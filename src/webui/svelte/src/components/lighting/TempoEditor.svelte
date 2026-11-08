@@ -13,10 +13,12 @@
      *
      * -->
 <script lang="ts">
+  import { configToSection } from "../../lib/tempoConvert";
   import { t } from "svelte-i18n";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
-  import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
+  import { fetchTempoGuess } from "../../lib/api/songs";
   import TimestampInput from "./TimestampInput.svelte";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     tempo: TempoSection | undefined;
@@ -49,25 +51,6 @@
 
   const ALIGNMENT_WARN_THRESHOLD_MS = 15;
 
-  function convertGuessToTempo(guessed: GuessedTempo): TempoSection {
-    return {
-      start: { value: guessed.start_seconds, unit: "s" },
-      bpm: guessed.bpm,
-      time_signature: guessed.time_signature,
-      changes: guessed.changes.map((c) => {
-        const change: TempoChange = {
-          timestamp: { type: "measure_beat", measure: c.measure, beat: c.beat },
-          bpm: c.bpm,
-          time_signature: c.time_signature,
-        };
-        if (c.transition_beats) {
-          change.transition = `${c.transition_beats}`;
-        }
-        return change;
-      }),
-    };
-  }
-
   async function guessTempoMap() {
     if (!songName) return;
     guessing = true;
@@ -76,7 +59,7 @@
       if (result) {
         guessSource = result.source;
         guessAlignmentRms = result.tempo.alignment_rms_ms ?? null;
-        onchange(convertGuessToTempo(result.tempo));
+        onchange(configToSection(result.config));
       }
     } finally {
       guessing = false;
@@ -86,10 +69,12 @@
   let expanded = $state(true);
 
   function enableTempo() {
+    // The player's own defaults: what a block that says nothing plays at.
+    const defaults = rules.tempo_defaults();
     onchange({
       start: { value: 0, unit: "s" },
-      bpm: 120,
-      time_signature: [4, 4],
+      bpm: defaults.bpm,
+      time_signature: [...defaults.time_signature],
       changes: [],
     });
   }
@@ -112,11 +97,15 @@
     onchange({ ...tempo, start: { ...tempo.start, value: v } });
   }
 
+  /** The start in another unit, converted so it stays the same time as
+   *  the player reads it (`500ms` is `0.5s`). */
   function updateStartUnit(unit: string) {
     if (!tempo) return;
+    const value = rules.time_in(tempo.start.value, tempo.start.unit, unit);
+    if (value === undefined) return;
     onchange({
       ...tempo,
-      start: { ...tempo.start, unit: unit as "ms" | "s" },
+      start: { ...tempo.start, value, unit: unit as "ms" | "s" },
     });
   }
 

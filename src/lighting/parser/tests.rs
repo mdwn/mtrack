@@ -18,9 +18,13 @@ mod chase_pattern_tests;
 #[cfg(test)]
 mod fixture_venue_tests;
 #[cfg(test)]
+mod grammar_tables_tests;
+#[cfg(test)]
 mod include_tests;
 #[cfg(test)]
 mod layer_commands_tests;
+#[cfg(test)]
+mod layout_tests;
 #[cfg(test)]
 mod measure_offset_tests;
 #[cfg(test)]

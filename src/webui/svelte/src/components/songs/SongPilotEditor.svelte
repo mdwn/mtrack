@@ -13,8 +13,10 @@
      *
      * -->
 <script lang="ts">
+  import type { PilotConfig, PilotHint } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import type { PilotConfig, PilotHintConfig } from "../../lib/api/songs";
+  import type { BeatGrid } from "../../lib/api/songs";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     /** The song.yaml `pilot:` block, or null when not configured. */
@@ -24,7 +26,7 @@
     hasBeatGrid?: boolean;
     /** The song's beat grid (beat times in seconds + measure start indices),
      * used to convert positions when switching between measure and time. */
-    beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    beatGrid?: BeatGrid | null;
   }
 
   let {
@@ -44,7 +46,7 @@
     onchange(null);
   }
 
-  function emit(hints: PilotHintConfig[], track?: string) {
+  function emit(hints: PilotHint[], track?: string) {
     const updated: PilotConfig = { ...(pilot ?? {}), hints };
     if (track !== undefined) {
       updated.track = track;
@@ -64,7 +66,7 @@
     emit(hints);
   }
 
-  function updateHint(index: number, patch: Partial<PilotHintConfig>) {
+  function updateHint(index: number, patch: Partial<PilotHint>) {
     const hints = [...(pilot?.hints ?? [])];
     const merged = { ...hints[index], ...patch };
     if (merged.align === "end") {
@@ -85,44 +87,8 @@
     emit(hints);
   }
 
-  function positionKind(hint: PilotHintConfig): "measure" | "time" {
+  function positionKind(hint: PilotHint): "measure" | "time" {
     return "measure" in hint.at ? "measure" : "time";
-  }
-
-  /** Time (seconds) of measure/beat on the grid, or null when off-grid. */
-  function measureBeatToTime(measure: number, beat: number): number | null {
-    if (!beatGrid) return null;
-    const startIdx = beatGrid.measure_starts[measure - 1];
-    if (startIdx === undefined) return null;
-    const time = beatGrid.beats[startIdx + (beat - 1)];
-    return time === undefined ? null : time;
-  }
-
-  /** Nearest measure/beat for a time (seconds), or null without a grid. */
-  function timeToMeasureBeat(
-    time: number,
-  ): { measure: number; beat?: number } | null {
-    if (!beatGrid || beatGrid.beats.length === 0) return null;
-    let nearest = 0;
-    for (let i = 1; i < beatGrid.beats.length; i++) {
-      if (
-        Math.abs(beatGrid.beats[i] - time) <
-        Math.abs(beatGrid.beats[nearest] - time)
-      ) {
-        nearest = i;
-      }
-    }
-    let measure = 0;
-    while (
-      measure + 1 < beatGrid.measure_starts.length &&
-      beatGrid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - beatGrid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
   }
 
   function switchPosition(index: number, kind: "measure" | "time") {
@@ -132,14 +98,28 @@
     // representation keeps the hint where it is.
     if (kind === "time") {
       const at = hint.at as { measure: number; beat?: number };
-      const time = measureBeatToTime(at.measure, at.beat ?? 1);
+      const time = beatGrid
+        ? rules.grid_query(beatGrid, {
+            measure: at.measure,
+            beat: at.beat ?? 1,
+          })?.secs
+        : undefined;
       updateHint(index, {
-        at: { time: time !== null ? Math.round(time * 1000) / 1000 : 0 },
+        at: { time: time !== undefined ? Math.round(time * 1000) / 1000 : 0 },
       });
     } else {
       const at = hint.at as { time: number };
+      // The nearest beat, as the player snaps a time to one; beat 1 stays
+      // implicit.
+      const nearest = beatGrid
+        ? rules.grid_query(beatGrid, { secs: at.time, snap: { step: 1 } })
+        : undefined;
       updateHint(index, {
-        at: timeToMeasureBeat(at.time) ?? { measure: 1 },
+        at: nearest
+          ? nearest.beat > 1
+            ? { measure: nearest.measure, beat: nearest.beat }
+            : { measure: nearest.measure }
+          : { measure: 1 },
       });
     }
   }
@@ -266,8 +246,9 @@
                 align: (e.target as HTMLSelectElement).value as "end" | "start",
               })}
           >
-            <option value="end">{$t("pilot.alignEnd")}</option>
-            <option value="start">{$t("pilot.alignStart")}</option>
+            {#each rules.config_choices().hint_aligns as a (a)}
+              <option value={a}>{$t(`pilot.aligns.${a}`)}</option>
+            {/each}
           </select>
           <button
             class="btn-icon delete-btn"

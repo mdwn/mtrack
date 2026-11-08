@@ -29,8 +29,8 @@ use std::{
 use tracing::{debug, error, info, warn};
 
 use super::{
-    build_active_source, build_pass_sources, current_playhead_section, Device, GroupedSources,
-    SongLoopCrossfade, PASS_PREBUILD_AHEAD,
+    build_active_source, build_pass_sources, Device, GroupedSources, SongLoopCrossfade,
+    PASS_PREBUILD_AHEAD,
 };
 use crate::audio::song_loop::{PassCrossover, PassGroup};
 use crate::playsync::{CancelHandle, SectionJumpLog};
@@ -355,10 +355,14 @@ impl<'a> LoopScheduler<'a> {
             Some(section) if !section.is_whole_song() || pass_due_soon => {
                 Some(section.bounds.clone())
             }
-            // The clock is stream-relative; section bounds are
-            // song-absolute. Offset by the playback start position, and
+            // The section the playhead sits in is the loop-back candidate:
+            // whichever section the performer is hearing could be armed at
+            // any moment, and arming loops back to its start, so its
+            // sources are prewarmed speculatively rather than opened at the
+            // first boundary. The clock is stream-relative; section bounds
+            // are song-absolute. Offset by the playback start position, and
             // take off what loops have put back to have the song's.
-            _ => current_playhead_section(
+            _ => crate::player::SectionBounds::at(
                 self.ctx.song,
                 elapsed.saturating_sub(self.trigger.consumed()),
             ),

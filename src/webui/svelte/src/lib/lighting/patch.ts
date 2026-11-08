@@ -13,86 +13,65 @@
 //
 
 /**
- * The venue inspector's patch check (venue-exchange design §21): whether a
- * fixture's candidate address or mode runs over another fixture's
- * addresses, asked before the save. The same rule as the server's
- * `lighting::patch`: fixtures on the identical span (same universe, start
- * and footprint) are ganged on purpose, not overlapping; only a partial
- * intersection is refused. A fixture whose footprint is not known is never
- * guessed at.
+ * The venue editor's patch placement (venue-exchange design §21), over the
+ * player's own patch rule: `rules.patch_overlaps` is `lighting::patch`'s
+ * `overlaps_with`, compiled to WebAssembly, and decides what a candidate
+ * address or mode runs over -- fixtures on the identical span gang, a
+ * footprint of nothing (the UI hands an unknown one over as 0) occupies
+ * nothing. What is here is placement only: how much fits, and the strip of
+ * addresses around a fixture.
  */
 
-/** The addresses one fixture occupies. */
-export interface Span {
-  fixture: string;
-  universe: number;
-  address: number;
-  /** Null when the fixture's type or mode does not load. */
-  footprint: number | null;
+import type { PatchOverlap, PatchSpan } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
+
+export type { PatchOverlap, PatchSpan };
+
+/** The gangs `candidate` would partly overlap, by address then name, each
+ *  naming every fixture of the gang. None for a span that is not one (an
+ *  address or footprint that is not a whole number in 0–65535). */
+export function overlaps(
+  spans: PatchSpan[],
+  candidate: PatchSpan,
+): PatchOverlap[] {
+  return rules.patch_overlaps(spans, candidate) ?? [];
 }
 
-/** The last address a span uses, or null when it uses none. */
-export function lastAddress(span: Span): number | null {
-  return span.footprint && span.footprint > 0
-    ? span.address + span.footprint - 1
-    : null;
-}
-
-/** Whether two spans are ganged: the identical addresses. */
-export function ganged(a: Span, b: Span): boolean {
-  return (
-    a.universe === b.universe &&
-    a.address === b.address &&
-    a.footprint === b.footprint &&
-    (a.footprint ?? 0) > 0
-  );
-}
-
-/** A fixture the candidate would overlap, and the addresses both use. */
-export interface Collision {
-  fixture: string;
-  from: number;
-  to: number;
-}
-
-/** The fixtures `candidate` would partly overlap, by address then name. The
- *  candidate's own span (same name) and the ones it gangs with are skipped. */
-export function collisions(spans: Span[], candidate: Span): Collision[] {
-  const end = lastAddress(candidate);
-  if (end === null) return [];
-  const out: Collision[] = [];
-  for (const s of spans) {
-    if (s.fixture === candidate.fixture || s.universe !== candidate.universe)
-      continue;
-    const last = lastAddress(s);
-    if (last === null || ganged(s, candidate)) continue;
-    const from = Math.max(s.address, candidate.address);
-    const to = Math.min(last, end);
-    if (from <= to) out.push({ fixture: s.fixture, from, to });
-  }
-  return out.sort(
-    (a, b) => a.from - b.from || a.fixture.localeCompare(b.fixture),
-  );
+/** One entry per fixture the hits name, with the addresses it shares, in
+ *  the order the editor lists them: by the first shared address, then by
+ *  name as the locale orders it. Display order only; the rule's own is by
+ *  gang, in byte order of the gang's first name. */
+export function listed(
+  hits: PatchOverlap[],
+): { fixture: string; from: number; to: number }[] {
+  return hits
+    .flatMap((h) =>
+      h.second_gang.map((fixture) => ({ fixture, from: h.from, to: h.to })),
+    )
+    .sort((a, b) => a.from - b.from || a.fixture.localeCompare(b.fixture));
 }
 
 /** How many addresses fit at the candidate's start before another
  *  fixture's (ganged ones aside): the largest footprint that would not
  *  collide. Zero when the start itself is taken. */
-export function room(spans: Span[], candidate: Span, limit = 512): number {
+export function room(
+  spans: PatchSpan[],
+  candidate: PatchSpan,
+  limit = rules.limits().universe_size,
+): number {
+  if (overlaps(spans, candidate).some((h) => h.from === candidate.address))
+    return 0;
+  // Widened to the end of the universe, the candidate hits everything
+  // after its start; the nearest bounds what fits.
+  const probe = { ...candidate, footprint: limit - candidate.address + 1 };
   let end = limit;
-  for (const s of spans) {
-    if (s.fixture === candidate.fixture || s.universe !== candidate.universe)
-      continue;
-    const last = lastAddress(s);
-    if (last === null || ganged(s, candidate)) continue;
-    if (s.address <= candidate.address && last >= candidate.address) return 0;
-    if (s.address > candidate.address) end = Math.min(end, s.address - 1);
-  }
+  for (const h of overlaps(spans, probe))
+    if (h.from > candidate.address) end = Math.min(end, h.from - 1);
   return Math.max(0, end - candidate.address + 1);
 }
 
 /** The addresses the strip shows: `size` of them around the fixture, inside
- *  1–512, so a long universe is never drawn whole. */
+ *  the universe, so a long universe is never drawn whole. */
 export function stripWindow(
   address: number,
   footprint: number,
@@ -100,8 +79,9 @@ export function stripWindow(
 ): { from: number; to: number } {
   const span = Math.max(1, footprint);
   let from = address - Math.max(0, Math.floor((size - span) / 2));
-  from = Math.max(1, Math.min(from, 512 - size + 1));
-  return { from, to: Math.min(512, from + size - 1) };
+  const last = rules.limits().universe_size;
+  from = Math.max(1, Math.min(from, last - size + 1));
+  return { from, to: Math.min(last, from + size - 1) };
 }
 
 /** One address cell of the strip. */
@@ -116,53 +96,37 @@ export interface StripCell {
 }
 
 export function stripCells(
-  spans: Span[],
-  candidate: Span,
+  spans: PatchSpan[],
+  candidate: PatchSpan,
   from: number,
   to: number,
 ): StripCell[] {
-  const end = lastAddress(candidate);
-  const others = spans.filter(
-    (s) =>
-      s.fixture !== candidate.fixture &&
-      s.universe === candidate.universe &&
-      lastAddress(s) !== null,
-  );
+  const end = rules.patch_last(candidate);
+  const others = spans
+    .filter(
+      (s) =>
+        s.fixture !== candidate.fixture && s.universe === candidate.universe,
+    )
+    .map((s) => ({
+      fixture: s.fixture,
+      from: s.address,
+      to: rules.patch_last(s),
+    }))
+    .filter(
+      (s): s is { fixture: string; from: number; to: number } =>
+        s.to !== undefined,
+    );
+  const clashes = overlaps(spans, candidate);
   const cells: StripCell[] = [];
   for (let address = from; address <= to; address++) {
-    const on = others.filter(
-      (s) => address >= s.address && address <= (lastAddress(s) as number),
-    );
-    const mine = end !== null && address >= candidate.address && address <= end;
     cells.push({
       address,
-      owners: on.map((s) => s.fixture),
-      mine,
-      clash: mine && on.some((s) => !ganged(s, candidate)),
+      owners: others
+        .filter((s) => address >= s.from && address <= s.to)
+        .map((s) => s.fixture),
+      mine: end !== undefined && address >= candidate.address && address <= end,
+      clash: clashes.some((h) => address >= h.from && address <= h.to),
     });
   }
   return cells;
-}
-
-/** Where the editor puts a fixture added after `previous` (the last row,
- *  not the highest address): the same universe, straight after it — its
- *  address plus its footprint, or plus one when that is not known. A
- *  fixture that would run past 512 starts the next universe. The first
- *  fixture of a venue goes at 1:1. */
-export function nextPatch(
-  previous: {
-    universe: number;
-    address: number;
-    footprint: number | null;
-  } | null,
-  footprint: number | null,
-): { universe: number; address: number } {
-  if (!previous) return { universe: 1, address: 1 };
-  const step =
-    previous.footprint && previous.footprint > 0 ? previous.footprint : 1;
-  const own = footprint && footprint > 0 ? footprint : 1;
-  const address = previous.address + step;
-  if (address + own - 1 > 512)
-    return { universe: previous.universe + 1, address: 1 };
-  return { universe: previous.universe, address };
 }

@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::config::{ConfigReload, ConfigSaved, FileSaved, StoreSnapshot};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -164,7 +165,12 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     let reload = apply_config_change(&state).await;
     (
         StatusCode::OK,
-        Json(with_reload(json!({"status": "saved"}), reload)),
+        Json(FileSaved {
+            status: "saved".to_string(),
+            filename: None,
+            version: None,
+            reload,
+        }),
     )
         .into_response()
 }
@@ -183,21 +189,7 @@ pub(super) async fn validate_config(body: String) -> impl IntoResponse {
 
 /// Helper to convert a ConfigError into an HTTP response.
 fn config_store_error_response(e: config::ConfigError) -> axum::response::Response {
-    match e {
-        config::ConfigError::StaleChecksum { .. } => {
-            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
-        }
-        config::ConfigError::InvalidProfileIndex { .. } | config::ConfigError::Validation(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+    super::helpers::fault_response(e.kind(), e.to_string())
 }
 
 /// Helper to convert a ConfigSnapshot into a JSON response, with what became
@@ -205,16 +197,14 @@ fn config_store_error_response(e: config::ConfigError) -> axum::response::Respon
 fn config_snapshot_response(
     snapshot: config::store::ConfigSnapshot,
     status: StatusCode,
-    reload: serde_json::Map<String, serde_json::Value>,
+    reload: ConfigReload,
 ) -> axum::response::Response {
-    (
-        status,
-        Json(with_reload(
-            json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum}),
-            reload,
-        )),
-    )
-        .into_response()
+    let snapshot = StoreSnapshot {
+        yaml: snapshot.yaml,
+        checksum: snapshot.checksum,
+    };
+    let saved = ConfigSaved { snapshot, reload };
+    (status, Json(saved)).into_response()
 }
 
 /// Returns the config store from the player, or an error response.
@@ -240,54 +230,33 @@ fn require_config_store(
 /// `applied: false` and a message saying so. It used to be refused with a
 /// 409, though the gRPC and MCP config changes saved and deferred.
 /// Non-blocking: device discovery runs in the background.
-pub(super) async fn apply_config_change(
-    state: &WebUiState,
-) -> serde_json::Map<String, serde_json::Value> {
+pub(super) async fn apply_config_change(state: &WebUiState) -> ConfigReload {
     config_apply_fields(&state.player.apply_config_change().await)
 }
 
-/// The reply's fields for what became of a saved config change.
-fn config_apply_fields(
-    outcome: &crate::player::ConfigChange,
-) -> serde_json::Map<String, serde_json::Value> {
+/// What became of a saved config change, as its reply says.
+fn config_apply_fields(outcome: &crate::player::ConfigChange) -> ConfigReload {
     // The reload brings the controllers in line with the config itself,
     // restarting only those it changed, or whose MIDI device it reopened.
     // Forcing them all here as well tore down every OSC, gRPC and MCP
     // client for a change that was not theirs.
-    let mut fields = serde_json::Map::new();
-    fields.insert("applied".into(), json!(outcome.applied()));
-    // Which it was, for the web UI to say so: a save deferred until the
-    // player is idle reads otherwise as one made.
-    fields.insert("reload".into(), json!(outcome.kind()));
-    if let Some(message) = outcome.message() {
-        fields.insert("message".into(), json!(message));
+    ConfigReload {
+        applied: outcome.applied(),
+        // Which it was, for the web UI to say so: a save deferred until the
+        // player is idle reads otherwise as one made.
+        reload: outcome.kind().to_string(),
+        message: outcome.message(),
+        // A song reload that failed beside it, carried rather than hiding
+        // the hardware's outcome.
+        songs_error: outcome.songs_error.clone(),
+        // The deferred reload generation a deferral waits for, for the web
+        // UI to clear its notice once the playback updates' started
+        // reaches it.
+        awaits_reload: outcome.awaits,
+        awaits_process: outcome
+            .awaits
+            .map(|_| crate::player::process_id().to_string()),
     }
-    // A song reload that failed beside it, carried rather than hiding the
-    // hardware's outcome.
-    if let Some(songs_error) = &outcome.songs_error {
-        fields.insert("songs_error".into(), json!(songs_error));
-    }
-    // The deferred reload generation a deferral waits for, for the web UI
-    // to clear its notice once the playback updates' started reaches it.
-    if let Some(awaits) = outcome.awaits {
-        fields.insert("awaits_reload".into(), json!(awaits));
-        fields.insert(
-            "awaits_process".into(),
-            json!(crate::player::process_id().to_string()),
-        );
-    }
-    fields
-}
-
-/// Adds what became of a save's hardware reload to its reply.
-pub(super) fn with_reload(
-    mut body: serde_json::Value,
-    reload: serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    if let Some(body) = body.as_object_mut() {
-        body.extend(reload);
-    }
-    body
 }
 
 /// GET /api/config/store — returns config YAML + checksum via the ConfigStore.
@@ -297,32 +266,10 @@ pub(super) async fn get_config_store(State(state): State<WebUiState>) -> impl In
         Err(e) => return e,
     };
     match store.read_yaml().await {
-        Ok((yaml, checksum)) => (
-            StatusCode::OK,
-            Json(json!({"yaml": yaml, "checksum": checksum})),
-        )
-            .into_response(),
+        Ok((yaml, checksum)) => {
+            (StatusCode::OK, Json(StoreSnapshot { yaml, checksum })).into_response()
+        }
         Err(e) => config_store_error_response(e),
-    }
-}
-
-/// Trait for config section types that support validation.
-trait Validatable {
-    fn validate(&self) -> Result<(), Vec<String>>;
-}
-impl Validatable for config::Audio {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
-    }
-}
-impl Validatable for config::Midi {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
-    }
-}
-impl Validatable for config::Dmx {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
     }
 }
 
@@ -341,51 +288,6 @@ fn extract_checksum(body: &serde_json::Value) -> Result<String, axum::response::
         })
 }
 
-/// Deserializes an optional config section from a JSON body field.
-/// Returns `None` if the field is absent or null; returns a 400 error on
-/// deserialization failure.
-#[allow(clippy::result_large_err)]
-fn deserialize_optional_section<T: serde::de::DeserializeOwned>(
-    body: &serde_json::Value,
-    field: &str,
-) -> Result<Option<T>, axum::response::Response> {
-    match body.get(field) {
-        Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map(Some).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("invalid {}: {}", field, e)})),
-            )
-                .into_response()
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// Shared preamble for optional, validatable config section updates.
-///
-/// Handles: checksum extraction, deserialization, validation,
-/// config store lookup. Returns the deserialized value, checksum, and store on
-/// success.
-#[allow(clippy::result_large_err)]
-async fn prepare_optional_update<T>(
-    state: &WebUiState,
-    body: &serde_json::Value,
-    field: &str,
-) -> Result<(Option<T>, String, std::sync::Arc<config::ConfigStore>), axum::response::Response>
-where
-    T: serde::de::DeserializeOwned + Validatable,
-{
-    let checksum = extract_checksum(body)?;
-    let value: Option<T> = deserialize_optional_section(body, field)?;
-    if let Some(ref v) = value {
-        if let Err(errors) = v.validate() {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
-        }
-    }
-    let store = require_config_store(state)?;
-    Ok((value, checksum, store))
-}
-
 /// Completes a config section update: calls the store updater, reloads hardware,
 /// and returns the response.
 async fn finish_config_update(
@@ -401,17 +303,35 @@ async fn finish_config_update(
     }
 }
 
+/// Updates `section` from the body's `field` (absent or `null` removes an
+/// optional section), through the store's one parse and validation, as
+/// MCP and gRPC do.
+async fn put_config_section(
+    state: &WebUiState,
+    body: &serde_json::Value,
+    section: config::store::ConfigSection,
+) -> axum::response::Response {
+    let checksum = match extract_checksum(body) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let store = match require_config_store(state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let value = body
+        .get(section.name())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    finish_config_update(state, store.update_section(section, value, &checksum).await).await
+}
+
 /// PUT /api/config/audio — update audio config section.
 pub(super) async fn put_config_audio(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (audio, checksum, store) =
-        match prepare_optional_update::<config::Audio>(&state, &body, "audio").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_audio(audio, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Audio).await
 }
 
 /// PUT /api/config/midi — update MIDI config section.
@@ -419,12 +339,7 @@ pub(super) async fn put_config_midi(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (midi, checksum, store) =
-        match prepare_optional_update::<config::Midi>(&state, &body, "midi").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_midi(midi, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Midi).await
 }
 
 /// PUT /api/config/dmx — update DMX config section.
@@ -432,12 +347,7 @@ pub(super) async fn put_config_dmx(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (dmx, checksum, store) =
-        match prepare_optional_update::<config::Dmx>(&state, &body, "dmx").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_dmx(dmx, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Dmx).await
 }
 
 /// PUT /api/config/controllers — update controllers config.
@@ -445,42 +355,7 @@ pub(super) async fn put_config_controllers(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let checksum = match extract_checksum(&body) {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-
-    let controllers: Vec<config::Controller> = match body.get("controllers") {
-        Some(v) => match serde_json::from_value(v.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid controllers: {}", e)})),
-                )
-                    .into_response()
-            }
-        },
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing controllers field"})),
-            )
-                .into_response()
-        }
-    };
-
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    match store.update_controllers(controllers, &checksum).await {
-        Ok(snapshot) => {
-            let reload = apply_config_change(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK, reload)
-        }
-        Err(e) => config_store_error_response(e),
-    }
+    put_config_section(&state, &body, config::store::ConfigSection::Controllers).await
 }
 
 /// PUT /api/config/samples — replace all sample definitions.
@@ -1329,7 +1204,7 @@ mod test {
 
         assert!(!state.player.is_playing().await);
         state.player.play().await.unwrap();
-        let reload = super::apply_config_change(&state).await;
+        let reload = serde_json::json!(super::apply_config_change(&state).await);
         // The save's reply says it has not been applied yet.
         assert_eq!(reload["applied"], serde_json::json!(false), "{reload:?}");
         assert!(reload["message"]
@@ -1371,7 +1246,7 @@ mod test {
         let tasks = state.player.controller_tasks();
         assert_eq!(tasks.len(), 1);
 
-        let reload = super::apply_config_change(&state).await;
+        let reload = serde_json::json!(super::apply_config_change(&state).await);
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
         state.player.await_hardware_ready().await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1488,7 +1363,7 @@ mod test {
             .await
             .unwrap();
         assert!(!state.player.is_playing().await);
-        let reload = super::apply_config_change(&state).await;
+        let reload = serde_json::json!(super::apply_config_change(&state).await);
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
     }
 
@@ -1662,14 +1537,16 @@ mod test {
     #[test]
     fn a_saves_reply_says_what_became_of_it() {
         use crate::player::ConfigApply;
-        let applied = super::config_apply_fields(&ConfigApply::Applied.into());
+        let applied = serde_json::json!(super::config_apply_fields(&ConfigApply::Applied.into()));
         assert_eq!(applied["applied"], serde_json::json!(true));
-        assert!(!applied.contains_key("message"));
-        let deferred = super::config_apply_fields(&ConfigApply::Deferred.into());
+        assert!(applied.get("message").is_none());
+        let deferred = serde_json::json!(super::config_apply_fields(&ConfigApply::Deferred.into()));
         assert_eq!(deferred["applied"], serde_json::json!(false));
         assert_eq!(deferred["reload"], "deferred");
         assert!(deferred["message"].as_str().unwrap().contains("idle"));
-        let failed = super::config_apply_fields(&ConfigApply::Failed("no store".into()).into());
+        let failed = serde_json::json!(super::config_apply_fields(
+            &ConfigApply::Failed("no store".into()).into()
+        ));
         assert_eq!(failed["applied"], serde_json::json!(false));
         assert_eq!(failed["reload"], "failed");
         let message = failed["message"].as_str().unwrap();

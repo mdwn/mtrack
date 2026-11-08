@@ -22,6 +22,9 @@
 //! each step. Every write goes through a directory proven to be inside the
 //! project (the same containment the GDTF import and the venue save use).
 
+use crate::webui::wire::mvr::{
+    AimPoint, AimPoints, MvrExportSummary, MvrImportAnswer, MvrInspection, MvrKept,
+};
 use std::collections::HashMap;
 
 use axum::{
@@ -32,12 +35,11 @@ use axum::{
 };
 use serde_json::json;
 
-use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
-    content_version, if_match_version, project_root, reload_if_current_venue, resolve_lighting_dir,
-    stale_venue_response, validate_lighting_name, venue_error_after_save,
-    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
+    content_version, if_match_version, lighting_dir, project_root, reload_if_current_venue,
+    resolve_lighting_dir, stale_venue_response, validate_lighting_name, venue_error_after_save,
+    LightingDir, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
@@ -147,19 +149,19 @@ fn parse_origin(text: &str) -> Result<Vec3, Response> {
     }
 }
 
-/// A directory the caller named, or the default, proven to stay in the
+/// A directory the caller named, or this host's, proven to stay in the
 /// project. Returns the project-relative string the library functions take.
 #[allow(clippy::result_large_err)]
 fn checked_dir(
     state: &WebUiState,
     requested: Option<&str>,
-    default: &'static str,
+    which: LightingDir,
 ) -> Result<String, Response> {
-    resolve_lighting_dir(&state.config_path, requested, default)?;
-    Ok(match requested {
-        Some(dir) if !dir.is_empty() => dir.to_string(),
-        _ => default.to_string(),
-    })
+    // The config read once: the directory, then proven to stay in the
+    // project as named.
+    let dir = lighting_dir(&state.config_path, requested, which)?;
+    resolve_lighting_dir(&state.config_path, Some(&dir), which)?;
+    Ok(dir)
 }
 
 /// The import options a form asks for, directories checked.
@@ -171,9 +173,9 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
         fixture_types_dir: checked_dir(
             state,
             form.field("fixture_types_dir"),
-            DEFAULT_FIXTURE_TYPES_DIR,
+            LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, form.field("venues_dir"), DEFAULT_VENUES_DIR)?,
+        venues_dir: checked_dir(state, form.field("venues_dir"), LightingDir::Venues)?,
         keep: match form.field("keep") {
             Some(text) => serde_json::from_str(text).map_err(|e| {
                 bad_request(format!(
@@ -192,7 +194,9 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
 /// fixture's and focus point's position in the file's millimeters, the
 /// scenery and, when the scenery carries a stage floor, its bounds
 /// (`scene.deck_mm`, else null). Writes nothing. A file the importer
-/// refuses (not an MVR, over the caps) is a 400 with the parser's reason.
+/// refuses (not an MVR, over the caps) is a 400 with the parser's reason; a
+/// venue name (or an embedded GDTF's record) the one rule for lighting
+/// files refuses is a 409 with the reason, as the import answers it.
 pub(super) async fn inspect_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -209,19 +213,23 @@ pub(super) async fn inspect_mvr(
                 &options,
                 &project,
             )
-            .map_err(|e| e.to_string())?;
-            let scene =
-                lighting::import::scene_view::scene_view(&form.bytes).map_err(|e| e.to_string())?;
-            Ok::<_, String>((report, scene))
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref()))?;
+            let scene = lighting::import::scene_view::scene_view(&form.bytes)
+                .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error": e.to_string()})))?;
+            Ok::<_, (StatusCode, serde_json::Value)>((report, scene))
         })())
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     let (report, scene) = outcome;
     Ok::<_, Response>(
         (
             StatusCode::OK,
-            Json(json!({"file_name": file_name, "report": report, "scene": scene})),
+            Json(MvrInspection {
+                file_name,
+                report,
+                scene,
+            }),
         )
             .into_response(),
     )
@@ -236,7 +244,9 @@ pub(super) async fn inspect_mvr(
 /// `{write: false, plan}` (what `import-mvr` prints without `--write`);
 /// `write=true` performs the import and answers `{write: true, report,
 /// reloaded}`, `reloaded` saying whether the running engine re-read the
-/// venue it is playing. Importing never makes the venue current.
+/// venue it is playing. Importing never makes the venue current. A venue
+/// whose file is not its alone, or whose new file is taken, is a 409 (the
+/// venue save's rule); anything else refused is a 400.
 pub(super) async fn import_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -268,7 +278,7 @@ pub(super) async fn import_mvr(
         Ok::<_, String>(
             if write {
                 lighting::import::import_mvr_bytes(&form.bytes, &form.file_name, &options, &project)
-                    .map(|report| serde_json::to_value(&report).unwrap_or_default())
+                    .map(Imported::Report)
             } else {
                 lighting::import::inspect_mvr_bytes(
                     &form.bytes,
@@ -276,38 +286,43 @@ pub(super) async fn import_mvr(
                     &options,
                     &project,
                 )
-                .map(|plan| serde_json::to_value(&plan).unwrap_or_default())
+                .map(Imported::Plan)
             }
-            .map_err(|e| e.to_string()),
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(bad_request)?;
-    if !write {
-        return Ok::<_, Response>(
-            (
-                StatusCode::OK,
-                Json(json!({"write": false, "plan": outcome})),
-            )
-                .into_response(),
-        );
-    }
-    let venue = outcome["venue_name"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
+    let report = match outcome {
+        Imported::Plan(plan) => {
+            let answer = MvrImportAnswer {
+                write: false,
+                plan: Some(plan),
+                report: None,
+                reloaded: None,
+                venue_error: None,
+            };
+            return Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response());
+        }
+        Imported::Report(report) => report,
+    };
+    let venue = report.plan.venue_name.clone();
     let reloaded = reload_if_current_venue(&state, &venue).await;
     let venue_error = venue_error_after_save(&state, &venue, &venues_path).await;
-    Ok((
-        StatusCode::OK,
-        Json(json!({
-            "write": true,
-            "report": outcome,
-            "reloaded": reloaded,
-            "venue_error": venue_error,
-        })),
-    )
-        .into_response())
+    let answer = MvrImportAnswer {
+        write: true,
+        plan: None,
+        report: Some(report),
+        reloaded: Some(reloaded),
+        venue_error: Some(venue_error),
+    };
+    Ok((StatusCode::OK, Json(answer)).into_response())
+}
+
+/// An import's outcome: the plan, or what the import did.
+enum Imported {
+    Plan(lighting::import::MvrPlan),
+    Report(lighting::import::MvrImport),
 }
 
 /// Query for the export endpoints.
@@ -333,9 +348,9 @@ fn export_options(state: &WebUiState, query: &ExportQuery) -> Result<MvrExportOp
         fixture_types_dir: checked_dir(
             state,
             query.fixture_types_dir.as_deref(),
-            DEFAULT_FIXTURE_TYPES_DIR,
+            LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, query.venues_dir.as_deref(), DEFAULT_VENUES_DIR)?,
+        venues_dir: checked_dir(state, query.venues_dir.as_deref(), LightingDir::Venues)?,
         ..MvrExportOptions::for_venue(&query.venue)
     })
 }
@@ -359,10 +374,11 @@ pub(super) async fn export_summary(
     })
     .await?
     .map_err(bad_request)?;
-    let file_name = report.output.clone();
-    let mut body = serde_json::to_value(&report).unwrap_or_default();
-    body["file_name"] = json!(file_name);
-    Ok::<_, Response>((StatusCode::OK, Json(body)).into_response())
+    let summary = MvrExportSummary {
+        file_name: report.output.clone(),
+        export: report,
+    };
+    Ok::<_, Response>((StatusCode::OK, Json(summary)).into_response())
 }
 
 /// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file= — the
@@ -427,7 +443,13 @@ pub(super) async fn keep_export(
     .await?;
     match result {
         Ok(report) => Ok::<_, Response>(
-            (StatusCode::OK, Json(json!({"kept": report.output}))).into_response(),
+            (
+                StatusCode::OK,
+                Json(MvrKept {
+                    kept: report.output,
+                }),
+            )
+                .into_response(),
         ),
         Err(KeepError::Exists(existing)) => Ok((
             StatusCode::CONFLICT,
@@ -499,11 +521,11 @@ pub(super) async fn add_aim_points(
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), LightingDir::Venues)?;
     let fixture_types_dir = checked_dir(
         &state,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let project = project_root(&state.config_path)?;
     let venues_path = project.join(&venues_dir);
@@ -521,8 +543,11 @@ pub(super) async fn add_aim_points(
     .await?;
     let (created, version) = match outcome {
         Ok(done) => done,
-        Err(AimError::Stale(current)) => return Err(stale_venue_response(&name, Some(current))),
+        Err(AimError::Stale(current)) => {
+            return Err(stale_venue_response(&name, Some(current)).into())
+        }
         Err(AimError::Message(e)) => return Err(bad_request(e)),
+        Err(AimError::Refused(r)) => return Err(r.into()),
     };
     let reloaded = if created.is_empty() {
         false
@@ -530,24 +555,21 @@ pub(super) async fn add_aim_points(
         reload_if_current_venue(&state, &name).await
     };
     let venue_error = venue_error_after_save(&state, &name, &venues_path).await;
-    let created: Vec<serde_json::Value> = created
+    let created = created
         .into_iter()
-        .map(|(point_name, fixture, point)| {
-            json!({"name": point_name, "fixture": fixture, "point": point})
+        .map(|(name, fixture, point)| AimPoint {
+            name,
+            fixture,
+            point,
         })
         .collect();
-    Ok::<_, Response>(
-        (
-            StatusCode::OK,
-            Json(json!({
-                "created": created,
-                "reloaded": reloaded,
-                "version": version,
-                "venue_error": venue_error,
-            })),
-        )
-            .into_response(),
-    )
+    let answer = AimPoints {
+        created,
+        reloaded,
+        version,
+        venue_error,
+    };
+    Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response())
 }
 
 /// The points created: (focus point name, fixture, position).
@@ -559,6 +581,9 @@ enum AimError {
     /// The file's version is not the one the client sent; carries the
     /// current one.
     Stale(String),
+    /// The venue's file may not be written (it is not the venue's alone),
+    /// or its upgrade to a `.venue` is refused: the save's own answer.
+    Refused(super::lighting_writes::Answer),
 }
 
 impl From<String> for AimError {
@@ -568,6 +593,7 @@ impl From<String> for AimError {
 }
 
 /// Adds the points; returns them with the venue file's version afterwards.
+#[allow(clippy::result_large_err)]
 fn add_aim_points_blocking(
     project: &std::path::Path,
     venue_name: &str,
@@ -595,28 +621,33 @@ fn add_aim_points_blocking(
         .map(|f| f.name.as_str())
         .collect();
 
-    // The file that holds the venue, whatever it is called.
+    // The venue's file, by the one rule for venue writes: the file the
+    // loader read it from, written only when it is the venue's alone, and a
+    // `.light` moved to a `.venue` (focus points need the newer format).
     let dir = project.join(venues_dir);
-    let mut found: Option<(std::path::PathBuf, String, lighting::types::Venue)> = None;
     if !dir.is_dir() {
         return Err(format!("cannot read {venues_dir}: not a directory").into());
     }
-    // The venue files the lighting system loads, subdirectories included.
-    for path in
-        lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
-    {
-        let Ok(content) = crate::util::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(mut venues) = lighting::parser::parse_venues(&content) {
-            if let Some(venue) = venues.remove(venue_name) {
-                found = Some((path, content, venue));
-                break;
-            }
-        }
-    }
-    let (path, content, venue) =
-        found.ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
+    let read = lighting::project_files::venues(&dir);
+    let venue = read
+        .get(venue_name)
+        .map(|declared| declared.item.clone())
+        .ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
+    let save = super::lighting_writes::Save {
+        kind: lighting::files::Kind::Venue,
+        dir: &dir,
+        record: &read.record,
+        library: &[],
+        name: venue_name,
+        from: None,
+        needs_new_format: true,
+    };
+    let plan = super::lighting_writes::plan(&save).map_err(AimError::Refused)?;
+    let content = plan
+        .current
+        .as_deref()
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
 
     let current = content_version(content.as_bytes());
     if expected_version.is_some_and(|expected| expected != current) {
@@ -658,7 +689,7 @@ fn add_aim_points_blocking(
     }
     let desired = venue.clone().with_focus_points(focus_points);
     let updated = lighting::venue_patch::patch_venue(&content, venue_name, &desired)?;
-    config_io::staged_write(&path, &updated)?;
+    super::lighting_writes::write(&plan, &updated).map_err(AimError::Refused)?;
     Ok((created, content_version(updated.as_bytes())))
 }
 
@@ -687,10 +718,7 @@ mod test {
 </ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
 
     fn synthetic_mvr(with_deck: bool) -> Vec<u8> {
-        let gdtf = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let glb = crate::lighting::import::scene_view::test_glb([-3.0, 0.0, -4.0], [3.0, 0.5, 0.0]);
         let scene = if with_deck {
             SYNTH_SCENE.to_string()
@@ -986,6 +1014,124 @@ mod test {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
+    #[tokio::test]
+    async fn a_re_import_into_a_shared_venue_file_is_a_conflict_and_writes_nothing() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let venues = dir.path().join("lighting/venues");
+        let mut shared = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        shared.push_str("venue \"Annex\" {\n}\n");
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("all.venue"), &shared).unwrap();
+
+        for write in ["false", "true"] {
+            let (status, body) = post(
+                &app,
+                "/lighting/mvr/import",
+                "Kellys.mvr",
+                &synthetic_mvr(true),
+                &[("name", "kellys"), ("write", write)],
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["kind"], "venue", "{body}");
+            assert_eq!(
+                body["error"],
+                "cannot import venue \"kellys\": Defined in all.venue alongside venue \
+                 \"Annex\"; edit that file by hand."
+            );
+        }
+        // The inspection says so too, so the wizard can ask for another name.
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "venue", "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("alongside venue \"Annex\""),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(venues.join("all.venue")).unwrap(),
+            shared
+        );
+        assert!(!venues.join("kellys.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn an_embedded_gdtf_s_taken_record_is_a_record_conflict_not_a_venue_one() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        let par = |name: &str| {
+            format!(
+                "fixture_type \"{name}\" {{\n  channels: 1\n  channel_map: {{\"dimmer\": 1}}\n}}\n"
+            )
+        };
+        std::fs::write(types.join("synth_brick.light"), par("Synth Brick")).unwrap();
+        std::fs::write(types.join("synth_brick_astera_pb15.fixture"), par("Other")).unwrap();
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "record", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with(
+                "lighting/fixture_types/synth_brick_astera_pb15.fixture holds \"Other\""
+            ),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_venues_directory_that_cannot_be_read_is_not_a_venue_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let venues = dir.path().join("lighting/venues");
+        std::fs::create_dir_all(&venues).unwrap();
+        // Written to and walked through, never listed.
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o300)).unwrap();
+        if std::fs::read_dir(&venues).is_ok() {
+            std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root
+        }
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["kind"], "unreadable", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("cannot be read"),
+            "{body}"
+        );
+    }
+
     async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
         let response = app
             .clone()
@@ -1236,6 +1382,63 @@ mod test {
             body["version"].as_str().unwrap(),
             super::content_version(after.as_bytes())
         );
+    }
+
+    async fn post_aim(app: &axum::Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/venues/kellys/aim-points")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn aim_points_are_refused_for_a_venue_whose_file_is_not_its_alone() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let shared = format!(
+            "{}venue \"annex\" {{\n}}\n",
+            std::fs::read_to_string(&path).unwrap()
+        );
+        std::fs::write(&path, &shared).unwrap();
+
+        let (status, body) = post_aim(&app).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["read_only"], true);
+        assert_eq!(body["file"], "kellys.venue");
+        assert_eq!(body["others"], json!(["annex"]));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), shared);
+    }
+
+    #[tokio::test]
+    async fn aim_points_move_a_light_venue_to_its_venue_file() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let venues = dir.path().join("lighting/venues");
+        let text = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("kellys.light"), &text).unwrap();
+
+        let (status, body) = post_aim(&app).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!body["created"].as_array().unwrap().is_empty(), "{body}");
+        assert!(!venues.join("kellys.light").exists());
+        let after = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        assert!(after.contains("focus \""), "{after}");
     }
 
     #[tokio::test]

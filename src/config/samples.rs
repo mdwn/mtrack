@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::midi;
+use super::midi_event::MidiEvent;
 
 /// Default maximum number of concurrent sample voices globally.
 pub const DEFAULT_MAX_SAMPLE_VOICES: u32 = 32;
@@ -24,9 +25,11 @@ pub const DEFAULT_MAX_SAMPLE_VOICES: u32 = 32;
 pub const DEFAULT_VELOCITY: u8 = 100;
 
 /// A YAML representation of a sample definition.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct SampleDefinition {
     /// The audio file for this sample (used when velocity mode is not "layers").
+    #[serde(default)]
     file: Option<String>,
 
     /// The output channels to route this sample to (1-indexed).
@@ -52,6 +55,7 @@ pub struct SampleDefinition {
 
     /// Maximum number of concurrent voices for this sample.
     /// If not set, only the global limit applies.
+    #[serde(default)]
     max_voices: Option<u32>,
 
     /// Fade time in milliseconds for release_behavior: fade.
@@ -170,6 +174,7 @@ impl SampleDefinition {
 }
 
 /// Configuration for velocity handling.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, Default)]
 pub struct VelocityConfig {
     /// The velocity handling mode.
@@ -177,9 +182,11 @@ pub struct VelocityConfig {
     mode: VelocityMode,
 
     /// Default velocity value when mode is "ignore".
+    #[serde(default)]
     default: Option<u8>,
 
     /// Whether to also scale volume by velocity when using layers.
+    #[serde(default)]
     scale: Option<bool>,
 
     /// Velocity layers (used when mode is "layers").
@@ -221,7 +228,10 @@ impl VelocityConfig {
 }
 
 /// Velocity handling mode.
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityMode {
     /// Ignore velocity, play at default volume.
@@ -234,6 +244,7 @@ pub enum VelocityMode {
 }
 
 /// A velocity layer that maps a velocity range to a sample file.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct VelocityLayer {
     /// The velocity range [min, max] inclusive (0-127).
@@ -252,7 +263,10 @@ impl VelocityLayer {
 }
 
 /// Behavior when a voice is released (e.g. Note Off, trigger release).
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseBehavior {
     /// Let the sample play to completion, ignoring the release.
@@ -265,7 +279,10 @@ pub enum ReleaseBehavior {
 }
 
 /// Behavior when a sample is triggered while it's already playing.
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RetriggerBehavior {
     /// Stop the previous voice and start a new one.
@@ -276,10 +293,11 @@ pub enum RetriggerBehavior {
 }
 
 /// A trigger that maps a MIDI event to a sample.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct SampleTrigger {
     /// The MIDI event that triggers the sample.
-    trigger: midi::Event,
+    trigger: MidiEvent,
 
     /// The name of the sample to trigger (references a SampleDefinition).
     sample: String,
@@ -303,6 +321,8 @@ impl SampleTrigger {
 }
 
 /// Global samples configuration that can be embedded in player config or loaded from a file.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Clone, Serialize, Debug, Default)]
 pub struct SamplesConfig {
     /// Sample definitions by name.

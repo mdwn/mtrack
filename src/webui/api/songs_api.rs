@@ -24,6 +24,10 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::super::state as ws_state;
+use crate::webui::wire::messages::Waveform;
+use crate::webui::wire::songs::{
+    FileKind, SongFailure, SongFile, SongFiles, SongInfo, SongList, TempoGuess, TempoGuessSource,
+};
 use crate::{config, songs};
 
 /// GET /api/songs — returns a list of all songs with metadata.
@@ -32,7 +36,7 @@ use crate::{config, songs};
 /// is always consistent with what the player knows about.
 pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
     let all_songs = state.player.songs();
-    let song_list: Vec<serde_json::Value> = all_songs
+    let songs: Vec<SongInfo> = all_songs
         .sorted_list()
         .iter()
         .map(|song| {
@@ -69,39 +73,31 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 })
                 .collect();
 
-            json!({
-                "name": song.name(),
-                "duration_ms": song.duration().as_millis() as u64,
-                "duration_display": song.duration_string(),
-                "num_channels": song.num_channels(),
-                "sample_format": format!("{}", song.sample_format()),
-                "track_count": song.tracks().len(),
-                "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
-                "has_midi": song.midi_playback().is_some(),
-                "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
-                "base_dir": base_dir,
-                "lighting_files": lighting_files,
-                "midi_dmx_files": midi_dmx_files,
-                "beat_grid": song.beat_grid().map(|g| json!({
-                    "beats": g.beats,
-                    "measure_starts": g.measure_starts,
-                })),
-                "has_tempo_map": song.tempo_map().is_some(),
-                "loop_playback": song.loop_playback(),
-                "loop_crossfade_ms": song.loop_crossfade().map(|d| d.as_millis() as u64),
-                "loop_crossfade_cut": song.loop_crossfade_cut(),
-                "sections": song.sections().iter().map(|s| json!({
-                    "name": s.name,
-                    "start_measure": s.start_measure,
-                    "end_measure": s.end_measure,
-                    "start_beat": s.start_beat,
-                    "end_beat": s.end_beat,
-                    "color": s.color,
-                })).collect::<Vec<_>>(),
-            })
+            let summary = song.summary();
+            SongInfo {
+                name: summary.name,
+                duration_ms: summary.duration.as_millis() as u64,
+                duration_display: crate::util::duration_minutes_seconds(summary.duration),
+                num_channels: song.num_channels(),
+                sample_format: format!("{}", song.sample_format()),
+                track_count: song.tracks().len(),
+                tracks: song.tracks().iter().map(|t| t.name().to_string()).collect(),
+                has_midi: song.midi_playback().is_some(),
+                has_lighting: !song.light_shows().is_empty()
+                    || !song.dsl_lighting_shows().is_empty(),
+                base_dir,
+                lighting_files,
+                midi_dmx_files,
+                beat_grid: song.beat_grid().cloned(),
+                has_tempo_map: song.tempo_map().is_some(),
+                loop_playback: song.loop_playback(),
+                loop_crossfade_ms: song.loop_crossfade().map(|d| d.as_millis() as u64),
+                loop_crossfade_cut: song.loop_crossfade_cut().to_vec(),
+                sections: summary.sections,
+            }
         })
         .collect();
-    let failure_list: Vec<serde_json::Value> = all_songs
+    let failures: Vec<SongFailure> = all_songs
         .failures()
         .iter()
         .map(|f| {
@@ -111,36 +107,19 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
-            json!({
-                "name": f.name(),
-                "error": f.error(),
-                "base_dir": base_dir,
-                "failed": true,
-            })
+            SongFailure {
+                name: f.name().to_string(),
+                error: f.error().to_string(),
+                base_dir,
+                failed: true,
+            }
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        Json(json!({"songs": song_list, "failures": failure_list})),
-    )
-        .into_response()
+    (StatusCode::OK, Json(SongList { songs, failures })).into_response()
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
-/// Helper to find a song's YAML config path (tries .yaml then .yml).
-fn find_yaml_path(base: &std::path::Path) -> Option<std::path::PathBuf> {
-    let yaml = base.join("song.yaml");
-    if yaml.exists() {
-        return Some(yaml);
-    }
-    let yml = base.join("song.yml");
-    if yml.exists() {
-        return Some(yml);
-    }
-    None
-}
-
 /// Reads a YAML file in a blocking task, returning a text/yaml response.
 async fn read_yaml_response(path: std::path::PathBuf) -> axum::response::Response {
     match super::helpers::spawn_blocking_io("read song config", move || {
@@ -172,16 +151,18 @@ pub(super) async fn get_song(
 
     let result = {
         let all_songs = state.player.songs();
-        match all_songs.get(&name) {
-            Ok(song) => match find_yaml_path(song.base_path()) {
-                Some(path) => GetSongResult::YamlPath(path),
-                None => GetSongResult::Summary(
+        // The file the song was read from, loaded or not, by the registry's
+        // one rule.
+        match all_songs.config_path(&name).filter(|p| p.is_file()) {
+            Some(path) => GetSongResult::YamlPath(path),
+            None => match all_songs.get(&name) {
+                Ok(song) => GetSongResult::Summary(
                     (
                         StatusCode::OK,
                         Json(json!({
                             "name": song.name(),
-                            "duration_ms": song.duration().as_millis() as u64,
-                            "duration_display": song.duration_string(),
+                            "duration_ms": song.summary().duration.as_millis() as u64,
+                            "duration_display": crate::util::duration_minutes_seconds(song.summary().duration),
                             "num_channels": song.num_channels(),
                             "sample_format": format!("{}", song.sample_format()),
                             "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
@@ -190,29 +171,17 @@ pub(super) async fn get_song(
                     )
                         .into_response(),
                 ),
-            },
-            Err(_) => {
-                if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
-                    match find_yaml_path(failure.base_path()) {
-                        Some(path) => GetSongResult::YamlPath(path),
-                        None => GetSongResult::NotFound(
-                            (
-                                StatusCode::NOT_FOUND,
-                                Json(json!({"error": format!("No config file found for failed song: {}", name)})),
-                            )
-                                .into_response(),
-                        ),
-                    }
-                } else {
+                Err(crate::songs::SongLookupError::FailedToLoad { .. }) => {
                     GetSongResult::NotFound(
                         (
                             StatusCode::NOT_FOUND,
-                            Json(json!({"error": format!("Song not found: {}", name)})),
+                            Json(json!({"error": format!("No config file found for failed song: {}", name)})),
                         )
                             .into_response(),
                     )
                 }
-            }
+                Err(e) => GetSongResult::NotFound(super::helpers::song_lookup_response(e)),
+            },
         }
     };
 
@@ -306,9 +275,10 @@ pub(super) async fn import_file_to_song(
         return e;
     }
 
-    if let Err(e) = ensure_song_config(&song_dir) {
-        return *e;
-    }
+    let created = match ensure_song_config(&state.player, &state.songs_path(), &song_dir).await {
+        Ok(created) => created,
+        Err(e) => return e,
+    };
 
     if let Err(resp) = super::helpers::reload_songs(&state).await {
         return resp;
@@ -319,7 +289,9 @@ pub(super) async fn import_file_to_song(
         Json(json!({
             "status": "imported",
             "file": filename,
-            "song": name,
+            // The name the song has: a new one's may not be the one asked
+            // for, when that is taken (#674).
+            "song": created.unwrap_or(name),
         })),
     )
         .into_response()
@@ -358,13 +330,11 @@ pub(super) async fn delete_song(
     let _song_writes = SONG_WRITES.lock().await;
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
-    // Resolve the song directory through the registry with path verification.
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
+    // Resolve the song's YAML through the registry with path verification.
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, None) {
         Ok(p) => p,
         Err(e) => return *e,
     };
-
-    let config_path = song_dir.join_filename("song.yaml");
     if !config_path.exists() {
         return (
             StatusCode::NOT_FOUND,
@@ -411,13 +381,7 @@ pub(super) async fn get_song_waveform(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     // Check cache first. Virtual tracks (metronome, pilot) render fresh in
@@ -430,15 +394,9 @@ pub(super) async fn get_song_waveform(
         })
         .await
         .unwrap_or_default();
-        let tracks: Vec<serde_json::Value> = cached
-            .iter()
-            .cloned()
-            .chain(virtual_peaks)
-            .map(|(track_name, peaks)| json!({ "name": track_name, "peaks": peaks }))
-            .collect();
         return (
             StatusCode::OK,
-            Json(json!({ "song_name": name, "tracks": tracks })),
+            Json(Waveform::new(name, cached.into_iter().chain(virtual_peaks))),
         )
             .into_response();
     }
@@ -469,17 +427,7 @@ pub(super) async fn get_song_waveform(
     .await;
 
     match peaks_result {
-        Ok(peaks) => {
-            let tracks: Vec<serde_json::Value> = peaks
-                .iter()
-                .map(|(track_name, p)| json!({ "name": track_name, "peaks": p }))
-                .collect();
-            (
-                StatusCode::OK,
-                Json(json!({ "song_name": name, "tracks": tracks })),
-            )
-                .into_response()
-        }
+        Ok(peaks) => (StatusCode::OK, Json(Waveform::new(name, peaks))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to compute waveform: {}", e)})),
@@ -501,13 +449,7 @@ pub(super) async fn get_song_tempo_guess(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     // Try MIDI file first — it has authoritative tempo/time-sig events.
@@ -519,10 +461,11 @@ pub(super) async fn get_song_tempo_guess(
         ) {
             return (
                 StatusCode::OK,
-                Json(json!({
-                    "source": "midi",
-                    "tempo": guessed,
-                })),
+                Json(TempoGuess {
+                    source: TempoGuessSource::Midi,
+                    config: guessed.to_config(),
+                    tempo: guessed,
+                }),
             )
                 .into_response();
         }
@@ -540,13 +483,18 @@ pub(super) async fn get_song_tempo_guess(
         }
     };
 
-    match crate::audio::tempo_guess::guess_tempo(beat_grid) {
+    // The grid's tempo map, as lighting derives it, is the suggestion.
+    match beat_grid
+        .to_tempo_map()
+        .map(|map| crate::audio::midi_tempo::GuessedTempo::from_tempo_map(&map))
+    {
         Some(guessed) => (
             StatusCode::OK,
-            Json(json!({
-                "source": "beat_grid",
-                "tempo": guessed,
-            })),
+            Json(TempoGuess {
+                source: TempoGuessSource::BeatGrid,
+                config: guessed.to_config(),
+                tempo: guessed,
+            }),
         )
             .into_response(),
         None => (
@@ -569,19 +517,17 @@ pub(super) async fn get_song_files(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     let song_dir = song.base_path().to_path_buf();
+    let named: Vec<std::path::PathBuf> = song.named_files().map(|p| p.to_path_buf()).collect();
 
     let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
-        let mut files: Vec<serde_json::Value> = Vec::new();
+        // A hidden file the song's config names (`file: .click.wav`) is
+        // the song's, and listed.
+        let named: Vec<_> = named.iter().filter_map(|p| p.canonicalize().ok()).collect();
+        let mut files: Vec<SongFile> = Vec::new();
         for entry in std::fs::read_dir(&song_dir)?.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -591,28 +537,17 @@ pub(super) async fn get_song_files(
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            // Skip song config files
-            if filename == "song.yaml" || filename == "song.yml" {
+            // Skip the song's config file, and hidden files it does not name
+            if songs::is_song_config_name(&path)
+                || (songs::is_hidden(&path)
+                    && !path.canonicalize().is_ok_and(|p| named.contains(&p)))
+            {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let file_type = if songs::is_supported_audio_extension(&ext) {
-                "audio"
-            } else if ext == "mid" {
-                "midi"
-            } else if ext == "light" {
-                "lighting"
-            } else {
-                "other"
-            };
-            files.push(json!({
-                "name": filename,
-                "type": file_type,
-            }));
+            files.push(SongFile {
+                kind: FileKind::of(&path),
+                name: filename,
+            });
         }
         Ok::<_, std::io::Error>(files)
     })
@@ -622,69 +557,29 @@ pub(super) async fn get_song_files(
         Err(e) => return e,
     };
 
-    files.sort_by(|a, b| {
-        a.get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
-    });
+    files.sort_by(|a, b| a.name.cmp(&b.name));
 
-    (StatusCode::OK, Json(json!({"files": files}))).into_response()
+    (StatusCode::OK, Json(SongFiles { files })).into_response()
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,
 /// here and over MCP, and by an MCP edit from reading the file to writing
 /// it back, so the edit is not made on a copy a save has replaced since:
 /// that save would be lost (#578).
-pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static SONG_WRITES: super::write_lock::WriteLock = super::write_lock::WriteLock::new();
 
-/// POST /api/songs/:name — creates a new song with the given config YAML.
-///
-/// Creates the song directory and writes song.yaml. Returns 409 Conflict if the
-/// song directory already exists.
+/// POST /api/songs/:name — creates a new song with the given config YAML
+/// ([`create_song`]).
 pub(super) async fn post_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
-
-    let root = match VerifiedRoot::new(&state.songs_path()) {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-
-    // Validate the YAML before creating any directories so we don't leave
-    // orphan directories on disk when validation fails.
-    if let Err(e) = validate_song_body(&body) {
-        return e;
-    }
-
     // Held from the check that the song is new: two creates of one name, or
     // a create beside an MCP write making it, would both find it missing
     // and the later would replace the earlier.
     let _writing = SONG_WRITES.lock().await;
-    let song_dir = match SafePath::create_dir_nested(&name, &root) {
-        Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
-
-    let config_path = song_dir.join_filename("song.yaml");
-    if config_path.exists() {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!("Song already exists: {}", name)})),
-        )
-            .into_response();
-    }
-
-    let cp = config_path;
-    let body_owned = body;
-    if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
-        config_io::staged_write(&cp, &body_owned)
-    })
-    .await
-    {
+    if let Err(e) = create_song(&state.player, &state.songs_path(), &name, body).await {
         return e;
     }
 
@@ -698,7 +593,62 @@ pub(super) async fn post_song(
         .into_response()
 }
 
-/// PUT /api/songs/:name — validates and atomically writes a song config.
+/// Creates the new song `name` with the config `body`, by the one rule of
+/// the web UI's create and MCP's `write_song` of a new song: the body
+/// validated before any directory is made; the song directory made under
+/// the songs root (`songs_path`); a 409 if it already has a config, or a
+/// `song.yaml` of another kind ([`songs::song_config_to_write`]), or if
+/// the name the body declares is another song's
+/// ([`songs::check_song_name_free`]). The caller holds [`SONG_WRITES`] and
+/// reloads the songs after. Answers the config written.
+pub(crate) async fn create_song(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+    body: String,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let root = VerifiedRoot::new(songs_path).map_err(|e| e.into_response())?;
+
+    // Validate the YAML before creating any directories so we don't leave
+    // orphan directories on disk when validation fails.
+    let declared = validate_song_body(&body)?.name().to_string();
+    // Not under a name another song holds (#674): the song is new, so
+    // only the names taken matter.
+    let taken = super::helpers::player_song_names(player);
+    let free = super::helpers::spawn_blocking_io("read the songs folder", {
+        let songs_root = songs_path.to_path_buf();
+        let declared = declared.clone();
+        move || -> std::io::Result<_> {
+            Ok(songs::check_song_name_free(
+                std::path::Path::new(""),
+                &declared,
+                &songs_root,
+                taken,
+            ))
+        }
+    })
+    .await?;
+    free.map_err(|taken| super::helpers::name_taken_response(&taken))?;
+
+    let song_dir = SafePath::create_dir_nested(name, &root).map_err(|e| e.into_response())?;
+    let Some(config_path) = songs::song_config_to_write(song_dir.as_path()) else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("Song already exists: {}", name)})),
+        )
+            .into_response());
+    };
+
+    let cp = config_path.clone();
+    super::helpers::spawn_blocking_io("write song config", move || {
+        config_io::staged_write(&cp, &body)
+    })
+    .await?;
+    Ok(config_path)
+}
+
+/// PUT /api/songs/:name — validates and atomically writes a song config
+/// ([`save_song`]).
 ///
 /// The song directory must already exist (created via POST or track upload).
 pub(super) async fn put_song(
@@ -709,26 +659,7 @@ pub(super) async fn put_song(
     // Held from the lookup: a song deleted before the lock was taken is
     // not written back.
     let _writing = SONG_WRITES.lock().await;
-    // Look up the song in the registry to get its actual path (handles nested dirs).
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
-        Ok(p) => p,
-        Err(e) => return *e,
-    };
-
-    let config_path = song_dir.join_filename("song.yaml");
-
-    // Validate the YAML before writing to disk.
-    if let Err(e) = validate_song_body(&body) {
-        return e;
-    }
-
-    let cp = config_path;
-    let body_owned = body;
-    if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
-        config_io::staged_write(&cp, &body_owned)
-    })
-    .await
-    {
+    if let Err(e) = save_song(&state.player, &state.songs_path(), &name, body).await {
         return e;
     }
 
@@ -736,6 +667,54 @@ pub(super) async fn put_song(
         return resp;
     }
     (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
+}
+
+/// Writes the config `body` of the existing song `name`, by the one rule
+/// of the web UI's save and MCP's `write_song`, `patch_song` and the song
+/// light show tools' `lighting:` edits: to the file the song was loaded
+/// from, in its folder, which must be there (404 otherwise); never another
+/// song's config ([`songs::check_song_config_for`], #680); the body
+/// validated; and not renamed onto a name another song holds
+/// ([`songs::check_song_name_free`], #689). The caller holds
+/// [`SONG_WRITES`] and reloads the songs after. Answers the config
+/// written.
+pub(crate) async fn save_song(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+    body: String,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    // Look up the song in the registry to get its actual YAML (handles
+    // nested folders and flat `<name>.yaml` songs).
+    // Validated before writing to disk; the song it declares is what the
+    // write is checked against, after the lookup.
+    let parsed = validate_song_body(&body);
+    let writing = parsed.as_ref().ok().map(|config| config.name());
+    let config_path = song_config_path(player, songs_path, name, writing).map_err(|e| *e)?;
+    let declared = parsed?.name().to_string();
+    // Not renamed onto a name another song holds (#689).
+    let taken = super::helpers::player_song_names(player);
+    let songs_root = songs_path.to_path_buf();
+    let free = super::helpers::spawn_blocking_io("read the songs folder", {
+        let config_path = config_path.clone();
+        move || -> std::io::Result<_> {
+            Ok(songs::check_song_name_free(
+                &config_path,
+                &declared,
+                &songs_root,
+                taken,
+            ))
+        }
+    })
+    .await?;
+    free.map_err(|taken| super::helpers::name_taken_response(&taken))?;
+
+    let cp = config_path.clone();
+    super::helpers::spawn_blocking_io("write song config", move || {
+        config_io::staged_write(&cp, &body)
+    })
+    .await?;
+    Ok(config_path)
 }
 
 /// PUT /api/songs/:name/tracks/:filename — uploads a single track file.
@@ -758,7 +737,7 @@ pub(super) async fn upload_track_single(
     let data = body.to_vec();
     super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
-    ensure_song_config(&song_dir).map_err(|e| *e)?;
+    let created = ensure_song_config(&state.player, &state.songs_path(), &song_dir).await?;
     super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>((
@@ -766,7 +745,8 @@ pub(super) async fn upload_track_single(
         Json(json!({
             "status": if replaced { "replaced" } else { "uploaded" },
             "replaced": replaced,
-            "song": name,
+            // The name the song has (see the import's).
+            "song": created.unwrap_or(name),
             "file": filename,
         })),
     ))
@@ -829,14 +809,15 @@ pub(super) async fn upload_tracks_multipart(
             .into_response());
     }
 
-    ensure_song_config(&song_dir).map_err(|e| *e)?;
+    let created = ensure_song_config(&state.player, &state.songs_path(), &song_dir).await?;
     super::helpers::reload_songs(&state).await?;
 
     Ok((
         StatusCode::OK,
         Json(json!({
             "status": "uploaded",
-            "song": name,
+            // The name the song has (see the import's).
+            "song": created.unwrap_or(name),
             "files": uploaded,
         })),
     ))
@@ -885,7 +866,33 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// Resolves an existing song directory by checking the player's registry first
 /// (handles nested paths like `artist/album/song`), then falling back to a
 /// direct path join. Returns an error response if the song isn't found.
-pub(super) fn resolve_song_dir(
+/// The YAML file a song is written to and deleted from: the one it was
+/// loaded from ([`songs::Song::config_path_or_default`], a failed load's
+/// likewise), or `song.yaml` in its folder for one the registry has not
+/// seen; within the verified song folder, which is within the songs root.
+/// A 409 when that file is another song's config
+/// ([`songs::check_song_config_for`], #680): a folder named as the song
+/// whose `song.yaml` declares another, unless `writing` (the name the
+/// config being written declares) is that song's own.
+fn song_config_path(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+    writing: Option<&str>,
+) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
+    let song_dir = resolve_song_dir(player, songs_path, name)?;
+    let path = player
+        .songs()
+        .config_path(name)
+        .filter(|path| path.starts_with(song_dir.as_path()))
+        .unwrap_or_else(|| song_dir.join_filename("song.yaml"));
+    songs::check_song_config_for(&path, name, writing).map_err(|e| {
+        Box::new((StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response())
+    })?;
+    Ok(path)
+}
+
+pub(crate) fn resolve_song_dir(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
@@ -906,7 +913,7 @@ pub(super) fn resolve_song_dir(
 
     // Check failures list — the song exists on disk but failed to load.
     let all_songs = player.songs();
-    if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+    if let Some(failure) = all_songs.failure(name) {
         if let Ok(safe) = SafePath::resolve(failure.base_path(), &root) {
             if safe.is_dir() {
                 return Ok(safe);
@@ -914,20 +921,21 @@ pub(super) fn resolve_song_dir(
         }
     }
 
-    // Fall back to direct join for songs not yet in registry but on disk.
-    if let Ok(safe) = root.resolve(name) {
-        if safe.is_dir() {
-            return Ok(safe);
+    // Fall back to direct join for songs not yet in registry but on disk:
+    // a relative path that stays under the root (no `..`, `\\` or NUL) and
+    // names a folder within it, never the songs root itself, which a name
+    // such as `.` or `Foo/..` would otherwise resolve to.
+    if SafePath::validate_relative_segments(name).is_ok() {
+        if let Ok(safe) = root.resolve(name) {
+            if safe.is_dir() && safe.as_path() != root.as_path() {
+                return Ok(safe);
+            }
         }
     }
 
-    Err(Box::new(
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Song not found: {}", name)})),
-        )
-            .into_response(),
-    ))
+    Err(Box::new(super::helpers::song_lookup_response(
+        crate::songs::SongLookupError::NotFound(name.to_string()),
+    )))
 }
 
 /// Resolves a song directory from the registry, falling back to creating it
@@ -953,19 +961,15 @@ fn remove_song_from_playlists(
 ) {
     let mut files_to_check: Vec<std::path::PathBuf> = Vec::new();
 
+    // Each playlist's file, as the loader reads it (`playlist::playlist_files`).
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file()
-                        && path
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                    {
-                        files_to_check.push(path);
-                    }
-                }
+            match crate::playlist::playlist_files(dir) {
+                Ok(files) => files_to_check.extend(files.into_iter().map(|file| file.path)),
+                Err(e) => tracing::warn!(
+                    "{}: the playlists could not be listed, so \"{song_name}\" stays on them: {e}",
+                    dir.display()
+                ),
             }
         }
     }
@@ -993,36 +997,34 @@ fn remove_song_from_playlists(
     }
 }
 
-/// Generates song.yaml for a song directory if one doesn't already exist.
-/// If song.yaml already exists, it is left untouched so that manual edits
-/// (track names, lighting config, etc.) are preserved.
-pub(super) fn ensure_song_config(
+/// Generates a song config for a song directory if it has none yet
+/// ([`songs::song_config_to_write`]), named by the one rule for a new
+/// song's name ([`songs::new_song`], as the bulk import names them): its
+/// folder's, unless a song loaded, failed or configured under the songs
+/// root has it (#674). One already there (`song.yaml`, `song.yml`, or one
+/// of another kind) is left untouched so that manual edits (track names,
+/// lighting config, etc.) are preserved. Answers the new song's name, which
+/// is the one it is loaded as; `None` when the folder had a config.
+pub(super) async fn ensure_song_config(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
     song_dir: &std::path::Path,
-) -> Result<(), Box<axum::response::Response>> {
-    let config_path = song_dir.join("song.yaml");
-    if config_path.exists() {
-        return Ok(());
-    }
-
-    let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to initialize song: {}", e)})),
-            )
-                .into_response(),
-        )
-    })?;
-
-    song.get_config().save(&config_path).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to save song config: {}", e)})),
-            )
-                .into_response(),
-        )
+) -> Result<Option<String>, axum::response::Response> {
+    let taken = super::helpers::player_song_names(player);
+    let (songs_path, song_dir) = (songs_path.to_path_buf(), song_dir.to_path_buf());
+    // Off the async worker: the names configured under the songs root are
+    // a walk of the whole tree, and the new config a scan of the audio.
+    super::helpers::spawn_blocking_io("write the song config", move || {
+        let song = songs::new_song(&songs_path, &song_dir, taken).map_err(|e| e.to_string())?;
+        match song {
+            Some(song) => song
+                .write()
+                .map(|()| Some(song.name))
+                .map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
     })
+    .await
 }
 
 /// Whether song `name` has a file `filename` already, for
@@ -1056,11 +1058,9 @@ pub(super) fn validate_track_filename(
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext != "mid" && ext != "light" && !songs::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if FileKind::of(path) == FileKind::Other {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -1080,6 +1080,35 @@ mod test {
     use axum::body::Body;
     use axum::http::StatusCode;
     use tower::ServiceExt;
+
+    /// A deleted song comes off each playlist's file as the loader reads
+    /// it: a `.yml` alone is edited, and with both `.yaml` and `.yml` only
+    /// the `.yaml`. `loud.YAML` is no playlist and `all_songs.yaml` no file
+    /// of one, so both are left alone.
+    #[test]
+    fn remove_song_from_playlists_edits_each_names_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let both = "songs:\n- Gone\n- Kept\n";
+        for file in [
+            "old.yml",
+            "set.yaml",
+            "set.yml",
+            "loud.YAML",
+            "all_songs.yaml",
+        ] {
+            std::fs::write(dir.join(file), both).unwrap();
+        }
+        super::remove_song_from_playlists("Gone", Some(dir), None);
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+        for file in ["old.yml", "set.yaml"] {
+            assert!(!read(file).contains("Gone"), "{file}: {}", read(file));
+            assert!(read(file).contains("Kept"), "{file}: {}", read(file));
+        }
+        assert_eq!(read("set.yml"), both);
+        assert_eq!(read("loud.YAML"), both);
+        assert_eq!(read("all_songs.yaml"), both);
+    }
 
     #[tokio::test]
     async fn get_songs_empty_registry() {
@@ -1314,6 +1343,71 @@ mod test {
         assert!(body.contains("YmlSong"));
     }
 
+    /// A flat-layout song (`<name>.yaml` beside others) is read from its own
+    /// file, not from a `song.yaml` that is not there.
+    #[tokio::test]
+    async fn get_song_in_a_flat_layout_reads_its_own_yaml() {
+        let (state, _dir) = test_state();
+        crate::testutil::write_wav(
+            state.songs_path().join("track1.wav"),
+            vec![vec![0_i32; 4410]],
+            44100,
+        )
+        .unwrap();
+        std::fs::write(
+            state.songs_path().join("FlatSong.yaml"),
+            "name: FlatSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs().await.unwrap();
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/FlatSong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.starts_with("name: FlatSong"), "{body}");
+    }
+
+    /// A name that resolves to the songs root itself (`Foo/..`) is no song:
+    /// the save is refused and no `song.yaml` is written in the root.
+    #[tokio::test]
+    async fn put_song_refuses_a_name_resolving_to_the_songs_root() {
+        let (state, _dir) = test_state();
+        std::fs::create_dir(state.songs_path().join("Foo")).unwrap();
+        let root_yaml = state.songs_path().join("song.yaml");
+        for uri in ["/songs/Foo%2F..", "/songs/."] {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri(uri)
+                        .body(Body::from("name: Root\ntracks: []\n"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                !response.status().is_success(),
+                "{uri}: {}",
+                response.status()
+            );
+            assert!(
+                !root_yaml.exists(),
+                "{uri} wrote the songs root's song.yaml"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn put_song_valid() {
         let (state, _dir) = test_state();
@@ -1341,6 +1435,105 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// #689: a save that renames a song onto a name another song holds is
+    /// refused with create-song's `taken` 409, the file left as it is; one
+    /// that keeps the name, or renames onto a free one, is saved.
+    #[tokio::test]
+    async fn a_rename_onto_another_songs_name_is_refused() {
+        let (state, _dir) = test_state();
+        for name in ["Foo", "Bar"] {
+            let dir = state.songs_path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("song.yaml"), format!("name: {name}\ntracks: []\n")).unwrap();
+        }
+        let foo = state.songs_path().join("Foo/song.yaml");
+        let app = router().with_state(state);
+        let put = |body: &'static str| {
+            app.clone().oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Foo")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+
+        let response = put("name: Bar\ntracks: []\n").await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["taken"], "Bar");
+        assert!(
+            body["error"].as_str().unwrap().contains("already exists"),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&foo).unwrap(),
+            "name: Foo\ntracks: []\n"
+        );
+
+        for yaml in [
+            "name: Foo\ntracks: []\nloop_playback: true\n",
+            "name: Baz\ntracks: []\n",
+        ] {
+            let response = put(yaml).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{yaml}");
+            assert_eq!(std::fs::read_to_string(&foo).unwrap(), yaml);
+        }
+    }
+
+    /// #680: a folder named as the song whose `song.yaml` declares another
+    /// song is that song's: saving or deleting the folder's name is refused
+    /// (409, naming the song), and the file is left as it is.
+    #[tokio::test]
+    async fn saving_or_deleting_a_folder_whose_config_is_another_songs_is_refused() {
+        let (state, _dir) = test_state();
+        let foo = state.songs_path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let bar = "name: Bar\ntracks: []\n";
+        std::fs::write(foo.join("song.yaml"), bar).unwrap();
+        let app = router().with_state(state);
+        for (method, body) in [("PUT", "name: Foo\ntracks: []\n"), ("DELETE", "")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    http::Request::builder()
+                        .method(method)
+                        .uri("/songs/Foo")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{method}");
+            let body = response_body(response).await;
+            assert!(
+                body.contains("Foo/song.yaml is the config of the song \\\"Bar\\\""),
+                "{method}: {body}"
+            );
+            assert_eq!(std::fs::read_to_string(foo.join("song.yaml")).unwrap(), bar);
+        }
+        // A save of Bar's own config under the folder's name is Bar's edit:
+        // the editor's page after it renamed the song still goes by the old
+        // name. The delete stays refused (above).
+        let renamed = "name: Bar\ntracks: []\nloop_playback: true\n";
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Foo")
+                    .body(Body::from(renamed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(foo.join("song.yaml")).unwrap(),
+            renamed
+        );
     }
 
     #[tokio::test]
@@ -1371,8 +1564,10 @@ mod test {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// A song loaded from a file of any name answers with that file: the
+    /// summary is for a song with no file at all.
     #[tokio::test]
-    async fn get_song_no_config_yaml_returns_summary() {
+    async fn get_song_reads_the_file_the_song_was_loaded_from() {
         let (state, _dir) = test_state();
         let song_dir = state.songs_path().join("CustomSong");
         std::fs::create_dir(&song_dir).unwrap();
@@ -1398,9 +1593,7 @@ mod test {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["config_file"], false);
-        assert_eq!(parsed["name"], "CustomSong");
+        assert!(body.starts_with("name: CustomSong"), "{body}");
     }
 
     #[tokio::test]
@@ -1451,7 +1644,10 @@ mod test {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].as_str().unwrap().contains("Song not found"));
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("unable to find song"));
     }
 
     #[tokio::test]
@@ -1474,7 +1670,7 @@ mod test {
         assert!(parsed["error"]
             .as_str()
             .unwrap()
-            .contains("Song not found: FakeSong"));
+            .contains("unable to find song FakeSong"));
     }
 
     #[tokio::test]
@@ -1522,7 +1718,7 @@ mod test {
         assert!(parsed["error"]
             .as_str()
             .unwrap()
-            .contains("Song not found: DoesNotExist"));
+            .contains("unable to find song DoesNotExist"));
     }
 
     #[tokio::test]
@@ -1552,6 +1748,108 @@ mod test {
 
         assert!(state.songs_path().join("NewSong/track1.wav").exists());
         assert!(state.songs_path().join("NewSong/song.yaml").exists());
+    }
+
+    /// #674: an upload's new song is named by the bulk import's rule: its
+    /// folder's name, unless a song configured under the songs root has it
+    /// (here one written since the last reload), then the first free suffix.
+    #[tokio::test]
+    async fn an_uploads_new_song_is_not_named_as_a_song_already_configured() {
+        let (state, _dir) = test_state();
+        let other = state.songs_path().join("Other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("song.yaml"), "name: Fresh\ntracks: []\n").unwrap();
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Fresh/tracks/track1.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // The answer gives the name the song has, for the client to go on.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(parsed["song"], "Fresh (2)");
+        let config =
+            crate::config::Song::deserialize(&state.songs_path().join("Fresh/song.yaml")).unwrap();
+        assert_eq!(config.name(), "Fresh (2)");
+    }
+
+    /// An extension in capitals is the same audio type: `Bass.WAV` is taken
+    /// and becomes a track, as the file listing calls it audio.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/NewSong/tracks/Bass.WAV")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = std::fs::read_to_string(state.songs_path().join("NewSong/song.yaml")).unwrap();
+        assert!(config.contains("Bass.WAV"), "{config}");
+    }
+
+    /// A MIDI upload's extension is read in any case: `Notes.MID` is taken.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_midi_extension() {
+        let (state, _dir) = test_state();
+        let midi = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+        )
+        .unwrap();
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/MidiSong/tracks/Notes.MID")
+                    .body(Body::from(midi))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.songs_path().join("MidiSong/Notes.MID").exists());
+    }
+
+    /// A light show upload's extension is read in any case: `Show.LIGHT` is
+    /// taken.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_light_extension() {
+        let (state, _dir) = test_state();
+        let show =
+            "show \"Loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}\n";
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/LightSong/tracks/Show.LIGHT")
+                    .body(Body::from(show))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.songs_path().join("LightSong/Show.LIGHT").exists());
     }
 
     #[tokio::test]
@@ -1744,6 +2042,105 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// A folder whose config is `song.yml` already has one: a create is
+    /// refused, and no `song.yaml` is written beside it.
+    #[tokio::test]
+    async fn post_song_conflict_if_song_yml_exists() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Existing");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: Existing\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/Existing")
+                    .body(Body::from("name: Existing\ntracks: []\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!song_dir.join("song.yaml").exists());
+    }
+
+    /// Beside a `song.yaml` of another kind (`kind: playlist`), a create
+    /// is refused and a track upload writes no config: neither writes over
+    /// it (`songs::song_config_to_write`), as both did on main.
+    #[tokio::test]
+    async fn create_and_upload_keep_a_song_yaml_of_another_kind() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Pl");
+        std::fs::create_dir(&song_dir).unwrap();
+        let playlist = "kind: playlist\nsongs: []\n";
+        std::fs::write(song_dir.join("song.yaml"), playlist).unwrap();
+
+        let create = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/Pl")
+                    .body(Body::from("name: Pl\ntracks: []\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CONFLICT);
+
+        let upload = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Pl/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+        assert!(song_dir.join("guitar.wav").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            playlist
+        );
+    }
+
+    /// A track uploaded to a song whose config is `song.yml` leaves that
+    /// config alone and writes no second `song.yaml` (`ensure_song_config`).
+    #[tokio::test]
+    async fn upload_track_to_a_song_yml_song_writes_no_song_yaml() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("YmlSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        let config = "name: YmlSong\ntracks: []\n";
+        std::fs::write(song_dir.join("song.yml"), config).unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/YmlSong/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!song_dir.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config
+        );
     }
 
     #[tokio::test]
@@ -1966,6 +2363,44 @@ mod test {
             .songs_path()
             .join("TestSong/dmx_lightshow.mid")
             .exists());
+    }
+
+    /// An import's name is read in any case: `dmx_Lights.MID` is a MIDI
+    /// file. `.midi` is not one to the player, so it is refused.
+    #[tokio::test]
+    async fn import_file_to_song_reads_extensions_in_any_case() {
+        let (state, dir) = test_state();
+        let source_path = dir.path().join("original.mid");
+        std::fs::copy(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+            &source_path,
+        )
+        .unwrap();
+        let source = source_path.canonicalize().unwrap();
+
+        for (filename, expected) in [
+            ("dmx_Lights.MID", StatusCode::OK),
+            ("dmx_lights.midi", StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({
+                "path": source.to_str().unwrap(),
+                "filename": filename,
+            });
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri("/songs/TestSong/import")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_string(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{filename}");
+        }
+        assert!(state.songs_path().join("TestSong/dmx_Lights.MID").exists());
     }
 
     #[tokio::test]
@@ -2284,6 +2719,8 @@ mod test {
         std::fs::copy(&midi_source, song_dir.join("notes.mid")).unwrap();
         std::fs::write(song_dir.join("show.light"), "show \"Test\" {}\n").unwrap();
         std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        std::fs::copy(&midi_source, song_dir.join("Other.MID")).unwrap();
+        std::fs::write(song_dir.join("Bass.WAV"), "not read").unwrap();
         std::fs::write(
             song_dir.join("song.yaml"),
             "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
@@ -2308,8 +2745,9 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let files = parsed["files"].as_array().unwrap();
 
-        // Should have track1.wav, notes.mid, show.light, readme.txt (song.yaml is skipped)
-        assert_eq!(files.len(), 4);
+        // Should have track1.wav, notes.mid, show.light, readme.txt,
+        // Other.MID and Bass.WAV (song.yaml is skipped)
+        assert_eq!(files.len(), 6);
 
         // Verify type classification
         let find_file = |name: &str| files.iter().find(|f| f["name"] == name).unwrap();
@@ -2317,6 +2755,156 @@ mod test {
         assert_eq!(find_file("notes.mid")["type"], "midi");
         assert_eq!(find_file("show.light")["type"], "lighting");
         assert_eq!(find_file("readme.txt")["type"], "other");
+        assert_eq!(find_file("Other.MID")["type"], "midi");
+        assert_eq!(find_file("Bass.WAV")["type"], "audio");
+    }
+
+    /// A folder `Foo` whose `song.yml` declares another song, `Bar`, is not
+    /// `Foo`'s: a delete of `Foo` finds nothing, and a save of `Foo` writes a
+    /// new `song.yaml`; Bar's config is left as it is.
+    #[tokio::test]
+    async fn another_songs_song_yml_is_left_alone_by_a_save_and_delete() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Foo");
+        std::fs::create_dir(&song_dir).unwrap();
+        let bar = "name: Bar\ntracks: []\n";
+        std::fs::write(song_dir.join("song.yml"), bar).unwrap();
+        state.player.reload_songs().await.unwrap();
+        let send = |method: &str, body: &str| {
+            http::Request::builder()
+                .method(method)
+                .uri("/songs/Foo")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(send("DELETE", ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            bar
+        );
+
+        let foo = "name: Foo\ntracks: []\n";
+        let response = router()
+            .with_state(state)
+            .oneshot(send("PUT", foo))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            bar
+        );
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            foo
+        );
+    }
+
+    /// A track uploaded to a flat-layout song (`<root>/flat.yaml`) writes no
+    /// `song.yaml` into the songs root: the root holds that song's config.
+    #[tokio::test]
+    async fn upload_track_to_a_flat_song_writes_no_root_song_yaml() {
+        let (state, _dir) = test_state();
+        let root = state.songs_path();
+        std::fs::write(root.join("flat.yaml"), "name: Flat\ntracks: []\n").unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Flat/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!root.join("song.yaml").exists());
+    }
+
+    /// The listing names a hidden file the song's config names
+    /// (`file: .click.wav`), and leaves out one it does not.
+    #[tokio::test]
+    async fn get_song_files_lists_a_hidden_file_the_config_names() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Clicky");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join(".click.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(song_dir.join(".draft.light"), "draft").unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: Clicky\ntracks:\n  - name: click\n    file: .click.wav\n",
+        )
+        .unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/Clicky/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<_> = parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, [".click.wav"]);
+    }
+
+    /// The listing hides the song's config by name, `song.yml` as well as
+    /// `song.yaml`, and hidden files.
+    #[tokio::test]
+    async fn get_song_files_hides_a_song_yml_config_and_hidden_files() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("YmlFiles");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: YmlFiles\ntracks: []\n").unwrap();
+        std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        std::fs::write(song_dir.join(".draft.light"), "draft").unwrap();
+        std::fs::write(song_dir.join("._readme.txt"), "fork").unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/YmlFiles/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<_> = parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["readme.txt"]);
     }
 
     #[tokio::test]

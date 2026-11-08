@@ -16,17 +16,19 @@
 // mounting conventions the 3D view relies on, pinned against the Rust
 // pointing math in src/lighting/effects/pointing.rs.
 
+import type { RigModel } from "../../src/gen/rules/mtrack_rules";
 import { test, expect } from "@playwright/test";
 import { Euler, Vector3 } from "three";
+import { loadRules } from "./rules-node";
 import {
   beamLength,
+  beamCss,
   beamLook,
   deckExtent,
   genericRig,
   isMover,
   poseRotations,
   trayPositions,
-  type RigModel,
 } from "../../src/lib/stage/rig";
 
 /** pointing.rs `out_of_frame`: R = Rz·Ry·Rx applied to a vector. */
@@ -146,7 +148,8 @@ test.describe("stage rig math", () => {
     expect(beamLength([0, 0, 4], [0, 0, 1], style).length).toBe(4);
   });
 
-  test("channels become a colour and a level", () => {
+  test("channels become a colour and a level", async () => {
+    await loadRules();
     const red = beamLook({ red: 255, green: 0, blue: 0, dimmer: 128 });
     expect(red.rgb[0]).toBeCloseTo(128 / 255);
     expect(red.rgb[1]).toBe(0);
@@ -157,9 +160,68 @@ test.describe("stage rig math", () => {
     expect(warm.intensity).toBeGreaterThan(0.9);
     const dark = beamLook({ red: 0, green: 0, blue: 0 });
     expect(dark.intensity).toBe(0);
+    expect(dark.lit).toBe(false);
   });
 
-  test("a fixture with no reported state is dark; one without a dimmer is not", () => {
+  test("the colour is the player's: dimmer times colour, white added, CMY flags filtering white", async () => {
+    // `channels::shown_color`, which the TUI draws by too.
+    await loadRules();
+    const css = (channels: Record<string, number>) =>
+      beamCss(beamLook(channels));
+    expect(css({ red: 255, dimmer: 0 })).toBe("rgb(0,0,0)");
+    expect(css({ red: 255, dimmer: 51 })).toBe("rgb(51,0,0)");
+    expect(css({ dimmer: 255 })).toBe("rgb(255,235,204)");
+    expect(css({ red: 0, white: 100, dimmer: 255 })).toBe("rgb(100,100,100)");
+    // Every emitter in its own colour: amber, UV, a warm white.
+    expect(css({ red: 0, green: 0, blue: 0, amber: 255, dimmer: 255 })).toBe(
+      "rgb(255,191,0)",
+    );
+    expect(css({ uv: 255 })).toBe("rgb(102,0,255)");
+    expect(css({ red: 0, green: 0, blue: 0, warm_white: 255 })).toBe(
+      "rgb(255,235,204)",
+    );
+    // Nothing that lights it: a head's position alone is dark.
+    expect(css({ pan: 128 })).toBe("rgb(0,0,0)");
+    // A CMY fixture's flags: cyan closed takes the red out of its white.
+    expect(css({ cyan: 255, magenta: 0, yellow: 0, dimmer: 255 })).toBe(
+      "rgb(0,255,255)",
+    );
+  });
+
+  test("a fixture is lit as the engine has it: by the light it emits", async () => {
+    // `channels::is_lit`: its dimmer times its brightest emitter. The views
+    // drew a faint fixture (red 5 under a full dimmer, a 0.007 mean) as
+    // dark, by thresholds of their own.
+    await loadRules();
+    expect(beamLook({ red: 5, green: 0, blue: 0, dimmer: 255 }).lit).toBe(true);
+    expect(beamLook({ red: 255, dimmer: 0 }).lit).toBe(false);
+    expect(beamLook({ red: 0, green: 0, blue: 0, dimmer: 255 }).lit).toBe(
+      false,
+    );
+    expect(beamLook({ dimmer: 5 }).lit).toBe(true);
+    // Where a head points says nothing of whether it is lit.
+    expect(beamLook({ red: 0, dimmer: 0, pan: 128 } as never).lit).toBe(false);
+    // Nor is it lit in a strobe's dark half.
+    expect(beamLook({ red: 255, dimmer: 255 }, 5, 150).lit).toBe(false);
+  });
+
+  test("a strobe flashes at the rate the player reports, not one read off the byte", async () => {
+    await loadRules();
+    const on = { red: 255, green: 0, blue: 0, dimmer: 255 };
+    // A strobe byte alone says nothing: the view does not know the
+    // fixture's range or curve. The rate comes beside the bytes.
+    expect(beamLook({ ...on, strobe: 200 }, undefined, 150).strobeOn).toBe(
+      true,
+    );
+    // 5 Hz: lit through the first 100 ms of each cycle, dark the next.
+    expect(beamLook(on, 5, 50).strobeOn).toBe(true);
+    expect(beamLook(on, 5, 150).strobeOn).toBe(false);
+    expect(beamCss(beamLook(on, 5, 50))).toBe("rgb(255,0,0)");
+    expect(beamCss(beamLook(on, 5, 150))).toBe("rgb(0,0,0)");
+  });
+
+  test("a fixture with no reported state is dark; one without a dimmer is not", async () => {
+    await loadRules();
     // Idle player: the server has said nothing about the fixture.
     const idle = beamLook(undefined);
     expect(idle.intensity).toBe(0);

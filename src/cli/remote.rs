@@ -13,7 +13,6 @@
 //
 
 use crate::config;
-use crate::lighting::parser::utils::parse_time_string;
 use crate::proto::player::v1::player_service_client::PlayerServiceClient;
 use crate::proto::player::v1::{
     GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest,
@@ -53,8 +52,7 @@ fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
 pub async fn play(host_port: Option<String>, from: Option<String>) -> Result<(), Box<dyn Error>> {
     let mut client = connect(host_port).await?;
     if let Some(from_str) = from {
-        // Parse the time string
-        let start_time = parse_time_string(&from_str)?;
+        let start_time = util::parse_position(&from_str)?;
         let start_duration = prost_types::Duration::try_from(start_time)
             .map_err(|e| format!("Failed to convert duration: {}", e))?;
 
@@ -75,9 +73,8 @@ pub async fn play(host_port: Option<String>, from: Option<String>) -> Result<(),
 
 pub async fn seek(host_port: Option<String>, to: &str) -> Result<(), Box<dyn Error>> {
     let mut client = connect(host_port).await?;
-    // Try to parse the target as a time; anything unparseable is a section name.
-    match parse_time_string(to) {
-        Ok(position) => {
+    match seek_target(to) {
+        SeekTarget::Position(position) => {
             let position = prost_types::Duration::try_from(position)
                 .map_err(|e| format!("Failed to convert duration: {}", e))?;
             client
@@ -87,16 +84,30 @@ pub async fn seek(host_port: Option<String>, to: &str) -> Result<(), Box<dyn Err
                 .await?;
             println!("Seeked to {}", to);
         }
-        Err(_) => {
+        SeekTarget::Section(section_name) => {
             client
-                .seek_to_section(Request::new(SeekToSectionRequest {
-                    section_name: to.to_string(),
-                }))
+                .seek_to_section(Request::new(SeekToSectionRequest { section_name }))
                 .await?;
             println!("Seeked to section {}", to);
         }
     }
     Ok(())
+}
+
+/// What `mtrack seek` was given: a position, or a section's name.
+enum SeekTarget {
+    Position(Duration),
+    Section(String),
+}
+
+/// A target that parses as a position is one; anything else is a section
+/// name. The position parser is every surface's (`util::parse_position`),
+/// so `90s` and `1:30s` seek rather than naming a section.
+fn seek_target(to: &str) -> SeekTarget {
+    match util::parse_position(to) {
+        Ok(position) => SeekTarget::Position(position),
+        Err(_) => SeekTarget::Section(to.to_string()),
+    }
 }
 
 pub async fn previous(host_port: Option<String>) -> Result<(), Box<dyn Error>> {
@@ -192,6 +203,24 @@ pub async fn cues(host_port: Option<String>) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn seek_parses_a_position_as_every_surface_does() {
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            ("1:30", 90.0),
+            ("1:30.5s", 90.5),
+        ] {
+            match seek_target(given) {
+                SeekTarget::Position(position) => {
+                    assert_eq!(position, Duration::from_secs_f64(secs), "{given}")
+                }
+                SeekTarget::Section(_) => panic!("{given} is a position"),
+            }
+        }
+        assert!(matches!(seek_target("chorus"), SeekTarget::Section(name) if name == "chorus"));
+    }
+
     mod print_song_tests {
         use super::*;
 
@@ -240,12 +269,11 @@ mod tests {
         }
     }
 
-    /// Returns an address with an OS-assigned ephemeral port that nothing is listening on.
-    fn unused_addr() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        addr.to_string()
+    use crate::testutil::net::ClosedPort;
+
+    /// The address of `closed`, where nothing listens.
+    fn addr(closed: &ClosedPort) -> String {
+        format!("127.0.0.1:{}", closed.port())
     }
 
     mod connect_tests {
@@ -253,7 +281,8 @@ mod tests {
 
         #[tokio::test]
         async fn connect_fails_when_no_server() {
-            let result = connect(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = connect(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
     }
@@ -263,73 +292,85 @@ mod tests {
 
         #[tokio::test]
         async fn play_fails_without_server() {
-            let result = play(Some(unused_addr()), None).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), None).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_fails_without_server() {
-            let result = play(Some(unused_addr()), Some("0:30".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("0:30".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_minutes_seconds_format() {
-            let result = play(Some(unused_addr()), Some("1:23.456".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("1:23.456".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_seconds_only_format() {
-            let result = play(Some(unused_addr()), Some("45.5s".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("45.5s".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn next_fails_without_server() {
-            let result = next(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = next(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn previous_fails_without_server() {
-            let result = previous(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = previous(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn stop_fails_without_server() {
-            let result = stop(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = stop(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn status_fails_without_server() {
-            let result = status(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = status(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_fails_without_server() {
-            let result = switch_to_playlist(Some(unused_addr()), "all_songs").await;
+            let closed = ClosedPort::bind();
+            let result = switch_to_playlist(Some(addr(&closed)), "all_songs").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_with_different_name() {
-            let result = switch_to_playlist(Some(unused_addr()), "playlist").await;
+            let closed = ClosedPort::bind();
+            let result = switch_to_playlist(Some(addr(&closed)), "playlist").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn active_effects_fails_without_server() {
-            let result = active_effects(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = active_effects(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn cues_fails_without_server() {
-            let result = cues(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = cues(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
     }

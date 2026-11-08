@@ -13,6 +13,10 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    LightingOwner,
+    MvrExportSummary,
+  } from "../../gen/rules/mtrack_rules";
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -23,9 +27,8 @@
     keepMvrExport,
     fetchMvrExportSummary,
     fetchVenue,
-    type MvrExportSummary,
   } from "../../lib/api/config";
-  import { fileStem, validExportName } from "../../lib/lighting/mvrPlan";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     venue: string;
@@ -35,6 +38,9 @@
     onclose: () => void;
     /** Called after aim points were added to the venue file. */
     onchanged?: () => void;
+    /** The venue's owner when its file is not its alone: aim points, which
+     *  write that file, are not offered, and why is said instead. */
+    readOnly?: LightingOwner | null;
   }
 
   let {
@@ -43,6 +49,7 @@
     venuesDir = "",
     onclose,
     onchanged,
+    readOnly = null,
   }: Props = $props();
   let dirs = $derived({
     fixtureTypesDir: fixtureTypesDir || undefined,
@@ -50,7 +57,9 @@
   });
 
   let dialogEl: HTMLDialogElement | undefined = $state();
-  let fileName = $state(untrack(() => `${fileStem(venue)}.mvr`));
+  let fileName = $state(
+    untrack(() => rules.mvr_export_name(undefined, venue) ?? ""),
+  );
   let layersFromTags = $state(false);
   let keep = $state(false);
   let summary = $state<MvrExportSummary | null>(null);
@@ -62,7 +71,9 @@
    *  native close event that causes must not count as the user closing. */
   let asking = false;
 
-  let fileValid = $derived(validExportName(fileName));
+  let fileValid = $derived(
+    rules.mvr_export_name(fileName, venue) !== undefined,
+  );
   let unlinked = $derived(
     summary?.fixed_fixtures.filter((f) => f.focus === null) ?? [],
   );
@@ -291,14 +302,20 @@
           {unlinked.map((f) => f.name).join(", ")}
         </p>
         <div class="warn__actions">
-          <button
-            class="btn btn-primary"
-            onclick={addAim}
-            disabled={working}
-            data-testid="mvr-export-add-aim"
-          >
-            {$t("lighting.mvr.export.addAim")}
-          </button>
+          {#if readOnly}
+            <p class="hint" data-testid="mvr-export-read-only">
+              {readOnly.reason}
+            </p>
+          {:else}
+            <button
+              class="btn btn-primary"
+              onclick={addAim}
+              disabled={working}
+              data-testid="mvr-export-add-aim"
+            >
+              {$t("lighting.mvr.export.addAim")}
+            </button>
+          {/if}
           <button
             class="btn"
             onclick={download}

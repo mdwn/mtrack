@@ -146,6 +146,35 @@ impl EffectType {
         }
     }
 
+    /// How long an effect of this type holds when no `hold_time` is written
+    /// for it: its own duration. A dimmer has no hold: it runs its duration
+    /// and ends.
+    pub fn default_hold(&self) -> Option<Duration> {
+        match self {
+            EffectType::Dimmer { .. } => None,
+            _ => Some(self.duration()),
+        }
+    }
+
+    /// How long an effect of this type lasts under the envelope written for
+    /// it: its fade in, its hold (see [`Self::default_hold`]) and its fade
+    /// out; a dimmer its own duration. All effects have a finite duration.
+    pub fn total_duration(
+        &self,
+        up_time: Option<Duration>,
+        hold_time: Option<Duration>,
+        down_time: Option<Duration>,
+    ) -> Duration {
+        if let EffectType::Dimmer { duration, .. } = self {
+            return *duration;
+        }
+        up_time.unwrap_or(Duration::ZERO)
+            + hold_time
+                .or_else(|| self.default_hold())
+                .unwrap_or(Duration::ZERO)
+            + down_time.unwrap_or(Duration::ZERO)
+    }
+
     /// Replace the duration field.
     pub fn set_duration(&mut self, new_duration: Duration) {
         match self {
@@ -331,6 +360,9 @@ pub enum EffectLayer {
     Foreground = 2, // Top layer (e.g., strobe effects)
 }
 
+/// The layer an effect runs on when the DSL names none.
+pub const DEFAULT_LAYER: EffectLayer = EffectLayer::Background;
+
 /// Blend mode for combining effects
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BlendMode {
@@ -345,6 +377,9 @@ pub enum BlendMode {
     /// Screen - screen blend mode
     Screen,
 }
+
+/// The blend mode an effect runs with when the DSL names none.
+pub const DEFAULT_BLEND: BlendMode = BlendMode::Replace;
 
 #[cfg(test)]
 mod tests {
@@ -449,5 +484,49 @@ mod tests {
         assert_eq!(BlendMode::Replace, BlendMode::Replace);
         assert_ne!(BlendMode::Replace, BlendMode::Multiply);
         assert_ne!(BlendMode::Add, BlendMode::Screen);
+    }
+
+    // ── total_duration ─────────────────────────────────────────────
+
+    #[test]
+    fn total_duration_holds_for_the_effect_duration_unless_a_hold_is_written() {
+        let effect = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: Duration::from_secs(5),
+        };
+        let up = Some(Duration::from_secs(1));
+        let down = Some(Duration::from_secs(2));
+        assert_eq!(effect.default_hold(), Some(Duration::from_secs(5)));
+        assert_eq!(
+            effect.total_duration(None, None, None),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            effect.total_duration(up, None, down),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            effect.total_duration(up, Some(Duration::from_secs(3)), down),
+            Duration::from_secs(6)
+        );
+    }
+
+    #[test]
+    fn total_duration_of_a_dimmer_is_its_own_whatever_the_envelope() {
+        let effect = EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(4),
+            curve: DimmerCurve::Linear,
+        };
+        assert_eq!(effect.default_hold(), None);
+        assert_eq!(
+            effect.total_duration(
+                Some(Duration::from_secs(1)),
+                Some(Duration::from_secs(9)),
+                None
+            ),
+            Duration::from_secs(4)
+        );
     }
 }

@@ -12,112 +12,280 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+//! The layers' masters, and each layer's clock: how the time of the effects
+//! on it runs.
+
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::super::effects::{EffectInstance, EffectLayer};
+use super::{scale_by_speed, unscale_by_speed};
 
-/// Clear a layer - immediately stops all effects on the specified layer
-pub(crate) fn clear_layer(
-    active_effects: &mut HashMap<String, EffectInstance>,
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-    layer: EffectLayer,
-) {
-    active_effects.retain(|_, effect| effect.layer != layer);
-    frozen_layers.remove(&layer);
+/// The engine's "now", on both its time bases: the engine instant, which
+/// steps a frame a tick, and the song time, when there is one.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Now {
+    pub instant: Instant,
+    pub song: Option<Duration>,
 }
 
-/// Clear all layers - immediately stops all effects on all layers
-pub(crate) fn clear_all_layers(
-    active_effects: &mut HashMap<String, EffectInstance>,
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-) {
-    active_effects.clear();
-    frozen_layers.clear();
+/// When a layer froze, on both time bases.
+#[derive(Clone, Copy, Debug)]
+struct Frozen {
+    /// What an effect timed on engine time holds at.
+    at: Instant,
+    /// What a cued effect holds at, and measures its time frozen from;
+    /// `None` when the freeze came with no song time.
+    song: Option<Duration>,
 }
 
-/// Freeze a layer - pauses all effects on the layer at their current state
-pub(crate) fn freeze_layer(
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-    _active_effects: &mut HashMap<String, EffectInstance>,
-    layer: EffectLayer,
-    current_time: Instant,
-) {
-    // Record the time when the layer was frozen
-    // Don't overwrite if already frozen
-    frozen_layers.entry(layer).or_insert(current_time);
+/// How the time of a layer's effects runs: its freeze and its speed master.
+///
+/// The one model of both: the engine renders and expires by it, a seek's
+/// history replays through the engine and so through it, and a show's ends
+/// are reckoned by it (see `LightingTimeline::effect_ends`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerClock {
+    frozen: Option<Frozen>,
+    /// The speed master, 1 by default. 0 freezes the layer rather than
+    /// scaling its time.
+    speed: f64,
+    /// The song time the clock last changed at: its effects have run at one
+    /// rate since.
+    since: Duration,
 }
 
-/// Unfreeze a layer - resumes effects on the layer from where they left off
-pub(crate) fn unfreeze_layer(
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-    active_effects: &mut HashMap<String, EffectInstance>,
-    layer: EffectLayer,
-    current_time: Instant,
-) {
-    // When unfreezing, we need to adjust effect start times to account for frozen duration
-    if let Some(frozen_at) = frozen_layers.remove(&layer) {
-        // Adjust start times for all effects on this layer
-        for effect in active_effects.values_mut() {
-            if effect.layer == layer {
-                if let Some(start_time) = effect.start_time {
-                    // Push the start time forward by the time it spent
-                    // frozen, so it appears as if no time passed while
-                    // frozen: from the freeze, or from its own start for an
-                    // effect cued during it, which held its first frame
-                    // until now -- pushed by the whole freeze, it waited out
-                    // the part before its cue again after the unfreeze.
-                    let frozen_for = current_time.duration_since(start_time.max(frozen_at));
-                    effect.start_time = Some(start_time + frozen_for);
+impl Default for LayerClock {
+    fn default() -> Self {
+        Self {
+            frozen: None,
+            speed: 1.0,
+            since: Duration::ZERO,
+        }
+    }
+}
+
+/// How long an effect started at `start` was held by a freeze from `frozen`
+/// to `now`: from the freeze, or from its own start for one started during
+/// it, which held its first frame from then (pushed by the whole freeze, it
+/// waited out the part before its start again after the unfreeze).
+fn held_for<T: Ord + Copy>(
+    start: T,
+    frozen: T,
+    now: T,
+    span: impl Fn(T, T) -> Duration,
+) -> Duration {
+    span(now, start.max(frozen))
+}
+
+impl LayerClock {
+    /// The layer's speed master.
+    pub(crate) fn speed(&self) -> f64 {
+        self.speed
+    }
+
+    /// Whether the layer is frozen, by a freeze or a speed of 0.
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen.is_some()
+    }
+
+    /// How far into itself `effect` is at `now` before the speed master: on
+    /// score time for a cued effect -- song time since its cue, less the
+    /// song time it has spent frozen, held at the song time the layer froze
+    /// at while frozen -- and otherwise on engine time since it started,
+    /// held at the instant the layer froze at. An effect through a freeze
+    /// with no song time to measure it by stays on engine time.
+    pub(crate) fn base_elapsed(&self, effect: &EffectInstance, now: Now) -> Duration {
+        match (effect.start_time, effect.cue_time, now.song) {
+            (Some(_), Some(cue_time), Some(song))
+                if !effect.engine_timed && self.frozen.is_none_or(|f| f.song.is_some()) =>
+            {
+                self.frozen
+                    .and_then(|f| f.song)
+                    .unwrap_or(song)
+                    .saturating_sub(cue_time)
+                    .saturating_sub(effect.score_frozen)
+            }
+            _ => effect
+                .start_time
+                .map(|start| {
+                    self.frozen
+                        .map_or(now.instant, |f| f.at)
+                        .duration_since(start)
+                })
+                .unwrap_or(Duration::ZERO),
+        }
+    }
+
+    /// `effect`'s own elapsed at `now`, what it renders and expires on: where
+    /// it was at the layer's last speed change, on from there at the layer's
+    /// speed.
+    pub(crate) fn elapsed(&self, effect: &EffectInstance, now: Now) -> Duration {
+        let base = self.base_elapsed(effect, now);
+        effect.elapsed_from.saturating_add(scale_by_speed(
+            base.saturating_sub(effect.speed_from),
+            self.speed,
+        ))
+    }
+
+    fn changed(&mut self, now: Now) {
+        if let Some(song) = now.song {
+            self.since = song;
+        }
+    }
+
+    /// Freezes the layer at `now`, unless it is frozen already.
+    pub(crate) fn freeze(&mut self, now: Now) {
+        self.changed(now);
+        self.frozen.get_or_insert(Frozen {
+            at: now.instant,
+            song: now.song,
+        });
+    }
+
+    /// Lets the layer run again from `now`: each of its effects resumes where
+    /// the freeze held it.
+    pub(crate) fn unfreeze(
+        &mut self,
+        layer: EffectLayer,
+        effects: &mut HashMap<String, EffectInstance>,
+        now: Now,
+    ) {
+        self.changed(now);
+        let Some(frozen) = self.frozen.take() else {
+            return;
+        };
+        for effect in effects.values_mut().filter(|e| e.layer == layer) {
+            if let Some(start) = effect.start_time {
+                effect.start_time = Some(
+                    start + held_for(start, frozen.at, now.instant, |a, b| a.duration_since(b)),
+                );
+            }
+            match (frozen.song, now.song, effect.cue_time) {
+                (Some(at), Some(song), Some(cue_time)) => {
+                    effect.score_frozen += held_for(cue_time, at, song, |a, b| a.saturating_sub(b));
                 }
+                // No song time to measure the freeze by: on engine time
+                // from here, which the start time above has shifted.
+                (_, _, Some(_)) => effect.engine_timed = true,
+                _ => {}
             }
         }
     }
-}
 
-/// Set the intensity master for a layer (0.0 to 1.0)
-pub(crate) fn set_layer_intensity_master(
-    layer_intensity_masters: &mut HashMap<EffectLayer, f64>,
-    layer: EffectLayer,
-    intensity: f64,
-) {
-    let clamped = intensity.clamp(0.0, 1.0);
-    if (clamped - 1.0).abs() < f64::EPSILON {
-        // 1.0 is the default, remove from map to save memory
-        layer_intensity_masters.remove(&layer);
-    } else {
-        layer_intensity_masters.insert(layer, clamped);
+    /// Sets the speed master from `now`: each effect on the layer carries on
+    /// from where it is, not from its cue at the new speed. 0 freezes the
+    /// layer, and a speed from 0 lets it run again.
+    pub(crate) fn set_speed(
+        &mut self,
+        layer: EffectLayer,
+        effects: &mut HashMap<String, EffectInstance>,
+        speed: f64,
+        now: Now,
+    ) {
+        for effect in effects.values_mut().filter(|e| e.layer == layer) {
+            let (base, own) = (self.base_elapsed(effect, now), self.elapsed(effect, now));
+            effect.speed_from = base;
+            effect.elapsed_from = own;
+        }
+        let speed = speed.max(0.0);
+        if speed == 0.0 {
+            self.freeze(now);
+        } else if self.speed == 0.0 {
+            self.unfreeze(layer, effects, now);
+        }
+        self.changed(now);
+        self.speed = if (speed - 1.0).abs() < f64::EPSILON {
+            1.0
+        } else {
+            speed
+        };
+    }
+
+    /// The song time `effect`'s own elapsed reaches its end at, the clock
+    /// as it has been since it last changed: back from `now` for one already
+    /// past it (not before its cue, nor the change it ran under), on from
+    /// `now` for one still running. `None` for one that never ends: held by
+    /// the freeze, or so slow no time there is reaches it.
+    pub(crate) fn end_of(&self, effect: &EffectInstance, now: Now) -> Option<Duration> {
+        let song = now.song.unwrap_or_default();
+        let elapsed = self.elapsed(effect, now);
+        let total = effect.total_duration();
+        let at = self.frozen.and_then(|f| f.song).unwrap_or(song);
+        if effect.has_reached_terminal_state(elapsed) {
+            let past = unscale_by_speed(elapsed - total, self.speed);
+            let floor = self.since.max(effect.cue_time.unwrap_or_default());
+            Some(at.saturating_sub(past).max(floor))
+        } else if self.is_frozen() {
+            None
+        } else {
+            at.checked_add(unscale_by_speed(total - elapsed, self.speed))
+        }
     }
 }
 
-/// Set the speed master for a layer (0.0+ where 1.0 = normal speed)
-pub(crate) fn set_layer_speed_master(
-    layer_speed_masters: &mut HashMap<EffectLayer, f64>,
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-    active_effects: &mut HashMap<String, EffectInstance>,
-    layer: EffectLayer,
-    speed: f64,
-    current_time: Instant,
-) {
-    let clamped = speed.max(0.0); // Speed can be > 1.0 but not negative
+/// Layer control state: intensity masters, and each layer's clock.
+#[derive(Clone, Default)]
+pub(crate) struct LayerState {
+    /// Layer intensity masters (0.0 to 1.0) — multiplies effect output per layer.
+    intensity_masters: HashMap<EffectLayer, f64>,
+    clocks: HashMap<EffectLayer, LayerClock>,
+}
 
-    // Speed 0.0 means freeze - use the freeze_layer mechanism
-    if clamped == 0.0 {
-        freeze_layer(frozen_layers, active_effects, layer, current_time);
-    } else {
-        // Non-zero speed means unfreeze (if was frozen by speed=0)
-        // Note: this only unfreezes if we're changing FROM 0.0
-        let was_frozen_by_speed = layer_speed_masters.get(&layer) == Some(&0.0);
-        if was_frozen_by_speed {
-            unfreeze_layer(frozen_layers, active_effects, layer, current_time);
+impl LayerState {
+    /// Reset every layer back to defaults — no masters, nothing frozen.
+    pub(crate) fn reset(&mut self) {
+        self.intensity_masters.clear();
+        self.clocks.clear();
+    }
+
+    /// Reset a single layer back to defaults.
+    pub(crate) fn reset_layer(&mut self, layer: EffectLayer) {
+        self.intensity_masters.remove(&layer);
+        self.clocks.remove(&layer);
+    }
+
+    pub(crate) fn intensity_master(&self, layer: EffectLayer) -> f64 {
+        *self.intensity_masters.get(&layer).unwrap_or(&1.0)
+    }
+
+    /// Sets a layer's intensity master, clamped to 0.0 to 1.0.
+    pub(crate) fn set_intensity_master(&mut self, layer: EffectLayer, intensity: f64) {
+        let clamped = intensity.clamp(0.0, 1.0);
+        if (clamped - 1.0).abs() < f64::EPSILON {
+            // 1.0 is the default
+            self.intensity_masters.remove(&layer);
+        } else {
+            self.intensity_masters.insert(layer, clamped);
         }
     }
 
-    if (clamped - 1.0).abs() < f64::EPSILON {
-        // 1.0 is the default, remove from map to save memory
-        layer_speed_masters.remove(&layer);
-    } else {
-        layer_speed_masters.insert(layer, clamped);
+    /// The layer's clock, at rest for a layer nothing has set.
+    pub(crate) fn clock(&self, layer: EffectLayer) -> LayerClock {
+        self.clocks.get(&layer).copied().unwrap_or_default()
+    }
+
+    /// Moves the instants the layers froze at by `rebase`: state replayed
+    /// in one engine, put in another (see `EffectEngine::install`).
+    pub(crate) fn rebase(&mut self, rebase: impl Fn(Instant) -> Instant) {
+        for clock in self.clocks.values_mut() {
+            if let Some(frozen) = clock.frozen.as_mut() {
+                frozen.at = rebase(frozen.at);
+            }
+        }
+    }
+
+    /// Lays `later`'s masters and clocks over these: what was set there,
+    /// later than these were, stands.
+    pub(crate) fn overlay(&mut self, later: &LayerState) {
+        self.intensity_masters
+            .extend(later.intensity_masters.iter().map(|(k, v)| (*k, *v)));
+        self.clocks
+            .extend(later.clocks.iter().map(|(k, v)| (*k, *v)));
+    }
+
+    pub(crate) fn clock_mut(&mut self, layer: EffectLayer) -> &mut LayerClock {
+        self.clocks.entry(layer).or_default()
     }
 }
 
@@ -129,18 +297,14 @@ mod tests {
     use super::super::super::effects::EffectType;
     use super::*;
 
-    fn static_effect() -> EffectType {
-        EffectType::Static {
-            parameters: HashMap::new(),
-            duration: Duration::from_secs(5),
-        }
-    }
-
-    fn make_effect(id: &str, fixtures: Vec<&str>, layer: EffectLayer) -> EffectInstance {
+    fn make_effect(id: &str, layer: EffectLayer) -> EffectInstance {
         let mut inst = EffectInstance::new(
             id.to_string(),
-            static_effect(),
-            fixtures.into_iter().map(|s| s.to_string()).collect(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: Duration::from_secs(5),
+            },
+            vec!["f1".to_string()],
             None,
             None,
             None,
@@ -149,140 +313,124 @@ mod tests {
         inst
     }
 
-    // ── clear_layer ────────────────────────────────────────────────
-
-    #[test]
-    fn clear_layer_removes_matching() {
-        let mut active = HashMap::new();
-        active.insert(
-            "a".to_string(),
-            make_effect("a", vec!["f1"], EffectLayer::Background),
-        );
-        active.insert(
-            "b".to_string(),
-            make_effect("b", vec!["f1"], EffectLayer::Foreground),
-        );
-        let mut frozen = HashMap::new();
-        clear_layer(&mut active, &mut frozen, EffectLayer::Background);
-        assert!(!active.contains_key("a"));
-        assert!(active.contains_key("b"));
+    fn at(instant: Instant) -> Now {
+        Now {
+            instant,
+            song: None,
+        }
     }
-
-    // ── clear_all_layers ───────────────────────────────────────────
-
-    #[test]
-    fn clear_all_empties_everything() {
-        let mut active = HashMap::new();
-        active.insert(
-            "a".to_string(),
-            make_effect("a", vec!["f1"], EffectLayer::Background),
-        );
-        let mut frozen = HashMap::new();
-        frozen.insert(EffectLayer::Background, Instant::now());
-        clear_all_layers(&mut active, &mut frozen);
-        assert!(active.is_empty());
-        assert!(frozen.is_empty());
-    }
-
-    // ── set_layer_intensity_master ─────────────────────────────────
 
     #[test]
     fn intensity_master_set_value() {
-        let mut masters = HashMap::new();
-        set_layer_intensity_master(&mut masters, EffectLayer::Background, 0.5);
-        assert_eq!(masters.get(&EffectLayer::Background), Some(&0.5));
+        let mut state = LayerState::default();
+        state.set_intensity_master(EffectLayer::Background, 0.5);
+        assert_eq!(state.intensity_master(EffectLayer::Background), 0.5);
     }
 
     #[test]
     fn intensity_master_one_removes() {
-        let mut masters = HashMap::new();
-        masters.insert(EffectLayer::Background, 0.5);
-        set_layer_intensity_master(&mut masters, EffectLayer::Background, 1.0);
-        assert!(!masters.contains_key(&EffectLayer::Background));
+        let mut state = LayerState::default();
+        state.set_intensity_master(EffectLayer::Background, 0.5);
+        state.set_intensity_master(EffectLayer::Background, 1.0);
+        assert!(state.intensity_masters.is_empty());
     }
 
     #[test]
     fn intensity_master_clamps() {
-        let mut masters = HashMap::new();
-        set_layer_intensity_master(&mut masters, EffectLayer::Background, 1.5);
-        // 1.5 clamps to 1.0, which is default, so removed
-        assert!(!masters.contains_key(&EffectLayer::Background));
-    }
-
-    #[test]
-    fn intensity_master_clamps_negative() {
-        let mut masters = HashMap::new();
-        set_layer_intensity_master(&mut masters, EffectLayer::Background, -0.5);
-        assert_eq!(masters.get(&EffectLayer::Background), Some(&0.0));
-    }
-
-    // ── freeze/unfreeze ────────────────────────────────────────────
-
-    #[test]
-    fn freeze_records_time() {
-        let mut frozen = HashMap::new();
-        let mut active = HashMap::new();
-        let now = Instant::now();
-        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, now);
-        assert_eq!(frozen.get(&EffectLayer::Background), Some(&now));
+        let mut state = LayerState::default();
+        state.set_intensity_master(EffectLayer::Background, 1.5);
+        assert!(state.intensity_masters.is_empty());
+        state.set_intensity_master(EffectLayer::Background, -0.5);
+        assert_eq!(state.intensity_master(EffectLayer::Background), 0.0);
     }
 
     #[test]
     fn freeze_does_not_overwrite() {
-        let mut frozen = HashMap::new();
-        let mut active = HashMap::new();
+        let mut clock = LayerClock::default();
         let t1 = Instant::now();
-        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, t1);
-        let t2 = Instant::now();
-        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, t2);
-        assert_eq!(frozen.get(&EffectLayer::Background), Some(&t1));
+        clock.freeze(at(t1));
+        clock.freeze(at(t1 + Duration::from_secs(1)));
+        assert_eq!(clock.frozen.map(|f| f.at), Some(t1));
     }
 
     #[test]
     fn unfreeze_adjusts_start_times() {
-        let mut frozen = HashMap::new();
-        let mut active = HashMap::new();
+        let mut clock = LayerClock::default();
         let base = Instant::now();
-        let mut effect = make_effect("a", vec!["f1"], EffectLayer::Background);
+        let mut effect = make_effect("a", EffectLayer::Background);
         effect.start_time = Some(base);
-        active.insert("a".to_string(), effect);
-
-        frozen.insert(EffectLayer::Background, base);
-        // Simulate 2 seconds frozen
-        let unfreeze_time = base + Duration::from_secs(2);
-        unfreeze_layer(
-            &mut frozen,
-            &mut active,
+        let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
+        clock.freeze(at(base));
+        clock.unfreeze(
             EffectLayer::Background,
-            unfreeze_time,
+            &mut active,
+            at(base + Duration::from_secs(2)),
         );
-
-        assert!(!frozen.contains_key(&EffectLayer::Background));
-        // Start time should be pushed forward by 2 seconds
-        let new_start = active.get("a").unwrap().start_time.unwrap();
-        assert_eq!(new_start, base + Duration::from_secs(2));
+        assert!(!clock.is_frozen());
+        assert_eq!(
+            active["a"].start_time,
+            Some(base + Duration::from_secs(2)),
+            "pushed forward by its 2 s frozen"
+        );
     }
 
     #[test]
     fn unfreeze_starts_an_effect_cued_during_the_freeze_from_its_beginning() {
-        let mut frozen = HashMap::new();
-        let mut active = HashMap::new();
+        let mut clock = LayerClock::default();
         let base = Instant::now();
-        let mut effect = make_effect("a", vec!["f1"], EffectLayer::Background);
+        let mut effect = make_effect("a", EffectLayer::Background);
         // Frozen at 0; cued 5 s in; unfrozen at 10 s.
         effect.start_time = Some(base + Duration::from_secs(5));
-        active.insert("a".to_string(), effect);
-        frozen.insert(EffectLayer::Background, base);
-        unfreeze_layer(
-            &mut frozen,
-            &mut active,
+        let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
+        clock.freeze(at(base));
+        clock.unfreeze(
             EffectLayer::Background,
-            base + Duration::from_secs(10),
+            &mut active,
+            at(base + Duration::from_secs(10)),
         );
         assert_eq!(
-            active.get("a").unwrap().start_time,
+            active["a"].start_time,
             Some(base + Duration::from_secs(10)),
             "it waits out the 5 s before its cue again"
         );
+    }
+
+    #[test]
+    fn a_speed_of_zero_freezes_and_a_speed_from_zero_unfreezes() {
+        let mut clock = LayerClock::default();
+        let mut active = HashMap::new();
+        let now = at(Instant::now());
+        clock.set_speed(EffectLayer::Background, &mut active, 0.0, now);
+        assert!(clock.is_frozen());
+        clock.set_speed(EffectLayer::Background, &mut active, 0.5, now);
+        assert!(!clock.is_frozen());
+        assert_eq!(clock.speed(), 0.5);
+    }
+
+    #[test]
+    fn an_effects_end_is_reckoned_at_its_layers_speed() {
+        let instant = Instant::now();
+        let song = |s: u64| Now {
+            instant,
+            song: Some(Duration::from_secs(s)),
+        };
+        let mut clock = LayerClock::default();
+        let mut effect = make_effect("a", EffectLayer::Background);
+        effect.start_time = Some(instant);
+        effect.cue_time = Some(Duration::ZERO);
+        let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
+        // Half speed from 1 s: 1 s in, 4 s to go at half speed, so 9 s.
+        clock.set_speed(EffectLayer::Background, &mut active, 0.5, song(1));
+        assert_eq!(
+            clock.end_of(&active["a"], song(2)),
+            Some(Duration::from_secs(9))
+        );
+        assert_eq!(
+            clock.end_of(&active["a"], song(12)),
+            Some(Duration::from_secs(9)),
+            "back from a time past it"
+        );
+        clock.freeze(song(3));
+        assert_eq!(clock.end_of(&active["a"], song(4)), None);
     }
 }

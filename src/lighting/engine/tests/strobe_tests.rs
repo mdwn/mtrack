@@ -137,9 +137,9 @@ fn test_strobe_effect() {
     // Should have strobe command since fixture has dedicated strobe channel
     assert_eq!(commands.len(), 1);
 
-    // Check strobe command (frequency 2.0 / max 20.0 = 0.1 = 25 in DMX)
+    // Check strobe command (frequency 2.0 / max 20.0 = 0.1 = 25.5, rounded to 26 in DMX)
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap();
-    assert_eq!(strobe_cmd.value, 25);
+    assert_eq!(strobe_cmd.value, 26);
 }
 
 #[test]
@@ -404,17 +404,17 @@ fn test_strobe_with_dmx_offset() {
     // period_fraction = (2.5 - 0.1) / (2.5 - 0.04) = 2.4/2.46 = 0.97561
     // min_normalized = 7/255 = 0.02745
     // normalized = 0.02745 + 0.97561 * 0.97255 = 0.97628
-    // DMX = (0.97628 * 255) as u8 = 248
+    // DMX = 0.97628 * 255 = 248.95, rounded to 249
     assert_eq!(
-        strobe_cmd.value, 248,
-        "10Hz strobe with offset should produce DMX 248"
+        strobe_cmd.value, 249,
+        "10Hz strobe with offset should produce DMX 249"
     );
 }
 
 #[test]
 fn test_strobe_without_offset_unchanged() {
     // Verify that fixtures without offset still work as before
-    // Fixture with max=20Hz, no offset: 2Hz → 2/20 = 0.1 → DMX 25
+    // Fixture with max=20Hz, no offset: 2Hz → 2/20 = 0.1 → DMX 25.5, rounded to 26
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
     engine.register_fixture(fixture);
@@ -436,8 +436,8 @@ fn test_strobe_without_offset_unchanged() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap();
     assert_eq!(
-        strobe_cmd.value, 25,
-        "2Hz strobe without offset should still produce DMX 25"
+        strobe_cmd.value, 26,
+        "2Hz strobe without offset should still produce DMX 26"
     );
 }
 
@@ -582,10 +582,10 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         );
 
         let strobe_value = strobe_cmd.unwrap().value;
-        // 10Hz with PixelBrick params (period-linear) should give DMX 248
+        // 10Hz with PixelBrick params (period-linear) should give DMX 249
         assert_eq!(
-            strobe_value, 248,
-            "Frame {}: strobe DMX value should be 248, got {}",
+            strobe_value, 249,
+            "Frame {}: strobe DMX value should be 249, got {}",
             frame, strobe_value
         );
 
@@ -777,8 +777,8 @@ fn test_esaweg_timeline_strobe_sequence() {
 
         let strobe_value = strobe_cmd.unwrap().value;
         assert_eq!(
-            strobe_value, 248,
-            "Frame {} after strobe start: strobe should be DMX 248, got {}",
+            strobe_value, 249,
+            "Frame {} after strobe start: strobe should be DMX 249, got {}",
             frame, strobe_value
         );
         strobe_present_count += 1;
@@ -918,11 +918,11 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
     let blue = sorted.iter().find(|&&(ch, _)| ch == 3).unwrap();
     assert_eq!(blue.1, 0, "Blue channel should be 0, got {}", blue.1);
 
-    // Channel 4 = strobe: 10Hz with PixelBrick params (period-linear, max=25, min=0.4, offset=7) → DMX 248
+    // Channel 4 = strobe: 10Hz with PixelBrick params (period-linear, max=25, min=0.4, offset=7) → DMX 249
     let strobe_val = sorted.iter().find(|&&(ch, _)| ch == 4).unwrap();
     assert_eq!(
-        strobe_val.1, 248,
-        "Strobe channel should be 248, got {}",
+        strobe_val.1, 249,
+        "Strobe channel should be 249, got {}",
         strobe_val.1
     );
 }
@@ -959,7 +959,7 @@ fn pixelbrick_strobe_byte(curve: crate::lighting::types::StrobeCurve, hz: f64) -
 fn the_strobe_curve_maps_a_rate_through_period_or_hertz() {
     use crate::lighting::types::StrobeCurve::{Linear, Period};
     // 10 Hz: period space (measured on the unit) vs hertz (the GDTF's word).
-    assert_eq!(pixelbrick_strobe_byte(Period, 10.0), 248);
+    assert_eq!(pixelbrick_strobe_byte(Period, 10.0), 249);
     let linear = pixelbrick_strobe_byte(Linear, 10.0);
     // 7 + (10 − 0.4)/(25 − 0.4) × 248 = 103.8
     assert!((103..=104).contains(&linear), "{linear}");
@@ -1102,7 +1102,7 @@ fn an_endpoints_only_archive_is_linear_by_default_and_period_when_set() {
     // Set to period (as the PixelBrick's record is): the measured curve.
     assert_eq!(
         strobe_byte(gdtf_fixture(synthetic, Some(StrobeCurve::Period)), 10.0),
-        248
+        249
     );
     for hz in [0.4, 2.0, 10.0, 25.0] {
         assert_eq!(
@@ -1128,7 +1128,7 @@ fn declared_steps_pick_the_first_containing_step_else_the_nearest_end() {
         step(20, 29, 2.0, 10.0),
         step(30, 30, 12.0, 12.0),
     ];
-    let dmx = |hz| crate::lighting::engine::processing::declared_dmx(&steps, hz);
+    let dmx = |hz| crate::lighting::effects::declared_dmx(&steps, hz);
     assert_eq!(dmx(5.0), 10.0);
     assert_eq!(dmx(3.0), 14.5, "first step in DMX order wins an overlap");
     assert_eq!(dmx(6.0), 20.0 + 4.0 / 8.0 * 9.0);
@@ -1154,4 +1154,109 @@ fn a_descending_function_is_followed_in_its_direction() {
     let ten = strobe_byte(fixture, 10.0);
     // 7 + (10 − 25)/(0.4 − 25) × 248 = 158.2
     assert_eq!(ten, 158);
+}
+
+/// The state stream says the rate a fixture with a strobe channel is
+/// strobing at — its byte read back through the fixture's own rule, the
+/// reading the stage views flash at — and nothing once the strobe is
+/// over. A software strobe's rate is not on the stream: its bytes flip
+/// there frame by frame already. A single instant carries both (an
+/// evaluation; see `an_evaluation_reports_a_software_strobes_rate`).
+#[test]
+fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_pixelbrick_fixture("Brick", 1, 1));
+    let mut rgb = HashMap::new();
+    rgb.insert("red".to_string(), 1);
+    rgb.insert("green".to_string(), 2);
+    rgb.insert("blue".to_string(), 3);
+    engine.register_fixture(FixtureInfo::new(
+        "Par".to_string(),
+        1,
+        10,
+        "RGB".to_string(),
+        rgb,
+        None,
+    ));
+    let strobe = |id: &str, target: &str, hz: f64| {
+        EffectInstance::new(
+            id.to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(hz),
+                duration: Duration::from_secs(1),
+            },
+            vec![target.to_string()],
+            None,
+            None,
+            None,
+        )
+    };
+    engine.start_effect(strobe("hw", "Brick", 10.0)).unwrap();
+    engine.start_effect(strobe("sw", "Par", 7.0)).unwrap();
+    engine.update(Duration::from_millis(16), None).unwrap();
+
+    use crate::state::StrobeRates;
+    let rate_in = |engine: &EffectEngine, name: &str, rates: StrobeRates| {
+        let registry = engine.get_fixture_registry();
+        crate::state::fixture_snapshots_with_cells(
+            engine.shown_fixture_states(),
+            &HashMap::new(),
+            registry,
+            engine.wire(),
+            rates,
+        )
+        .into_iter()
+        .find(|s| s.name == name)
+        .and_then(|s| s.strobe_hz)
+    };
+    let rate = |engine: &EffectEngine, name: &str| rate_in(engine, name, StrobeRates::Live);
+    // The PixelBrick's period curve puts 10 Hz at byte 249 (248.95,
+    // rounded), which reads back at the byte itself: 10.05 Hz (the curve is
+    // steep up here; byte 248 is 9.1 Hz).
+    let brick = rate(&engine, "Brick").expect("the Brick strobes");
+    let registry = engine.get_fixture_registry();
+    assert_eq!(registry["Brick"].strobe_hz(249), Some(brick));
+    assert!((9.1..=10.05).contains(&brick), "{brick} Hz");
+    assert_eq!(
+        rate(&engine, "Par"),
+        None,
+        "a software strobe: not on the stream"
+    );
+    assert_eq!(
+        rate_in(&engine, "Par", StrobeRates::Instant),
+        Some(7.0),
+        "the effect's own rate, on a single instant"
+    );
+    assert_eq!(rate_in(&engine, "Brick", StrobeRates::Instant), Some(brick));
+
+    // Over: the Brick's channel is sent off (byte 0), the Par's state goes.
+    engine.update(Duration::from_secs(2), None).unwrap();
+    assert_eq!(rate(&engine, "Brick"), None);
+    assert_eq!(rate(&engine, "Par"), None);
+}
+
+/// #633: a period curve with a DMX offset and no minimum frequency wrote
+/// `hz / max` of the whole channel, so a slow strobe landed below the
+/// offset, where the fixture does not strobe, and read back as none. The
+/// offset holds there as everywhere: any rate over 0 writes a byte in
+/// `offset..=255`, and that byte reads back to about the rate.
+#[test]
+fn a_dmx_offset_holds_without_a_minimum_frequency() {
+    for hz in [0.3, 1.0, 2.0, 5.0] {
+        let fixture = create_fixture_with_strobe_offset("Brick", 1, 1, 20.0, 0.0, 64);
+        let byte = strobe_byte(fixture.clone(), hz);
+        assert!(byte >= 64, "{hz} Hz wrote {byte}, below the offset");
+        let back = fixture
+            .strobe_hz(byte)
+            .unwrap_or_else(|| panic!("{hz} Hz: byte {byte} reads back as no strobe"));
+        // One byte of the 191 above the offset is 20/191 Hz.
+        assert!(
+            (back - hz).abs() <= 20.0 / 191.0 / 2.0 + 1e-9,
+            "{hz} Hz: byte {byte} reads back as {back} Hz"
+        );
+    }
+    // Under the offset is not a strobe rate.
+    let fixture = create_fixture_with_strobe_offset("Brick", 1, 1, 20.0, 0.0, 64);
+    assert_eq!(fixture.strobe_hz(63), None);
+    assert_eq!(fixture.strobe_hz(255), Some(20.0));
 }

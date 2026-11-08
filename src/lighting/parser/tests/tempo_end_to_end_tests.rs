@@ -1734,3 +1734,48 @@ show "T" {
         "bar 3 should account for the 1.5s lead-in, got {cue}"
     );
 }
+
+// ── One rule for the tempo a duration is read at ──
+
+#[test]
+fn test_every_duration_reads_the_tempo_at_the_cues_score_time() {
+    // Under an offset, past a tempo change: `duration`, `up_time`,
+    // `hold_time`, `down_time` and a dimmer's own duration are all read at
+    // the cue's place in the score (@3/1, 60 BPM), by one rule. They were
+    // reached three ways -- the dimmer's passing the shifted time and the
+    // offset separately, up_time and hold_time the unshifted measure time
+    // -- that all landed on this same place (`span` takes the offset off
+    // itself), so this pins what the one rule must keep giving, not a
+    // change.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+show "Test" {
+    @1/1
+    offset 1 measures
+
+    @3/1
+    a: static, color: "red", duration: 1beat, up_time: 1beat, down_time: 1beat
+    b: strobe, frequency: 4, hold_time: 1beat
+    c: dimmer, start: 0%, end: 100%, duration: 1beat
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    // @3/1 is 4s in the score, 6s with the bar of offset at 120 BPM.
+    let cue = &show.cues[1];
+    assert_eq!(cue.time, Duration::from_secs(6));
+    let beat = Duration::from_secs(1);
+    let a = &cue.effects[0];
+    assert_eq!(a.effect_type.duration(), beat);
+    assert_eq!(a.up_time, Some(beat));
+    assert_eq!(a.down_time, Some(beat));
+    assert_eq!(cue.effects[1].hold_time, Some(beat));
+    assert_eq!(cue.effects[2].total_duration(), beat);
+}

@@ -1,0 +1,51 @@
+[package]
+name = "mtrack-rules-wasm"
+description = "mtrack's beat grid, tempo map, metronome, DMX patch and light show rules, compiled to WebAssembly for the web UI."
+license = "GPL-3.0"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A cdylib is what `wasm32-unknown-unknown` turns into a .wasm module; the
+# rlib lets the host build, test and lint it with the rest of the workspace.
+[lib]
+crate-type = ["cdylib", "rlib"]
+# The player's modules compiled here carry unit tests that need the rest of
+# the player; this crate's own tests are in tests/.
+test = false
+doctest = false
+
+[features]
+default = ["tsify"]
+# Derives the TypeScript types of the included structs. The player declares
+# the same feature (as a no-op) so the `cfg_attr` in the shared sources is a
+# known one there.
+tsify = []
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+# What the included light show parser needs: its grammar and its ordered
+# show map, at the player's versions.
+pest = "2.8"
+pest_derive = "2.8"
+indexmap = { version = "2", features = ["serde"] }
+# Pinned exactly: the `wasm-bindgen` CLI the build runs (setup.sh, CI) must
+# be this version, and wasm-pack would otherwise download one.
+wasm-bindgen = "=0.2.122"
+tsify-next = { version = "0.5", default-features = false, features = ["js"] }
+# The free-form maps a few request types carry (`serde_json::Value`).
+serde_json = "1.0"
+# What the included config files read with, at the player's versions.
+strum = { version = "0.28", features = ["derive"] }
+midly = "0.5.3"
+tracing = "0.1.44"
+
+# `config`: what the included modules' own unit tests use
+# (compiled by `clippy --all-targets`, never run here).
+[dev-dependencies]
+config = "0.15.19"
+
+# No download of binaryen: `make gen-wasm` runs the pinned wasm-opt itself.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

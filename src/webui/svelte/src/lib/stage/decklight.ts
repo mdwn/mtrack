@@ -12,6 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
+
 /**
  * The light the beams put on the deck, as plain numbers (no three.js): the
  * 3D view's cones show a beam in the air, and this is what the same beam
@@ -30,8 +33,6 @@
  * twice, here ({@link deckLight}) and in {@link DECK_SHADER} for the GPU,
  * from the same constants.
  */
-
-type Vec3 = [number, number, number];
 
 /** The field angle taken for a beam whose type states none, as a multiple
  *  of its beam angle; also the most a stated ratio is trusted for. */
@@ -72,9 +73,11 @@ export function beamSpread(
     rig.field_deg !== null && rig.angle_deg > 0 && rig.field_deg > rig.angle_deg
       ? Math.min(rig.field_deg / rig.angle_deg, MAX_FIELD_RATIO)
       : DEFAULT_FIELD_RATIO;
-  const valid = typeof override === "number" && override > 0 && override <= 180;
-  const beamDeg = Math.min(valid ? override : rig.angle_deg, 180);
-  return { beamDeg, fieldDeg: Math.min(beamDeg * stated, 180) };
+  const valid =
+    typeof override === "number" && rules.beam_angle_valid(override);
+  const widest = rules.limits().beam_angle_max;
+  const beamDeg = Math.min(valid ? override : rig.angle_deg, widest);
+  return { beamDeg, fieldDeg: Math.min(beamDeg * stated, widest) };
 }
 
 function solidAngle(beamDeg: number, fieldDeg: number): number {

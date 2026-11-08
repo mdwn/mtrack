@@ -166,12 +166,12 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
         host_port: Option<String>,
-        /// Start playback from a specific time (e.g., "1:23.456" or "45.5s").
+        /// Start playback from a specific time (e.g., "1:23.456", "45.5s" or "90").
         #[arg(long)]
         from: Option<String>,
     },
-    /// Seeks within the current song to a time (e.g. "1:23.456" or "45.5s")
-    /// or to the start of a named section (e.g. "chorus").
+    /// Seeks within the current song to a time (e.g. "1:23.456", "45.5s" or
+    /// "90") or to the start of a named section (e.g. "chorus").
     Seek {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
@@ -243,12 +243,16 @@ enum Commands {
         /// List the archive's modes and their footprints; import nothing.
         #[arg(long)]
         list_modes: bool,
-        /// Project directory the import writes into.
+        /// The project the import writes into: its directory (its
+        /// mtrack.yaml says where the lighting files are) or its config
+        /// file. The library is the project's lighting/library.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
     },
     /// Imports an MVR venue file: reports what the import would do, or
     /// (with --write) copies the MVR and its embedded GDTFs into the
@@ -269,15 +273,21 @@ enum Commands {
         /// the venue's recorded origin on a re-import, else 0,0,0.
         #[arg(long)]
         origin: Option<String>,
-        /// Project directory the import writes into.
+        /// The project the import writes into: its directory (its
+        /// mtrack.yaml says where the lighting files are) or its config
+        /// file. The library is the project's lighting/library.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
-        /// Venues directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
-        venues_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
+        /// Venues directory, relative to the project (default: the one the
+        /// project's config gives this host's profile, else
+        /// lighting/venues).
+        #[arg(long)]
+        venues_dir: Option<String>,
     },
     /// Exports a venue as an .mvr archive: the patch with positions,
     /// rotations and focus points, every fixture type's GDTF embedded
@@ -292,15 +302,20 @@ enum Commands {
         /// Put each fixture on a layer named after its first tag.
         #[arg(long)]
         layers_from_tags: bool,
-        /// Project directory.
+        /// The project: its directory (its mtrack.yaml says where the
+        /// lighting files are) or its config file.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
-        /// Venues directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
-        venues_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
+        /// Venues directory, relative to the project (default: the one the
+        /// project's config gives this host's profile, else
+        /// lighting/venues).
+        #[arg(long)]
+        venues_dir: Option<String>,
     },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
@@ -346,9 +361,9 @@ enum Commands {
     Verify {
         /// The path to the mtrack.yaml player config file.
         config: String,
-        /// Only check specific categories (e.g., "track-mappings"). Runs all checks if omitted.
-        #[arg(long)]
-        check: Option<Vec<String>>,
+        /// Only check specific categories. Runs all checks if omitted.
+        #[arg(long, value_enum)]
+        check: Option<Vec<crate::verify::Check>>,
         /// Hostname to verify against. When profiles are used, this filters which profiles
         /// to check. If omitted, all profiles are verified.
         #[arg(long)]
@@ -548,7 +563,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             name.as_deref(),
             list_modes,
             &project,
-            &fixture_types_dir,
+            fixture_types_dir,
         )?,
         Commands::ImportMvr {
             mvr_path,
@@ -601,6 +616,29 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// The CLI reference names every subcommand, and only those.
+    #[test]
+    fn the_cli_reference_names_every_command() {
+        use clap::CommandFactory;
+        let reference = include_str!("../docs/src/reference/cli.md");
+        let mut documented: Vec<&str> = reference
+            .split("`mtrack ")
+            .skip(1)
+            .filter_map(|rest| rest.split([' ', '`']).next())
+            .filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .filter(|word| !word.is_empty())
+            .collect();
+        documented.sort();
+        documented.dedup();
+        let mut commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+            .map(|c| c.get_name().to_string())
+            .collect();
+        commands.sort();
+        assert_eq!(documented, commands);
+    }
 
     mod format_device_list_tests {
         use super::*;
@@ -1230,7 +1268,10 @@ mod tests {
                     hostname,
                 } => {
                     assert_eq!(config, "mtrack.yaml");
-                    assert_eq!(check.as_deref(), Some(&["track-mappings".to_string()][..]));
+                    assert_eq!(
+                        check.as_deref(),
+                        Some(&[crate::verify::Check::TrackMappings][..])
+                    );
                     assert_eq!(hostname.as_deref(), Some("stage-left"));
                 }
                 _ => panic!("expected Verify command"),
@@ -1560,26 +1601,19 @@ mod tests {
         }
 
         #[test]
-        fn parse_verify_with_multiple_checks() {
-            let cli = Cli::try_parse_from([
+        fn parse_verify_refuses_an_unknown_check() {
+            // A typo used to run no checks and exit 0.
+            let err = Cli::try_parse_from([
                 "mtrack",
                 "verify",
                 "mtrack.yaml",
                 "--check",
-                "track-mappings",
-                "--check",
-                "other-check",
+                "track_mappings",
             ])
-            .unwrap();
-            match cli.command {
-                Commands::Verify { check, .. } => {
-                    let checks = check.unwrap();
-                    assert_eq!(checks.len(), 2);
-                    assert!(checks.contains(&"track-mappings".to_string()));
-                    assert!(checks.contains(&"other-check".to_string()));
-                }
-                _ => panic!("expected Verify command"),
-            }
+            .err()
+            .expect("an unknown check is refused");
+            assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(err.to_string().contains("track-mappings"), "{err}");
         }
 
         #[test]

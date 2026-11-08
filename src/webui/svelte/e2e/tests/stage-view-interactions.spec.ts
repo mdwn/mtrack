@@ -13,18 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 let testCounter = 0;
-
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 test.describe("Stage View Interactions", () => {
   let wsId: string;
@@ -63,7 +54,7 @@ test.describe("Stage View Interactions", () => {
     await expect(canvas).toBeVisible();
 
     // Send updated fixture state with new colors.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "state",
       fixtures: {
         "front-left": {
@@ -95,7 +86,7 @@ test.describe("Stage View Interactions", () => {
     await expect(canvas).toBeVisible();
 
     // Send metadata with additional fixtures.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "metadata",
       fixtures: {
         "front-left": { tags: ["front", "left"], type: "par" },

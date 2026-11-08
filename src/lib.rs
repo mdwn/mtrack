@@ -19,13 +19,18 @@ pub mod cli;
 pub(crate) mod clock;
 pub mod config;
 pub mod controller;
+pub mod device_info;
 pub mod dmx;
+#[cfg(test)]
+mod docs_tests;
 pub mod lighting;
+pub mod logging;
 pub mod midi;
 pub mod notification;
 pub mod player;
 pub mod playlist;
 pub mod playsync;
+pub mod position;
 pub mod proto;
 pub mod samples;
 pub mod section_loop;

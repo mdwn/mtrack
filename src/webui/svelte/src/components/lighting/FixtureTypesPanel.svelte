@@ -14,21 +14,27 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    FixtureTypeEntry,
+    FixtureTypeSaved,
+    GdtfImport,
+    GdtfSummary,
+    LightingFileError,
+  } from "../../gen/rules/mtrack_rules";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import ReadOnlyNote, { readOnly } from "./ReadOnlyNote.svelte";
   import FixtureTest from "./FixtureTest.svelte";
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
-  import {
-    channelProblems,
-    type ChannelProblem,
-  } from "../../lib/lighting/venueRows";
+  import { typeSavedMessage } from "../../lib/lighting/typeSaved";
+  import { rules } from "../../lib/rules";
   import {
     fetchFixtureTypeGdtf,
     fetchFixtureTypes,
@@ -37,10 +43,6 @@
     saveFixtureTypeText,
     deleteFixtureType,
     importGdtf,
-    type FixtureTypeEntry,
-    type GdtfSummary,
-    type GdtfImportReport,
-    type LightingFileError,
   } from "../../lib/api/config";
 
   interface Props {
@@ -81,6 +83,21 @@
   let ftError = $state("");
   let ftSaving = $state(false);
   let ftMsg = $state("");
+  /** The last save's message, when all went well: not shown as an error. */
+  let ftSavedMsg = $state("");
+
+  /** What a save says: saved, the venue lines a rename retyped, or that
+   *  the current venue no longer loads (kept until the next message). */
+  function showSaved(done: FixtureTypeSaved) {
+    const said = typeSavedMessage(done);
+    ftMsg = said.text;
+    if (!said.ok) return;
+    ftSavedMsg = said.text;
+    setTimeout(() => {
+      if (ftMsg === said.text) ftMsg = "";
+    }, 4000);
+  }
+
   let editingFt = $state<string | null>(null);
   let editFtName = $state("");
   let editFtChannels = $state<{ name: string; offset: number }[]>([]);
@@ -143,21 +160,27 @@
   /** In text mode the DSL declares the name — the file is keyed on it, and
    *  the server refuses a save where the two disagree. So the Name field
    *  reads it out rather than being a second, conflicting source. */
-  let editFtDslName = $derived(declaredFixtureTypeName(editFtDsl));
-  /** A rich or referential type cannot go back to `.light`: the loader
-   *  skips v2 syntax there. Anything else may be saved in either form. */
+  let editFtDslName = $derived(rules.fixture_type_name(editFtDsl) ?? "");
+  /** A plain type in a `.light` may stay one or move to a `.fixture`. A
+   *  rich or referential type cannot be a `.light` (the loader skips v2
+   *  syntax there), a `.fixture` is never written back as one, and a new
+   *  type is always a `.fixture`. */
   let ftExtChoosable = $derived(
-    ftMode === "text" && !editFtReferential && !editFtRich,
+    ftMode === "text" &&
+      !isNewFt &&
+      !editFtReferential &&
+      !editFtRich &&
+      !!editingFt &&
+      fixtureTypes[editingFt]?.extension === "light",
+  );
+  /** The open type's owner when it may not be written; null otherwise. A
+   *  type whose file is not its alone is shown read-only, with the file
+   *  and why. */
+  let ftReadOnly = $derived(
+    editingFt && !isNewFt ? readOnly(fixtureTypes[editingFt]?.owner) : null,
   );
   /** Whether the "which form?" chooser is open ahead of a new type. */
   let newFtChoice = $state(false);
-
-  /** The name a fixture type DSL declares, quoted or bare. Comment lines
-   *  start with `#`, so anchoring to the start of a line skips them. */
-  function declaredFixtureTypeName(dsl: string): string {
-    const match = dsl.match(/^[ \t]*fixture_type[ \t]+(?:"([^"]*)"|([\w-]+))/m);
-    return (match?.[1] ?? match?.[2] ?? "").trim();
-  }
 
   /** The commented starting point for a hand-written `.fixture`. */
   const NEW_FIXTURE_TEMPLATE = `# The rich channel form, which only a .fixture file may hold:
@@ -181,7 +204,7 @@ fixture_type "Name" {
         ftDir || undefined,
         venuesDir || undefined,
       );
-      fixtureTypes = result.fixtureTypes;
+      fixtureTypes = result.fixture_types;
       ftFileErrors = result.errors;
     } catch (e: any) {
       ftError = e.message;
@@ -263,7 +286,10 @@ fixture_type "Name" {
 
     // A fixture from a GDTF is its page: no file, no text.
     if (entry.referential) return;
-    if (editFtExt === "fixture" || entry.rich) {
+    // Only a type the channel map can say all of opens in it (the
+    // player's own rule, `form_editable`); anything more opens as text,
+    // so a form save never drops a comment, a curve or a limit.
+    if (!entry.form_editable) {
       await openFtAsText(name);
       return;
     }
@@ -291,7 +317,7 @@ fixture_type "Name" {
     ftTextLoading = true;
     try {
       const full = await fetchFixtureType(name, ftDir || undefined);
-      editFtDsl = full.dsl;
+      editFtDsl = full.dsl ?? "";
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -346,7 +372,7 @@ fixture_type "Name" {
   /** What the last import did, said on the fixture's page it opened. */
   let importNotice = $state<{ name: string; text: string } | null>(null);
 
-  function importText(report: GdtfImportReport): string {
+  function importText(report: GdtfImport): string {
     const tr = get(t);
     if (report.already_imported)
       return tr("lighting.gdtfImport.already", {
@@ -443,9 +469,7 @@ fixture_type "Name" {
   /** Set by a refused save: the channel rows are then checked as edited. */
   let checkChannels = $state(false);
   let channelIssues = $derived(
-    checkChannels
-      ? channelProblems(editFtChannels)
-      : new Map<number, ChannelProblem[]>(),
+    checkChannels ? (rules.channel_row_problems(editFtChannels) ?? []) : [],
   );
 
   function removeFtChannel(i: number) {
@@ -464,13 +488,14 @@ fixture_type "Name" {
     // Every channel row is saved or the save is refused: a blank name, a
     // name another row has, or an address below 1 is marked, never dropped
     // or merged into its namesake.
-    const found = channelProblems(editFtChannels);
-    if (found.size > 0) {
+    // The player's own check of the rows (`rules.channel_row_problems`).
+    const found = rules.channel_row_problems(editFtChannels) ?? [];
+    if (found.length > 0) {
       checkChannels = true;
       ftMsg = get(t)("lighting.channelRowsNeedAttention", {
-        values: { count: found.size },
+        values: { count: found.length },
       });
-      const first = Math.min(...found.keys());
+      const first = found[0].row;
       queueMicrotask(() =>
         document
           .querySelector<HTMLElement>(
@@ -494,7 +519,7 @@ fixture_type "Name" {
     ftSaving = true;
     ftMsg = "";
     try {
-      await saveFixtureType(
+      const done = await saveFixtureType(
         newName,
         {
           channels,
@@ -509,15 +534,16 @@ fixture_type "Name" {
             : null,
         },
         ftDir || undefined,
+        // A rename is one save: the server moves the type's file, or
+        // renames it in place, by the one rule for type files, and retypes
+        // the venue lines naming it.
+        isRename ? oldName : null,
+        venuesDir || undefined,
       );
-      if (isRename) {
-        await deleteFixtureType(oldName, ftDir || undefined);
-      }
       await loadFixtureTypes();
       editingFt = null;
       toList();
-      ftMsg = get(t)("common.saved");
-      setTimeout(() => (ftMsg = ""), 2000);
+      showSaved(done);
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -540,20 +566,18 @@ fixture_type "Name" {
     ftSaving = true;
     ftMsg = "";
     try {
-      await saveFixtureTypeText(
+      const done = await saveFixtureTypeText(
         newName,
         editFtDsl,
         editFtExt,
         ftDir || undefined,
+        isRename ? oldName : null,
+        venuesDir || undefined,
       );
-      if (isRename) {
-        await deleteFixtureType(oldName, ftDir || undefined);
-      }
       await loadFixtureTypes();
       editingFt = null;
       toList();
-      ftMsg = get(t)("common.saved");
-      setTimeout(() => (ftMsg = ""), 2000);
+      showSaved(done);
       return true;
     } catch (e: any) {
       ftMsg = e.message;
@@ -629,7 +653,8 @@ fixture_type "Name" {
           {#if ftMsg}
             <span
               class="save-msg"
-              class:save-error={ftMsg !== get(t)("common.saved")}>{ftMsg}</span
+              class:save-error={ftMsg !== get(t)("common.saved") &&
+                ftMsg !== ftSavedMsg}>{ftMsg}</span
             >
           {/if}
           <button class="btn" onclick={cancelEditFt}
@@ -641,7 +666,7 @@ fixture_type "Name" {
             <button
               class="btn btn-primary"
               onclick={saveFt}
-              disabled={ftSaving}
+              disabled={ftSaving || !!ftReadOnly}
             >
               {ftSaving ? $t("common.saving") : $t("common.save")}
             </button>
@@ -666,6 +691,10 @@ fixture_type "Name" {
         />
       {/if}
 
+      {#if !showFtDetails && ftReadOnly}
+        <ReadOnlyNote owner={ftReadOnly} prefix="ft" />
+      {/if}
+
       {#if !showFtDetails}
         <div class="field">
           <label for="ft-name">{$t("lighting.name")}</label>
@@ -687,6 +716,7 @@ fixture_type "Name" {
               id="ft-name"
               class="input"
               bind:value={editFtName}
+              disabled={!!ftReadOnly}
               placeholder="e.g. RGBW_Par"
             />
           {/if}
@@ -741,7 +771,8 @@ fixture_type "Name" {
               >
             </div>
             {#each editFtChannels as ch, i (i)}
-              {@const issues = channelIssues.get(i) ?? []}
+              {@const issues =
+                channelIssues.find((p) => p.row === i)?.problems ?? []}
               <div
                 class="channel-row"
                 data-channel-row={i}
@@ -857,7 +888,8 @@ fixture_type "Name" {
         {#if ftMsg}
           <span
             class="save-msg"
-            class:save-error={ftMsg !== get(t)("common.saved")}>{ftMsg}</span
+            class:save-error={ftMsg !== get(t)("common.saved") &&
+              ftMsg !== ftSavedMsg}>{ftMsg}</span
           >
         {/if}
         <button class="btn" onclick={loadFixtureTypes} disabled={ftLoading}
@@ -966,7 +998,7 @@ fixture_type "Name" {
                 {:else}
                   <span class="card-spacer"></span>
                 {/if}
-                {#if entry.extension === "light"}
+                {#if entry.form_editable}
                   <!-- The channel map is the default way in; this is the
                            way out of it, and the only path from v1 to the
                            rich form. -->
@@ -981,6 +1013,9 @@ fixture_type "Name" {
                 {/if}
                 <button
                   class="btn btn-danger btn-sm"
+                  data-testid="ft-delete"
+                  disabled={!!readOnly(entry.owner)}
+                  title={readOnly(entry.owner)?.reason ?? undefined}
                   onclick={(e) => {
                     e.stopPropagation();
                     removeFt(name);

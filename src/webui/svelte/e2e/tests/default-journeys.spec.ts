@@ -13,7 +13,9 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
+import { card } from "../support/locators";
 import { MVR_INSPECTION } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 // What a first-time user does in each Lighting editor: open it, press the
 // add/new button, take whatever the form offers, save — and what the server
@@ -42,12 +44,6 @@ const json = (body: unknown, status = 200) => ({
   body: JSON.stringify(body),
 });
 
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
-
 /** Catches every PUT/POST/DELETE whose URL matches; GETs pass through. */
 async function catchWrites(page: Page, url: RegExp | string) {
   const writes: Request[] = [];
@@ -62,7 +58,7 @@ async function catchWrites(page: Page, url: RegExp | string) {
 }
 
 test.describe("Fixture types", () => {
-  test("a new .light type with the defaults: the name is required, then the default channel is sent", async ({
+  test("a new channel-map type with the defaults: the name is required, then the default channel is sent", async ({
     page,
   }) => {
     const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
@@ -70,7 +66,9 @@ test.describe("Fixture types", () => {
     await page
       .getByRole("button", { name: "Define a fixture by hand" })
       .click();
-    await page.getByRole("button", { name: ".light (channel map)" }).click();
+    await page
+      .getByRole("button", { name: "Channel map", exact: true })
+      .click();
     const save = page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" });
@@ -211,7 +209,7 @@ test.describe("Venues", () => {
     expect(body.source).toEqual(venue.source);
   });
 
-  test("a rename saves every fixture under the new name, then deletes the old", async ({
+  test("a rename is one save under the new name, from the old, at its version", async ({
     page,
   }) => {
     const venue = richVenue(unique("rig"));
@@ -223,20 +221,19 @@ test.describe("Venues", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await expect.poll(() => writes.length).toBe(2);
+    await expect.poll(() => writes.length).toBe(1);
+    // The server moves or renames the one file: nothing is deleted after.
+    await page.waitForTimeout(300);
+    expect(writes).toHaveLength(1);
     expect(writes[0].method()).toBe("PUT");
-    expect(new URL(writes[0].url()).pathname).toBe(
-      `/api/lighting/venues/${venue.name}-b`,
-    );
-    // A new file: no version to match.
-    expect(writes[0].headers()["if-match"]).toBeUndefined();
+    const url = new URL(writes[0].url());
+    expect(url.pathname).toBe(`/api/lighting/venues/${venue.name}-b`);
+    expect(url.searchParams.get("from")).toBe(venue.name);
+    // The old venue's file is what is written, at the version it was read.
+    expect(writes[0].headers()["if-match"]).toBe("v1");
     expect(
       writes[0].postDataJSON().fixtures.map((f: { name: string }) => f.name),
     ).toEqual(["Spot", "Par"]);
-    expect(writes[1].method()).toBe("DELETE");
-    expect(new URL(writes[1].url()).pathname).toBe(
-      `/api/lighting/venues/${venue.name}`,
-    );
   });
 
   test("Delete, confirmed, sends a DELETE and nothing else", async ({
@@ -292,24 +289,21 @@ async function openPlan(page: Page, venue: ReturnType<typeof richVenue>) {
   );
   await page.goto(`/?wsId=${venue.name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: {
-      type: "metadata",
-      _wsId: venue.name,
-      fixtures: Object.fromEntries(
-        Object.values(venue.fixtures).map((f) => [
-          f.name,
-          {
-            tags: f.tags,
-            type: f.fixture_type,
-            capabilities: ["color"],
-            position: f.position,
-            rotation: f.rotation,
-          },
-        ]),
-      ),
-      venue: { name: venue.name, dir: null, focus_points: venue.focus_points },
-    },
+  await sendWs(page, venue.name, {
+    type: "metadata",
+    fixtures: Object.fromEntries(
+      Object.values(venue.fixtures).map((f) => [
+        f.name,
+        {
+          tags: f.tags,
+          type: f.fixture_type,
+          capabilities: ["color"],
+          position: f.position,
+          rotation: f.rotation,
+        },
+      ]),
+    ),
+    venue: { name: venue.name, dir: null, focus_points: venue.focus_points },
   });
   await expect(page.locator(".inspector")).toBeVisible();
   return puts;

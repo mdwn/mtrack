@@ -17,15 +17,32 @@ use std::time::Duration;
 use super::super::effects::{BlendMode, EffectLayer, EffectType};
 use super::super::tempo::TempoMap;
 
-/// Bundles the per-cue context that flows through the parsing pipeline,
-/// replacing the 5-7 individual parameters previously threaded through
-/// `parse_effect_definition` and friends.
+/// The cue an effect is parsed in: the tempo map in force, the cue's time
+/// and the show `offset` it includes.
 #[derive(Clone)]
 pub(crate) struct ParseContext {
     pub tempo_map: Option<TempoMap>,
     pub cue_time: Duration,
     pub offset_secs: f64,
-    pub unshifted_score_time: Option<Duration>,
+}
+
+impl ParseContext {
+    /// A duration parameter's value -- `duration`, `up_time`, `hold_time`,
+    /// `down_time`, on any effect -- read at the cue's place in the score:
+    /// its time less the offset, on the unshifted map, which is the map
+    /// shifted by the offset as the cue was (#525). One in beats or
+    /// measures so integrates through the tempo changes and ramps from
+    /// there, as the cue times do. Two other rules apply on purpose: a
+    /// sequence's effects are resolved again where the sequence is
+    /// expanded (`Effect::resolve_musical_durations`, #529), and its
+    /// `length:` is read from its first cue (`declared_length`), there
+    /// being no cue to read it at.
+    pub fn duration(&self, value: &str) -> Result<Duration, Box<dyn std::error::Error>> {
+        let score_time = self
+            .cue_time
+            .saturating_sub(Duration::from_secs_f64(self.offset_secs));
+        super::utils::parse_duration_string(value, &self.tempo_map, Some(score_time), 0.0)
+    }
 }
 
 /// A file's shows by name, in the order the file has them: the timeline
@@ -45,36 +62,41 @@ pub struct LightShow {
 #[derive(Debug, Clone)]
 pub struct Sequence {
     pub cues: Vec<Cue>,
-    /// The effective BPM used when parsing this sequence's internal cue timing.
-    /// Used to rescale cue times when the sequence is expanded at a different tempo.
-    pub bpm: f64,
+    /// The tempo map its cue times were resolved on: where it is used, a
+    /// cue is placed the same number of beats in, counted on this map.
+    pub tempo_map: Option<TempoMap>,
     /// How long one pass lasts, from the first cue, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
 }
 
 impl Sequence {
-    /// Calculate the duration of this sequence based on when all effects complete.
-    /// Returns the time from sequence start (0) to when the last effect completes.
-    pub fn duration(&self) -> Duration {
-        if self.cues.is_empty() {
-            return Duration::ZERO;
-        }
-
-        let mut max_completion_time = Duration::ZERO;
-
-        for cue in &self.cues {
-            for effect in &cue.effects {
-                let effect_duration = effect.total_duration();
-                let completion_time = cue.time + effect_duration;
-                if completion_time > max_completion_time {
-                    max_completion_time = completion_time;
-                }
-            }
-        }
-
-        max_completion_time
+    /// How long one pass lasts: its declared `length:`, else as
+    /// [`pass_length`] has it.
+    pub fn pass_length(&self) -> Duration {
+        self.length.unwrap_or_else(|| pass_length(&self.cues))
     }
+}
+
+/// When a pass of `cues` starts: at the earliest of them.
+pub(crate) fn pass_start(cues: &[Cue]) -> Duration {
+    cues.iter().map(|c| c.time).min().unwrap_or_default()
+}
+
+/// How long one pass of `cues` -- a sequence's, or an inline loop body's --
+/// lasts when nothing says: from its earliest cue until its last effect
+/// ends, or, when no cue has an effect, until its last cue.
+pub(crate) fn pass_length(cues: &[Cue]) -> Duration {
+    let start = pass_start(cues);
+    let effects_end = cues
+        .iter()
+        .flat_map(|c| c.effects.iter().map(move |e| c.time + e.total_duration()))
+        .max();
+    let last_cue = cues.iter().map(|c| c.time).max();
+    effects_end
+        .or(last_cue)
+        .unwrap_or_default()
+        .saturating_sub(start)
 }
 
 /// Loop mode for sequence references
@@ -84,18 +106,18 @@ pub(crate) enum SequenceLoop {
     Loop, // Infinite loop
     PingPong,
     Random,
-    Count(usize), // Loop N times
+    /// Loop N times: a `u64` on every target, so the WebAssembly editor
+    /// and the player take the same counts.
+    Count(u64),
 }
 
-/// Unexpanded sequence cue information for two-pass parsing
-#[derive(Debug, Clone)]
-pub(crate) struct UnexpandedSequenceCue {
-    pub time: Duration,
-    pub effects: Vec<Effect>,
-    pub layer_commands: Vec<LayerCommand>,
-    pub stop_sequences: Vec<String>,
-    pub sequence_references: Vec<SequenceCall>,
-}
+/// Each named loop mode and its keyword, as the grammar writes it.
+pub(crate) const SEQUENCE_LOOPS: [(SequenceLoop, &str); 4] = [
+    (SequenceLoop::Once, "once"),
+    (SequenceLoop::Loop, "loop"),
+    (SequenceLoop::PingPong, "pingpong"),
+    (SequenceLoop::Random, "random"),
+];
 
 /// A `sequence "name"(…), loop: …` reference, as written in a cue.
 #[derive(Debug, Clone)]
@@ -126,7 +148,9 @@ pub struct Effect {
     pub up_time: Option<Duration>,
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
-    pub sequence_name: Option<String>, // Track which sequence this effect came from (for stopping)
+    /// The sequences it was started through, innermost first; empty for a
+    /// show's own effect. `stop sequence X` stops it when X is any of them.
+    pub sequences: Vec<String>,
     /// `per: cell` (design §17.3): the effect's targets are the group's
     /// fixtures expanded to their cells, in spatial order.
     pub per_cell: bool,
@@ -164,19 +188,10 @@ impl MusicalLength {
     /// The musical length a duration string spells, or `None` for one in
     /// seconds (or that does not parse; `parse_duration_string` reports that).
     pub fn parse(value: &str) -> Option<MusicalLength> {
-        let value = value.trim();
-        if let Some(n) = value
-            .strip_suffix("measures")
-            .or_else(|| value.strip_suffix("measure"))
-        {
-            n.trim().parse().ok().map(MusicalLength::Measures)
-        } else if let Some(n) = value
-            .strip_suffix("beats")
-            .or_else(|| value.strip_suffix("beat"))
-        {
-            n.trim().parse().ok().map(MusicalLength::Beats)
-        } else {
-            None
+        match super::utils::parse_time_value(value).ok()? {
+            super::utils::TimeValue::Measures(n) => Some(MusicalLength::Measures(n)),
+            super::utils::TimeValue::Beats(n) => Some(MusicalLength::Beats(n)),
+            super::utils::TimeValue::Seconds(_) => None,
         }
     }
 
@@ -226,6 +241,12 @@ impl MusicalDurations {
 }
 
 impl Effect {
+    /// The sequence it is written in, if any: the innermost it was started
+    /// through.
+    pub fn sequence_name(&self) -> Option<&str> {
+        self.sequences.first().map(String::as_str)
+    }
+
     /// Resolves the durations written in beats or measures at `at_time` on
     /// `tempo_map` (with a show `offset` of `offset_secs`), leaving the ones
     /// written in seconds as they are.
@@ -250,27 +271,17 @@ impl Effect {
         }
     }
 
-    /// Calculate the total duration of this effect.
-    /// All effects have a finite duration.
+    /// How long the effect lasts (see [`EffectType::total_duration`]).
     pub fn total_duration(&self) -> Duration {
-        // For dimmers, use the effect's own duration field (timing params not used)
-        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
-            return *duration;
-        }
-
-        // Extract the effect type's duration field
-        let effect_duration = self.effect_type.duration();
-
-        // If hold_time is explicitly set, use up + hold + down.
-        // Otherwise use up + effect_duration + down.
-        let hold = self.hold_time.unwrap_or(effect_duration);
-
-        self.up_time.unwrap_or(Duration::ZERO) + hold + self.down_time.unwrap_or(Duration::ZERO)
+        self.effect_type
+            .total_duration(self.up_time, self.hold_time, self.down_time)
     }
 }
 
 /// Layer control command types (grandMA-inspired)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayerCommandType {
     /// Clear - immediately stop all effects on the layer
     Clear,
@@ -280,6 +291,124 @@ pub enum LayerCommandType {
     Unfreeze,
     /// Master - set layer intensity and/or speed master
     Master,
+}
+
+/// Each layer command and its keyword, as the grammar writes it: the one
+/// table both ways are read off.
+pub(crate) const LAYER_COMMAND_KEYWORDS: [(LayerCommandType, &str); 4] = [
+    (LayerCommandType::Clear, "clear"),
+    (LayerCommandType::Freeze, "freeze"),
+    (LayerCommandType::Unfreeze, "unfreeze"),
+    (LayerCommandType::Master, "master"),
+];
+
+impl LayerCommandType {
+    /// The command a keyword names.
+    pub fn from_keyword(keyword: &str) -> Result<LayerCommandType, Box<dyn std::error::Error>> {
+        LAYER_COMMAND_KEYWORDS
+            .iter()
+            .find(|(_, k)| *k == keyword)
+            .map(|(c, _)| *c)
+            .ok_or_else(|| format!("Unknown layer command type: {}", keyword).into())
+    }
+
+    /// The command's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        LAYER_COMMAND_KEYWORDS
+            .iter()
+            .find(|(c, _)| *c == self)
+            .map(|(_, k)| *k)
+            .expect("every layer command has a keyword")
+    }
+}
+
+/// The parameters a layer command takes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerCommandParam {
+    Layer,
+    Intensity,
+    Speed,
+}
+
+impl LayerCommandParam {
+    /// Each parameter and its name, as the grammar spells it, in the order
+    /// a command newly given them writes them: the one table.
+    pub const ALL: [(LayerCommandParam, &'static str); 3] = [
+        (LayerCommandParam::Layer, "layer"),
+        (LayerCommandParam::Intensity, "intensity"),
+        (LayerCommandParam::Speed, "speed"),
+    ];
+
+    /// The parameter a name names.
+    pub fn from_keyword(name: &str) -> Result<LayerCommandParam, Box<dyn std::error::Error>> {
+        Self::ALL
+            .iter()
+            .find(|(_, k)| *k == name)
+            .map(|(p, _)| *p)
+            .ok_or_else(|| format!("Unknown layer command parameter: {}", name).into())
+    }
+}
+
+/// The effect keywords of the grammar: which effect a line names, before
+/// its parameters are read.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectKind {
+    Static,
+    Cycle,
+    Strobe,
+    Pulse,
+    Chase,
+    Dimmer,
+    Rainbow,
+    Move,
+}
+
+/// Each effect and its keyword, as the grammar writes it: the one table
+/// both ways are read off.
+pub(crate) const EFFECT_KEYWORDS: [(EffectKind, &str); 8] = [
+    (EffectKind::Static, "static"),
+    (EffectKind::Cycle, "cycle"),
+    (EffectKind::Strobe, "strobe"),
+    (EffectKind::Pulse, "pulse"),
+    (EffectKind::Chase, "chase"),
+    (EffectKind::Dimmer, "dimmer"),
+    (EffectKind::Rainbow, "rainbow"),
+    (EffectKind::Move, "move"),
+];
+
+impl EffectKind {
+    /// The effect a keyword names, or `None` for a word that names none.
+    pub fn from_keyword(keyword: &str) -> Option<EffectKind> {
+        EFFECT_KEYWORDS
+            .iter()
+            .find(|(_, k)| *k == keyword)
+            .map(|(e, _)| *e)
+    }
+
+    /// The effect's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        EFFECT_KEYWORDS
+            .iter()
+            .find(|(e, _)| *e == self)
+            .map(|(_, k)| *k)
+            .expect("every effect has a keyword")
+    }
+
+    /// Which effect an effect type is.
+    pub fn of(effect_type: &EffectType) -> EffectKind {
+        match effect_type {
+            EffectType::Static { .. } => EffectKind::Static,
+            EffectType::ColorCycle { .. } => EffectKind::Cycle,
+            EffectType::Strobe { .. } => EffectKind::Strobe,
+            EffectType::Pulse { .. } => EffectKind::Pulse,
+            EffectType::Chase { .. } => EffectKind::Chase,
+            EffectType::Dimmer { .. } => EffectKind::Dimmer,
+            EffectType::Rainbow { .. } => EffectKind::Rainbow,
+            EffectType::Move { .. } => EffectKind::Move,
+        }
+    }
 }
 
 /// A layer control command
@@ -313,7 +442,7 @@ mod tests {
             up_time: None,
             hold_time: None,
             down_time: None,
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -336,7 +465,7 @@ mod tests {
             up_time: up,
             hold_time: hold,
             down_time: down,
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -480,78 +609,59 @@ mod tests {
         assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
-    // ── Sequence::duration ─────────────────────────────────────────
+    // ── pass_length ────────────────────────────────────────────────
 
-    #[test]
-    fn sequence_empty() {
-        let seq = Sequence {
-            cues: vec![],
-            bpm: 120.0,
-            length: None,
-        };
-        assert_eq!(seq.duration(), Duration::ZERO);
+    fn cue(time: u64, effects: Vec<Effect>) -> Cue {
+        Cue {
+            time: Duration::from_secs(time),
+            effects,
+            layer_commands: vec![],
+            stop_sequences: vec![],
+            start_sequences: vec![],
+        }
     }
 
     #[test]
-    fn sequence_single_timed_cue() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(2),
-                effects: vec![static_effect(Duration::from_secs(3))],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            bpm: 120.0,
-            length: None,
-        };
-        // cue_time(2) + effect_duration(3) = 5
-        assert_eq!(seq.duration(), Duration::from_secs(5));
+    fn pass_length_empty() {
+        assert_eq!(pass_length(&[]), Duration::ZERO);
     }
 
     #[test]
-    fn sequence_max_completion_across_cues() {
+    fn pass_length_runs_from_the_earliest_cue_to_the_last_effect_end() {
+        let cues = [
+            cue(5, vec![static_effect(Duration::from_secs(10))]),
+            cue(2, vec![static_effect(Duration::from_secs(3))]),
+            cue(20, vec![]),
+        ];
+        // From 2 to max(5+10, 2+3) = 15; the effectless cue at 20 does not count.
+        assert_eq!(pass_length(&cues), Duration::from_secs(13));
         let seq = Sequence {
-            cues: vec![
-                Cue {
-                    time: Duration::from_secs(0),
-                    effects: vec![static_effect(Duration::from_secs(3))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
-                Cue {
-                    time: Duration::from_secs(5),
-                    effects: vec![static_effect(Duration::from_secs(10))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
+            cues: cues.to_vec(),
+            tempo_map: None,
+            length: None,
+        };
+        assert_eq!(seq.pass_length(), Duration::from_secs(13));
+    }
+
+    #[test]
+    fn pass_length_without_effects_runs_to_the_last_cue() {
+        assert_eq!(
+            pass_length(&[cue(2, vec![]), cue(7, vec![])]),
+            Duration::from_secs(5)
+        );
+        assert_eq!(pass_length(&[cue(2, vec![])]), Duration::ZERO);
+    }
+
+    #[test]
+    fn pass_length_mixed_short_and_long() {
+        let cues = [cue(
+            1,
+            vec![
+                static_effect(Duration::from_secs(1)), // short: 1+1=2
+                static_effect(Duration::from_secs(4)), // long: 1+4=5
             ],
-            bpm: 120.0,
-            length: None,
-        };
-        // max(0+3, 5+10) = 15
-        assert_eq!(seq.duration(), Duration::from_secs(15));
-    }
-
-    #[test]
-    fn sequence_mixed_short_and_long() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(1),
-                effects: vec![
-                    static_effect(Duration::from_secs(1)), // short: 1+1=2
-                    static_effect(Duration::from_secs(4)), // long: 1+4=5
-                ],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            bpm: 120.0,
-            length: None,
-        };
-        assert_eq!(seq.duration(), Duration::from_secs(5));
+        )];
+        assert_eq!(pass_length(&cues), Duration::from_secs(4));
     }
 
     // ── LayerCommandType ───────────────────────────────────────────

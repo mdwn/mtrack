@@ -16,19 +16,20 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { effectiveTheme } from "../../../lib/theme";
-  import type { TempoSection } from "../../../lib/lighting/types";
+  import type { GridLine } from "../../../gen/rules/mtrack_rules";
   import {
     msToPixel,
     getGridLines,
-    getAdjustedGridLines,
-    formatMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     pixelsPerMs: number;
     totalDurationMs: number;
-    tempo?: TempoSection;
+    /** The bar and beat lines of the tempo map the cues are drawn under,
+     *  from the player's layout; none without a tempo. */
+    grid?: GridLine[];
     scrollLeft: number;
     viewportWidth: number;
     onclick?: (ms: number) => void;
@@ -43,7 +44,7 @@
   let {
     pixelsPerMs,
     totalDurationMs,
-    tempo,
+    grid = [],
     scrollLeft,
     viewportWidth,
     onclick,
@@ -130,21 +131,12 @@
 
       // Label
       ctx.fillStyle = tickLabel;
-      ctx.fillText(formatMs(t), x, h - 16);
+      ctx.fillText(rules.clock(t / 1000, 3), x, h - 16);
     }
 
     // Draw measure/beat grid if tempo exists
-    if (tempo) {
-      const gridLines =
-        offsets.length > 0
-          ? getAdjustedGridLines(
-              tempo,
-              viewStartMs,
-              viewEndMs,
-              offsets,
-              pixelsPerMs,
-            )
-          : getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
+    if (grid.length > 0) {
+      const gridLines = getGridLines(grid, viewStartMs, viewEndMs, pixelsPerMs);
       for (const line of gridLines) {
         const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
         if (line.type === "measure") {
@@ -322,7 +314,7 @@
     // Re-draw when any dependency changes
     void pixelsPerMs;
     void totalDurationMs;
-    void tempo;
+    void grid;
     void scrollLeft;
     void viewportWidth;
     void offsets;

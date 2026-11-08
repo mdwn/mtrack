@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing::{error, info, span, Level};
 
-use super::AbortOnDrop;
+use super::{AbortOnDrop, TransportAction, TransportBindings};
 use crate::{config, player::Player, util};
 
 /// This is the all hosts multicast address.
@@ -45,25 +45,17 @@ const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 const STATUS_STOPPED: &str = "Stopped";
 const STATUS_PLAYING: &str = "Playing";
 
-/// Recognized OSC command actions.
+/// Recognized OSC command actions: the transport actions every controller
+/// has, and those with an argument or a meaning OSC alone carries.
 #[derive(Debug, PartialEq)]
 enum OscAction {
-    Play,
+    Transport(TransportAction),
     Pause,
-    Prev,
-    Next,
-    Stop,
-    AllSongs,
-    Playlist,
     StopSamples,
-    SectionAck,
-    StopSectionLoop,
     LoopSection,
     Seek,
     SeekToSection,
     SetTrackGain,
-    AmbientMode(crate::dmx::engine::AmbientMode),
-    CancelAutoPlay,
     Unrecognized,
 }
 
@@ -77,41 +69,23 @@ pub struct Driver {
     broadcast_addresses: Vec<SocketAddr>,
     /// OSC events.
     osc_events: Arc<OscEvents>,
+    /// Where its socket is bound, once it is.
+    bound: super::BoundAddr,
 }
 
 pub(super) struct OscEvents {
-    /// The OSC address to look for to play the current song in the playlist.
-    play: Matcher,
+    /// The OSC address for each transport action.
+    transport: TransportBindings<Matcher>,
     /// The OSC address to pause playback while preserving position.
     pause: Matcher,
-    /// The OSC address to look for to move the playlist to the previous item.
-    prev: Matcher,
-    /// The OSC address to look for to move the playlist to the next item.
-    next: Matcher,
-    /// The OSC address to look for to stop playback.
-    stop: Matcher,
-    /// The OSC address to look for to switch from the current playlist to an all songs playlist.
-    all_songs: Matcher,
-    /// The OSC address to look for to switch back to the current playlist.
-    playlist: Matcher,
     /// The OSC address to look for to stop all triggered samples.
     stop_samples: Matcher,
-    /// The OSC address to acknowledge the current section (arm section loop).
-    section_ack: Matcher,
-    /// The OSC address to break out of the current section loop.
-    stop_section_loop: Matcher,
     /// The OSC address to loop a specific section by name.
     loop_section: Matcher,
     /// The OSC address to seek to a position (numeric seconds argument).
     seek: Matcher,
     /// The OSC address to seek to the start of a named section.
     seek_section: Matcher,
-    /// The OSC addresses to set ambient light's mode.
-    ambient_on: Matcher,
-    ambient_off: Matcher,
-    ambient_auto: Matcher,
-    /// The OSC address to call off an auto play waiting to start.
-    cancel_auto_play: Matcher,
     /// The OSC address pattern to set an output track's gain in dB.
     track_gain: Matcher,
     /// The raw track gain pattern; the `*` segment carries the track name and
@@ -131,6 +105,49 @@ pub(super) struct OscEvents {
     timeline: String,
 }
 
+impl OscEvents {
+    /// The addresses `config` sets.
+    pub(super) fn new(config: &config::OscController) -> Result<OscEvents, Box<dyn Error>> {
+        Ok(OscEvents {
+            transport: TransportBindings::new(|action| {
+                Ok(Some(Matcher::new(osc_address_for(config, action))?))
+            })?,
+            pause: Matcher::new(config.pause())?,
+            stop_samples: Matcher::new(config.stop_samples())?,
+            loop_section: Matcher::new(config.loop_section())?,
+            seek: Matcher::new(config.seek())?,
+            seek_section: Matcher::new(config.seek_section())?,
+            track_gain: Matcher::new(config.track_gain())?,
+            track_gain_pattern: config.track_gain().to_string(),
+            status: config.status().to_string(),
+            audio_health: config.audio_health().to_string(),
+            playlist_current: config.playlist_current().to_string(),
+            playlist_current_song: config.playlist_current_song().to_string(),
+            playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+            timeline: config.timeline().to_string(),
+        })
+    }
+}
+
+/// The OSC address `config` binds to `action`.
+fn osc_address_for(config: &config::OscController, action: TransportAction) -> &str {
+    use crate::dmx::engine::AmbientMode;
+    match action {
+        TransportAction::Play => config.play(),
+        TransportAction::Prev => config.prev(),
+        TransportAction::Next => config.next(),
+        TransportAction::Stop => config.stop(),
+        TransportAction::AllSongs => config.all_songs(),
+        TransportAction::Playlist => config.playlist(),
+        TransportAction::SectionAck => config.section_ack(),
+        TransportAction::StopSectionLoop => config.stop_section_loop(),
+        TransportAction::AmbientMode(AmbientMode::On) => config.ambient_on(),
+        TransportAction::AmbientMode(AmbientMode::Off) => config.ambient_off(),
+        TransportAction::AmbientMode(AmbientMode::Auto) => config.ambient_auto(),
+        TransportAction::CancelAutoPlay => config.cancel_auto_play(),
+    }
+}
+
 impl Driver {
     pub fn new(
         config: Box<config::OscController>,
@@ -148,43 +165,23 @@ impl Driver {
             player,
             addr,
             broadcast_addresses,
-            osc_events: Arc::new(OscEvents {
-                play: Matcher::new(config.play())?,
-                pause: Matcher::new(config.pause())?,
-                prev: Matcher::new(config.prev())?,
-                next: Matcher::new(config.next())?,
-                stop: Matcher::new(config.stop())?,
-                all_songs: Matcher::new(config.all_songs())?,
-                playlist: Matcher::new(config.playlist())?,
-                stop_samples: Matcher::new(config.stop_samples())?,
-                section_ack: Matcher::new(config.section_ack())?,
-                stop_section_loop: Matcher::new(config.stop_section_loop())?,
-                loop_section: Matcher::new(config.loop_section())?,
-                seek: Matcher::new(config.seek())?,
-                seek_section: Matcher::new(config.seek_section())?,
-                ambient_on: Matcher::new(config.ambient_on())?,
-                ambient_off: Matcher::new(config.ambient_off())?,
-                ambient_auto: Matcher::new(config.ambient_auto())?,
-                cancel_auto_play: Matcher::new(config.cancel_auto_play())?,
-                track_gain: Matcher::new(config.track_gain())?,
-                track_gain_pattern: config.track_gain().to_string(),
-                status: config.status().to_string(),
-                audio_health: config.audio_health().to_string(),
-                playlist_current: config.playlist_current().to_string(),
-                playlist_current_song: config.playlist_current_song().to_string(),
-                playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
-                timeline: config.timeline().to_string(),
-            }),
+            osc_events: Arc::new(OscEvents::new(&config)?),
+            bound: super::BoundAddr::new(),
         }))
     }
 }
 
 impl super::Driver for Driver {
+    fn bound_addr(&self) -> Option<super::BoundAddr> {
+        Some(self.bound.clone())
+    }
+
     fn monitor_events(&self) -> JoinHandle<Result<(), std::io::Error>> {
         let addr = self.addr;
         let broadcast_addresses = self.broadcast_addresses.clone();
         let player = self.player.clone();
         let osc_events = self.osc_events.clone();
+        let bound = self.bound.clone();
 
         tokio::spawn(async move {
             let span = span!(Level::INFO, "OSC Driver");
@@ -208,6 +205,8 @@ impl super::Driver for Driver {
                     }
                 }
             }
+            // Datagrams queue on the socket from here on.
+            bound.set(socket.local_addr()?);
             let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
             let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
             let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
@@ -360,15 +359,14 @@ impl Driver {
         osc_events: &Arc<OscEvents>,
         tx_sender: &Sender<OscPacket>,
     ) -> Result<(), Box<dyn Error>> {
-        let playlist = player.get_playlist();
-        let song = match playlist.current() {
-            Some(song) => song,
-            None => return Ok(()),
+        // The player's one status, as every surface reads it.
+        let status = player.playback_status().await;
+        let Some(song) = status.current_song else {
+            return Ok(());
         };
-        let is_playing = player.is_playing().await;
-        let elapsed = player.elapsed().await?;
-        let elapsed_duration = elapsed.unwrap_or_default();
-        let status_string = if is_playing {
+        let summary = song.summary();
+        let elapsed_duration = status.elapsed?.unwrap_or_default();
+        let status_string = if status.playing {
             STATUS_PLAYING
         } else {
             STATUS_STOPPED
@@ -376,21 +374,14 @@ impl Driver {
         let duration_string = format!(
             "{}/{}",
             util::duration_minutes_seconds(elapsed_duration),
-            util::duration_minutes_seconds(song.duration())
+            util::duration_minutes_seconds(summary.duration)
         );
-        let playlist_songs: Vec<String> = playlist.songs().to_vec();
-
-        // The player's status says what the transport is doing; this says
-        // whether audio is actually leaving the machine. A surface wants both —
-        // "playing" next to "stalled" is the combination worth a red light.
-        let audio_health = player
-            .hardware_status()
-            .audio_output
-            .map(|h| h.status.as_str());
+        let playlist_songs: Vec<String> = status.playlist.songs().to_vec();
+        let audio_health = status.audio_health.as_ref().map(|h| h.status.as_str());
 
         let mut packets = build_broadcast_packets(
             osc_events,
-            song.name(),
+            &summary.name,
             status_string,
             &duration_string,
             &playlist_songs,
@@ -412,7 +403,7 @@ impl Driver {
         packets.push(build_timeline_packet(
             &osc_events.timeline,
             elapsed_duration.as_secs_f64(),
-            song.duration().as_secs_f64(),
+            summary.duration.as_secs_f64(),
             &section_timings,
         ));
 
@@ -471,45 +462,13 @@ impl Driver {
     ) -> Result<bool, Box<dyn Error>> {
         let action = classify_message(osc_events, &msg.addr)?;
         match action {
-            OscAction::Play => {
-                if let Err(e) = player.play().await {
-                    error!(err = e.as_ref(), "Failed to play song: {}", e);
-                }
-            }
+            OscAction::Transport(action) => action.run(player).await,
             OscAction::Pause => {
                 if let Err(e) = player.pause().await {
                     error!(err = e.as_ref(), "Failed to pause song: {}", e);
                 }
             }
-            OscAction::Prev => {
-                player.prev().await;
-            }
-            OscAction::Next => {
-                player.next().await;
-            }
-            OscAction::Stop => {
-                player.stop().await;
-            }
-            OscAction::AllSongs => {
-                if let Err(e) = player.switch_to_playlist("all_songs").await {
-                    error!("Failed to switch to all_songs: {}", e);
-                }
-            }
-            OscAction::Playlist => {
-                let name = player.persisted_playlist_name();
-                if let Err(e) = player.switch_to_playlist(&name).await {
-                    error!("Failed to switch to playlist {}: {}", name, e);
-                }
-            }
             OscAction::StopSamples => player.stop_samples(),
-            OscAction::SectionAck => {
-                if let Err(e) = player.section_ack().await {
-                    error!("Failed to ack section: {}", e);
-                }
-            }
-            OscAction::StopSectionLoop => {
-                player.stop_section_loop();
-            }
             OscAction::LoopSection => {
                 // Extract section name from OSC message string argument.
                 let section_name = msg
@@ -585,10 +544,6 @@ impl Driver {
                     }
                 }
             }
-            OscAction::AmbientMode(mode) => player.set_ambient_mode(mode),
-            OscAction::CancelAutoPlay => {
-                player.cancel_waiting_auto_play();
-            }
             OscAction::Unrecognized => return Ok(false),
         }
         Ok(true)
@@ -598,42 +553,21 @@ impl Driver {
 /// Classifies an OSC address against the configured event matchers.
 fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box<dyn Error>> {
     let address = OscAddress::new(addr.to_string())?;
-    if osc_events.play.match_address(&address) {
-        Ok(OscAction::Play)
+    if let Some(action) = osc_events
+        .transport
+        .classify(|matcher| matcher.match_address(&address))
+    {
+        Ok(OscAction::Transport(action))
     } else if osc_events.pause.match_address(&address) {
         Ok(OscAction::Pause)
-    } else if osc_events.prev.match_address(&address) {
-        Ok(OscAction::Prev)
-    } else if osc_events.next.match_address(&address) {
-        Ok(OscAction::Next)
-    } else if osc_events.stop.match_address(&address) {
-        Ok(OscAction::Stop)
-    } else if osc_events.all_songs.match_address(&address) {
-        Ok(OscAction::AllSongs)
-    } else if osc_events.playlist.match_address(&address) {
-        Ok(OscAction::Playlist)
     } else if osc_events.stop_samples.match_address(&address) {
         Ok(OscAction::StopSamples)
-    } else if osc_events.section_ack.match_address(&address) {
-        Ok(OscAction::SectionAck)
-    } else if osc_events.stop_section_loop.match_address(&address) {
-        Ok(OscAction::StopSectionLoop)
     } else if osc_events.loop_section.match_address(&address) {
         Ok(OscAction::LoopSection)
     } else if osc_events.seek.match_address(&address) {
         Ok(OscAction::Seek)
     } else if osc_events.seek_section.match_address(&address) {
         Ok(OscAction::SeekToSection)
-    } else if osc_events.ambient_on.match_address(&address) {
-        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::On))
-    } else if osc_events.ambient_off.match_address(&address) {
-        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::Off))
-    } else if osc_events.ambient_auto.match_address(&address) {
-        Ok(OscAction::AmbientMode(
-            crate::dmx::engine::AmbientMode::Auto,
-        ))
-    } else if osc_events.cancel_auto_play.match_address(&address) {
-        Ok(OscAction::CancelAutoPlay)
     } else if osc_events.track_gain.match_address(&address) {
         Ok(OscAction::SetTrackGain)
     } else {
@@ -761,10 +695,41 @@ fn build_broadcast_packets(
 }
 
 #[cfg(test)]
+mod docs_test {
+    use super::{STATUS_PLAYING, STATUS_STOPPED};
+
+    /// The docs name the two status strings the player sends, and nothing
+    /// else as the status message's argument.
+    #[test]
+    fn the_docs_state_the_status_strings() {
+        let osc = include_str!("../../docs/src/interfaces/osc.md");
+        let row = osc
+            .lines()
+            .find(|l| l.starts_with("| `status` |"))
+            .expect("osc.md documents status");
+        assert!(
+            row.ends_with(&format!(
+                "| `{STATUS_PLAYING}` or `{STATUS_STOPPED}` (`string`). |"
+            )),
+            "{row}"
+        );
+        let config = include_str!("../../docs/src/configuration/player-config.md");
+        let comment = config
+            .split("\n\n")
+            .find(|block| block.contains("status: /mtrack/status"))
+            .expect("player-config.md shows status");
+        assert!(
+            comment.contains(&format!(
+                "\"{STATUS_PLAYING}\" or\n  # \"{STATUS_STOPPED}\""
+            )),
+            "{comment}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap, error::Error, net::SocketAddr, path::Path, sync::Arc, time::Duration,
-    };
+    use std::{collections::HashMap, error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
     use rosc::{OscMessage, OscPacket, OscType};
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
@@ -772,9 +737,7 @@ mod test {
     use crate::{
         config,
         controller::osc::{Driver, STATUS_PLAYING, STATUS_STOPPED},
-        playlist,
-        playlist::Playlist,
-        songs,
+        controller::TransportAction,
         testutil::{eventually, eventually_async},
     };
 
@@ -782,31 +745,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -814,12 +755,48 @@ mod test {
         let device = binding.to_mock()?;
 
         let driver = Driver::new(Box::new(config::OscController::new()), player.clone())?;
-        let next = driver.osc_events.next.pattern.clone();
-        let prev = driver.osc_events.prev.pattern.clone();
-        let play = driver.osc_events.play.pattern.clone();
-        let stop = driver.osc_events.stop.pattern.clone();
-        let all_songs = driver.osc_events.all_songs.pattern.clone();
-        let playlist = driver.osc_events.playlist.pattern.clone();
+        let next = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Next)
+            .expect("bound")
+            .pattern
+            .clone();
+        let prev = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Prev)
+            .expect("bound")
+            .pattern
+            .clone();
+        let play = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Play)
+            .expect("bound")
+            .pattern
+            .clone();
+        let stop = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Stop)
+            .expect("bound")
+            .pattern
+            .clone();
+        let all_songs = driver
+            .osc_events
+            .transport
+            .event(TransportAction::AllSongs)
+            .expect("bound")
+            .pattern
+            .clone();
+        let playlist = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Playlist)
+            .expect("bound")
+            .pattern
+            .clone();
 
         let osc_packet = |address| async {
             let packet = osc_event(address);
@@ -960,31 +937,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_client_tracking() -> Result<(), Box<dyn Error>> {
         // Set up a player (not used directly, but needed for Driver initialization)
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -1090,31 +1045,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_multiple_clients() -> Result<(), Box<dyn Error>> {
         // Test that multiple clients can connect and all receive broadcasts
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -1231,48 +1164,21 @@ mod test {
         build_broadcast_packets, build_timeline_packet, classify_message, format_playlist_content,
         OscAction, OscEvents, SectionTiming,
     };
-    use rosc::address::Matcher;
 
     fn make_default_osc_events() -> OscEvents {
-        let config = config::OscController::new();
-        OscEvents {
-            play: Matcher::new(config.play()).unwrap(),
-            pause: Matcher::new(config.pause()).unwrap(),
-            prev: Matcher::new(config.prev()).unwrap(),
-            next: Matcher::new(config.next()).unwrap(),
-            stop: Matcher::new(config.stop()).unwrap(),
-            all_songs: Matcher::new(config.all_songs()).unwrap(),
-            playlist: Matcher::new(config.playlist()).unwrap(),
-            stop_samples: Matcher::new(config.stop_samples()).unwrap(),
-            section_ack: Matcher::new(config.section_ack()).unwrap(),
-            stop_section_loop: Matcher::new(config.stop_section_loop()).unwrap(),
-            loop_section: Matcher::new(config.loop_section()).unwrap(),
-            seek: Matcher::new(config.seek()).unwrap(),
-            seek_section: Matcher::new(config.seek_section()).unwrap(),
-            ambient_on: Matcher::new(config.ambient_on()).unwrap(),
-            ambient_off: Matcher::new(config.ambient_off()).unwrap(),
-            ambient_auto: Matcher::new(config.ambient_auto()).unwrap(),
-            cancel_auto_play: Matcher::new(config.cancel_auto_play()).unwrap(),
-            track_gain: Matcher::new(config.track_gain()).unwrap(),
-            track_gain_pattern: config.track_gain().to_string(),
-            status: config.status().to_string(),
-            audio_health: config.audio_health().to_string(),
-            playlist_current: config.playlist_current().to_string(),
-            playlist_current_song: config.playlist_current_song().to_string(),
-            playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
-            timeline: config.timeline().to_string(),
-        }
+        OscEvents::new(&config::OscController::new()).unwrap()
     }
 
     mod classify_message_tests {
         use super::{classify_message, make_default_osc_events, OscAction};
+        use crate::controller::TransportAction;
 
         #[test]
         fn recognizes_play() {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/play").unwrap(),
-                OscAction::Play
+                OscAction::Transport(TransportAction::Play)
             );
         }
 
@@ -1308,7 +1214,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/prev").unwrap(),
-                OscAction::Prev
+                OscAction::Transport(TransportAction::Prev)
             );
         }
 
@@ -1317,7 +1223,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/next").unwrap(),
-                OscAction::Next
+                OscAction::Transport(TransportAction::Next)
             );
         }
 
@@ -1326,7 +1232,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/stop").unwrap(),
-                OscAction::Stop
+                OscAction::Transport(TransportAction::Stop)
             );
         }
 
@@ -1335,7 +1241,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/all_songs").unwrap(),
-                OscAction::AllSongs
+                OscAction::Transport(TransportAction::AllSongs)
             );
         }
 
@@ -1344,7 +1250,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/playlist").unwrap(),
-                OscAction::Playlist
+                OscAction::Transport(TransportAction::Playlist)
             );
         }
 
@@ -1364,17 +1270,20 @@ mod test {
             for (addr, action) in [
                 (
                     "/mtrack/ambient/on",
-                    OscAction::AmbientMode(AmbientMode::On),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::On)),
                 ),
                 (
                     "/mtrack/ambient/off",
-                    OscAction::AmbientMode(AmbientMode::Off),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::Off)),
                 ),
                 (
                     "/mtrack/ambient/auto",
-                    OscAction::AmbientMode(AmbientMode::Auto),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::Auto)),
                 ),
-                ("/mtrack/auto_play/cancel", OscAction::CancelAutoPlay),
+                (
+                    "/mtrack/auto_play/cancel",
+                    OscAction::Transport(TransportAction::CancelAutoPlay),
+                ),
             ] {
                 assert_eq!(classify_message(&events, addr).unwrap(), action, "{addr}");
             }
@@ -1443,31 +1352,9 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_sets_gain() -> Result<(), Box<dyn Error>> {
-            let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-            let pl = Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs.clone(),
-            )?;
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone())?,
-            );
-            playlists.insert("playlist".to_string(), pl);
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    None,
-                    None,
-                    HashMap::from([("click".to_string(), vec![1])]),
-                    "assets/songs",
-                ),
-                None,
-            )?;
+            let player = crate::testutil::player::assets_player()
+                .track_mappings(HashMap::from([("click".to_string(), vec![1])]))
+                .build()?;
             player.await_hardware_ready().await;
 
             let events = Arc::new(make_default_osc_events());
@@ -1535,36 +1422,13 @@ mod test {
 
     mod handle_packet_tests {
         use super::*;
-        use std::{collections::HashMap, path::Path, sync::Arc};
+        use std::sync::Arc;
 
         async fn make_player() -> Arc<Player> {
-            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
-            let pl = Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml")).unwrap(),
-                songs.clone(),
-            )
-            .unwrap();
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone()).unwrap(),
-            );
-            playlists.insert("playlist".to_string(), pl);
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    Some(config::Midi::new("mock-midi-device", None)),
-                    None,
-                    HashMap::new(),
-                    "assets/songs",
-                ),
-                None,
-            )
-            .unwrap();
+            let player = crate::testutil::player::assets_player()
+                .midi("mock-midi-device")
+                .build()
+                .unwrap();
             player.await_hardware_ready().await;
             player
         }
@@ -1669,38 +1533,11 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_cancels_a_waiting_auto_play() {
-            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
-            let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n";
-            let playlist_config: config::Playlist = ::config::Config::builder()
-                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
-                .build()
-                .unwrap()
-                .try_deserialize()
+            let player = crate::testutil::player::assets_player()
+                .playlist_yaml("songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n")
+                .ready()
+                .await
                 .unwrap();
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone()).unwrap(),
-            );
-            playlists.insert(
-                "playlist".to_string(),
-                Playlist::new("playlist", &playlist_config, songs).unwrap(),
-            );
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    None,
-                    None,
-                    HashMap::new(),
-                    "assets/songs",
-                ),
-                None,
-            )
-            .unwrap();
-            player.await_hardware_ready().await;
             let events = Arc::new(make_default_osc_events());
 
             player.next().await;
@@ -1732,57 +1569,16 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
         let device = binding.to_mock()?;
 
-        // Find a free port by binding temporarily.
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
-
-        // Construct a Driver directly with the free port.
-        let driver = Arc::new(Driver {
-            player: player.clone(),
-            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                port,
-            )),
-            broadcast_addresses: vec![],
-            osc_events: Arc::new(make_default_osc_events()),
-        });
-
-        let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give the spawned tasks time to bind and start.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         let send_osc = |addr: &str| {
             let addr = addr.to_string();
@@ -1827,7 +1623,7 @@ mod test {
             .expect_err("OSC monitor task should be cancelled");
         assert!(aborted.is_cancelled());
 
-        let rebound = timeout(Duration::from_secs(1), async {
+        let rebound = timeout(crate::testutil::PATIENCE, async {
             loop {
                 match UdpSocket::bind(format!("127.0.0.1:{}", port)).await {
                     Ok(socket) => break socket,
@@ -1845,55 +1641,15 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_with_multicast() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
 
-        // Find a free port.
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
-
-        // Use a multicast address as a broadcast target to cover the multicast join path.
-        let multicast_addr: SocketAddr = format!("224.0.0.1:{}", port + 1).parse()?;
-
-        let driver = Arc::new(Driver {
-            player: player.clone(),
-            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                port,
-            )),
-            broadcast_addresses: vec![multicast_addr],
-            osc_events: Arc::new(make_default_osc_events()),
-        });
-
-        let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give it time to start and join multicast group.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // A multicast address as a broadcast target covers the multicast
+        // join path; nothing need listen there (9 is the discard port).
+        let multicast_addr: SocketAddr = "224.0.0.1:9".parse()?;
+        let (handle, port) = start_driver(player.clone(), vec![multicast_addr]).await?;
 
         // Send a command to verify the driver is functional.
         let client = UdpSocket::bind("127.0.0.1:0").await?;
@@ -1916,64 +1672,39 @@ mod test {
     }
 
     async fn make_monitor_player() -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         Ok(player)
     }
 
-    /// Starts the OSC driver on a free local port, returning its task and the
-    /// port to send to.
-    async fn start_driver_on_free_port(
+    /// Starts the OSC driver on a port the OS picks, broadcasting to
+    /// `broadcast_addresses`, returning its task and the port to send to once
+    /// its socket is bound.
+    async fn start_driver(
         player: Arc<Player>,
+        broadcast_addresses: Vec<SocketAddr>,
     ) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, u16), Box<dyn Error>> {
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
-
         let driver = Arc::new(Driver {
             player,
             addr: SocketAddr::V4(std::net::SocketAddrV4::new(
                 std::net::Ipv4Addr::UNSPECIFIED,
-                port,
+                0,
             )),
-            broadcast_addresses: vec![],
+            broadcast_addresses,
             osc_events: Arc::new(make_default_osc_events()),
+            bound: super::super::BoundAddr::new(),
         });
         let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give the spawned tasks time to bind and start.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let port = driver.bound.port().await;
         Ok((handle, port))
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_survives_a_malformed_address() -> Result<(), Box<dyn Error>> {
         let player = make_monitor_player().await?;
-        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         // A trailing slash makes the address invalid. The packet still decodes,
         // so it reaches the handler, which can't classify it.
@@ -2006,35 +1737,13 @@ mod test {
         // broadcast of 4 status + timeline + 8 gains = 13 packets. Dropping
         // what does not fit would lose the same tail on every broadcast, so a
         // broadcast waits for the UDP task, here a late reader, to drain.
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
         let mappings: HashMap<String, Vec<u16>> = (1..=8)
             .map(|i| (format!("trk{i}"), vec![i as u16]))
             .collect();
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                mappings,
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
+        let player = crate::testutil::player::assets_player()
+            .track_mappings(mappings)
+            .ready()
+            .await?;
         let events = Arc::new(make_default_osc_events());
         let (tx_sender, mut tx_receiver) = mpsc::channel::<OscPacket>(10);
         for _ in 0..2 {
@@ -2067,7 +1776,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_survives_a_burst() -> Result<(), Box<dyn Error>> {
         let player = make_monitor_player().await?;
-        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         // Every recognized message queues a status broadcast back to the
         // sender, so a burst from one client fills the receive and send queues

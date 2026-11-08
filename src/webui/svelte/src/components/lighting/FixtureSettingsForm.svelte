@@ -23,19 +23,23 @@
    * anything is written. mtrack keeps these in a record of its own; the user never sees
    * or edits it as a file.
    */
+  import type {
+    FixtureSettingsData,
+    GdtfMode,
+    SettingsSaved,
+    StrobeCurve,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
+  import { typeSavedMessage } from "../../lib/lighting/typeSaved";
   import {
     ConflictError,
     fetchFixtureSettings,
     postFixtureSettings,
-    type FixtureSettingsData,
-    type FixtureSettingsResult,
-    type GdtfMode,
-    type StrobeCurve,
   } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     name: string;
@@ -136,7 +140,7 @@
 
   /** What the save will do, in words, for the confirm; null when there is
    *  nothing to ask about. */
-  function consequences(plan: FixtureSettingsResult): string | null {
+  function consequences(plan: SettingsSaved): string | null {
     const tr = get(t);
     const lines: string[] = [];
     if (plan.rename && plan.rename.lines > 0) {
@@ -195,29 +199,7 @@
         dirs,
         saved.version,
       );
-      const said: string[] = [tr("common.saved")];
-      if (done.rename && done.rename.lines > 0) {
-        said.push(
-          tr("lighting.settings.renamed", {
-            values: {
-              count: done.rename.lines,
-              venues: done.rename.venues
-                .map((v) => `${v.venue} (${v.lines})`)
-                .join(", "),
-            },
-          }),
-        );
-      }
-      if (done.venue_error) {
-        message = {
-          ok: false,
-          text: tr("lighting.venueError.saved", {
-            values: { ...done.venue_error },
-          }),
-        };
-      } else {
-        message = { ok: true, text: said.join(" ") };
-      }
+      message = typeSavedMessage(done);
       const next = done.rename?.to ?? typeName.trim();
       // Saved: the form is clean before anything navigates (a rename moves
       // the page to the new name's address, which must not ask).
@@ -329,19 +311,17 @@
                   })
                 : $t("lighting.settings.strobeAutoLinear")}</option
             >
-            <option value="period"
-              >{$t("lighting.settings.strobePeriod")}</option
-            >
-            <option value="linear"
-              >{$t("lighting.settings.strobeLinear")}</option
-            >
-            {#if steps > 0}
-              <option value="declared"
-                >{$t("lighting.settings.strobeDeclared", {
+            <!-- `declared` reads the GDTF's own steps, so only a type that
+                 declares some can take it. -->
+            {#each rules
+              .config_choices()
+              .strobe_curves.filter((c) => c !== "declared" || steps > 0) as c (c)}
+              <option value={c}
+                >{$t(`lighting.settings.strobeCurves.${c}`, {
                   values: { steps },
                 })}</option
               >
-            {/if}
+            {/each}
           </select>
           <span class="field-hint" data-testid="ft-set-strobe-hint"
             >{$t("lighting.settings.strobeHint")}</span

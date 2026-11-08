@@ -17,8 +17,10 @@
   import { tick } from "svelte";
   import { t } from "svelte-i18n";
   import { SvelteSet } from "svelte/reactivity";
+  import { rules } from "../../lib/rules";
 
-  const ALL_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
+  /** The levels the player's log lines carry (`tracing::Level`). */
+  const ALL_LEVELS = rules.log_levels();
   let enabledLevels = new SvelteSet(["INFO", "WARN", "ERROR"]);
 
   function toggleLevel(level: string) {

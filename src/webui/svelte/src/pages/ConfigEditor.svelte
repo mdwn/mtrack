@@ -14,6 +14,11 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    AudioDeviceInfo,
+    MetronomeSounds,
+    MidiDeviceInfo,
+  } from "../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
@@ -27,17 +32,18 @@
     updateMetronomeDefaults,
     deleteProfileFile,
     ConflictError,
-    type AudioDeviceInfo,
-    type MidiDeviceInfo,
-    type ProfileFileInfo,
+    type ProfileDraft,
     uploadSampleFile,
   } from "../lib/api/config";
+  import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
   import {
-    fileProfileName,
+    fileProfileLabel,
     inlineProfileName,
+    profileRouteMessage,
+    resolveProfileRoute,
     loadProfileFileList,
     readProfileVersioned,
     writeProfile,
@@ -53,10 +59,8 @@
   import SamplesSection, {
     type SampleBrowseTarget,
   } from "../components/config/SamplesSection.svelte";
-  import MetronomeSection, {
-    type MetronomeSoundRole,
-    type MetronomeDefaultSounds,
-  } from "../components/config/MetronomeSection.svelte";
+  import MetronomeSection from "../components/config/MetronomeSection.svelte";
+  import type { SoundRole } from "../lib/metronomePresets";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import Tooltip from "../components/config/Tooltip.svelte";
 
@@ -87,7 +91,7 @@
 
   let configYaml = $state("");
   let checksum = $state("");
-  let profiles = $state<any[]>([]);
+  let profiles = $state<ProfileDraft[]>([]);
   let selectedIndex = $state<number | null>(null);
   let isNew = $state(false);
   let loading = $state(true);
@@ -158,7 +162,7 @@
   let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
 
   // Player-wide metronome defaults (mtrack.yaml `metronome.sounds`).
-  let metronomeSounds = $state<MetronomeDefaultSounds | null>(null);
+  let metronomeSounds = $state<MetronomeSounds | null>(null);
   let metronomeEnabled = $state(false);
   let metronomeVolume = $state<number | null>(null);
   let metronomeSnapshot = $state("");
@@ -229,6 +233,29 @@
 
   async function loadProfileFiles() {
     profileFiles = await loadProfileFileList();
+  }
+
+  /** What the list says when the route names a profile file that is not
+   *  there (deleted, or differing only in case): it is not opened, and no
+   *  other file is opened in its place. */
+  const routeMissing = $derived(
+    profilesDir &&
+      routeProfile &&
+      !loading &&
+      !isNew &&
+      selectedFilename === null &&
+      !resolveProfileRoute(routeProfile, addressable(profileFiles))
+      ? profileRouteMessage(
+          routeProfile,
+          profileFiles.map((f) => f.file),
+          $t,
+        )
+      : null,
+  );
+
+  /** The full file names of the profile files the API can address. */
+  function addressable(files: ProfileFileInfo[]): string[] {
+    return files.filter((f) => f.addressable).map((f) => f.file);
   }
 
   async function loadDevices() {
@@ -309,7 +336,7 @@
       selectedIndex = 0;
       profiles = [profile];
 
-      updateConfigUrl(fileProfileName(filename), section);
+      updateConfigUrl(filename, section);
     } catch (e: any) {
       error = e.message;
     }
@@ -318,12 +345,14 @@
   async function addNewFileProfile() {
     const name = await showPrompt(get(t)("config.profileFilenamePrompt"));
     if (!name) return;
-    const empty: any = {};
+    const empty: ProfileDraft = {};
     profiles = [empty];
     selectedIndex = 0;
     selectedFilename = name;
     fileVersion = null;
-    startDraft(name.replace(/\.\w+$/, ""));
+    // The draft is addressed by what was typed (`stage.yml`), not its
+    // stem, which would resolve to another file (`stage.yaml`).
+    startDraft(name);
   }
 
   async function saveFileProfile() {
@@ -337,11 +366,13 @@
     saveNotice = null;
     saveOk = false;
     try {
+      // A new profile's save is only a create: one reaching a file already
+      // there is refused rather than merged into it.
       const written = await writeProfile(
         { kind: "file", filename: selectedFilename },
         profiles[selectedIndex],
         checksum,
-        false,
+        isNew,
         fileVersion,
       );
       fileVersion = written.version;
@@ -349,7 +380,17 @@
       isNew = false;
       dirty = false;
       showSaved(reloadNotice(written.reload));
-      await loadProfileFiles();
+      // Select the file the save went to, as listed (a new `stage` is
+      // `stage.yaml`), in the same step as the list arrives, so the route
+      // names that file and nothing re-selects it, which would clear the
+      // saved notice.
+      const files = await loadProfileFileList();
+      const saved = resolveProfileRoute(selectedFilename, addressable(files));
+      profileFiles = files;
+      if (saved) {
+        selectedFilename = saved;
+        if (routeProfile !== saved) updateConfigUrl(saved, routeSection);
+      }
     } catch (e: any) {
       if (e instanceof ConflictError && selectedFilename) {
         // The profile file changed since it was opened: reload it and leave
@@ -377,8 +418,10 @@
     saveNotice = null;
     try {
       saveNotice = reloadNotice(await deleteProfileFile(selectedFilename));
+      suppressAutoSelect = true;
       selectedIndex = null;
       selectedFilename = null;
+      updateConfigUrl();
       isNew = false;
       dirty = false;
       await loadProfileFiles();
@@ -417,7 +460,7 @@
   }
 
   function addNewProfile() {
-    const empty: any = {};
+    const empty: ProfileDraft = {};
     profiles.push(empty);
     selectedIndex = profiles.length - 1;
     startDraft(`Profile #${selectedIndex}`);
@@ -570,7 +613,7 @@
     metronomeSaveOk = false;
     try {
       const snapshot = await updateMetronomeDefaults(
-        metronomeSounds as Record<string, unknown> | null,
+        metronomeSounds,
         metronomeEnabled,
         metronomeVolume,
         checksum,
@@ -595,7 +638,7 @@
   }
 
   // Metronome sound file browser state
-  let metronomeBrowseRole = $state<MetronomeSoundRole | null>(null);
+  let metronomeBrowseRole = $state<SoundRole | null>(null);
   let metronomeRef: MetronomeSection | undefined = $state();
 
   function onMetronomeBrowseSelect(paths: string[]) {
@@ -727,19 +770,26 @@
       return;
     }
     if (profilesDir) {
-      // File-based: match by filename (without extension)
-      const match = profileFiles.find(
-        (f) => f.filename.replace(/\.\w+$/, "") === routeProfile,
+      // A draft is never swapped for a file its name reaches (`stage` with
+      // `stage.yml` there): its save goes out as a create, which the
+      // server refuses, and says so.
+      if (isNew) return;
+      // File-based: the route names a file by its full file name, or, from
+      // an old link, by a stem the server's rule resolves (`.yaml`, else
+      // `.yml`).
+      const match = resolveProfileRoute(
+        routeProfile,
+        addressable(profileFiles),
       );
-      if (match && selectedFilename !== match.filename) {
-        selectFileProfile(match.filename, routeSection);
+      if (match && selectedFilename !== match) {
+        selectFileProfile(match, routeSection);
       }
     } else {
       // Inline: match by hostname or index. Skip re-selecting the current
       // profile — selectProfile resets isNew/dirty, which would turn an
       // unsaved new profile into a bogus update of a nonexistent index.
       const idx = profiles.findIndex(
-        (p: any) =>
+        (p) =>
           (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
       );
       if (idx >= 0 && idx !== selectedIndex) {
@@ -821,7 +871,9 @@
         <span class="detail-title">
           {isNew
             ? $t("config.newProfile")
-            : selectedFilename || "Profile"}{#if dirty}<span
+            : selectedFilename
+              ? fileProfileLabel(selectedFilename, profileFiles)
+              : "Profile"}{#if dirty}<span
               class="dirty-indicator"
               title={$t("config.unsavedChanges", {
                 default: "Unsaved changes",
@@ -868,13 +920,11 @@
         {trackNames}
         {sampleNames}
         initialSection={routeSection}
-        profileName={isNew || !selectedFilename
-          ? undefined
-          : fileProfileName(selectedFilename)}
+        profileName={isNew || !selectedFilename ? undefined : selectedFilename}
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
-          updateConfigUrl(selectedFilename?.replace(/\.\w+$/, ""), section)}
+          updateConfigUrl(selectedFilename ?? undefined, section)}
         onnotifbrowse={onNotifBrowse}
         onnotifupload={onNotifUpload}
         {notifUploadMsg}
@@ -900,6 +950,9 @@
         </div>
       </div>
 
+      {#if routeMissing}
+        <p class="route-missing" role="alert">{routeMissing}</p>
+      {/if}
       {#if profileFiles.length === 0}
         <div class="empty-state">
           <p>{$t("config.noProfilesDir")}</p>
@@ -907,12 +960,19 @@
         </div>
       {:else}
         <div class="profile-list">
-          {#each profileFiles as pf (pf.filename)}
+          {#each profileFiles as pf (pf.file)}
             <button
               class="profile-file-row"
-              onclick={() => selectFileProfile(pf.filename)}
+              disabled={!pf.addressable || !!pf.error}
+              title={pf.addressable ? null : $t("config.profileNotAddressable")}
+              onclick={() => selectFileProfile(pf.file)}
             >
-              <span class="pf-name">{pf.filename}</span>
+              <span class="pf-name"
+                >{fileProfileLabel(pf.file, profileFiles)}</span
+              >
+              {#if pf.error}
+                <span class="pf-error">{pf.error}</span>
+              {/if}
               {#if pf.hostname}
                 <span class="pf-hostname">{pf.hostname}</span>
               {/if}
@@ -1292,6 +1352,14 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .pf-error {
+    color: var(--text-danger);
+    font-size: 0.85em;
+  }
+  .route-missing {
+    color: var(--text-danger);
+    margin: 0 0 12px;
   }
   .save-msg {
     font-size: 13px;

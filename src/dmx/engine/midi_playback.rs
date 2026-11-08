@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 use super::{classify_midi_dmx_action, Engine, MidiDmxAction};
-use crate::dmx::universe::TARGET_HZ;
+use crate::dmx::universe::{dim_ticks, dimmed_at, TARGET_HZ};
 use crate::midi::playback::TimedMidiEvent;
 
 /// Where a channel MIDI DMX drove stands at a point in the song: at
@@ -66,16 +66,8 @@ impl Written {
     /// Where the channel has got to at `time`, dimming as the store and the
     /// universe do: `rate` a tick, at TARGET_HZ, up to the target.
     fn at(&self, time: Duration) -> f64 {
-        if self.rate == 0.0 {
-            return self.target;
-        }
         let ticks = time.saturating_sub(self.since).as_secs_f64() * TARGET_HZ;
-        let value = self.from + self.rate * ticks;
-        if self.rate > 0.0 {
-            value.min(self.target)
-        } else {
-            value.max(self.target)
-        }
+        dimmed_at(self.from, self.target, self.rate, ticks)
     }
 }
 
@@ -105,19 +97,15 @@ pub(super) fn replay_midi_dmx(
                 MidiDmxAction::KeyVelocity { channel, value } => (channel, value, true),
                 MidiDmxAction::Controller { channel, value } => (channel, value, false),
                 MidiDmxAction::Dimming { duration } => {
-                    dim_rate = if duration.is_zero() {
-                        1.0
-                    } else {
-                        duration.as_secs_f64() * TARGET_HZ
-                    };
+                    dim_rate = dim_ticks(duration);
                     continue;
                 }
                 MidiDmxAction::Unrecognized => continue,
             };
         let from = channels.get(&channel).map_or(0.0, |w| w.at(event.time));
         let target = f64::from(value);
-        let rate = if dim && dim_rate > f64::EPSILON {
-            (target - from) / dim_rate
+        let rate = if dim {
+            crate::dmx::universe::dim_rate(from, target, dim_rate)
         } else {
             0.0
         };

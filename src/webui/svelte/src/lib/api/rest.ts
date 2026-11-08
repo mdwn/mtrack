@@ -19,8 +19,9 @@ async function request(
   path: string,
   body?: string,
   headers?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<Response> {
-  const opts: RequestInit = { method };
+  const opts: RequestInit = { method, signal };
   if (body !== undefined) {
     opts.headers = { "Content-Type": "application/json", ...headers };
     opts.body = body;
@@ -30,8 +31,13 @@ async function request(
   return fetch(`${BASE}${path}`, opts);
 }
 
-export async function get(path: string): Promise<Response> {
-  return request("GET", path);
+/** A GET; `signal` aborts it, e.g. `AbortSignal.timeout(ms)` to give up
+ *  on a server that never answers. */
+export async function get(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return request("GET", path, undefined, undefined, signal);
 }
 
 export async function put(
@@ -81,14 +87,29 @@ export async function del(path: string): Promise<Response> {
 export async function apiError(
   res: Response,
   fallback: string,
-): Promise<Error> {
-  const body: { error?: string; errors?: string[] } = await res
+): Promise<ApiError> {
+  const body: { error?: string; errors?: string[]; kind?: string } = await res
     .json()
     .catch(() => ({}));
   const msg =
     body.error ||
     (Array.isArray(body.errors) ? body.errors.join("; ") : undefined);
-  return new Error(msg || `${fallback}: ${res.status}`);
+  return new ApiError(
+    msg || `${fallback}: ${res.status}`,
+    typeof body.kind === "string" ? body.kind : null,
+  );
+}
+
+/** A refused request's message, and the `kind` of refusal when the server
+ *  says which (an import's `venue`, `record`, `library`, ...), so a caller
+ *  offers the right way on without guessing from the status. */
+export class ApiError extends Error {
+  kind: string | null;
+  constructor(message: string, kind: string | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.kind = kind;
+  }
 }
 
 /** A save refused because the file changed since the client read it (HTTP 409

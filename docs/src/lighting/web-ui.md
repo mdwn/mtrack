@@ -133,7 +133,11 @@ its two ends. **Period** is for a unit whose firmware is linear in the flash len
 PixelBrick's is: set it there, or a 10 Hz strobe flashes about once every one and a half seconds.
 **Linear in Hz** ignores a table. If a 2 Hz strobe does not flash twice a second when you test the
 fixture, try another curve. See
-[Strobe curve](configuration.md#strobe-curve-strobe_curve).
+[Strobe curve](configuration.md#strobe-curve-strobe_curve). The stage views flash a strobing
+fixture at the rate the player reads back from the byte it sent through this curve, so the plot
+and the 3D view show what the rig is asked for, not a guess from the byte. A fixture with no
+strobe channel, whose colour or brightness the player flashes, flashes on the live views as its
+values do; the timeline's preview, one instant, flashes it at the effect's rate.
 
 Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
@@ -485,7 +489,8 @@ output fixes](../images/lighting-fit.png)
   out.
 - **Fixes** starts with a **suggestion** for the selected group: the fixtures that can do what
   the shows ask of it (a `move` needs pan or tilt, a colour cue colour channels, a `strobe` a
-  strobe channel, `per: cell` cells), grouped by fixture type and, when the venue places them,
+  strobe channel or a dimmer or colour channels to flash, a `dimmer` or `pulse` a dimmer or
+  colour channels, `per: cell` cells), grouped by fixture type and, when the venue places them,
   by where they hang (deck, low rig or truss; downstage, midstage or upstage). The largest set is
   the suggestion, with the reason in words; if nothing fits it says which need nothing meets.
   **Apply** adds the group's tags to those fixtures in the venue file, keeping positions,

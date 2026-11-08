@@ -192,9 +192,9 @@ Click **Import from Filesystem** to browse the project directory (the directory 
 - **Single import** — Navigate to a directory containing audio files, click "Use This Directory"
   to generate a `song.yaml` from the detected audio, MIDI, and lighting files.
 - **Bulk import** — When viewing a directory with subdirectories, click "Import All
-  Subdirectories" to import every subdirectory as a song. Subdirectories are scanned
-  recursively, so nested structures (artist/album/song) are handled automatically. Directories
-  that already have a `song.yaml` are skipped.
+  Subdirectories" to import every subdirectory holding audio or MIDI files as a song.
+  Subdirectories are scanned recursively, so nested structures (artist/album/song) are handled
+  automatically. Directories that already have a song config are skipped.
 
 ![Bulk import results](../images/bulk-import-result.png)
 
@@ -227,7 +227,7 @@ grid (laid out eight to a row) lets you exclude specific channels from playback.
 except 10 (the General MIDI drum channel) for the live-show pattern of mtrack running drums
 while the band plays everything else.
 
-Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
+Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A/MP4, AIFF (`.aiff` or `.aif`).
 
 ### Samples Tab
 
@@ -476,8 +476,8 @@ The toolbar includes a full transport:
 **Keyboard shortcuts:**
 
 - **Space** — Toggle play/pause
-- **Home** — Skip to start
-- **End** — Skip to end
+- **Home** — Skip to start (while stopped or paused)
+- **End** — Skip to end (while stopped or paused)
 
 The shortcuts apply while the timeline has focus and no text field does.
 
@@ -621,11 +621,13 @@ Opening a profile shows its settings in tabs:
 - **Triggers** — Audio and MIDI trigger inputs with [calibration](#calibrating-a-trigger-input)
 - **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
   supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with
-  optional section_ack and stop_section_loop events, plus Morningstar preset naming integration
+  optional section_ack, stop_section_loop, ambient_on, ambient_off, ambient_auto and
+  cancel_auto_play events, plus Morningstar preset naming integration
 - **Notifications** — Custom audio files for loop armed, break requested, loop exited, and
   section entering events, plus per-section-name overrides
 - **Status Events** — MIDI events emitted on player state changes (off/idling/playing) for
-  hardware LED feedback
+  hardware LED feedback, plus optional auto-play events, sent in place of the idling events
+  while an auto play waits to start its song
 
 ![Configuration editor](../images/config-editor.png)
 
@@ -739,7 +741,9 @@ The status page shows build information and hardware subsystem status in a two-c
 layout:
 
 - **Audio, MIDI, DMX, Trigger** — Each shows "connected", "initializing", "failed",
-  "not connected" or "not configured", with the device name when connected. "Failed" means
+  "not connected" or "not configured", with the device name when connected. Audio can also show
+  "Open, but not playing out" (the stream is open but stalled) or "Reconnecting to the
+  interface" (it is recovering). "Failed" means
   initialization gave up and needs attention. Subsystems that aren't currently
   connected get a **Configure →** or **Fix →** pill that deep-links to the relevant section
   in the config editor for the active profile.

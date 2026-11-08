@@ -327,8 +327,8 @@ controllers:
   # The following events will be used by mtrack to report the current
   # player status over OSC. If not specified, these below are the defaults.
 
-  # The current status of the player: whether it's stopped or playing, and the
-  # current elapsed time and the song duration. Contains a single string argument.
+  # Whether the player is playing: a single string argument, "Playing" or
+  # "Stopped". The elapsed time goes on playlist_current_song_elapsed.
   status: /mtrack/status
 
   # The audio output's health verdict, separate from the player status: "healthy",
@@ -533,14 +533,15 @@ controllers:
 | `dmx.ola_port` | integer | `9010` | no |
 | `dmx.ola_http_port` | integer | `9090` | no |
 | `dmx.null_client` | bool | `false` | no |
-| `dmx.universes` | list of `{ universe, name }` | `[]` | no |
+| `dmx.universes` | list of `{ universe, name }` | — | yes, when `dmx` is present (may be `[]`) |
 | `dmx.lighting` | lighting system | — | no; see [Lighting Configuration](../lighting/configuration.md) |
 | `trigger` | trigger inputs | — | no; see [Trigger Configuration](triggers.md) |
 | `controllers` | list | `[]` | no |
 | `status_events` | `off_events`/`idling_events`/`playing_events` | — | no |
 | `notifications` | notification sounds | — | no |
 
-Durations use the `duration_string` format: `500ms`, `1s`, `2m`.
+Durations are decimal numbers, each with a unit -- `ns`, `us`, `ms`, `s`, `m` (minutes), `h`, `d`,
+`w` or `y` -- summed when there are several: `500ms`, `1.5s`, `2m`, `1m30s`.
 
 ## Legacy layout
 

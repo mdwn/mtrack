@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use crate::config::lighting::{Directories, GroupConstraint, Lighting, LogicalGroup};
 use crate::lighting::effects::DmxCommand;
-use crate::lighting::evaluate::{apply_timeline_update, evaluate_show, Evaluation};
+use crate::lighting::evaluate::{apply_timeline_update, evaluate_show, start_from, Evaluation};
 use crate::lighting::gdtf::{build_zip, SYNTHETIC_DESCRIPTION};
 use crate::lighting::parser::parse_light_shows;
 use crate::lighting::system::LightingSystem;
@@ -261,7 +261,7 @@ fn project() -> Project {
     }
     std::fs::write(
         base.join("lighting/library/mover.gdtf"),
-        build_zip(&[("description.xml", SYNTHETIC_DESCRIPTION.as_bytes())]),
+        crate::testutil::lighting::synthetic_gdtf(),
     )
     .unwrap();
     std::fs::write(
@@ -335,7 +335,7 @@ fn live_frames(project: &mut Project) -> Vec<[u8; 513]> {
             .collect();
         effect
     };
-    apply_timeline_update(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
+    start_from(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
 
     let step = Duration::from_millis(10);
     let mut universe = [0u8; 513];
@@ -616,7 +616,7 @@ fn frames_for(fixture_type: &str, show: &str, at: &[Duration]) -> Vec<[u8; 513]>
             .collect();
         effect
     };
-    apply_timeline_update(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
+    start_from(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
     let step = Duration::from_millis(10);
     let mut universe = [0u8; 513];
     let mut frames = Vec::new();
@@ -655,7 +655,7 @@ fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
     assert_eq!(cmy(&frames[2]), [255, 0, 255, 255], "dimmer only");
     // A mix: green full, blue half, red none.
     let f = cmy(&frames[3]);
-    assert_eq!(f[0], 127, "dimmer 50%");
+    assert_eq!(f[0], 128, "dimmer 50%");
     assert_eq!(f[1], 255, "cyan removes all the red");
     assert_eq!(f[2], 0, "no magenta: green is full");
     assert!(

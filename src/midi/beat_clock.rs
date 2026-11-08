@@ -13,7 +13,7 @@
 //
 use std::time::Duration;
 
-use super::playback::TempoEntry;
+use super::playback::{MidiTiming, TempoWalk};
 
 /// Number of MIDI clock pulses per quarter note.
 const CLOCKS_PER_BEAT: u64 = 24;
@@ -32,35 +32,44 @@ impl PrecomputedBeatClock {
     /// current tempo's interval.
     #[cfg(test)]
     pub(crate) fn from_tempo_info(
-        tempo_map: &[TempoEntry],
+        tempo_map: &[super::playback::TempoEntry],
         ticks_per_beat: u16,
         total_ticks: u64,
     ) -> Self {
         Self::from_tempo_info_until(tempo_map, ticks_per_beat, total_ticks, Duration::ZERO)
     }
 
-    /// As [`Self::from_tempo_info`], and on past the file's end at its last
-    /// tempo until `until`: for a song that lasts longer than its MIDI file.
+    /// [`Self::from_timing_until`] for a tempo map given as its parts.
+    #[cfg(test)]
     pub(crate) fn from_tempo_info_until(
-        tempo_map: &[TempoEntry],
+        tempo_map: &[super::playback::TempoEntry],
         ticks_per_beat: u16,
         total_ticks: u64,
         until: Duration,
     ) -> Self {
+        let timing = MidiTiming {
+            tempo: tempo_map.to_vec(),
+            signatures: Vec::new(),
+            ticks_per_beat,
+            total_ticks,
+        };
+        Self::from_timing_until(&timing, until)
+    }
+
+    /// As [`Self::from_tempo_info`], and on past the file's end at its last
+    /// tempo until `until`: for a song that lasts longer than its MIDI file.
+    pub(crate) fn from_timing_until(timing: &MidiTiming, until: Duration) -> Self {
         // A bound for a degenerate file: an hour at 300 BPM is ~430k pulses.
         const MAX_PULSES: usize = 2_000_000;
+        let (ticks_per_beat, total_ticks) = (timing.ticks_per_beat, timing.total_ticks);
         if ticks_per_beat == 0 {
             return PrecomputedBeatClock { ticks: Vec::new() };
         }
         let tpb = ticks_per_beat as f64;
-        // Default tempo: 120 BPM = 500_000 microseconds per beat
-        let default_micros_per_tick = 500_000.0 / tpb;
 
         let mut ticks = Vec::new();
-        let mut micros_per_tick = default_micros_per_tick;
+        let mut walk = TempoWalk::new(&timing.tempo, ticks_per_beat);
         let mut elapsed_micros: f64 = 0.0;
-        let mut current_tick: f64 = 0.0;
-        let mut tempo_idx: usize = 0;
 
         // Walk through the entire MIDI timeline, generating clock ticks: one
         // at the start of the file, the first after Start falling on beat 1
@@ -79,6 +88,7 @@ impl PrecomputedBeatClock {
             let at = Duration::from_micros(elapsed_micros.round() as u64);
             let in_file =
                 (pulse as u128) * (ticks_per_beat as u128) < per_beat * total_ticks as u128;
+            let micros_per_tick = walk.micros_per_tick();
             let running_on = at < until && micros_per_tick.is_finite() && micros_per_tick > 0.0;
             if !in_file && !running_on {
                 break;
@@ -86,26 +96,7 @@ impl PrecomputedBeatClock {
             ticks.push(at);
 
             let next_clock_tick = (pulse + 1) as f64 * tpb / CLOCKS_PER_BEAT as f64;
-
-            // Check if any tempo changes occur before the next clock tick
-            while tempo_idx < tempo_map.len()
-                && (tempo_map[tempo_idx].tick as f64) <= next_clock_tick
-            {
-                let entry = &tempo_map[tempo_idx];
-                if (entry.tick as f64) > current_tick {
-                    // Accumulate time up to the tempo change
-                    elapsed_micros += (entry.tick as f64 - current_tick) * micros_per_tick;
-                    current_tick = entry.tick as f64;
-                }
-                micros_per_tick = entry.micros_per_tick;
-                tempo_idx += 1;
-            }
-
-            // Accumulate time from current position to the next clock tick
-            if next_clock_tick > current_tick {
-                elapsed_micros += (next_clock_tick - current_tick) * micros_per_tick;
-            }
-            current_tick = next_clock_tick;
+            elapsed_micros = walk.micros_at(next_clock_tick);
         }
 
         PrecomputedBeatClock { ticks }
@@ -127,6 +118,7 @@ impl PrecomputedBeatClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::midi::playback::TempoEntry;
 
     #[test]
     fn constant_tempo_tick_count() {
@@ -165,7 +157,7 @@ mod tests {
         let tpb = 480u16;
         let tempo_map = vec![TempoEntry {
             tick: 480,
-            micros_per_tick: 1_000_000.0 / 480.0,
+            micros_per_beat: 1_000_000,
         }];
         // 2 beats total = 960 ticks
         let beat_clock = PrecomputedBeatClock::from_tempo_info(&tempo_map, tpb, 960);
@@ -223,11 +215,11 @@ mod tests {
         let tempo_map = vec![
             TempoEntry {
                 tick: 480,
-                micros_per_tick: 1_000_000.0 / 480.0, // 60 BPM
+                micros_per_beat: 1_000_000, // 60 BPM
             },
             TempoEntry {
                 tick: 960,
-                micros_per_tick: 250_000.0 / 480.0, // 240 BPM
+                micros_per_beat: 250_000, // 240 BPM
             },
         ];
         // 3 beats total = 1440 ticks
@@ -242,7 +234,7 @@ mod tests {
         let tpb = 480u16;
         let tempo_map = vec![TempoEntry {
             tick: 0,
-            micros_per_tick: 1_000_000.0 / 480.0, // 60 BPM
+            micros_per_beat: 1_000_000, // 60 BPM
         }];
         // 1 beat = 480 ticks at 60 BPM = 1_000_000 µs
         let beat_clock = PrecomputedBeatClock::from_tempo_info(&tempo_map, tpb, 480);
@@ -264,7 +256,7 @@ mod tests {
         let tpb = 100u16;
         let tempo_map = vec![TempoEntry {
             tick: 0,
-            micros_per_tick: 500_000.0 / 100.0, // 120 BPM
+            micros_per_beat: 500_000, // 120 BPM
         }];
         // 1 beat = 100 ticks
         let beat_clock = PrecomputedBeatClock::from_tempo_info(&tempo_map, tpb, 100);
@@ -282,6 +274,7 @@ mod tests {
 #[cfg(test)]
 mod pulse_layout_tests {
     use super::*;
+    use crate::midi::playback::TempoEntry;
 
     /// Every file of whole beats gives 24 pulses a beat, all inside the file,
     /// whatever its resolution.
@@ -336,7 +329,7 @@ mod pulse_layout_tests {
         // 480 tpb; at beat 2 the tempo goes to 60 BPM (1_000_000 us/beat).
         let map = [TempoEntry {
             tick: 960,
-            micros_per_tick: 1_000_000.0 / 480.0,
+            micros_per_beat: 1_000_000,
         }];
         let clock = PrecomputedBeatClock::from_tempo_info(&map, 480, 1440);
         let t = clock.ticks();

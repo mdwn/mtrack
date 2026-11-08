@@ -12,32 +12,99 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! Extract a tempo map from a MIDI file.
-//!
-//! MIDI files contain explicit `SetTempo` and `TimeSignature` meta events
-//! that provide an authoritative tempo map. When a beat grid is available
-//! (from click track analysis), the MIDI is cross-correlated against it
-//! to auto-detect the correct alignment offset. This handles both MIDI
-//! files with and without lead-in silence.
+//! A tempo map guessed for a song: from its MIDI file's `SetTempo` and
+//! `TimeSignature` events, read by the one rule playback reads them by
+//! ([`MidiTiming`]), or from the beat grid of its click track, through the
+//! one derivation lighting plays to ([`BeatGrid::to_tempo_map`]). When a
+//! beat grid is available, the MIDI is cross-correlated against it to
+//! auto-detect the correct alignment offset. This handles both MIDI files
+//! with and without lead-in silence.
 
 use std::path::Path;
 
-use midly::{Format, MetaMessage, Smf, TrackEventKind};
+use midly::Smf;
 
 use super::click_analysis::BeatGrid;
-use super::tempo_guess::{GuessedTempo, GuessedTempoChange};
+pub use super::guessed_tempo::{GuessedTempo, GuessedTempoChange};
+use crate::config::{TempoChangeConfig, TempoConfig, TransitionConfig};
+use crate::midi::playback::{
+    MidiTiming, SignatureEntry, TempoEntry, TempoWalk, DEFAULT_MICROS_PER_BEAT,
+};
+use crate::tempo::{TempoChangePosition, TempoMap, TimeSignature};
 
-/// A tempo event at a tick position.
-struct TempoEvent {
-    tick: u64,
-    micros_per_beat: u32,
+impl GuessedTempo {
+    /// The guess as a song's `tempo:` block, its changes in the order a
+    /// save requires (`TempoConfig::normalized`): a start or a beat at
+    /// their defaults (0, the downbeat) left out.
+    pub fn to_config(&self) -> TempoConfig {
+        let signature = |[n, d]: [u32; 2]| format!("{n}/{d}");
+        let config = TempoConfig {
+            bpm: self.bpm,
+            time_signature: signature(self.time_signature),
+            start: (self.start_seconds > 0.0).then_some(self.start_seconds),
+            changes: self
+                .changes
+                .iter()
+                .map(|c| TempoChangeConfig {
+                    measure: c.measure,
+                    beat: (c.beat > 1).then_some(f64::from(c.beat)),
+                    bpm: Some(c.bpm),
+                    time_signature: Some(signature(c.time_signature)),
+                    transition: c
+                        .transition_beats
+                        .filter(|&beats| beats > 0)
+                        .map(|beats| TransitionConfig::Beats(f64::from(beats))),
+                })
+                .collect(),
+        };
+        config.normalized().0
+    }
+
+    /// The suggestion a tempo map makes: a beat grid's, derived as lighting
+    /// derives it. The grid's measured tempo is rounded to a hundredth of a
+    /// BPM, which is what an author would write (a hundredth over a
+    /// five-minute song is a few milliseconds).
+    pub fn from_tempo_map(map: &TempoMap) -> GuessedTempo {
+        let signature = |ts: TimeSignature| [ts.numerator, ts.denominator];
+        let round = |bpm: f64| (bpm * 100.0).round() / 100.0;
+        let mut bpm = round(map.initial_bpm);
+        let mut time_signature = signature(map.initial_time_signature);
+        let changes = map
+            .changes
+            .iter()
+            .filter_map(|change| {
+                let (measure, beat) = match change.position {
+                    TempoChangePosition::MeasureBeat(measure, beat) => (measure, beat),
+                    TempoChangePosition::Time(_) => change.original_measure_beat?,
+                };
+                if let Some(changed) = change.bpm {
+                    bpm = round(changed);
+                }
+                if let Some(changed) = change.time_signature {
+                    time_signature = signature(changed);
+                }
+                Some(GuessedTempoChange {
+                    measure,
+                    beat: beat.floor() as u32,
+                    bpm,
+                    time_signature,
+                    transition_beats: None,
+                })
+            })
+            .collect();
+        GuessedTempo {
+            start_seconds: map.start_offset.as_secs_f64(),
+            bpm: round(map.initial_bpm),
+            time_signature: signature(map.initial_time_signature),
+            changes,
+            alignment_rms_ms: None,
+        }
+    }
 }
 
-/// A time signature event at a tick position.
-struct TimeSigEvent {
-    tick: u64,
-    numerator: u8,
-    denominator_power: u8, // actual denominator = 2^power
+/// A tempo as a whole BPM, as a MIDI file's is written.
+fn bpm_of(micros_per_beat: u32) -> f64 {
+    (60_000_000.0 / micros_per_beat as f64).round()
 }
 
 /// Extract a tempo map from a MIDI file.
@@ -57,12 +124,13 @@ pub fn extract_tempo_from_midi(
     let smf = Smf::parse(&data).ok()?;
 
     let tpb = match smf.header.timing {
-        midly::Timing::Metrical(tpb) => tpb.as_int() as u64,
+        midly::Timing::Metrical(tpb) => tpb.as_int(),
         midly::Timing::Timecode(_, _) => return None, // SMPTE not supported
     };
 
-    // Extract tempo and time signature events from the appropriate track(s)
-    let (tempo_events, time_sig_events) = extract_events(&smf);
+    // The file's tempo and time signature events, where playback reads them.
+    let timing = MidiTiming::of(&smf.tracks, tpb, smf.header.format);
+    let (tempo_events, time_sig_events) = (&timing.tempo[..], &timing.signatures[..]);
 
     if tempo_events.is_empty() {
         return None;
@@ -72,7 +140,7 @@ pub fn extract_tempo_from_midi(
     // or fall back to 0.0 if no beat grid is available.
     let start_offset_seconds = match beat_grid {
         Some(grid) if grid.beats.len() >= 4 => {
-            find_best_offset(&tempo_events, &time_sig_events, tpb, grid)
+            find_best_offset(tempo_events, time_sig_events, tpb, grid)
         }
         Some(grid) => grid.beats.first().copied().unwrap_or(0.0),
         None => 0.0,
@@ -81,7 +149,7 @@ pub fn extract_tempo_from_midi(
     // Convert start_offset_seconds to a tick position by walking through
     // tempo events. The MIDI file may include a lead-in before beat 1
     // (tick 0 = audio file start, not necessarily beat 1).
-    let offset_tick = seconds_to_tick(start_offset_seconds, &tempo_events, tpb);
+    let offset_tick = seconds_to_tick(start_offset_seconds, tempo_events, tpb);
 
     // Find the tempo and time signature active at the offset tick.
     // These become the base values — they represent what the song starts at.
@@ -90,8 +158,8 @@ pub fn extract_tempo_from_midi(
         .rev()
         .find(|e| e.tick <= offset_tick)
         .map(|e| e.micros_per_beat)
-        .unwrap_or(tempo_events[0].micros_per_beat);
-    let base_bpm = (60_000_000.0 / base_micros_per_beat as f64).round() as u32;
+        .unwrap_or(DEFAULT_MICROS_PER_BEAT);
+    let base_bpm = bpm_of(base_micros_per_beat);
 
     let base_time_sig = time_sig_events
         .iter()
@@ -106,12 +174,12 @@ pub fn extract_tempo_from_midi(
 
     // Collect all events that occur AFTER the offset tick.
     let mut all_events: Vec<(u64, EventKind)> = Vec::new();
-    for te in &tempo_events {
+    for te in tempo_events {
         if te.tick > offset_tick {
             all_events.push((te.tick, EventKind::Tempo(te.micros_per_beat)));
         }
     }
-    for ts in &time_sig_events {
+    for ts in time_sig_events {
         if ts.tick > offset_tick {
             all_events.push((
                 ts.tick,
@@ -121,12 +189,16 @@ pub fn extract_tempo_from_midi(
     }
     all_events.sort_by_key(|(tick, _)| *tick);
 
-    // Convert ticks to measure/beat position, counting from the offset tick.
+    // Convert ticks to measure/beat position, counting from the offset tick
+    // in quarter notes, which is what a tick counts: a bar is as many of
+    // them as the tempo map has it (`TimeSignature::beats_per_measure`), so
+    // a 6/8 bar is three, not six (#636).
     let mut tick_cursor: u64 = offset_tick;
     let mut measure: u32 = 1;
     let mut beat_in_measure: f64 = 0.0;
-    let mut beats_per_measure = base_time_sig[0];
-    let ticks_per_beat = tpb;
+    let mut beats_per_measure =
+        TimeSignature::new(current_ts[0], current_ts[1]).beats_per_measure();
+    let ticks_per_beat = tpb as u64;
 
     for (tick, event) in &all_events {
         // Advance measure/beat from cursor to this tick
@@ -135,8 +207,8 @@ pub fn extract_tempo_from_midi(
         beat_in_measure += delta_beats;
 
         // Roll over complete measures
-        while beat_in_measure >= beats_per_measure as f64 {
-            beat_in_measure -= beats_per_measure as f64;
+        while beat_in_measure >= beats_per_measure {
+            beat_in_measure -= beats_per_measure;
             measure += 1;
         }
 
@@ -146,13 +218,13 @@ pub fn extract_tempo_from_midi(
 
         match event {
             EventKind::Tempo(micros_per_beat) => {
-                let bpm = (60_000_000.0 / *micros_per_beat as f64).round() as u32;
+                let bpm = bpm_of(*micros_per_beat);
                 if bpm != current_bpm {
                     changes.push(GuessedTempoChange {
                         measure,
                         beat: beat_number,
                         bpm,
-                        time_signature: [beats_per_measure, current_ts[1]],
+                        time_signature: current_ts,
                         transition_beats: None,
                     });
                     current_bpm = bpm;
@@ -169,7 +241,8 @@ pub fn extract_tempo_from_midi(
                         time_signature: new_ts,
                         transition_beats: None,
                     });
-                    beats_per_measure = new_ts[0];
+                    beats_per_measure =
+                        TimeSignature::new(new_ts[0], new_ts[1]).beats_per_measure();
                     current_ts = new_ts;
                 }
             }
@@ -191,12 +264,15 @@ pub fn extract_tempo_from_midi(
             return None;
         }
         let max_time = grid.beats.last().copied().unwrap_or(0.0);
+        // Scored beat for beat against the grid, which counts a bar's
+        // beats by its own rule (a 6/8 bar is six).
         let midi_beats = midi_beat_times(
-            &tempo_events,
-            &time_sig_events,
+            tempo_events,
+            time_sig_events,
             tpb,
             start_offset_seconds,
             max_time,
+            grid_step_ticks,
         );
         let score = alignment_score(&midi_beats, &grid.beats);
         if score == f64::NEG_INFINITY {
@@ -215,64 +291,19 @@ pub fn extract_tempo_from_midi(
     })
 }
 
-/// Converts a time in seconds to a MIDI tick position by walking through
-/// tempo events. Handles tempo changes during the lead-in period.
-fn seconds_to_tick(target_seconds: f64, tempo_events: &[TempoEvent], tpb: u64) -> u64 {
-    if target_seconds <= 0.0 {
-        return 0;
-    }
-
-    let mut elapsed_seconds = 0.0;
-    let mut current_tick: u64 = 0;
-    let mut current_micros_per_beat = tempo_events[0].micros_per_beat;
-
-    for te in tempo_events.iter().skip(1) {
-        let delta_ticks = te.tick - current_tick;
-        let seconds_per_tick = current_micros_per_beat as f64 / 1_000_000.0 / tpb as f64;
-        let delta_seconds = delta_ticks as f64 * seconds_per_tick;
-
-        if elapsed_seconds + delta_seconds >= target_seconds {
-            // The target falls within this tempo segment.
-            let remaining = target_seconds - elapsed_seconds;
-            return current_tick + (remaining / seconds_per_tick).round() as u64;
-        }
-
-        elapsed_seconds += delta_seconds;
-        current_tick = te.tick;
-        current_micros_per_beat = te.micros_per_beat;
-    }
-
-    // Target is past the last tempo event — extrapolate.
-    let remaining = target_seconds - elapsed_seconds;
-    let seconds_per_tick = current_micros_per_beat as f64 / 1_000_000.0 / tpb as f64;
-    current_tick + (remaining / seconds_per_tick).round() as u64
+/// Converts a time in seconds to a MIDI tick position, by the one walk
+/// ([`TempoWalk`]). Handles tempo changes during the lead-in period.
+fn seconds_to_tick(target_seconds: f64, tempo_events: &[TempoEntry], tpb: u16) -> u64 {
+    TempoWalk::new(tempo_events, tpb)
+        .tick_at(target_seconds.max(0.0) * 1_000_000.0)
+        .round() as u64
 }
 
-/// Converts a MIDI tick position to absolute seconds by walking through
-/// tempo events. Inverse of `seconds_to_tick()`.
-fn tick_to_seconds(target_tick: u64, tempo_events: &[TempoEvent], tpb: u64) -> f64 {
-    if target_tick == 0 {
-        return 0.0;
-    }
-
-    let mut elapsed_seconds = 0.0;
-    let mut current_tick: u64 = 0;
-    let mut current_micros_per_beat = tempo_events[0].micros_per_beat;
-
-    for te in tempo_events.iter().skip(1) {
-        if te.tick >= target_tick {
-            break;
-        }
-        let delta_ticks = te.tick - current_tick;
-        let seconds_per_tick = current_micros_per_beat as f64 / 1_000_000.0 / tpb as f64;
-        elapsed_seconds += delta_ticks as f64 * seconds_per_tick;
-        current_tick = te.tick;
-        current_micros_per_beat = te.micros_per_beat;
-    }
-
-    let remaining_ticks = target_tick - current_tick;
-    let seconds_per_tick = current_micros_per_beat as f64 / 1_000_000.0 / tpb as f64;
-    elapsed_seconds + remaining_ticks as f64 * seconds_per_tick
+/// Converts a MIDI tick position to absolute seconds, by the one walk
+/// ([`TempoWalk`]). Inverse of `seconds_to_tick()`.
+#[cfg(test)]
+fn tick_to_seconds(target_tick: u64, tempo_events: &[TempoEntry], tpb: u16) -> f64 {
+    TempoWalk::new(tempo_events, tpb).micros_at(target_tick as f64) / 1_000_000.0
 }
 
 /// Returns the tick step (pulse width) for one click-track beat given a time
@@ -298,25 +329,41 @@ fn beat_step_ticks(numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
     }
 }
 
+/// The tick step between the beats the beat grid counts in a time
+/// signature: one per denominator note, as
+/// [`TimeSignature::grid_beats_per_measure`] counts a bar (a 6/8 bar is six
+/// eighths, where [`beat_step_ticks`] has two dotted quarters). Whole ticks,
+/// rounded down as [`beat_step_ticks`] rounds its simple metres.
+fn grid_step_ticks(_numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
+    // Four quarter notes a whole note, over the notes a whole note holds.
+    let whole = tpb.saturating_mul(4);
+    whole
+        .checked_shr(u32::from(denominator_power))
+        .unwrap_or(0)
+        .max(1)
+}
+
 /// Generates expected beat positions (in seconds) from the MIDI tempo map.
 ///
-/// Steps through ticks using the natural pulse of the current time signature
-/// (quarter notes for simple meter, dotted quarters for compound meter, etc.),
-/// so the predicted beat positions match what a typical click track marks.
+/// Steps through ticks by `step` in the current time signature --
+/// [`beat_step_ticks`]'s natural pulse to find where beat 1 falls, or
+/// [`grid_step_ticks`]'s grid beats to score the result against the grid.
 /// Stops when the generated time exceeds `max_seconds`.
 fn midi_beat_times(
-    tempo_events: &[TempoEvent],
-    time_sig_events: &[TimeSigEvent],
-    tpb: u64,
+    tempo_events: &[TempoEntry],
+    time_sig_events: &[SignatureEntry],
+    tpb: u16,
     start_seconds: f64,
     max_seconds: f64,
+    step: fn(u8, u8, u64) -> u64,
 ) -> Vec<f64> {
     let start_tick = seconds_to_tick(start_seconds, tempo_events, tpb);
+    let mut walk = TempoWalk::new(tempo_events, tpb);
     let mut beats = Vec::new();
     let mut tick = start_tick;
 
     loop {
-        let time = tick_to_seconds(tick, tempo_events, tpb);
+        let time = walk.micros_at(tick as f64) / 1_000_000.0;
         if time > max_seconds {
             break;
         }
@@ -330,7 +377,7 @@ fn midi_beat_times(
             .map(|e| (e.numerator, e.denominator_power))
             .unwrap_or((4, 2)); // default: 4/4
 
-        tick += beat_step_ticks(num, denom_pow, tpb);
+        tick += step(num, denom_pow, tpb as u64);
     }
 
     beats
@@ -386,9 +433,9 @@ const MAX_LEADIN_SECONDS: f64 = 10.0;
 /// Uses a two-phase search: coarse candidates from beat grid positions in
 /// the first 10 seconds, then fine refinement around the best candidate.
 fn find_best_offset(
-    tempo_events: &[TempoEvent],
-    time_sig_events: &[TimeSigEvent],
-    tpb: u64,
+    tempo_events: &[TempoEntry],
+    time_sig_events: &[SignatureEntry],
+    tpb: u16,
     grid: &BeatGrid,
 ) -> f64 {
     let max_time = grid.beats.last().copied().unwrap_or(0.0);
@@ -421,7 +468,14 @@ fn find_best_offset(
     let mut best_start = grid_first;
 
     for &candidate in &candidates {
-        let midi_beats = midi_beat_times(tempo_events, time_sig_events, tpb, candidate, max_time);
+        let midi_beats = midi_beat_times(
+            tempo_events,
+            time_sig_events,
+            tpb,
+            candidate,
+            max_time,
+            beat_step_ticks,
+        );
         let score = alignment_score(&midi_beats, &grid.beats);
         let closer = (candidate - grid_first).abs() < (best_start - grid_first).abs();
         let meaningfully_better = score > best_score + score_epsilon;
@@ -441,7 +495,14 @@ fn find_best_offset(
 
     let mut t = fine_start;
     while t <= fine_end {
-        let midi_beats = midi_beat_times(tempo_events, time_sig_events, tpb, t, max_time);
+        let midi_beats = midi_beat_times(
+            tempo_events,
+            time_sig_events,
+            tpb,
+            t,
+            max_time,
+            beat_step_ticks,
+        );
         let score = alignment_score(&midi_beats, &grid.beats);
         let closer = (t - grid_first).abs() < (best_start - grid_first).abs();
         let meaningfully_better = score > best_score + score_epsilon;
@@ -461,65 +522,6 @@ enum EventKind {
     TimeSig(u8, u8),
 }
 
-/// Extract tempo and time signature events from all relevant tracks.
-fn extract_events(smf: &Smf) -> (Vec<TempoEvent>, Vec<TimeSigEvent>) {
-    let mut tempo_events = Vec::new();
-    let mut time_sig_events = Vec::new();
-
-    // For Format 0 and 1, meta events are in the first track (or the only track)
-    // For Format 2, we'd need to handle each track separately (rare)
-    let tracks_to_scan: Vec<&[midly::TrackEvent]> = match smf.header.format {
-        Format::SingleTrack => smf.tracks.iter().map(|t| t.as_slice()).collect(),
-        Format::Parallel => {
-            // Scan all tracks for meta events (some DAWs put them on track 0,
-            // others distribute them)
-            smf.tracks.iter().map(|t| t.as_slice()).collect()
-        }
-        Format::Sequential => smf.tracks.iter().map(|t| t.as_slice()).collect(),
-    };
-
-    for track in tracks_to_scan {
-        let mut tick: u64 = 0;
-        for event in track {
-            tick += event.delta.as_int() as u64;
-            match event.kind {
-                TrackEventKind::Meta(MetaMessage::Tempo(tempo)) => {
-                    // Avoid duplicate tempo events at the same tick
-                    if !tempo_events.iter().any(|e: &TempoEvent| e.tick == tick) {
-                        tempo_events.push(TempoEvent {
-                            tick,
-                            micros_per_beat: tempo.as_int(),
-                        });
-                    }
-                }
-                TrackEventKind::Meta(MetaMessage::TimeSignature(
-                    numerator,
-                    denominator,
-                    _clocks_per_click,
-                    _thirty_seconds_per_quarter,
-                )) => {
-                    if !time_sig_events
-                        .iter()
-                        .any(|e: &TimeSigEvent| e.tick == tick)
-                    {
-                        time_sig_events.push(TimeSigEvent {
-                            tick,
-                            numerator,
-                            denominator_power: denominator,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    tempo_events.sort_by_key(|e| e.tick);
-    time_sig_events.sort_by_key(|e| e.tick);
-
-    (tempo_events, time_sig_events)
-}
-
 /// Collapse consecutive monotonic BPM changes into single transitions.
 /// For example, 92→82→72→62 at consecutive beats becomes a single change
 /// with transition_beats spanning the full run.
@@ -533,8 +535,8 @@ fn collapse_ramps(changes: &mut Vec<GuessedTempoChange>) {
     let mut i = 0;
     while i + 1 < changes.len() {
         // Determine direction
-        let bpm_i = changes[i].bpm as i32;
-        let bpm_next = changes[i + 1].bpm as i32;
+        let bpm_i = changes[i].bpm;
+        let bpm_next = changes[i + 1].bpm;
         let going_down = bpm_next < bpm_i;
         let going_up = bpm_next > bpm_i;
 
@@ -559,8 +561,8 @@ fn collapse_ramps(changes: &mut Vec<GuessedTempoChange>) {
         // same time signature, and changes are close together.
         let mut run_end = i + 1;
         while run_end + 1 < changes.len() {
-            let prev_bpm = changes[run_end].bpm as i32;
-            let next_bpm = changes[run_end + 1].bpm as i32;
+            let prev_bpm = changes[run_end].bpm;
+            let next_bpm = changes[run_end + 1].bpm;
             let same_dir = if going_down {
                 next_bpm < prev_bpm
             } else {
@@ -629,6 +631,37 @@ fn dedup_changes(changes: &mut Vec<GuessedTempoChange>) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// The guess as a `tempo:` block: defaults left out, changes in bar
+    /// order, a ramp as its beats.
+    #[test]
+    fn a_guess_is_a_tempo_config() {
+        let change = |measure, beat, transition_beats| GuessedTempoChange {
+            measure,
+            beat,
+            bpm: 140.0,
+            time_signature: [3, 4],
+            transition_beats,
+        };
+        let guess = GuessedTempo {
+            start_seconds: 0.0,
+            bpm: 120.0,
+            time_signature: [4, 4],
+            changes: vec![change(9, 1, Some(4)), change(5, 3, None)],
+            alignment_rms_ms: None,
+        };
+        let config = guess.to_config();
+        assert_eq!(config.start, None);
+        assert_eq!(config.time_signature, "4/4");
+        let at: Vec<(u32, Option<f64>)> =
+            config.changes.iter().map(|c| (c.measure, c.beat)).collect();
+        assert_eq!(at, vec![(5, Some(3.0)), (9, None)]);
+        assert_eq!(
+            config.changes[1].transition,
+            Some(TransitionConfig::Beats(4.0))
+        );
+        assert_eq!(config.changes[0].time_signature.as_deref(), Some("3/4"));
+    }
 
     /// Helper: builds a minimal Format 0 MIDI file with given tempo/time-sig events.
     /// Returns the raw bytes. Uses 480 ticks per beat.
@@ -733,6 +766,91 @@ mod tests {
         }
     }
 
+    /// A bar is as many quarter notes as the tempo map has it, so a 6/8
+    /// file's tempo change at bar 5 is guessed at bar 5, not bar 3 (#636).
+    #[test]
+    fn a_compound_metre_rolls_bars_over_by_quarter_notes() {
+        // 6/8 at 480 tpb: a bar is three quarter notes, 1440 ticks; bar 5
+        // starts at tick 5760.
+        let f = write_test_midi(&[
+            (0, MidiMetaEvent::TimeSig(6, 3)),
+            (0, MidiMetaEvent::Tempo(bpm_to_micros(120))),
+            (5760, MidiMetaEvent::Tempo(bpm_to_micros(100))),
+        ]);
+        let result = extract_tempo_from_midi(f.path(), None).unwrap();
+        assert_eq!(result.time_signature, [6, 8]);
+        assert_eq!(result.changes.len(), 1, "{:?}", result.changes);
+        assert_eq!((result.changes[0].measure, result.changes[0].beat), (5, 1));
+        assert_eq!(result.changes[0].bpm, 100.0);
+    }
+
+    /// The file's tempo is read as playback reads it: 120 BPM until the
+    /// first tempo event, which a lead-in at the default tempo then has.
+    #[test]
+    fn the_tempo_before_the_first_event_is_the_default() {
+        let f = write_test_midi(&[(1920, MidiMetaEvent::Tempo(bpm_to_micros(90)))]);
+        let result = extract_tempo_from_midi(f.path(), None).unwrap();
+        assert_eq!(result.bpm, 120.0);
+        assert_eq!(result.changes.len(), 1, "{:?}", result.changes);
+        assert_eq!((result.changes[0].measure, result.changes[0].beat), (2, 1));
+        assert_eq!(result.changes[0].bpm, 90.0);
+    }
+
+    // ── suggestions from a beat grid ─────────────────────────────────────────
+
+    /// The web UI's suggestion from a click track is the tempo map lighting
+    /// plays to, as an author would write it.
+    #[test]
+    fn a_grid_suggests_the_map_lighting_derives() {
+        let steady = make_beat_grid(120.0, 1.5, 65, 4);
+        let result = GuessedTempo::from_tempo_map(&steady.to_tempo_map().unwrap());
+        assert_eq!(result.bpm, 120.0);
+        assert_eq!(result.time_signature, [4, 4]);
+        assert!((result.start_seconds - 1.5).abs() < 0.001);
+        assert!(result.changes.is_empty(), "{:?}", result.changes);
+        assert!(result.alignment_rms_ms.is_none());
+
+        // 8 bars of 4/4 at 120, then 8 bars of 3/4 at 160: a meter change
+        // and a tempo change at bar 9, beat 1.
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        let mut t = 0.0;
+        for i in 0..32 {
+            if i % 4 == 0 {
+                measure_starts.push(beats.len());
+            }
+            beats.push(t);
+            t += 60.0 / 120.0;
+        }
+        for i in 0..25 {
+            if i % 3 == 0 {
+                measure_starts.push(beats.len());
+            }
+            beats.push(t);
+            t += 60.0 / 160.0;
+        }
+        let grid = BeatGrid {
+            beats,
+            measure_starts,
+        };
+        let result = GuessedTempo::from_tempo_map(&grid.to_tempo_map().unwrap());
+        assert_eq!(result.bpm, 120.0);
+        assert_eq!(result.time_signature, [4, 4]);
+        assert_eq!(result.changes.len(), 1, "{:?}", result.changes);
+        let change = &result.changes[0];
+        assert_eq!((change.measure, change.beat), (9, 1));
+        assert_eq!(change.time_signature, [3, 4]);
+        assert!((change.bpm - 160.0).abs() < 0.01, "{}", change.bpm);
+        assert!(change.transition_beats.is_none());
+
+        // Too small a grid to describe a tempo suggests nothing.
+        let tiny = BeatGrid {
+            beats: vec![0.0],
+            measure_starts: vec![0],
+        };
+        assert!(tiny.to_tempo_map().is_none());
+    }
+
     // ── alignment_rms_ms tests ────────────────────────────────────────────────
 
     #[test]
@@ -760,6 +878,23 @@ mod tests {
         );
     }
 
+    /// A 6/8 click clicks every eighth, as the beat grid counts a 6/8 bar
+    /// (`TimeSignature::grid_beats_per_measure`): a correct 6/8 map
+    /// scores as well as a correct 4/4 one, not an eighth off on four
+    /// clicks in six.
+    #[test]
+    fn alignment_rms_ms_low_for_a_compound_metre_clicked_in_eighths() {
+        let f = write_test_midi(&[
+            (0, MidiMetaEvent::TimeSig(6, 3)),
+            (0, MidiMetaEvent::Tempo(bpm_to_micros(120))),
+        ]);
+        // Quarter = 0.5s, so an eighth click every 0.25s, six to a bar.
+        let grid = make_beat_grid(240.0, 0.0, 96, 6);
+        let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
+        let rms = result.alignment_rms_ms.expect("a grid was given");
+        assert!(rms < 2.0, "a correct 6/8 map scored {rms:.3}ms");
+    }
+
     #[test]
     fn alignment_rms_ms_high_for_mismatched_grid() {
         // MIDI at 120 BPM but beat grid at 90 BPM — wildly mismatched.
@@ -780,7 +915,7 @@ mod tests {
         // MIDI starts at 120 BPM, no beat grid provided.
         let f = write_test_midi(&[(0, MidiMetaEvent::Tempo(bpm_to_micros(120)))]);
         let result = extract_tempo_from_midi(f.path(), None).unwrap();
-        assert_eq!(result.bpm, 120);
+        assert_eq!(result.bpm, 120.0);
         assert!(result.changes.is_empty());
     }
 
@@ -798,7 +933,7 @@ mod tests {
         let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
 
         // Should auto-detect that beat 1 is at ~2.0s and use 140 BPM as base.
-        assert_eq!(result.bpm, 140);
+        assert_eq!(result.bpm, 140.0);
         assert!(result.changes.is_empty(), "No changes after beat 1");
         assert!(
             (result.start_seconds - 2.0).abs() < 0.01,
@@ -814,7 +949,7 @@ mod tests {
         let grid = make_beat_grid(120.0, 0.0, 32, 4);
         let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
 
-        assert_eq!(result.bpm, 120);
+        assert_eq!(result.bpm, 120.0);
         assert!(result.start_seconds.abs() < 0.01, "Offset should be ~0.0s");
     }
 
@@ -852,11 +987,11 @@ mod tests {
 
         let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
 
-        assert_eq!(result.bpm, 120);
+        assert_eq!(result.bpm, 120.0);
         assert!((result.start_seconds - 1.0).abs() < 0.01);
         assert_eq!(result.changes.len(), 1);
         assert_eq!(result.changes[0].measure, 5);
-        assert_eq!(result.changes[0].bpm, 150);
+        assert_eq!(result.changes[0].bpm, 150.0);
     }
 
     #[test]
@@ -871,7 +1006,7 @@ mod tests {
         let grid = make_beat_grid(120.0, 2.0, 24, 3);
         let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
 
-        assert_eq!(result.bpm, 120);
+        assert_eq!(result.bpm, 120.0);
         assert_eq!(result.time_signature, [3, 4]);
         assert!((result.start_seconds - 2.0).abs() < 0.01);
     }
@@ -880,7 +1015,7 @@ mod tests {
 
     #[test]
     fn seconds_to_tick_zero_offset() {
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -891,7 +1026,7 @@ mod tests {
     fn seconds_to_tick_simple() {
         // 120 BPM, 480 tpb: 1 beat = 0.5s, 1 tick = 0.5/480 s
         // 2.0s = 4 beats = 1920 ticks
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -904,11 +1039,11 @@ mod tests {
         // At 60 BPM: 1 beat = 1.0s, so 0.5s more = 0.5 beats = 240 ticks.
         // Total for 1.5s = 960 + 240 = 1200 ticks.
         let events = vec![
-            TempoEvent {
+            TempoEntry {
                 tick: 0,
                 micros_per_beat: bpm_to_micros(120),
             },
-            TempoEvent {
+            TempoEntry {
                 tick: 960,
                 micros_per_beat: bpm_to_micros(60),
             },
@@ -935,7 +1070,7 @@ mod tests {
             );
         }
 
-        assert_eq!(result.bpm, 150, "Base should be 150");
+        assert_eq!(result.bpm, 150.0, "Base should be 150");
     }
 
     /// Evaluates MIDI beat alignment against a real click track.
@@ -1004,10 +1139,11 @@ mod tests {
         let data = std::fs::read(&midi_path).unwrap();
         let smf = midly::Smf::parse(&data).unwrap();
         let tpb = match smf.header.timing {
-            midly::Timing::Metrical(tpb) => tpb.as_int() as u64,
+            midly::Timing::Metrical(tpb) => tpb.as_int(),
             _ => panic!("SMPTE timing not supported"),
         };
-        let (tempo_events, time_sig_events) = extract_events(&smf);
+        let timing = MidiTiming::of(&smf.tracks, tpb, smf.header.format);
+        let (tempo_events, time_sig_events) = (timing.tempo, timing.signatures);
         let max_time = grid.beats.last().copied().unwrap_or(0.0) + 1.0;
         let midi_beats = midi_beat_times(
             &tempo_events,
@@ -1015,6 +1151,7 @@ mod tests {
             tpb,
             result.start_seconds,
             max_time,
+            beat_step_ticks,
         );
 
         eprintln!(
@@ -1155,10 +1292,11 @@ mod tests {
         let data = std::fs::read(&midi_path).unwrap();
         let smf = midly::Smf::parse(&data).unwrap();
         let tpb = match smf.header.timing {
-            midly::Timing::Metrical(tpb) => tpb.as_int() as u64,
+            midly::Timing::Metrical(tpb) => tpb.as_int(),
             _ => panic!("SMPTE not supported"),
         };
-        let (tempo_events, time_sig_events) = extract_events(&smf);
+        let timing = MidiTiming::of(&smf.tracks, tpb, smf.header.format);
+        let (tempo_events, time_sig_events) = (timing.tempo, timing.signatures);
 
         // What offset did the cross-correlation choose?
         let found_offset = find_best_offset(&tempo_events, &time_sig_events, tpb, &grid);
@@ -1166,11 +1304,25 @@ mod tests {
 
         // Score at the found offset vs offset=0.
         let score_found = {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, found_offset, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                found_offset,
+                max_time,
+                beat_step_ticks,
+            );
             alignment_score(&mb, &grid.beats)
         };
         let score_zero = {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, 0.0, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                0.0,
+                max_time,
+                beat_step_ticks,
+            );
             alignment_score(&mb, &grid.beats)
         };
 
@@ -1238,7 +1390,14 @@ mod tests {
         candidates.extend(grid.beats.iter().copied().filter(|&t| t <= 10.0));
         candidates.dedup_by(|a, b| (*a - *b).abs() < 0.001);
         for c in &candidates {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, *c, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                *c,
+                max_time,
+                beat_step_ticks,
+            );
             let score = alignment_score(&mb, &grid.beats);
             let marker = if (*c - found_offset).abs() < 0.002 {
                 " ← chosen"
@@ -1386,7 +1545,7 @@ mod tests {
                     c.measure, c.beat, c.bpm, c.time_signature[0], c.time_signature[1]
                 );
             }
-            assert_eq!(result.bpm, 120, "Base should be 120");
+            assert_eq!(result.bpm, 120.0, "Base should be 120");
             return;
         }
 
@@ -1398,7 +1557,7 @@ mod tests {
                 c.measure, c.beat, c.bpm, c.time_signature[0], c.time_signature[1]
             );
         }
-        assert_eq!(result.bpm, 120, "Base should be 120");
+        assert_eq!(result.bpm, 120.0, "Base should be 120");
     }
 
     #[test]
@@ -1442,7 +1601,7 @@ mod tests {
 
     #[test]
     fn tick_to_seconds_zero() {
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -1452,7 +1611,7 @@ mod tests {
     #[test]
     fn tick_to_seconds_simple() {
         // 120 BPM, 480 tpb: 1920 ticks = 4 beats = 2.0s
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -1465,11 +1624,11 @@ mod tests {
         // 120 BPM for 960 ticks (1.0s), then 60 BPM.
         // 1200 ticks = 960 at 120BPM (1.0s) + 240 at 60BPM (0.5s) = 1.5s
         let events = vec![
-            TempoEvent {
+            TempoEntry {
                 tick: 0,
                 micros_per_beat: bpm_to_micros(120),
             },
-            TempoEvent {
+            TempoEntry {
                 tick: 960,
                 micros_per_beat: bpm_to_micros(60),
             },
@@ -1481,11 +1640,11 @@ mod tests {
     #[test]
     fn tick_to_seconds_roundtrip() {
         let events = vec![
-            TempoEvent {
+            TempoEntry {
                 tick: 0,
                 micros_per_beat: bpm_to_micros(120),
             },
-            TempoEvent {
+            TempoEntry {
                 tick: 960,
                 micros_per_beat: bpm_to_micros(90),
             },
@@ -1534,7 +1693,7 @@ mod tests {
     #[test]
     fn find_offset_no_leadin() {
         // MIDI at 120 BPM, beat grid starts at 0.0.
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -1547,7 +1706,7 @@ mod tests {
     #[test]
     fn find_offset_with_leadin() {
         // MIDI at 120 BPM, beat grid starts at 2.0s (4-beat lead-in).
-        let events = vec![TempoEvent {
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -1561,11 +1720,11 @@ mod tests {
     fn find_offset_with_tempo_change_in_leadin() {
         // 100 BPM lead-in, then 140 BPM at tick 1600 (~2.0s).
         let events = vec![
-            TempoEvent {
+            TempoEntry {
                 tick: 0,
                 micros_per_beat: bpm_to_micros(100),
             },
-            TempoEvent {
+            TempoEntry {
                 tick: 1600,
                 micros_per_beat: bpm_to_micros(140),
             },
@@ -1577,6 +1736,34 @@ mod tests {
     }
 
     // ── beat_step_ticks tests ─────────────────────────────────────────────────
+
+    /// A bar is the grid's beats of the grid's step, and a simple metre's
+    /// step is the click's pulse; a compound metre's grid counts eighths.
+    #[test]
+    fn grid_step_ticks_count_the_grids_beats() {
+        let tpb = 480u64;
+        for (numerator, power) in [(4u8, 2u8), (3, 2), (2, 1), (6, 3), (7, 3), (12, 3), (5, 4)] {
+            let signature = TimeSignature::new(u32::from(numerator), 1 << power);
+            let bar = tpb as f64 * signature.beats_per_measure();
+            let step = grid_step_ticks(numerator, power, tpb);
+            assert_eq!(
+                (step * u64::from(signature.grid_beats_per_measure())) as f64,
+                bar,
+                "{numerator}/{}",
+                1 << power
+            );
+        }
+        for (numerator, power) in [(4u8, 2u8), (2, 1), (7, 3), (5, 4)] {
+            for tpb in [480, 25, 97] {
+                assert_eq!(
+                    grid_step_ticks(numerator, power, tpb),
+                    beat_step_ticks(numerator, power, tpb)
+                );
+            }
+        }
+        assert_eq!(grid_step_ticks(6, 3, 25), 12);
+        assert_eq!(grid_step_ticks(4, 200, 480), 1);
+    }
 
     #[test]
     fn beat_step_ticks_simple_meters() {
@@ -1654,8 +1841,8 @@ mod tests {
         // in a perfectly aligned grid (all errors are 0).  The epsilon rule
         // should resolve the tie in favour of the candidate closest to the
         // grid's first beat (i.e. 0.0 — no lead-in).
-        let tpb = 480_u64;
-        let events = vec![TempoEvent {
+        let tpb = 480_u16;
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];
@@ -1675,8 +1862,8 @@ mod tests {
         // Grid starts at exactly 1 beat (0.5s at 120 BPM) into the song.
         // The correct offset is 0.5s, and the score with that offset should be
         // meaningfully better than 0.0 (because 0.0 would misalign every beat).
-        let tpb = 480_u64;
-        let events = vec![TempoEvent {
+        let tpb = 480_u16;
+        let events = vec![TempoEntry {
             tick: 0,
             micros_per_beat: bpm_to_micros(120),
         }];

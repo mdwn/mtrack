@@ -17,69 +17,38 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, span, warn, Level};
 
+use super::{TransportAction, TransportBindings};
 use crate::{config, midi, midi::Device, player::Player};
 
-/// Recognized MIDI controller actions.
-#[derive(Debug, PartialEq)]
-enum MidiAction {
-    Play,
-    Prev,
-    Next,
-    Stop,
-    AllSongs,
-    Playlist,
-    SectionAck,
-    StopSectionLoop,
-    AmbientMode(crate::dmx::engine::AmbientMode),
-    CancelAutoPlay,
-    Unrecognized,
+/// The MIDI event configured for each transport action.
+type MidiEvents = TransportBindings<LiveEvent<'static>>;
+
+/// The MIDI event `config` binds to `action`, `None` for none.
+fn midi_event_for(
+    config: &config::MidiController,
+    action: TransportAction,
+) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+    use crate::dmx::engine::AmbientMode;
+    Ok(match action {
+        TransportAction::Play => Some(config.play()?),
+        TransportAction::Prev => Some(config.prev()?),
+        TransportAction::Next => Some(config.next()?),
+        TransportAction::Stop => Some(config.stop()?),
+        TransportAction::AllSongs => Some(config.all_songs()?),
+        TransportAction::Playlist => Some(config.playlist()?),
+        TransportAction::SectionAck => config.section_ack()?,
+        TransportAction::StopSectionLoop => config.stop_section_loop()?,
+        TransportAction::AmbientMode(AmbientMode::On) => config.ambient_on()?,
+        TransportAction::AmbientMode(AmbientMode::Off) => config.ambient_off()?,
+        TransportAction::AmbientMode(AmbientMode::Auto) => config.ambient_auto()?,
+        TransportAction::CancelAutoPlay => config.cancel_auto_play()?,
+    })
 }
 
-/// MIDI events that the controller recognizes.
-struct MidiEvents {
-    play: LiveEvent<'static>,
-    prev: LiveEvent<'static>,
-    next: LiveEvent<'static>,
-    stop: LiveEvent<'static>,
-    all_songs: LiveEvent<'static>,
-    playlist: LiveEvent<'static>,
-    section_ack: Option<LiveEvent<'static>>,
-    stop_section_loop: Option<LiveEvent<'static>>,
-    ambient_on: Option<LiveEvent<'static>>,
-    ambient_off: Option<LiveEvent<'static>>,
-    ambient_auto: Option<LiveEvent<'static>>,
-    cancel_auto_play: Option<LiveEvent<'static>>,
-}
-
-/// Classifies a parsed MIDI event against the known controller events.
-fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction {
-    if *event == events.play {
-        MidiAction::Play
-    } else if *event == events.prev {
-        MidiAction::Prev
-    } else if *event == events.next {
-        MidiAction::Next
-    } else if *event == events.stop {
-        MidiAction::Stop
-    } else if *event == events.all_songs {
-        MidiAction::AllSongs
-    } else if *event == events.playlist {
-        MidiAction::Playlist
-    } else if events.section_ack.as_ref() == Some(event) {
-        MidiAction::SectionAck
-    } else if events.stop_section_loop.as_ref() == Some(event) {
-        MidiAction::StopSectionLoop
-    } else if events.ambient_on.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::On)
-    } else if events.ambient_off.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Off)
-    } else if events.ambient_auto.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Auto)
-    } else if events.cancel_auto_play.as_ref() == Some(event) {
-        MidiAction::CancelAutoPlay
-    } else {
-        MidiAction::Unrecognized
-    }
+/// The transport action a MIDI event is configured as, `None` for one
+/// that is not.
+fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> Option<TransportAction> {
+    events.classify(|bound| bound == event)
 }
 
 /// Stops a device's event watch when dropped.
@@ -118,20 +87,7 @@ impl Driver {
                 Ok(Arc::new(Driver {
                     player,
                     midi_device,
-                    events: MidiEvents {
-                        play: config.play()?,
-                        prev: config.prev()?,
-                        next: config.next()?,
-                        stop: config.stop()?,
-                        all_songs: config.all_songs()?,
-                        playlist: config.playlist()?,
-                        section_ack: config.section_ack()?,
-                        stop_section_loop: config.stop_section_loop()?,
-                        ambient_on: config.ambient_on()?,
-                        ambient_off: config.ambient_off()?,
-                        ambient_auto: config.ambient_auto()?,
-                        cancel_auto_play: config.cancel_auto_play()?,
-                    },
+                    events: MidiEvents::new(|action| midi_event_for(&config, action))?,
                 }))
             }
             None => Err("No MIDI device to use for MIDI configuration".into()),
@@ -147,20 +103,7 @@ impl super::Driver for Driver {
         let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(256);
         let player = self.player.clone();
         let device = self.midi_device.clone();
-        let events = MidiEvents {
-            play: self.events.play,
-            prev: self.events.prev,
-            next: self.events.next,
-            stop: self.events.stop,
-            all_songs: self.events.all_songs,
-            playlist: self.events.playlist,
-            section_ack: self.events.section_ack,
-            stop_section_loop: self.events.stop_section_loop,
-            ambient_on: self.events.ambient_on,
-            ambient_off: self.events.ambient_off,
-            ambient_auto: self.events.ambient_auto,
-            cancel_auto_play: self.events.cancel_auto_play,
-        };
+        let events = self.events.clone();
 
         // Watched before the task below exists, so that the task only ever
         // stops a watch that has started.
@@ -214,45 +157,8 @@ impl super::Driver for Driver {
                     }
                 };
 
-                match classify_midi_event(&events, &event) {
-                    MidiAction::Play => {
-                        if let Err(e) = player.play().await {
-                            error!(err = e.as_ref(), "Failed to play song: {}", e);
-                        }
-                    }
-                    MidiAction::Prev => {
-                        player.prev().await;
-                    }
-                    MidiAction::Next => {
-                        player.next().await;
-                    }
-                    MidiAction::Stop => {
-                        player.stop().await;
-                    }
-                    MidiAction::AllSongs => {
-                        if let Err(e) = player.switch_to_playlist("all_songs").await {
-                            error!("Failed to switch to all_songs: {}", e);
-                        }
-                    }
-                    MidiAction::Playlist => {
-                        let name = player.persisted_playlist_name();
-                        if let Err(e) = player.switch_to_playlist(&name).await {
-                            error!("Failed to switch to playlist {}: {}", name, e);
-                        }
-                    }
-                    MidiAction::SectionAck => {
-                        if let Err(e) = player.section_ack().await {
-                            error!("Failed to ack section: {}", e);
-                        }
-                    }
-                    MidiAction::StopSectionLoop => {
-                        player.stop_section_loop();
-                    }
-                    MidiAction::AmbientMode(mode) => player.set_ambient_mode(mode),
-                    MidiAction::CancelAutoPlay => {
-                        player.cancel_waiting_auto_play();
-                    }
-                    MidiAction::Unrecognized => {}
+                if let Some(action) = classify_midi_event(&events, &event) {
+                    action.run(&player).await;
                 }
             }
         })
@@ -261,16 +167,12 @@ impl super::Driver for Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path};
+    use std::error::Error;
 
     use crate::{
         config::{self, midi::ToMidiEvent, MidiController},
         controller::Controller,
         midi::Device,
-        player::Player,
-        playlist,
-        playlist::Playlist,
-        songs,
         testutil::eventually,
     };
 
@@ -306,31 +208,9 @@ mod test {
         playlist_event.to_midi_event()?.write(&mut playlist_buf)?;
         unrecognized_event.write(&mut unrecognized_buf)?;
 
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
@@ -520,22 +400,10 @@ mod test {
     /// started for it ran on, and nothing could watch the device again.
     #[tokio::test(flavor = "current_thread")]
     async fn a_driver_aborted_before_it_runs_stops_its_watch() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-aborted-driver", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-aborted-driver")
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         let device = player.midi_device().expect("midi device");
         let driver = super::Driver::new(
@@ -572,22 +440,10 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_watch_the_device_lets_go_ends_the_driver_with_an_error() -> Result<(), Box<dyn Error>>
     {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-watch-let-go", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-watch-let-go")
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         let device = player.midi_device().expect("midi device");
         let driver = super::Driver::new(
@@ -604,7 +460,7 @@ mod test {
         let handle = crate::controller::Driver::monitor_events(&*driver);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         device.stop_watch_events();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, handle)
             .await
             .expect("the driver ran on with nothing watching")?;
         assert!(result.is_err(), "the driver ended as if stopped");
@@ -612,25 +468,20 @@ mod test {
     }
 
     mod classify_midi_event_tests {
-        use super::super::{classify_midi_event, MidiAction, MidiEvents};
+        use super::super::{classify_midi_event, MidiEvents, TransportAction};
         use crate::config::midi::{note_on, ToMidiEvent};
         use midly::live::LiveEvent;
 
+        /// Keys 0 to 11 on channel 16, one per action in
+        /// [`TransportAction::ALL`]'s order.
         fn make_test_events() -> MidiEvents {
-            MidiEvents {
-                play: note_on(16, 0, 127).to_midi_event().unwrap(),
-                prev: note_on(16, 1, 127).to_midi_event().unwrap(),
-                next: note_on(16, 2, 127).to_midi_event().unwrap(),
-                stop: note_on(16, 3, 127).to_midi_event().unwrap(),
-                all_songs: note_on(16, 4, 127).to_midi_event().unwrap(),
-                playlist: note_on(16, 5, 127).to_midi_event().unwrap(),
-                section_ack: Some(note_on(16, 6, 127).to_midi_event().unwrap()),
-                stop_section_loop: Some(note_on(16, 7, 127).to_midi_event().unwrap()),
-                ambient_on: Some(note_on(16, 8, 127).to_midi_event().unwrap()),
-                ambient_off: Some(note_on(16, 9, 127).to_midi_event().unwrap()),
-                ambient_auto: Some(note_on(16, 10, 127).to_midi_event().unwrap()),
-                cancel_auto_play: Some(note_on(16, 11, 127).to_midi_event().unwrap()),
-            }
+            let mut key = 0;
+            MidiEvents::new(|_| {
+                let event = note_on(16, key, 127).to_midi_event()?;
+                key += 1;
+                Ok(Some(event))
+            })
+            .unwrap()
         }
 
         #[test]
@@ -638,10 +489,10 @@ mod test {
             use crate::dmx::engine::AmbientMode;
             let events = make_test_events();
             for (key, action) in [
-                (8, MidiAction::AmbientMode(AmbientMode::On)),
-                (9, MidiAction::AmbientMode(AmbientMode::Off)),
-                (10, MidiAction::AmbientMode(AmbientMode::Auto)),
-                (11, MidiAction::CancelAutoPlay),
+                (8, Some(TransportAction::AmbientMode(AmbientMode::On))),
+                (9, Some(TransportAction::AmbientMode(AmbientMode::Off))),
+                (10, Some(TransportAction::AmbientMode(AmbientMode::Auto))),
+                (11, Some(TransportAction::CancelAutoPlay)),
             ] {
                 let event = note_on(16, key, 127).to_midi_event().unwrap();
                 assert_eq!(classify_midi_event(&events, &event), action, "key {key}");
@@ -652,52 +503,67 @@ mod test {
         fn recognizes_play() {
             let events = make_test_events();
             let event = note_on(16, 0, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Play);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Play)
+            );
         }
 
         #[test]
         fn recognizes_prev() {
             let events = make_test_events();
             let event = note_on(16, 1, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Prev);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Prev)
+            );
         }
 
         #[test]
         fn recognizes_next() {
             let events = make_test_events();
             let event = note_on(16, 2, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Next);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Next)
+            );
         }
 
         #[test]
         fn recognizes_stop() {
             let events = make_test_events();
             let event = note_on(16, 3, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Stop);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Stop)
+            );
         }
 
         #[test]
         fn recognizes_all_songs() {
             let events = make_test_events();
             let event = note_on(16, 4, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::AllSongs);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::AllSongs)
+            );
         }
 
         #[test]
         fn recognizes_playlist() {
             let events = make_test_events();
             let event = note_on(16, 5, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Playlist);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Playlist)
+            );
         }
 
         #[test]
         fn unrecognized_note() {
             let events = make_test_events();
             let event = note_on(16, 99, 127).to_midi_event().unwrap();
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -705,10 +571,7 @@ mod test {
             let events = make_test_events();
             // Play is on channel 16, note 0 — try channel 1
             let event = note_on(1, 0, 127).to_midi_event().unwrap();
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -717,10 +580,7 @@ mod test {
             // Play is note_on(16, 0, 127) — try with velocity 64
             let event = note_on(16, 0, 64).to_midi_event().unwrap();
             // LiveEvent NoteOn equality checks velocity too, so different velocity won't match
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -730,10 +590,7 @@ mod test {
                 channel: 15.into(),
                 message: midly::MidiMessage::ProgramChange { program: 27.into() },
             };
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -747,10 +604,7 @@ mod test {
                     vel: 127.into(),
                 },
             };
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
     }
 }

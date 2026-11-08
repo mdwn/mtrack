@@ -16,64 +16,11 @@
 //! through against a seek, `evaluate_show` and the show's end.
 
 use super::*;
-use crate::lighting::parser::parse_light_shows;
-use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+use crate::testutil::lighting::{engine_with as fresh, rgb, shows};
 
+/// The mover at address 1.
 fn mover(name: &str) -> FixtureInfo {
-    let channels: HashMap<String, u16> = [("pan", 1), ("tilt", 3), ("dimmer", 5)]
-        .into_iter()
-        .map(|(n, o)| (n.to_string(), o))
-        .collect();
-    let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Mover".to_string(), channels, None);
-    let mut defs = HashMap::new();
-    defs.insert(
-        "pan".to_string(),
-        ChannelDef {
-            offset: 1,
-            fine: Some(2),
-            range: Some(PhysicalRange {
-                from: -270.0,
-                to: 270.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert(
-        "tilt".to_string(),
-        ChannelDef {
-            offset: 3,
-            fine: Some(4),
-            range: Some(PhysicalRange {
-                from: -135.0,
-                to: 135.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert("dimmer".to_string(), ChannelDef::at(5));
-    info = info.with_channel_defs(defs);
-    info.position = Some([0.0, 3.0, 0.0]);
-    info.rotation = Some([0.0, 0.0, 0.0]);
-    info
-}
-
-fn rgb(name: &str) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(name.to_string(), 1, 10, "RGB".to_string(), channels, None)
-}
-
-fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("parse")
-        .into_values()
-        .collect()
+    crate::testutil::lighting::mover(name, 1)
 }
 
 fn run_frames(tl: &mut LightingTimeline, engine: &mut EffectEngine, from_ms: u64, until_ms: u64) {
@@ -83,17 +30,10 @@ fn run_frames(tl: &mut LightingTimeline, engine: &mut EffectEngine, from_ms: u64
         let t = Duration::from_millis(ms);
         let u = tl.update(t);
         apply_timeline_update(engine, u, &mut |e| e);
-        let _ = engine.update(step, Some(t));
+        // Out to the rig, as the live output sends it.
+        engine.render_and_send(step, t);
         ms += 10;
     }
-}
-
-fn fresh(fixtures: &[FixtureInfo]) -> EffectEngine {
-    let mut engine = EffectEngine::new();
-    for f in fixtures {
-        engine.register_fixture(f.clone());
-    }
-    engine
 }
 
 /// Played through from 0 in exact 10 ms frames, as the effects loop does.
@@ -113,8 +53,7 @@ fn seek_play(source: &str, fixtures: &[FixtureInfo], seek_ms: u64, until_ms: u64
     let mut engine = fresh(fixtures);
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     run_frames(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }
@@ -192,7 +131,7 @@ fn compare_pan(name: &str, src: &str, pairs: &[(u64, u64)]) -> Vec<String> {
 }
 
 fn compare_blue(name: &str, src: &str, pairs: &[(u64, u64)]) -> Vec<String> {
-    let f = [rgb("w")];
+    let f = [rgb("w", 10)];
     let mut bad = Vec::new();
     for &(seek, at) in pairs {
         let l = played(src, &f, at);
@@ -384,7 +323,7 @@ fn move_seek_battery2() {
 fn move_seek_static_slow_down_seek_onto_it() {
     let src = "show \"s\" {\n    @00:02.000\n    w: static, color: \"blue\", duration: 2s\n    \
         @00:04.000\n    master(layer: background, speed: 0.5)\n}\n";
-    let f = [rgb("w")];
+    let f = [rgb("w", 10)];
     for (seek, at) in [(4000, 4000), (4000, 5000), (4500, 4500)] {
         let live = blue_of(&played(src, &f, at));
         let s = blue_of(&seek_play(src, &f, seek, at));
@@ -430,7 +369,7 @@ fn move_seek_show_end() {
         let f = if is_move {
             vec![mover("m")]
         } else {
-            vec![rgb("w")]
+            vec![rgb("w", 10)]
         };
         let live = live_end(&src, &f, 20000);
         let end = LightingTimeline::new(shows(&src)).show_end();
@@ -486,9 +425,14 @@ fn compare_heads(
                     "{name} {head} seek {seek} at {at}: live {l:?} seek {s:?}"
                 ));
             }
-            // Evaluate reports a head with no pose at rest, at 0.
+            // Evaluate draws a head as the live snapshot does: one with no
+            // pose where its held pan points (a clear released it), else at
+            // rest, at 0.
+            let drawn = crate::state::shown_poses_on_wire(&live)
+                .get(head)
+                .map(|pose| pose.pan);
             let e = eval_pan(src, fixtures, at, head);
-            if !close(l.or(Some(0.0)), e) {
+            if !close(l.or(drawn).or(Some(0.0)), e) {
                 bad.push(format!("{name} {head} eval at {at}: live {l:?} eval {e:?}"));
             }
         }
@@ -893,7 +837,7 @@ fn many_overlapping_moves(n: u64) -> String {
 
 /// Builds the timeline for `n` cues of [`many_overlapping_moves`] and seeks
 /// to near its end: how long each takes, and how many effects the seek
-/// hands the engine.
+/// leaves running.
 fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
     let s = shows(&many_overlapping_moves(n));
     let t = std::time::Instant::now();
@@ -901,18 +845,19 @@ fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
     let built = t.elapsed();
     let t = std::time::Instant::now();
     let h = tl.start_at(Duration::from_millis(n * 50 - 100));
-    (built, t.elapsed(), h.effects_with_elapsed.len())
+    let mut engine = EffectEngine::reckoner();
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
+    (built, t.elapsed(), engine.get_active_effects().len())
 }
 
-/// A move that sets a head's pose outright, over another's, leaves nothing
-/// of the earlier one's pose to keep, so the replay forgets that one:
-/// building the timeline and seeking stay linear in the cues, and the seek
-/// hands the engine only what still counts, not every move since the top
-/// (#596, #599). 8000 cues took about 4 s in release while they piled up.
+/// A move that takes a head's pose over another's leaves nothing of the
+/// earlier one to keep: building the timeline and seeking stay linear in the
+/// cues, and the seek leaves only what still runs, not every move since the
+/// top (#596, #599). 8000 cues took about 4 s in release while they piled up.
 #[test]
 fn a_long_show_of_moves_builds_and_seeks_quickly() {
     let (built, sought, resumed) = build_and_seek(8000);
-    assert!(resumed <= 16, "{resumed} effects handed over");
+    assert!(resumed <= 16, "{resumed} effects still running");
     assert!(built < Duration::from_secs(5), "built in {built:?}");
     assert!(sought < Duration::from_secs(5), "sought in {sought:?}");
 }
@@ -926,5 +871,153 @@ fn time_a_long_show_of_moves() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4000);
     let (built, sought, resumed) = build_and_seek(n);
-    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects handed over");
+    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects still running");
+}
+
+/// A seek into `R2N` cues of [`many_overlapping_moves`] (4000 by default)
+/// on eight real heads, timed by phase: `scratch` and `install`, which a
+/// DMX start runs under the engine's lock, and `prepare`, the replay, which
+/// it runs with the lock released.
+#[test]
+#[ignore]
+fn time_a_seeks_phases() {
+    let n: u64 = std::env::var("R2N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4000);
+    let heads: Vec<FixtureInfo> = (0..8u16)
+        .map(|i| mover_at(&format!("h{i}"), 1 + i * 16))
+        .collect();
+    let mut tl = LightingTimeline::new(shows(&many_overlapping_moves(n)));
+    let mut engine = fresh(&heads);
+    let scope = crate::lighting::engine::StopScope::All;
+    for _ in 0..5 {
+        let history = tl.start_at(Duration::from_millis(n * 50 - 100));
+        let t = std::time::Instant::now();
+        let scratch = engine.scratch(scope);
+        let scratched = t.elapsed();
+        let t = std::time::Instant::now();
+        let prepared = scratch.prepare(history);
+        let replayed = t.elapsed();
+        let t = std::time::Instant::now();
+        let errors = engine.install(prepared);
+        let installed = t.elapsed();
+        eprintln!(
+            "{n} cues: scratch {scratched:?}, prepare {replayed:?}, install {installed:?}, \
+             {} running, {} errors",
+            engine.get_active_effects().len(),
+            errors.len()
+        );
+    }
+}
+
+/// A start prepared while the engine renders on installs as one done all
+/// at once: the frames between take nothing from it, and the head goes on
+/// from the same place.
+#[test]
+fn a_start_prepared_while_the_engine_renders_installs_the_same() {
+    let src = show(format!(
+        "    @0.000\n    m: move pan: 90deg, tilt: 0deg, duration: 4s\n    \
+         @1.000\n    freeze(layer: background)\n    @2.000\n    unfreeze(layer: background)\n{}",
+        st("3.000", "3s")
+    ));
+    let f = [mover("m"), rgb("w", 10)];
+    let at = Duration::from_millis(3500);
+    let at_once = seek_play(&src, &f, 3500, 4500);
+
+    let mut tl = LightingTimeline::new(shows(&src));
+    let mut engine = fresh(&f);
+    let scope = crate::lighting::engine::StopScope::All;
+    let scratch = engine.scratch(scope);
+    for _ in 0..7 {
+        let _ = engine.update(Duration::from_millis(23), Some(Duration::ZERO));
+    }
+    let prepared = scratch.prepare(tl.start_at(at));
+    assert!(engine.install(prepared).is_empty());
+    run_frames(&mut tl, &mut engine, 3500, 4500);
+
+    assert_eq!(pan_of(&engine), pan_of(&at_once));
+    assert_eq!(blue_of(&engine), blue_of(&at_once));
+}
+
+/// A pass crossfade's start, replayed from the pose memory of a moment
+/// before the swap and installed into the fresh engine at it, is the start
+/// replayed from the fresh engine's own: a head the history moves without a
+/// `from` starts from where it is at the swap (the history replayed again,
+/// since it has moved), one it moves from a pose of its own is where the
+/// replay left it, and one it leaves alone keeps its pose at the swap.
+#[test]
+fn a_start_installed_at_a_swap_starts_from_the_poses_then() {
+    for next in [
+        "    @0.000\n    m: move pan: 90deg, tilt: 0deg, duration: 2s\n",
+        "    @0.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, \
+         duration: 2s\n",
+    ] {
+        let next = show(next.to_string());
+        let f = [mover("m"), mover_at("n", 41)];
+        let mut outgoing = fresh(&f);
+        let mut playing = LightingTimeline::new(shows(&show(
+            "    @0.000\n    m, n: move from_pan: 0deg, from_tilt: 0deg, pan: -90deg, \
+             tilt: 0deg, duration: 3s\n"
+                .to_string(),
+        )));
+        playing.start();
+        run_frames(&mut playing, &mut outgoing, 0, 500);
+        let history = || LightingTimeline::new(shows(&next)).start_at(Duration::from_millis(1500));
+
+        let scratch = outgoing.scratch(crate::lighting::engine::StopScope::Nothing);
+        let prepared = scratch.prepare(history());
+        // The outgoing pass plays on while the history replays.
+        run_frames(&mut playing, &mut outgoing, 510, 1000);
+        let mut split = outgoing.sibling();
+        assert!(split.install(prepared).is_empty());
+
+        let mut whole = outgoing.sibling();
+        let _ = whole.start_from(history(), crate::lighting::engine::StopScope::Nothing);
+        for head in ["m", "n"] {
+            let (a, b) = (split.poses()[head], whole.poses()[head]);
+            assert!(
+                (a.pan - b.pan).abs() < 1e-9 && (a.tilt - b.tilt).abs() < 1e-9,
+                "{next}: {head}: {a:?} vs {b:?}"
+            );
+        }
+        assert!(
+            (split.poses()["n"].pan - outgoing.poses()["n"].pan).abs() < 1e-9,
+            "n is where the outgoing pass has it at the swap"
+        );
+    }
+}
+
+/// An install with `StopScope::Nothing` takes nothing the engine runs: an
+/// effect started between the scratch and the install stays, as it was,
+/// beside the history's.
+#[test]
+fn an_install_beside_what_runs_keeps_it_as_it_was() {
+    let f = [mover("m"), rgb("w", 10)];
+    let mut engine = fresh(&f);
+    let src = show(st("0.000", "10s"));
+    let mut tl = LightingTimeline::new(shows(&src));
+    let scratch = engine.scratch(crate::lighting::engine::StopScope::Nothing);
+    let prepared = scratch.prepare(tl.start_at(Duration::from_secs(2)));
+
+    let mut live = EffectInstance::new(
+        "live".to_string(),
+        crate::lighting::effects::EffectType::Static {
+            parameters: HashMap::from([("red".to_string(), 1.0)]),
+            duration: Duration::from_secs(30),
+        },
+        vec!["w".to_string()],
+        None,
+        None,
+        None,
+    );
+    live.layer = crate::lighting::effects::EffectLayer::Foreground;
+    engine.start_effect(live).unwrap();
+    for _ in 0..5 {
+        let _ = engine.update(Duration::from_millis(23), None);
+    }
+    let started = engine.get_active_effects()["live"].start_time;
+    assert!(engine.install(prepared).is_empty());
+    assert_eq!(engine.get_active_effects()["live"].start_time, started);
+    assert_eq!(engine.get_active_effects().len(), 2, "the history's too");
 }

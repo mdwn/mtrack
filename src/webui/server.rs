@@ -31,9 +31,7 @@ use tonic_web::GrpcWebLayer;
 use tower::{Layer, ServiceExt};
 use tracing::{debug, error, info};
 
-use crate::controller::grpc::PlayerServer;
 use crate::player::Player;
-use crate::proto::player::v1::player_service_server::PlayerServiceServer;
 use crate::state::StateSnapshot;
 
 use super::state as ws_state;
@@ -317,12 +315,8 @@ async fn grpc_web_handler(
         method, uri, content_type
     );
 
-    let grpc_svc = match state.player.config_store() {
-        Some(store) => {
-            PlayerServiceServer::new(PlayerServer::with_config_store(state.player.clone(), store))
-        }
-        None => PlayerServiceServer::new(PlayerServer::new(state.player.clone())),
-    };
+    // The same service, behind the same lock, as native gRPC.
+    let grpc_svc = crate::controller::grpc::player_service(state.player.clone());
     let grpc_web = GrpcWebLayer::new().layer(grpc_svc);
 
     match grpc_web.oneshot(request).await {
@@ -403,6 +397,7 @@ fn mime_type_for_path(path: &str) -> &'static str {
         Some("ico") => "image/x-icon",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -585,69 +580,15 @@ mod test {
         assert_eq!(config.address, "127.0.0.1");
     }
 
-    use crate::player::PlayerDevices;
-    use crate::playlist;
-    use crate::songs::{Song, Songs};
-    use std::collections::HashMap;
-
     fn test_webui_state() -> (WebUiState, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-
-        let config_path = dir.path().join("mtrack.yaml");
-        std::fs::write(&config_path, "songs: songs\n").unwrap();
-
-        let playlist_path = dir.path().join("playlist.yaml");
-        std::fs::write(&playlist_path, "songs:\n  - Song A\n").unwrap();
-
-        let songs_path = dir.path().join("songs");
-        std::fs::create_dir(&songs_path).unwrap();
-
-        let mut map = HashMap::new();
-        map.insert(
-            "Song A".to_string(),
-            Arc::new(Song::new_for_test("Song A", &["track1"])),
-        );
-        let songs = Arc::new(Songs::new(map));
-        let playlist_config = crate::config::Playlist::new(&["Song A".to_string()]);
-        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let mut playlists = std::collections::HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone()).unwrap(),
-        );
-        playlists.insert(pl.name().to_string(), pl);
-        let player = Arc::new(
-            crate::player::Player::new_with_devices(devices, playlists, "test".to_string(), None)
-                .unwrap(),
-        );
-
-        let (broadcast_tx, _) = broadcast::channel(16);
-        let (_state_tx, state_rx) =
-            watch::channel(Arc::new(crate::state::StateSnapshot::default()));
-
-        player.set_song_sources(crate::player::SongSources {
-            songs: songs_path,
-            playlists_dir: None,
-            legacy_playlist: Some(playlist_path),
-        });
-        let state = WebUiState::new(WebUiStateParams {
-            player,
-            state_rx,
-            broadcast_tx,
-            config_path,
-            profiles_dir: None,
-            waveform_cache: ws_state::new_waveform_cache(),
-        });
-
-        (state, dir)
+        super::super::api::test_helpers::test_state_on_disk(
+            crate::testutil::player::memory_player(&["Song A"]).playlists(),
+            "test",
+            None,
+            None,
+            "songs:\n  - Song A\n",
+            false,
+        )
     }
 
     async fn start_test_server() -> (WebUiHandle, String, tempfile::TempDir) {
@@ -932,12 +873,12 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // First message: metadata
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .unwrap();
 
         // Second message: waveform (from pre-populated cache)
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for waveform message")
             .expect("stream ended")
@@ -967,7 +908,7 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // First message should be the metadata JSON
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for WS message")
             .expect("stream ended")
@@ -993,12 +934,12 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // Skip the metadata message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .unwrap();
 
         // Next messages should include a playback update (poller runs at 200ms)
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for playback message")
             .expect("stream ended")

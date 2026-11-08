@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::devices::{AudioProbe, NoiseFloor, ProbeAudioRequest, ProbeKind};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
 
@@ -62,23 +63,6 @@ pub(super) async fn get_midi_devices() -> impl IntoResponse {
 /// for is the hardware, not the session.
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// What the config editor asks to have probed: a device name, plus whichever
-/// format settings are filled in beside it.
-///
-/// Everything but the name is optional and mirrors the profile's audio block,
-/// so the probe opens the device the way saving this profile would. Probing
-/// with defaults would answer a question nobody asked — a WING opens fine at
-/// some formats and refuses the one that matters.
-#[derive(serde::Deserialize)]
-pub(super) struct ProbeAudioRequest {
-    device: String,
-    sample_rate: Option<u32>,
-    sample_format: Option<String>,
-    bits_per_sample: Option<u16>,
-    buffer_size: Option<usize>,
-    stream_buffer_size: Option<crate::config::StreamBufferSize>,
-}
-
 /// POST /api/devices/audio/probe — opens a device, confirms its callback runs,
 /// and closes it again.
 ///
@@ -117,12 +101,13 @@ pub(super) async fn post_probe_audio_device(
         });
         return (
             StatusCode::OK,
-            Json(json!({
-                "outcome": "in_use",
-                "ok": ok,
-                "callbacks": health.as_ref().map(|h| h.callbacks),
-                "health": health,
-            })),
+            Json(AudioProbe {
+                outcome: ProbeKind::InUse,
+                ok,
+                reason: None,
+                callbacks: health.as_ref().map(|h| h.callbacks),
+                health: Some(health),
+            }),
         )
             .into_response();
     }
@@ -169,24 +154,26 @@ pub(super) async fn post_probe_audio_device(
     // real device while it does.
     match tokio::task::spawn_blocking(move || audio::probe_device(audio)).await {
         Ok(outcome) => {
-            let reason = match &outcome {
-                audio::ProbeOutcome::CouldNotOpen(why) => Some(why.clone()),
-                _ => None,
+            let (kind, reason, callbacks) = match &outcome {
+                audio::ProbeOutcome::Streaming { callbacks } => {
+                    (ProbeKind::Streaming, None, Some(*callbacks))
+                }
+                audio::ProbeOutcome::OpenedButSilent => (ProbeKind::OpenedButSilent, None, None),
+                audio::ProbeOutcome::CouldNotOpen(why) => {
+                    (ProbeKind::CouldNotOpen, Some(why.clone()), None)
+                }
+                audio::ProbeOutcome::OpenedCannotReport => {
+                    (ProbeKind::OpenedCannotReport, None, None)
+                }
             };
-            let callbacks = match &outcome {
-                audio::ProbeOutcome::Streaming { callbacks } => Some(*callbacks),
-                _ => None,
+            let probe = AudioProbe {
+                outcome: kind,
+                ok: outcome.is_ok(),
+                reason: Some(reason),
+                callbacks,
+                health: None,
             };
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "outcome": outcome.kind(),
-                    "ok": outcome.is_ok(),
-                    "reason": reason,
-                    "callbacks": callbacks,
-                })),
-            )
-                .into_response()
+            (StatusCode::OK, Json(probe)).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -346,14 +333,14 @@ pub(super) async fn post_calibrate_start(
             device_name,
             noise_floor,
         ))) => {
-            let response = json!({
-                "peak": noise_floor.peak,
-                "rms": noise_floor.rms,
-                "low_freq_energy": noise_floor.low_freq_energy,
-                "channel": target_channel,
-                "sample_rate": sample_rate,
-                "device_channels": channels,
-            });
+            let response = NoiseFloor {
+                peak: noise_floor.peak.into(),
+                rms: noise_floor.rms.into(),
+                low_freq_energy: noise_floor.low_freq_energy.into(),
+                channel: target_channel,
+                sample_rate,
+                device_channels: channels,
+            };
 
             let session = CalibrationSession {
                 device,

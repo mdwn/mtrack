@@ -13,7 +13,11 @@
      *
      * -->
 <script lang="ts">
-  import { GAIN_MIN, GAIN_MAX, GAIN_STEP, formatDb } from "../lib/gain";
+  import { GAIN_STEP, formatDb } from "../lib/gain";
+  import { rules } from "../lib/rules";
+
+  /** The player's gain range (`track_gains`); its lowest is silence. */
+  const [GAIN_MIN, GAIN_MAX] = rules.limits().gain_db;
   import { t } from "svelte-i18n";
 
   interface Props {

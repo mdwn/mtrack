@@ -12,7 +12,13 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-type MessageHandler = (data: unknown) => void;
+import type { SocketMessage } from "../../gen/rules/mtrack_rules";
+
+type MessageOf<T extends SocketMessage["type"]> = Extract<
+  SocketMessage,
+  { type: T }
+>;
+type MessageHandler = (msg: SocketMessage) => void;
 
 const RECONNECT_MS = 2000;
 
@@ -36,9 +42,12 @@ export function onConnectionStatus(cb: (connected: boolean) => void): void {
   onStatusChange = cb;
 }
 
-export function on(type: string, cb: MessageHandler): void {
+export function on<T extends SocketMessage["type"]>(
+  type: T,
+  cb: (msg: MessageOf<T>) => void,
+): void {
   const list = handlers.get(type) ?? [];
-  list.push(cb);
+  list.push(cb as MessageHandler);
   handlers.set(type, list);
 }
 
@@ -72,9 +81,8 @@ export function connect(): void {
 
   ws.onmessage = (event) => {
     try {
-      const msg = JSON.parse(event.data as string);
-      const type = msg.type as string;
-      const cbs = handlers.get(type);
+      const msg = JSON.parse(event.data as string) as SocketMessage;
+      const cbs = handlers.get(msg.type);
       if (cbs) {
         for (const cb of cbs) cb(msg);
       }

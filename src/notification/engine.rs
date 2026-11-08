@@ -32,6 +32,7 @@ use crate::audio;
 use crate::audio::mixer::{ActiveSource, AudioMixer};
 use crate::audio::sample_source::channel_mapped::ChannelMappedSource;
 use crate::audio::sample_source::MemorySampleSource;
+use crate::config::section_key;
 use crate::playsync::CancelHandle;
 use crate::samples::loader::SampleLoader;
 
@@ -42,6 +43,23 @@ use crate::samples::loader::SampleLoader;
 ///   mtrack:looping: [9]
 /// ```
 pub const NOTIFICATION_TRACK: &str = "mtrack:looping";
+
+/// Loads the event overrides and the per-section ones, the latter under
+/// their [`section_key`], into one map: global and per-song alike.
+fn load_keyed_overrides(
+    overrides: &HashMap<String, String>,
+    section_overrides: &HashMap<String, String>,
+    base_path: &Path,
+    loader: &mut SampleLoader,
+) -> HashMap<String, Arc<Vec<f32>>> {
+    let mut keyed = overrides.clone();
+    keyed.extend(
+        section_overrides
+            .iter()
+            .map(|(name, path)| (section_key(name), path.clone())),
+    );
+    load_overrides(&keyed, base_path, loader)
+}
 
 /// The notification engine manages audio playback for notification events.
 pub struct NotificationEngine {
@@ -68,32 +86,13 @@ impl NotificationEngine {
     ) -> Self {
         let default_tones = generate_default_tones(sample_rate);
 
-        // Load global overrides.
         let mut loader = SampleLoader::new(sample_rate);
-        let mut global_overrides = load_overrides(global_overrides_config, base_path, &mut loader);
-
-        // Load global section name overrides with "section:" prefix.
-        for (section_name, path_str) in global_section_overrides {
-            let key = format!("section:{}", section_name);
-            let path = if Path::new(path_str).is_absolute() {
-                path_str.into()
-            } else {
-                base_path.join(path_str)
-            };
-            match super::audio::load_audio_file(&mut loader, &path) {
-                Ok(samples) => {
-                    global_overrides.insert(key, samples);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        section = section_name.as_str(),
-                        path = ?path,
-                        err = %e,
-                        "Failed to load section notification override"
-                    );
-                }
-            }
-        }
+        let global_overrides = load_keyed_overrides(
+            global_overrides_config,
+            global_section_overrides,
+            base_path,
+            &mut loader,
+        );
 
         info!(
             default_tones = default_tones.len(),
@@ -130,30 +129,7 @@ impl NotificationEngine {
         base_path: &Path,
     ) {
         let mut loader = SampleLoader::new(self.sample_rate);
-        let mut loaded = load_overrides(overrides, base_path, &mut loader);
-
-        // Load section name overrides with "section:" prefix.
-        for (section_name, path_str) in section_overrides {
-            let key = format!("section:{}", section_name);
-            let path = if Path::new(path_str).is_absolute() {
-                path_str.into()
-            } else {
-                base_path.join(path_str)
-            };
-            match super::audio::load_audio_file(&mut loader, &path) {
-                Ok(samples) => {
-                    loaded.insert(key, samples);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        section = section_name.as_str(),
-                        path = ?path,
-                        err = %e,
-                        "Failed to load song section notification override"
-                    );
-                }
-            }
-        }
+        let loaded = load_keyed_overrides(overrides, section_overrides, base_path, &mut loader);
 
         *self.song_overrides.write() = loaded;
     }

@@ -13,6 +13,14 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    Cluster,
+    Depth,
+    FitGroup,
+    FitReport,
+    Height,
+    Want,
+  } from "../../gen/rules/mtrack_rules";
   import { untrack } from "svelte";
   import { t, locale } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -27,14 +35,7 @@
     olaPatchLine,
     orderGroups,
     sameSet,
-    tagsFor,
     withTags,
-    type Cluster,
-    type Depth,
-    type Fit,
-    type FitGroup,
-    type Height,
-    type Want,
   } from "../../lib/lighting/fit";
   import { addUniverseToRunningProfile } from "../../lib/profileStore";
   import { metadataStore, reloadStore, venueStore } from "../../lib/ws/stores";
@@ -49,7 +50,7 @@
 
   let { groupParam, profileName }: Props = $props();
 
-  let fit = $state<Fit | null>(null);
+  let fit = $state<FitReport | null>(null);
   let error = $state<string | null>(null);
   let selectedName = $state<string | null>(null);
   /** The fixtures a click on Apply (or Tag N fixtures) would tag. */
@@ -122,7 +123,7 @@
   let current = $derived<FitGroup | null>(
     ordered.find((g) => g.name === selectedName) ?? null,
   );
-  let tags = $derived(current ? tagsFor(current) : []);
+  let tags = $derived(current?.tags ?? []);
   let canTag = $derived(current !== null && current.defined && tags.length > 0);
   let isSuggestion = $derived(
     current?.suggestion != null &&
@@ -197,7 +198,7 @@
     if (!fit?.venue || !current || selection.length === 0) return;
     const venueName = fit.venue.name;
     const names = [...selection];
-    const toAdd = tagsFor(current);
+    const toAdd = current.tags;
     tagging = true;
     tagMsg = null;
     try {

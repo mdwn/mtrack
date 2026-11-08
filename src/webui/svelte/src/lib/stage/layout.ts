@@ -25,7 +25,8 @@
  * region, everything else lands on the front row.
  */
 
-export type Vec3 = [number, number, number];
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+import type { BeamLook } from "./rig";
 
 export interface Pt {
   x: number;
@@ -244,33 +245,96 @@ export function beamEnd(
   ];
 }
 
-/** The channels a beam's look is read from. */
-export interface BeamChannels {
-  red?: number;
-  green?: number;
-  blue?: number;
-  dimmer?: number;
+/** How a plot draws its fixtures: the body's size, outline and glow, and
+ *  the label's font and its gap below the body. */
+export interface FixtureStyle {
+  radius: number;
+  glow: number;
+  lineWidth: number;
+  /** The outline of a fixture the venue has not placed. */
+  unplacedDash: number[];
+  stroke: string;
+  font: string;
+  labelFill: string;
+  labelGap: number;
+}
+
+/**
+ * Draws a fixture on a plot, the one way every 2D view does: its glow when
+ * it is lit, its body -- `body` when given (a pixel fixture's cells), else a
+ * disc in the colour it shows, black in a strobe's dark half -- outlined,
+ * dashed when unplaced, and its name under it.
+ */
+export function drawFixture(
+  ctx: CanvasRenderingContext2D,
+  pos: Pt,
+  name: string,
+  look: BeamLook,
+  style: FixtureStyle,
+  options: {
+    unplaced: boolean;
+    body?: (ctx: CanvasRenderingContext2D, color: string) => void;
+  },
+): void {
+  const [r, g, b] = look.rgb.map((c) =>
+    look.strobeOn ? Math.round(c * 255) : 0,
+  );
+  const color = `rgb(${r},${g},${b})`;
+  if (look.lit) {
+    const gradient = ctx.createRadialGradient(
+      pos.x,
+      pos.y,
+      style.radius,
+      pos.x,
+      pos.y,
+      style.glow,
+    );
+    gradient.addColorStop(0, `rgba(${r},${g},${b},${look.intensity * 0.5})`);
+    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, style.glow, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = style.stroke;
+  ctx.lineWidth = style.lineWidth;
+  if (options.unplaced) ctx.setLineDash(style.unplacedDash);
+  if (options.body) {
+    options.body(ctx, color);
+  } else {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, style.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = style.labelFill;
+  ctx.font = style.font;
+  ctx.textAlign = "center";
+  ctx.fillText(name, pos.x, pos.y + style.radius + style.labelGap);
 }
 
 /**
  * Draws a mover's beam on a canvas: from the fixture to `end` in the color
- * the fixture is showing, solid with a footprint dot when the beam meets
- * the deck, dashed when it points up or level, neutral when the fixture
- * is dark.
+ * the fixture is showing (its {@link beamLook}: the one reading of a
+ * fixture's state every view draws from, so the beam is lit, coloured and
+ * strobed as the fixture's dot is), solid with a footprint dot when the
+ * beam meets the deck, dashed when it points up or level, neutral when the
+ * fixture is dark or in a strobe's dark half.
  */
 export function drawBeam(
   ctx: CanvasRenderingContext2D,
   from: Pt,
   end: Pt,
-  channels: BeamChannels,
+  look: BeamLook,
   hasFloor: boolean,
   options: { dark: boolean; width: number; dot: number },
 ): void {
-  const k = (channels.dimmer ?? 255) / 255;
-  const r = Math.round((channels.red ?? 0) * k);
-  const g = Math.round((channels.green ?? 0) * k);
-  const b = Math.round((channels.blue ?? 0) * k);
-  const lit = r + g + b > 24;
+  const [r, g, b] = look.rgb.map((c) => Math.round(c * 255));
+  const lit = look.lit;
   const neutral = options.dark ? "255,255,255" : "0,0,0";
   ctx.strokeStyle = lit ? `rgba(${r},${g},${b},0.55)` : `rgba(${neutral},0.18)`;
   ctx.lineWidth = lit ? options.width : Math.max(1, options.width / 2);

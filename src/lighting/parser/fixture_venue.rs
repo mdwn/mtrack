@@ -15,90 +15,135 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
+use super::super::fixture_data::{beam_angle_valid, MAX_BEAM_ANGLE};
 use super::super::types::{
     ganged_from_cells, Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1,
     GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
 };
-use super::error::get_error_context;
+use super::error::describe_pest_error_in;
 use super::grammar::{LightingParser, Rule};
+use super::utils::{items, split_unit};
 use pest::iterators::Pair;
 use pest::Parser;
 
-pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
-    let mut fixture_types = HashMap::new();
+/// The kind of one top-level item of a lighting file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Include,
+    FixtureType,
+    Venue,
+    Show,
+    Sequence,
+    Tempo,
+}
 
-    let pairs = match LightingParser::parse(Rule::file, content) {
-        Ok(pairs) => pairs,
-        Err(e) => {
-            let (line, col) = match e.line_col {
-                pest::error::LineColLocation::Pos((line, col)) => (line, col),
-                pest::error::LineColLocation::Span((line, col), _) => (line, col),
-            };
-            return Err(format!(
-                "Fixture types DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
-                line,
-                col,
-                e.variant.message(),
-                get_error_context(content, line, col)
-            ).into());
+impl ItemKind {
+    /// The keyword the item starts with.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ItemKind::Include => "include",
+            ItemKind::FixtureType => "fixture_type",
+            ItemKind::Venue => "venue",
+            ItemKind::Show => "show",
+            ItemKind::Sequence => "sequence",
+            ItemKind::Tempo => "tempo",
         }
-    };
+    }
+}
 
-    for pair in pairs {
-        for inner_pair in pair.into_inner() {
-            match inner_pair.as_rule() {
-                Rule::fixture_type => {
-                    let fixture_type = parse_fixture_type_definition(inner_pair)
-                        .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
-                    fixture_types.insert(fixture_type.name().to_string(), fixture_type);
-                }
-                _ => {
-                    // Skip non-fixture_type rules (like comments)
-                }
-            }
+/// One top-level item of a lighting file, in file order: its kind and its
+/// name (an include's path; none for a tempo or an unnamed show).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileItem {
+    pub kind: ItemKind,
+    pub name: Option<String>,
+}
+
+impl std::fmt::Display for FileItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "{} \"{name}\"", self.kind.keyword()),
+            None => f.write_str(self.kind.keyword()),
+        }
+    }
+}
+
+/// A file's blocks of one kind by name, and every top-level item it holds.
+pub type Listed<T> = Result<(HashMap<String, T>, Vec<FileItem>), Box<dyn Error>>;
+
+/// The top-level item `pair` is, if it is one.
+fn file_item(pair: &Pair<Rule>) -> Option<FileItem> {
+    let kind = match pair.as_rule() {
+        Rule::include => ItemKind::Include,
+        Rule::fixture_type => ItemKind::FixtureType,
+        Rule::venue => ItemKind::Venue,
+        Rule::light_show => ItemKind::Show,
+        Rule::sequence => ItemKind::Sequence,
+        Rule::tempo => ItemKind::Tempo,
+        _ => return None,
+    };
+    let name = pair
+        .clone()
+        .into_inner()
+        .next()
+        .filter(|inner| {
+            matches!(
+                inner.as_rule(),
+                Rule::string | Rule::fixture_type_name | Rule::show_name | Rule::sequence_name
+            )
+        })
+        .map(extract_string);
+    Some(FileItem { kind, name })
+}
+
+pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
+    parse_fixture_types_listed(content).map(|(types, _)| types)
+}
+
+/// [`parse_fixture_types`], with every top-level item of the file in file
+/// order — a repeated type twice, though only its last block is kept.
+pub fn parse_fixture_types_listed(content: &str) -> Listed<FixtureType> {
+    let mut fixture_types = HashMap::new();
+    let mut listed = Vec::new();
+
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| describe_pest_error_in("Fixture types DSL", &e, content))?;
+
+    for pair in items(pairs) {
+        listed.extend(file_item(&pair));
+        if pair.as_rule() == Rule::fixture_type {
+            let fixture_type = parse_fixture_type_definition(pair)
+                .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
+            fixture_types.insert(fixture_type.name().to_string(), fixture_type);
         }
     }
 
-    Ok(fixture_types)
+    Ok((fixture_types, listed))
 }
 
 pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
+    parse_venues_listed(content).map(|(venues, _)| venues)
+}
+
+/// [`parse_venues`], with every top-level item of the file in file order —
+/// a repeated venue twice, though only its last block is kept.
+pub fn parse_venues_listed(content: &str) -> Listed<Venue> {
     let mut venues = HashMap::new();
+    let mut listed = Vec::new();
 
-    let pairs = match LightingParser::parse(Rule::file, content) {
-        Ok(pairs) => pairs,
-        Err(e) => {
-            let (line, col) = match e.line_col {
-                pest::error::LineColLocation::Pos((line, col)) => (line, col),
-                pest::error::LineColLocation::Span((line, col), _) => (line, col),
-            };
-            return Err(format!(
-                "Venues DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
-                line,
-                col,
-                e.variant.message(),
-                get_error_context(content, line, col)
-            )
-            .into());
-        }
-    };
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| describe_pest_error_in("Venues DSL", &e, content))?;
 
-    for pair in pairs {
-        for inner_pair in pair.into_inner() {
-            match inner_pair.as_rule() {
-                Rule::venue => {
-                    let venue = parse_venue_definition(inner_pair)
-                        .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
-                    venues.insert(venue.name().to_string(), venue);
-                }
-                _ => {
-                    // Ignore other rules
-                }
-            }
+    for pair in items(pairs) {
+        listed.extend(file_item(&pair));
+        if pair.as_rule() == Rule::venue {
+            let venue = parse_venue_definition(pair)
+                .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
+            venues.insert(venue.name().to_string(), venue);
         }
     }
 
-    Ok(venues)
+    Ok((venues, listed))
 }
 
 fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dyn Error>> {
@@ -358,12 +403,11 @@ fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Erro
 /// Parses a physical value with its unit: `270deg`, `-135.5deg`, `0.5hz`.
 fn parse_phys_value(text: &str) -> Result<(f64, PhysicalUnit), Box<dyn Error>> {
     let text = text.trim();
-    let (number, unit) = if let Some(n) = text.strip_suffix("deg") {
-        (n, PhysicalUnit::Degrees)
-    } else if let Some(n) = text.strip_suffix("hz") {
-        (n, PhysicalUnit::Hertz)
-    } else {
-        return Err(format!("physical value \"{text}\" needs a unit: deg or hz").into());
+    let (number, unit) = split_unit(text);
+    let unit = match unit {
+        "deg" => PhysicalUnit::Degrees,
+        "hz" => PhysicalUnit::Hertz,
+        _ => return Err(format!("physical value \"{text}\" needs a unit: deg or hz").into()),
     };
     let value = number
         .parse::<f64>()
@@ -606,11 +650,14 @@ fn parse_fixture_content(
                     .find(|p| p.as_rule() == Rule::strobe_curve_value)
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
-                *strobe_curve = Some(match value.as_str() {
-                    "linear" => StrobeCurve::Linear,
-                    "declared" => StrobeCurve::Declared,
-                    _ => StrobeCurve::Period,
-                });
+                // The grammar admits each curve's keyword alone.
+                *strobe_curve = Some(
+                    <StrobeCurve as strum::VariantArray>::VARIANTS
+                        .iter()
+                        .copied()
+                        .find(|curve| curve.keyword() == value)
+                        .unwrap_or_default(),
+                );
             }
             Rule::max_strobe_frequency => {
                 for inner in content_pair.into_inner() {
@@ -924,10 +971,10 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
                 let degrees: f64 = text.parse()?;
-                if !degrees.is_finite() || degrees <= 0.0 || degrees > 180.0 {
+                if !beam_angle_valid(degrees) {
                     return Err(format!(
                         "fixture \"{}\": beam_angle {text} is not allowed; it is degrees, \
-                         greater than 0 and at most 180",
+                         greater than 0 and at most {MAX_BEAM_ANGLE}",
                         name.as_deref().unwrap_or_default()
                     )
                     .into());
@@ -1461,5 +1508,51 @@ venue "Main" {
         let v = &venues["V"];
         assert_eq!(v.fixtures()["A"].start_channel(), 9);
         assert_eq!(v.fixtures()["B"].start_channel(), 100);
+    }
+}
+
+#[cfg(test)]
+mod migration_advice_tests {
+    /// Parses a `Lighting` block the way the loader does, via the `config`
+    /// crate rather than a serde_yaml dependency this crate does not carry.
+    fn parse(yaml: &str) -> Result<crate::config::Lighting, config::ConfigError> {
+        config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize()
+    }
+
+    /// The shape the venue-group migration message tells people to write must
+    /// actually load.
+    ///
+    /// `groups` is a map keyed by name, and the advice printed a sequence — so
+    /// following it produced a config that fails to deserialize, which is worse
+    /// than the error it was replacing.
+    #[test]
+    fn the_migration_advice_shape_deserializes() {
+        // The advice itself, not a copy of it. Parsing a hand-written string
+        // here left the real message free to say anything: reverting it to a
+        // sequence kept this test green, which is the failure it exists to
+        // prevent.
+        let advice = super::migration_yaml("wash");
+        let dedented: String = advice
+            .lines()
+            .map(|line| line.strip_prefix("    ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lighting: crate::config::Lighting =
+            parse(&dedented).expect("the shape the migration message prints must load");
+        assert!(lighting.groups().contains_key("wash"));
+        assert_eq!(lighting.groups()["wash"].name(), "wash");
+    }
+
+    #[test]
+    fn a_sequence_of_groups_does_not_load() {
+        // Guards the advice against drifting back to a list.
+        let yaml = "groups:\n  - name: wash\n    constraints:\n      - AllOf: [\"wash\"]\n";
+        assert!(
+            parse(yaml).is_err(),
+            "a sequence must not silently load, or the advice cannot be checked"
+        );
     }
 }

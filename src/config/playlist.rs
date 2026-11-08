@@ -17,7 +17,9 @@ use config::Config;
 use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
-use super::song::LoopCrossfade;
+pub use super::fade::{FadeCurve, FadeStatus};
+use super::length::{parse_length, LoopCrossfade};
+pub use super::playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
 
 /// The configuration for a playlist.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -65,72 +67,6 @@ pub struct ConfiguredEntry {
     /// it: `false` for none, or settings overriding the playlist's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<super::ambient::PlaylistAmbient>,
-}
-
-/// An entry's `auto_play` as written: `true` (at once), `false`, or the gap
-/// before it starts (`2s`, `500ms`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum AutoPlayConfig {
-    On(bool),
-    Gap(String),
-}
-
-impl Serialize for AutoPlayConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            AutoPlayConfig::On(on) => serializer.serialize_bool(*on),
-            AutoPlayConfig::Gap(gap) => serializer.serialize_str(gap),
-        }
-    }
-}
-
-/// By hand: a bool or a gap, a bare number being seconds.
-impl<'de> Deserialize<'de> for AutoPlayConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct AutoPlayVisitor;
-        impl<'de> serde::de::Visitor<'de> for AutoPlayVisitor {
-            type Value = AutoPlayConfig;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("true, false, or the gap before the song starts (e.g. 2s)")
-            }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(AutoPlayConfig::On(v))
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(match v.trim() {
-                    "true" => AutoPlayConfig::On(true),
-                    "false" => AutoPlayConfig::On(false),
-                    _ => AutoPlayConfig::Gap(v.to_string()),
-                })
-            }
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                Ok(AutoPlayConfig::Gap(format!("{v}s")))
-            }
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(AutoPlayConfig::Gap(format!("{v}s")))
-            }
-            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(AutoPlayConfig::Gap(format!("{}ms", (v * 1000.0).round())))
-            }
-        }
-        deserializer.deserialize_any(AutoPlayVisitor)
-    }
-}
-
-impl AutoPlayConfig {
-    /// The gap before the song starts, `None` for no auto play.
-    pub fn parse(&self) -> Result<Option<std::time::Duration>, String> {
-        match self {
-            AutoPlayConfig::On(false) => Ok(None),
-            AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
-            AutoPlayConfig::Gap(gap) => duration_string::DurationString::from_string(gap.clone())
-                .map(|d| Some(d.into()))
-                .map_err(|_| {
-                    format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
-                }),
-        }
-    }
 }
 
 /// By hand rather than untagged: a song called `1999` reaches us as a
@@ -193,53 +129,6 @@ pub struct EntryTransitions {
     pub auto_play: Option<std::time::Duration>,
 }
 
-/// An entry's fades as written, for an editor that sets them per entry:
-/// `None` for none.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct EntryFades {
-    #[serde(default)]
-    pub fade_out: Option<FadeConfig>,
-    #[serde(default)]
-    pub fade_in: Option<FadeConfig>,
-}
-
-/// A fade as written in a playlist: a length alone, or with its settings.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(untagged)]
-pub enum FadeConfig {
-    /// `"3s"`, `"500ms"`, `"6beats"`, `"1measure"`; `"0s"` for none.
-    Length(String),
-    /// The length with its settings.
-    Full {
-        /// As for the short form.
-        length: String,
-        /// `equal_power` (the default) or `linear`. Equal power fades in
-        /// quickly and out slowly, holding the level up; linear is a straight
-        /// ramp in amplitude.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        curve: Option<String>,
-        /// Tracks that do not fade: on a fade-out they cut at once, on a
-        /// fade-in they start at full level. A fade-out defaults to the
-        /// song's `loop_crossfade_cut` tracks, a fade-in to none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        exclude: Option<Vec<String>>,
-        /// A fade-out only: how long the lights take to cross into the next
-        /// song's show, `0s` to switch at once. Defaults to `length`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        lights: Option<String>,
-    },
-}
-
-/// A fade's curve.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FadeCurve {
-    /// Quick in, slow out: the level holds up through the fade.
-    EqualPower,
-    /// A straight ramp in amplitude.
-    Linear,
-}
-
 /// A fade's settings, parsed: see [`FadeConfig`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fade {
@@ -250,75 +139,6 @@ pub struct Fade {
     /// `None` for the default (the fade's length); `Some(Time(0))` switches
     /// at once.
     pub lights: Option<LoopCrossfade>,
-}
-
-/// [`FadeConfig::Full`] as read, unknown settings refused.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FullFade {
-    #[serde(deserialize_with = "string_or_number")]
-    length: String,
-    #[serde(default)]
-    curve: Option<String>,
-    #[serde(default)]
-    exclude: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "optional_string_or_number")]
-    lights: Option<String>,
-}
-
-/// By hand rather than untagged: `fade_out: 0` reaches us as a number, and
-/// a misspelt setting should be refused, not ignored.
-impl<'de> Deserialize<'de> for FadeConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct FadeVisitor;
-        impl<'de> serde::de::Visitor<'de> for FadeVisitor {
-            type Value = FadeConfig;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a fade length, or a map with `length` and its settings")
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(FadeConfig::Length(v.to_string()))
-            }
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                Ok(FadeConfig::Length(v.to_string()))
-            }
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(FadeConfig::Length(v.to_string()))
-            }
-            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(FadeConfig::Length(v.to_string()))
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> Result<Self::Value, A::Error> {
-                let full =
-                    FullFade::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(FadeConfig::Full {
-                    length: full.length,
-                    curve: full.curve,
-                    exclude: full.exclude,
-                    lights: full.lights,
-                })
-            }
-        }
-        deserializer.deserialize_any(FadeVisitor)
-    }
-}
-
-/// A length written as a string or, for a bare `0`, a number.
-fn string_or_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    match FadeConfig::deserialize(deserializer)? {
-        FadeConfig::Length(length) => Ok(length),
-        FadeConfig::Full { .. } => Err(serde::de::Error::custom("expected a length")),
-    }
-}
-
-fn optional_string_or_number<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    string_or_number(deserializer).map(Some)
 }
 
 impl FadeConfig {
@@ -363,28 +183,15 @@ impl FadeConfig {
 }
 
 impl Fade {
-    /// The fade as configured, for status reports: a `null` `exclude` is the
-    /// default (a fade-out's `loop_crossfade_cut`, a fade-in's none), as is a
-    /// `null` `lights` (the length).
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "length": self.length.to_string(),
-            "curve": match self.curve {
-                FadeCurve::EqualPower => "equal_power",
-                FadeCurve::Linear => "linear",
-            },
-            "exclude": self.exclude,
-            "lights": self.lights.map(|l| l.to_string()),
-        })
+    /// The fade as configured, for status reports.
+    pub fn status(&self) -> FadeStatus {
+        FadeStatus {
+            length: self.length.to_string(),
+            curve: self.curve,
+            exclude: self.exclude.clone(),
+            lights: self.lights.map(|l| l.to_string()),
+        }
     }
-}
-
-/// A fade's length: as a loop crossfade, or zero for none.
-fn parse_length(field: &str, value: &str) -> Result<LoopCrossfade, String> {
-    if value.trim().trim_end_matches(['m', 's']).trim() == "0" {
-        return Ok(LoopCrossfade::Time(std::time::Duration::ZERO));
-    }
-    LoopCrossfade::parse_field(field, value)
 }
 
 impl Playlist {

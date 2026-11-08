@@ -41,13 +41,19 @@ use crate::{
 use super::universe::Universe;
 
 mod ambient;
+mod ambient_mode;
 mod midi_playback;
+mod pass;
 mod playback;
 mod test_output;
 mod timeline;
+#[cfg(test)]
+mod wire_tests;
 
+pub use crate::player::TestOutputStatus;
 pub use ambient::{AmbientMode, AmbientReport, AmbientStatus};
-pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
+pub use test_output::{TestOutput, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
+pub(crate) use timeline::lighting_timeline;
 
 /// The result of classifying a MIDI message for DMX purposes.
 #[derive(Debug, PartialEq)]
@@ -127,20 +133,14 @@ pub struct Engine {
     pub(super) effect_engine: Arc<Mutex<EffectEngine>>,
     pub(super) lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     pub(super) lighting_config: Option<config::Lighting>,
-    ola_http_port: u16,
+    /// Asks olad's web server, on the profile's port, what is patched.
+    olad: super::patch_check::OladProbe,
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// The pass a crossfading song loop is fading out of, while it does.
-    pub(super) outgoing_pass: Mutex<Option<timeline::OutgoingPass>>,
-    /// Loop breaks' fades still going out, oldest first: each crosses out
-    /// over everything after it at its own length, so nothing that comes
-    /// later -- another pass's crossfade, another break, a stop's dark --
-    /// cuts it short or drops it. Locked after `outgoing_pass`.
-    pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
-    /// The channels (universe, 1-based channel) the last frame wrote. A
-    /// channel lit but not among them is held by the universe from an
-    /// effect long gone, which nothing will write again (#573).
-    pub(super) last_written: Mutex<HashSet<(u16, u16)>>,
+    pub(super) outgoing_pass: Mutex<Option<pass::OutgoingPass>>,
+    /// Loop breaks' fades still going out. Locked after `outgoing_pass`.
+    pub(super) break_fades: Mutex<pass::BreakFades>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -156,6 +156,23 @@ pub struct Engine {
     pub(super) timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
     pub(super) broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     pub(super) watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
+    /// Which show file watcher may reload the show: the one started for
+    /// the song now playing. Bumped, under the timeline's lock, whenever
+    /// one is let go, so an edit it took in before it went cannot reload
+    /// the last song's show into the next (see `Engine::reload_show`).
+    pub(super) watcher_generation: AtomicU64,
+    /// The show rebuild lock: rebuilds one at a time, and what would cut
+    /// across one waits for it (see `Engine::rebuilding`). Outermost: taken
+    /// before the timeline's lock and the engine's.
+    pub(super) rebuild_lock: Mutex<()>,
+    /// A show rebuild is under way: the main engine's frame holds its last
+    /// (see `Engine::rebuild_at`). What the effects loop reads in place of
+    /// the lock, which it never waits on.
+    pub(super) rebuild_hold: AtomicBool,
+    /// Run once by the next show rebuild between its replay and its
+    /// install, for a test to come in between.
+    #[cfg(test)]
+    pub(super) rebuild_hook: Mutex<Option<RebuildHook>>,
     pub(super) midi_dmx_store: Arc<parking_lot::RwLock<MidiDmxStore>>,
     pub(super) midi_dmx_playbacks: Mutex<Vec<MidiDmxPlayback>>,
     pub(super) effects_loop_heartbeat: Arc<AtomicU64>,
@@ -175,6 +192,10 @@ pub struct Engine {
     /// `effect_engine`, `outgoing_pass` and `break_fades`, never before.
     ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
+
+/// What a test runs between a show rebuild's replay and its install.
+#[cfg(test)]
+pub(super) type RebuildHook = Box<dyn FnOnce(&Engine) + Send>;
 
 /// A MIDI DMX light show being played back from the effects loop.
 pub(super) struct MidiDmxPlayback {
@@ -252,7 +273,10 @@ impl Engine {
                 None
             };
 
-        let ee = EffectEngine::new();
+        let mut ee = EffectEngine::new();
+        // A fixture patched on a universe with no output here holds
+        // nothing: the wire keeps no bytes for it, and its state reads dark.
+        ee.set_outputs(Some(universes.keys().copied().collect()));
         let update_subphase = ee.update_subphase();
         let effect_engine = Arc::new(Mutex::new(ee));
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
@@ -278,17 +302,21 @@ impl Engine {
             effects_loop_handle: Mutex::new(None),
             lighting_system,
             lighting_config: lighting_config.cloned(),
-            ola_http_port: config.ola_http_port(),
+            olad: super::patch_check::OladProbe::new(config.ola_http_port()),
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
-            break_fades: Mutex::new(Vec::new()),
-            last_written: Mutex::new(HashSet::new()),
+            break_fades: Mutex::new(Default::default()),
             playback_generation,
             current_song_time,
             timeline_finished,
             timeline_cancel_handle,
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
+            watcher_generation: AtomicU64::new(0),
+            rebuild_lock: Mutex::new(()),
+            rebuild_hold: AtomicBool::new(false),
+            #[cfg(test)]
+            rebuild_hook: Mutex::new(None),
             midi_dmx_store,
             midi_dmx_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
@@ -491,12 +519,9 @@ impl Engine {
             universe.update_dim_speed(dimming_duration);
         }
         // Mirror dim rate to MIDI DMX store
-        let rate = if dimming_duration.is_zero() {
-            1.0
-        } else {
-            dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
-        };
-        self.midi_dmx_store.read().set_dim_rate(universe_id, rate);
+        self.midi_dmx_store
+            .read()
+            .set_dim_rate(universe_id, super::universe::dim_ticks(dimming_duration));
     }
 
     /// Updates the given universe by ID.
@@ -549,9 +574,10 @@ impl Engine {
                 return Ok(());
             }
         };
-        // What a channel no frame writes any more goes to, below: 0 for a
-        // level or colour.
-        let levels = effect_engine.level_channels();
+        // The main engine's frame, with each layer of light still crossing
+        // over it folded on in turn by the one blend (`pass::cross`): a
+        // looping song's outgoing pass, the loop breaks' fades, ambient.
+        //
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
         // the overlap. The outgoing pass goes once the overlap is over (among
@@ -562,19 +588,17 @@ impl Engine {
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
             match outgoing.as_mut() {
                 Some(pass) => {
-                    let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
-                    let (t, time) = pass.timing(song_time);
-                    match pass.render(dt, time) {
-                        Ok(old) => {
-                            let blended = effect_engine.crossfade_commands(&old, &incoming, t);
-                            // What goes out is the blend, so that is what the
-                            // rig shows to the web UI and get_fixture_state
-                            // too (#555).
-                            let shown = (t < 1.0)
-                                .then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
-                            effect_engine.set_shown(shown);
+                    let incoming = self.main_frame(&mut effect_engine, dt, song_time)?.to_vec();
+                    match pass.render(dt, song_time) {
+                        Ok((t, old)) => {
                             done = t >= 1.0;
-                            std::borrow::Cow::Owned(blended)
+                            std::borrow::Cow::Owned(pass::cross(
+                                &old,
+                                &pass.effect_engine,
+                                &mut effect_engine,
+                                &incoming,
+                                t,
+                            ))
                         }
                         Err(e) => {
                             error!("A loop pass's crossfade failed to render, and goes: {e}");
@@ -583,76 +607,24 @@ impl Engine {
                         }
                     }
                 }
-                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
+                None => self.main_frame(&mut effect_engine, dt, song_time)?,
             };
         if done {
             if let Some(pass) = outgoing.take() {
-                self.retire_pass(pass);
+                self.break_fades.lock().retire(pass);
             }
         }
         drop(outgoing);
 
         // Loop breaks' fades go out over all of that, each at its own
-        // length: the newest first, so the oldest crosses outermost. One
-        // that is over goes only once every older one has: what it holds of
-        // a mover's position is what the older ones cross onto. One that
-        // fails to render goes at once, rather than stopping every frame
-        // after it.
+        // length.
         let mut fades = self.break_fades.lock();
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> = if fades.is_empty()
         {
             commands
         } else {
-            let mut blended = commands.into_owned();
-            let mut shown = (
-                effect_engine.shown_fixture_states().clone(),
-                effect_engine.shown_poses().clone(),
-            );
-            // Newest first: (over, failed) for each.
-            let mut ends = Vec::with_capacity(fades.len());
-            for fade in fades.iter_mut().rev() {
-                let (t, time) = fade.timing(song_time);
-                let old = match fade.render(dt, time) {
-                    Ok(old) => old,
-                    Err(e) => {
-                        error!("A loop break's fade failed to render, and goes: {e}");
-                        ends.push((true, true));
-                        continue;
-                    }
-                };
-                blended = effect_engine.crossfade_commands(&old, &blended, t);
-                shown = effect_engine.crossfade_states_onto(
-                    &fade.effect_engine,
-                    (&shown.0, &shown.1),
-                    t,
-                );
-                ends.push((t >= 1.0, false));
-            }
-            // What goes out is the blend, so that is what the rig shows
-            // too (#555).
-            effect_engine.set_shown(Some(shown));
-            // Oldest first: the over ones until the first still going, and
-            // any that failed.
-            let mut still_older = false;
-            let keep: Vec<bool> = ends
-                .into_iter()
-                .rev()
-                .map(|(over, failed)| {
-                    let keep = !failed && (still_older || !over);
-                    still_older |= keep;
-                    keep
-                })
-                .collect();
-            let mut keep = keep.into_iter();
-            fades.retain(|_| keep.next().unwrap_or(true));
-            // One over but kept for an older one is held: its song's show
-            // has faded out, and must not go on firing cues under it.
-            for fade in fades.iter_mut().filter(|f| !f.held) {
-                if fade.timing(song_time).0 >= 1.0 {
-                    fade.hold();
-                }
-            }
-            std::borrow::Cow::Owned(blended)
+            let under = commands.into_owned();
+            std::borrow::Cow::Owned(fades.render_over(&mut effect_engine, dt, song_time, under))
         };
         drop(fades);
 
@@ -674,26 +646,10 @@ impl Engine {
         // its effect over, its MIDI DMX cleared at a song start -- goes to
         // 0: the universe would hold it lit, with nothing to say so (#581).
         // A position or a setting holds where it was, as going dark leaves
-        // it.
-        let written: HashSet<(u16, u16)> =
-            commands.iter().map(|c| (c.universe, c.channel)).collect();
-        let released: Vec<crate::lighting::effects::DmxCommand> = {
-            let mut last = self.last_written.lock();
-            let gone: Vec<(u16, u16)> = last.difference(&written).copied().collect();
-            *last = written;
-            if gone.is_empty() {
-                Vec::new()
-            } else {
-                gone.into_iter()
-                    .filter(|at| levels.contains(at))
-                    .map(|(universe, channel)| crate::lighting::effects::DmxCommand {
-                        universe,
-                        channel,
-                        value: 0,
-                    })
-                    .collect()
-            }
-        };
+        // it. The engine's wire records what the universes hold, which is
+        // what its state reports.
+        let commands = commands.to_vec();
+        let released = effect_engine.send(&commands);
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
@@ -727,6 +683,27 @@ impl Engine {
         Ok(())
     }
 
+    /// The main engine's own frame at `song_time` -- or, while a show
+    /// rebuild is on its way in, the last one held (see
+    /// `Engine::rebuild_at`): rendered there, the old show's effects at the
+    /// time the rebuild goes to snapped moves and fades to their start.
+    fn main_frame<'a>(
+        &self,
+        engine: &'a mut EffectEngine,
+        dt: Duration,
+        song_time: Duration,
+    ) -> Result<
+        std::borrow::Cow<'a, [crate::lighting::effects::DmxCommand]>,
+        crate::lighting::effects::EffectError,
+    > {
+        if self.rebuild_holding() {
+            return Ok(std::borrow::Cow::Borrowed(engine.last_commands()));
+        }
+        Ok(std::borrow::Cow::Borrowed(
+            engine.update(dt, Some(song_time))?,
+        ))
+    }
+
     /// Starts a lighting effect
     pub fn start_effect(
         &self,
@@ -739,7 +716,19 @@ impl Engine {
 
     /// The port olad's web server listens on, from the profile.
     pub fn ola_http_port(&self) -> u16 {
-        self.ola_http_port
+        self.olad.http_port()
+    }
+
+    /// What asks olad's web server which universes are patched.
+    pub fn olad(&self) -> &super::patch_check::OladProbe {
+        &self.olad
+    }
+
+    /// Holds the olad probe to `limits`, for a test whose runner may be
+    /// slower than a probe allows.
+    #[cfg(test)]
+    pub(crate) fn set_olad_limits(&mut self, limits: super::patch_check::ProbeLimits) {
+        self.olad = self.olad.clone().with_limits(limits);
     }
 
     /// The universes this profile configures an output for.
@@ -815,14 +804,11 @@ impl Engine {
     /// Drops every registered fixture: what a restart gives for a venue that
     /// does not register, so what runs now is what runs after a reboot.
     fn clear_registered_fixtures(&self) {
-        // Resolved before the engine is locked: the venue's registration
-        // locks the lighting system first, then the engine.
-        let heads = self.resolve_groups(self.ambient_move_groups());
         let mut effect_engine = self.effect_engine.lock();
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
-        self.ambient_follows_rig(&effect_engine, &mut |_| heads.clone());
+        self.ambient_follows_rig(&effect_engine);
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -832,36 +818,28 @@ impl Engine {
     /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let mut lighting_system = lighting_system.lock();
-            let venue = lighting_system.current_venue().map(str::to_string);
-            let fixture_infos = match lighting_system.get_current_venue_fixtures() {
+            let lighting_system = lighting_system.lock();
+            let fixture_infos = match lighting_system.load_current_venue_fixtures() {
                 Ok(infos) => {
                     self.record_venue_registration(VenueRegistration {
-                        venue,
+                        venue: lighting_system.current_venue().map(str::to_string),
                         ok: true,
                         fixture: None,
                         error: None,
                     });
                     infos
                 }
-                Err(e) => {
-                    let (fixture, error) = match venue
-                        .as_deref()
-                        .and_then(|v| lighting_system.venue_problem(v))
-                    {
-                        Some((fixture, reason)) => (Some(fixture), reason),
-                        None => (None, e.to_string()),
-                    };
+                Err(fault) => {
                     drop(lighting_system);
                     self.clear_registered_fixtures();
                     self.record_venue_registration(VenueRegistration {
                         ok: false,
-                        fixture,
+                        fixture: fault.fixture,
                         // No venue selected is not a failure to report.
-                        error: venue.as_ref().map(|_| error),
-                        venue,
+                        error: fault.venue.as_ref().map(|_| fault.reason),
+                        venue: fault.venue,
                     });
-                    return Err(e);
+                    return Err(fault.error);
                 }
             };
 
@@ -869,7 +847,11 @@ impl Engine {
             // this profile cannot drive, naming the fixtures. The per-tick
             // drop warning in update_effects is the backstop, not the report.
             self.warned_missing_universes.lock().clear();
-            for (universe, fixtures) in unconfigured_universes(&fixture_infos, &self.universes) {
+            for (universe, fixtures) in
+                crate::lighting::lint::unconfigured_universes(&fixture_infos, |universe| {
+                    self.universes.contains_key(&universe)
+                })
+            {
                 warn!(
                     universe,
                     fixtures = fixtures.join(", "),
@@ -889,7 +871,7 @@ impl Engine {
                 .flat_map(|f| {
                     f.channels
                         .values()
-                        .map(move |&offset| (f.universe, f.address + offset - 1))
+                        .filter_map(move |&offset| Some((f.universe, f.dmx_channel(offset)?)))
                 })
                 .collect();
             midi_dmx_store
@@ -898,13 +880,14 @@ impl Engine {
             for fixture_info in &fixture_infos {
                 // Register slots in the MIDI DMX store for each fixture channel
                 for (channel_name, &offset) in &fixture_info.channels {
-                    let dmx_channel = fixture_info.address + offset - 1;
-                    midi_dmx_store.register_slot(
-                        fixture_info.universe,
-                        dmx_channel,
-                        &fixture_info.name,
-                        channel_name,
-                    );
+                    if let Some(channel) = fixture_info.dmx_channel(offset) {
+                        midi_dmx_store.register_slot(
+                            fixture_info.universe,
+                            channel,
+                            &fixture_info.name,
+                            channel_name,
+                        );
+                    }
                 }
                 midi_dmx_store.register_universe(fixture_info.universe);
             }
@@ -913,22 +896,9 @@ impl Engine {
             effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
             effect_engine.replace_fixtures(fixture_infos);
-            effect_engine.set_focus_points(
-                lighting_system
-                    .get_current_venue()
-                    .map(|venue| {
-                        venue
-                            .focus_points()
-                            .iter()
-                            .map(|(name, point)| (name.clone(), *point))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            );
+            effect_engine.set_focus_points(lighting_system.current_focus_points());
             drop(midi_dmx_store);
-            self.ambient_follows_rig(&effect_engine, &mut |groups| {
-                timeline::resolve_groups_in(&mut lighting_system, groups)
-            });
+            self.ambient_follows_rig(&effect_engine);
         }
         Ok(())
     }
@@ -1044,87 +1014,9 @@ impl Drop for Engine {
     }
 }
 
-/// Groups fixtures by the universes `configured` has no entry for:
-/// universe → fixture names, both sorted for stable reporting. Generic over
-/// the map's value so tests don't need to construct output threads.
-fn unconfigured_universes<V>(
-    fixture_infos: &[crate::lighting::effects::FixtureInfo],
-    configured: &HashMap<u16, V>,
-) -> std::collections::BTreeMap<u16, Vec<String>> {
-    let mut gaps: std::collections::BTreeMap<u16, Vec<String>> = Default::default();
-    for fixture_info in fixture_infos {
-        if !configured.contains_key(&fixture_info.universe) {
-            gaps.entry(fixture_info.universe)
-                .or_default()
-                .push(fixture_info.name.clone());
-        }
-    }
-    for fixtures in gaps.values_mut() {
-        fixtures.sort();
-    }
-    gaps
-}
-
-#[cfg(test)]
-mod universe_gap_tests {
-    use std::collections::HashMap;
-
-    use super::unconfigured_universes;
-    use crate::lighting::effects::FixtureInfo;
-
-    fn fixture(name: &str, universe: u16) -> FixtureInfo {
-        let mut channels = HashMap::new();
-        channels.insert("dimmer".to_string(), 1);
-        FixtureInfo::new(
-            name.to_string(),
-            universe,
-            1,
-            "Par".to_string(),
-            channels,
-            None,
-        )
-    }
-
-    #[test]
-    fn reports_only_unconfigured_universes_with_sorted_fixtures() {
-        let fixtures = vec![
-            fixture("Wash1", 1),
-            fixture("Truss2", 9),
-            fixture("Truss1", 9),
-            fixture("Side1", 4),
-        ];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-
-        let gaps = unconfigured_universes(&fixtures, &configured);
-        assert_eq!(gaps.len(), 2);
-        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
-        assert_eq!(
-            gaps[&9],
-            vec!["Truss1".to_string(), "Truss2".to_string()],
-            "fixture names sort for stable reports"
-        );
-        assert!(!gaps.contains_key(&1));
-    }
-
-    #[test]
-    fn a_fully_configured_venue_reports_nothing() {
-        let fixtures = vec![fixture("Wash1", 1)];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-        assert!(unconfigured_universes(&fixtures, &configured).is_empty());
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashSet,
-        error::Error,
-        net::{Ipv4Addr, SocketAddr, TcpListener},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{collections::HashSet, error::Error, sync::Arc, time::Duration};
 
     use midly::num::u7;
 
@@ -1135,18 +1027,13 @@ mod test {
     use crate::lighting::effects::EffectType;
 
     fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
-        let listener = TcpListener::bind(SocketAddr::new(
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            0,
-        ))?;
-        let port = listener.local_addr()?.port();
-        // Use a mock OLA client for tests
+        // A mock OLA client, so the engine connects to no OLA port.
         let ola_client = OlaClientFactory::create_mock_client();
         let engine = Engine::new(
             &config::Dmx::new(
                 None,
                 None,
-                Some(port),
+                None,
                 vec![config::Universe::new(5, "universe1".to_string())],
                 None, // lighting configuration
             ),
@@ -1533,9 +1420,7 @@ mod test {
         use std::collections::HashMap;
 
         // Create DMX engine without lighting system
-        let config = create_test_config();
-        let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Engine::new(&config, None, None, ola_client)?;
+        let engine = create_test_engine()?;
 
         // Test that effects with unknown groups still work (graceful fallback)
         let mut parameters = HashMap::new();
@@ -1581,9 +1466,7 @@ mod test {
         let song = crate::songs::Song::new(temp_path, &song_config)?;
 
         // Create DMX engine
-        let config = create_test_config();
-        let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+        let engine = Arc::new(create_test_engine()?);
 
         // Test timeline setup
         let song_arc = Arc::new(song);
@@ -1954,6 +1837,61 @@ mod test {
     }
 
     #[test]
+    fn a_song_without_a_show_stops_the_last_songs_watcher() -> Result<(), Box<dyn Error>> {
+        // A song with no show of its own dropped the last song's timeline
+        // and tempo but left its file watcher running, whose reload on an
+        // edit put the last song's show back under this one. Going dark
+        // between songs dropped it; now a song's release does either way.
+        let (engine, cancel_handle) = create_engine()?;
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("last.light");
+        std::fs::write(
+            &dsl_path,
+            "show \"last\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+        )?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path],
+            None,
+            tx,
+        )?);
+
+        let song_config = crate::config::Song::new(
+            "No lights",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            engine.watcher_handle.lock().is_none(),
+            "the last song's show watcher outlived it"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_midi_dmx_mirrors_to_effect_engine() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
@@ -2254,7 +2192,7 @@ mod test {
 
     /// Waits up to a generous while for `thread` to end; whether it did.
     fn ended_soon(thread: &std::thread::JoinHandle<()>) -> bool {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !thread.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -3316,31 +3254,57 @@ mod test {
 
         /// The wash's (red, green, blue) after a seek to `secs` in `source`.
         fn seek_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
-            let (engine, _cancel_handle) = wash_running(source)?;
+            Ok(seek_engine(source, secs, &mut |_| ())?.2)
+        }
+
+        /// [`seek_frame`], with the engine it seeks; `before` runs just
+        /// before the seek, with its time.
+        fn seek_engine(
+            source: &str,
+            secs: f64,
+            before: &mut dyn FnMut(f64),
+        ) -> Result<Framed, Box<dyn Error>> {
+            let (engine, cancel_handle) = wash_running(source)?;
             let at = Duration::from_secs_f64(secs);
             engine.update_song_time(at);
+            before(secs);
             engine.start_lighting_timeline_at(at);
             engine.update_effects()?;
             let universe = engine.get_universe(5).unwrap();
-            Ok((
+            let frame = (
                 universe.get_target_value(0),
                 universe.get_target_value(1),
                 universe.get_target_value(2),
-            ))
+            );
+            Ok((engine, cancel_handle, frame))
         }
 
         /// The wash's (red, green, blue) at `secs` in `source`, played
         /// through to it in 10 ms frames.
         fn played_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
-            let (engine, _cancel_handle) = wash_running(source)?;
+            Ok(played_engine(source, secs, &mut |_| ())?.2)
+        }
+
+        /// [`played_frame`], with the engine it plays; `before` runs just
+        /// before each frame after the first, with its time.
+        fn played_engine(
+            source: &str,
+            secs: f64,
+            before: &mut dyn FnMut(f64),
+        ) -> Result<Framed, Box<dyn Error>> {
+            let (engine, cancel_handle) = wash_running(source)?;
             let mut at = 1.0;
             let mut frame = frame_at(&engine, at);
             while at + 0.01 <= secs + 1e-9 {
                 at += 0.01;
+                before(at);
                 frame = frame_at(&engine, at);
             }
-            Ok(frame)
+            Ok((engine, cancel_handle, frame))
         }
+
+        /// An engine and the wash's (red, green, blue) in it.
+        type Framed = (Arc<Engine>, CancelHandle, (f64, f64, f64));
 
         const GREEN: (f64, f64, f64) = (0.0, 255.0, 0.0);
         const DARK: (f64, f64, f64) = (0.0, 0.0, 0.0);
@@ -3587,14 +3551,7 @@ mod test {
             // Show "b" starts sequence "x" at 5 s; show "a" stops "x" at 5 s.
             // Live, the stop lands before the start, so "x" plays; a seek
             // took the stop for the whole time and dropped it.
-            let cues_of = |src: &str| {
-                crate::lighting::parser::parse_light_shows(src)
-                    .unwrap()
-                    .into_values()
-                    .next()
-                    .unwrap()
-                    .cues
-            };
+            let cues_of = |src: &str| crate::testutil::lighting::shows(src).swap_remove(0).cues;
             let mut cues = cues_of(
                 "sequence \"x\" {\n    @00:00.000\n    wash: static, color: \"green\", \
                  duration: 10s, layer: midground, blend_mode: replace\n}\n\n\
@@ -3967,7 +3924,7 @@ mod test {
             // restart put in.
             let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
             let (green, epoch) = fire_at(&engine, 2.0);
-            assert!(!green.effects.is_empty(), "the green cue fired");
+            assert!(green.effects().next().is_some(), "the green cue fired");
 
             engine.update_song_time(Duration::from_millis(500));
             engine.start_lighting_timeline_at(Duration::from_millis(500));
@@ -4757,6 +4714,74 @@ mod test {
         }
 
         #[test]
+        fn same_time_cues_fire_in_file_order_across_a_power_of_ten() -> Result<(), Box<dyn Error>> {
+            // #669: the engine broke the tie by effect id, compared as a
+            // string, so with the ids either side of 10^k
+            // (`song_effect_9999`, `song_effect_10000`) the earlier cue went
+            // on top. Just before the cues fire (or the seek replays them),
+            // the counter moves on to one short of the next power of ten,
+            // never back, as other tests take ids meanwhile. Should one take
+            // some in between, so the two cues' ids miss the boundary, it
+            // tries again at the next.
+            let shows = "show \"later\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"earlier\" {\n    @1.500\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n";
+            let one = "show \"a\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n    @1.500\n    \
+                wash: static, color: \"green\", duration: 5s, layer: midground, \
+                blend_mode: replace\n}\n";
+            type Run = fn(&str, f64, &mut dyn FnMut(f64)) -> Result<Framed, Box<dyn Error>>;
+            let runs: [(&str, Run); 2] = [("played", played_engine), ("seek", seek_engine)];
+            for show in [shows, one] {
+                for (how, run) in runs {
+                    let mut straddled = false;
+                    for _ in 0..4 {
+                        let mut boundary = None;
+                        let (engine, _cancel_handle, frame) = run(show, 2.0, &mut |at| {
+                            if at + 1e-9 >= 1.5 && boundary.is_none() {
+                                boundary = Some(
+                                    crate::lighting::timeline::advance_effect_id_counter_short_of_power_of_ten(1),
+                                );
+                            }
+                        })?;
+                        let boundary = boundary.unwrap();
+                        assert_eq!(frame, GREEN, "{how}, ids from {boundary}\n{show}");
+                        let ids: Vec<u64> = engine
+                            .effect_engine
+                            .lock()
+                            .get_active_effects()
+                            .keys()
+                            .map(|id| id.trim_start_matches("song_effect_").parse().unwrap())
+                            .collect();
+                        if ids.iter().any(|&n| n < boundary) && ids.iter().any(|&n| n >= boundary) {
+                            straddled = true;
+                            break;
+                        }
+                    }
+                    assert!(straddled, "{how}: the ids never straddled 10^k\n{show}");
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn same_time_sequences_stack_in_the_order_the_show_starts_them(
+        ) -> Result<(), Box<dyn Error>> {
+            // #669: they went by their ids, so by the sequences' names.
+            // Started at one cue, the one started later goes on top.
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            let show = "sequence \"b\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                sequence \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"s\" {\n    @1.500\n    sequence \"b\"\n    sequence \"a\"\n}\n";
+            assert_eq!(played_frame(show, 2.0)?, RED);
+            assert_eq!(seek_frame(show, 2.0)?, RED, "seek to 2 s");
+            Ok(())
+        }
+
+        #[test]
         fn cues_less_than_a_frame_apart_apply_in_turn() -> Result<(), Box<dyn Error>> {
             // #592: cues that land in one frame were applied all layer
             // commands first, then all effects, so a clear or a sequence
@@ -4830,7 +4855,7 @@ mod test {
             // Create a timeline with a cue at t=0
             use crate::lighting::parser::{Cue, Effect};
             let effect = Effect {
-                sequence_name: None,
+                sequences: Vec::new(),
                 ignored_parameters: Vec::new(),
                 tempo_offset_secs: 0.0,
                 musical: Default::default(),
@@ -4929,7 +4954,7 @@ mod test {
             let cue = Cue {
                 time: std::time::Duration::from_secs(1),
                 effects: vec![Effect {
-                    sequence_name: None,
+                    sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),
@@ -5023,7 +5048,7 @@ mod test {
             let cue = Cue {
                 time: std::time::Duration::ZERO,
                 effects: vec![Effect {
-                    sequence_name: None,
+                    sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),
@@ -5177,14 +5202,10 @@ mod test {
             engine.update_song_time(Duration::from_secs(10));
 
             crate::dmx::watcher::reload_timeline(
+                &engine,
                 std::slice::from_ref(&dsl_path),
-                &engine.effect_engine,
-                &engine.current_song_timeline,
-                &engine.current_song_time,
-                engine.playback_delay,
                 None,
-                None,
-                None,
+                0,
             )?;
             let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
             assert_eq!(
@@ -5657,9 +5678,7 @@ mod test {
 
         #[test]
         fn no_lighting_system_passes_through() -> Result<(), Box<dyn Error>> {
-            let config = create_test_config();
-            let ola_client = OlaClientFactory::create_mock_client();
-            let engine = Engine::new(&config, None, None, ola_client)?;
+            let engine = create_test_engine()?;
 
             let effect = EffectInstance::new(
                 "test".to_string(),
@@ -5982,23 +6001,22 @@ mod test {
             epoch
         }
         use crate::lighting::parser::{LayerCommand, LayerCommandType};
+        use crate::lighting::timeline::Step;
 
         #[test]
         fn applies_layer_commands() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![LayerCommand {
-                    command_type: LayerCommandType::Clear,
-                    layer: None,
-                    intensity: None,
-                    speed: None,
-                }],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(
+                    Duration::ZERO,
+                    Step::Command(LayerCommand {
+                        command_type: LayerCommandType::Clear,
+                        layer: None,
+                        intensity: None,
+                        speed: None,
+                    }),
+                )],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6010,67 +6028,7 @@ mod test {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec!["test_seq".to_string()],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
-            };
-
-            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
-            Ok(())
-        }
-
-        #[test]
-        fn applies_effects_with_elapsed() -> Result<(), Box<dyn Error>> {
-            let (engine, _cancel_handle) = create_engine()?;
-
-            // Register a fixture for the effect
-            let mut channels = std::collections::HashMap::new();
-            channels.insert("dimmer".to_string(), 1);
-            let fixture_info = crate::lighting::effects::FixtureInfo::new(
-                "test_fixture".to_string(),
-                1,
-                1,
-                "Generic".to_string(),
-                channels,
-                None,
-            );
-            {
-                let mut ee = engine.effect_engine.lock();
-                ee.register_fixture(fixture_info);
-            }
-
-            let effect = crate::lighting::EffectInstance::new(
-                "test_effect".to_string(),
-                crate::lighting::effects::EffectType::Static {
-                    parameters: {
-                        let mut p = std::collections::HashMap::new();
-                        p.insert("dimmer".to_string(), 0.5);
-                        p
-                    },
-                    duration: Duration::ZERO,
-                },
-                vec!["test_fixture".to_string()],
-                None,
-                None,
-                None,
-            );
-
-            let mut effects_with_elapsed = std::collections::HashMap::new();
-            effects_with_elapsed.insert(
-                "test_effect".to_string(),
-                (effect, std::time::Duration::from_secs(2)),
-            );
-
-            let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed,
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Stop("test_seq".to_string()))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6113,12 +6071,7 @@ mod test {
             );
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![effect],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Start(effect))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6847,8 +6800,8 @@ mod test {
                     .map_err(|e| e.to_string())
                 })
             };
-            ready_rx.recv_timeout(Duration::from_secs(5))?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            ready_rx.recv_timeout(crate::testutil::PATIENCE)?;
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
             let mut red = 0.0;
             while std::time::Instant::now() < deadline {
                 red = engine.get_universe(5).unwrap().get_target_value(0);
@@ -6923,7 +6876,7 @@ mod test {
                     .map_err(|e| e.to_string())
                 })
             };
-            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            ready_rx.recv_timeout(crate::testutil::PATIENCE)?;
             std::thread::sleep(Duration::from_millis(200));
             let red = engine.get_universe(5).unwrap().get_target_value(0);
             let through_store = engine.midi_dmx_store.read().has_active_slots();

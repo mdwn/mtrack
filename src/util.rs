@@ -13,7 +13,6 @@
 //
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::Serialize;
 use yaml_rust2::{Yaml, YamlEmitter};
@@ -37,59 +36,7 @@ pub fn filename_display(path: &Path) -> &str {
         .unwrap_or("unreadable file name")
 }
 
-/// Outputs the given duration in a minutes:seconds format.
-pub fn duration_minutes_seconds(duration: Duration) -> String {
-    let minutes = duration.as_secs() / 60;
-    let secs = duration.as_secs() - minutes * 60;
-    format!("{}:{:02}", minutes, secs)
-}
-
-/// A duration of `secs` seconds, or `None` for one no duration holds: a
-/// negative or non-finite number, or one too large. For seconds a client
-/// sends: `Duration::from_secs_f64` panics on these, and a panic there takes
-/// down the task serving the client.
-pub fn duration_from_secs(secs: f64) -> Option<Duration> {
-    Duration::try_from_secs_f64(secs).ok()
-}
-
-/// A playback position a client sent as text: seconds (`90`, `90s`,
-/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`). The one parser for
-/// a position as text; a position sent as a number of seconds goes through
-/// [`duration_from_secs`], as this does. Errors are the reason, for the
-/// surface to answer with.
-pub fn parse_position(value: &str) -> Result<Duration, String> {
-    let trimmed = value.trim();
-    let seconds = if let Some(stripped) = trimmed
-        .strip_suffix('s')
-        .or_else(|| trimmed.strip_suffix('S'))
-    {
-        if stripped.contains(':') {
-            parse_mm_ss(stripped)?
-        } else {
-            stripped
-                .parse::<f64>()
-                .map_err(|e| format!("invalid seconds: {e}"))?
-        }
-    } else if trimmed.contains(':') {
-        parse_mm_ss(trimmed)?
-    } else {
-        trimmed
-            .parse::<f64>()
-            .map_err(|e| format!("invalid duration: {e}"))?
-    };
-    // Too large a number is turned down with the rest: converting it
-    // panicked, failing the request with no answer.
-    duration_from_secs(seconds)
-        .ok_or_else(|| "duration must be a finite, non-negative number of seconds in range".into())
-}
-
-/// The seconds in an `mm:ss.mmm` time.
-fn parse_mm_ss(s: &str) -> Result<f64, String> {
-    let (mm, ss) = s.split_once(':').ok_or("expected mm:ss.mmm")?;
-    let minutes: u64 = mm.parse().map_err(|e| format!("invalid minutes: {e}"))?;
-    let seconds: f64 = ss.parse().map_err(|e| format!("invalid seconds: {e}"))?;
-    Ok((minutes as f64) * 60.0 + seconds)
-}
+pub use crate::position::{duration_from_secs, duration_minutes_seconds, parse_position};
 
 /// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
 /// and PascalCase by inserting hyphens at word boundaries and lowercasing.
@@ -135,6 +82,157 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
+/// The regular files in `dir`, as it lists them, sorted by file name: the
+/// one listing every lookup and list of named files below works from. Names
+/// are kept as the filesystem has them, UTF-8 or not. An entry that cannot
+/// be read is passed over with a warning.
+pub fn files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        match entry {
+            Ok(entry) if entry.path().is_file() => found.push(entry.path()),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("{}: unreadable entry: {e}", dir.display()),
+        }
+    }
+    found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(found)
+}
+
+/// [`files_in`] for a lookup by name: a directory that is not there, or
+/// cannot be listed, lists nothing (the name's file is new; its write then
+/// fails if the directory does).
+pub fn files_to_look_up(dir: &Path) -> Vec<PathBuf> {
+    files_in(dir).unwrap_or_default()
+}
+
+/// The YAML config files in `dir` ([`files_in`]): every file whose name
+/// ends in `.yaml` or `.yml`, lowercase as written (`songs::is_yaml_config`),
+/// sorted by file name.
+pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(files_in(dir)?
+        .into_iter()
+        .filter(|path| crate::songs::is_yaml_config(path))
+        .collect())
+}
+
+/// The one rule for a name's YAML file: of `files` (one directory's
+/// [`files_in`]), those named for `stem`, `<stem>.yaml` then `<stem>.yml`
+/// (`songs::YAML_EXTENSIONS`), matched against the names as listed, so a
+/// `set.YML` on a case-insensitive filesystem is not `set.yml`. The first is
+/// the name's file.
+fn yaml_files_named<'a>(files: &'a [PathBuf], stem: &std::ffi::OsStr) -> Vec<&'a PathBuf> {
+    crate::songs::YAML_EXTENSIONS
+        .iter()
+        .filter_map(|ext| {
+            let mut file_name = stem.to_os_string();
+            file_name.push(".");
+            file_name.push(ext);
+            files
+                .iter()
+                .find(|file| file.file_name() == Some(file_name.as_os_str()))
+        })
+        .collect()
+}
+
+/// A name's file in a directory, by the directory's listing: one it lists
+/// (`Found`), or the one to create (`New`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedFile {
+    Found(PathBuf),
+    New(PathBuf),
+}
+
+impl NamedFile {
+    /// The file's path.
+    pub fn path(&self) -> &Path {
+        match self {
+            NamedFile::Found(path) | NamedFile::New(path) => path,
+        }
+    }
+
+    /// Whether the directory lists it.
+    pub fn exists(&self) -> bool {
+        matches!(self, NamedFile::Found(_))
+    }
+
+    /// The same file, at `path`.
+    pub fn with_path(&self, path: PathBuf) -> NamedFile {
+        match self {
+            NamedFile::Found(_) => NamedFile::Found(path),
+            NamedFile::New(_) => NamedFile::New(path),
+        }
+    }
+}
+
+/// A file to create is named as one already there but for case
+/// (`Set.yaml` for a new `set.yaml`), which a case-insensitive filesystem
+/// takes for the same file: it is refused, not written into.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` already exists; names differ only in case")]
+pub struct CaseClash(pub String);
+
+/// The file `file_name` in `dir`, whose regular files are `files`
+/// ([`files_in`]): `Found` when listed as written, else `New`, unless a
+/// listed name differs from it only in case ([`CaseClash`]).
+pub fn file_among(
+    dir: &Path,
+    files: &[PathBuf],
+    file_name: &std::ffi::OsStr,
+) -> Result<NamedFile, CaseClash> {
+    let mut names = files.iter().filter_map(|file| file.file_name());
+    if names.clone().any(|listed| listed == file_name) {
+        return Ok(NamedFile::Found(dir.join(file_name)));
+    }
+    let folded = file_name.to_string_lossy().to_lowercase();
+    match names.find(|listed| listed.to_string_lossy().to_lowercase() == folded) {
+        Some(listed) => Err(CaseClash(listed.to_string_lossy().into_owned())),
+        None => Ok(NamedFile::New(dir.join(file_name))),
+    }
+}
+
+/// The YAML file in `dir` (whose regular files are `files`) that holds
+/// `name` (a playlist, a profile): the first of [`yaml_files_named`], else
+/// a new `<name>.yaml` ([`file_among`]: refused beside a `Set.yaml`).
+pub fn yaml_file_among(dir: &Path, files: &[PathBuf], name: &str) -> Result<NamedFile, CaseClash> {
+    match yaml_files_named(files, std::ffi::OsStr::new(name)).first() {
+        Some(file) => Ok(NamedFile::Found((*file).clone())),
+        None => file_among(
+            dir,
+            files,
+            std::ffi::OsStr::new(&format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])),
+        ),
+    }
+}
+
+/// The YAML file in `dir` that holds `name` ([`yaml_file_among`], by the
+/// directory's listing). Every read, write and delete of the name goes to
+/// it, so a `.yml` is saved into itself. `name` is not checked for path
+/// safety here.
+pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
+    yaml_file_among(dir, &files_to_look_up(dir), name)
+}
+
+/// The YAML config files in `dir`, one for each name: the file
+/// [`yaml_file_at`] takes for it ([`yaml_files_named`]), with the other a
+/// name has (its `.yml` beside its `.yaml`), which is not read. Sorted by
+/// file name.
+pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
+    let files = files_in(dir)?;
+    Ok(files
+        .iter()
+        .filter(|file| crate::songs::is_yaml_config(file))
+        .filter_map(
+            |file| match yaml_files_named(&files, file.file_stem()?).as_slice() {
+                [taken, unread @ ..] if *taken == file => {
+                    Some((file.clone(), unread.first().map(|f| (*f).clone())))
+                }
+                _ => None,
+            },
+        )
+        .collect())
+}
+
 /// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
 /// emission.
 pub fn to_yaml_string<T: Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
@@ -175,6 +273,33 @@ fn json_to_yaml(value: &serde_json::Value) -> Yaml {
 /// `01-main.yaml.1234.mtrack-new` is not picked up by the directory scans that
 /// look for `.yaml` and `.light` files.
 const STAGED_SUFFIX: &str = ".mtrack-new";
+
+/// The suffix a file's kept original takes ([`restore_file`]), then `-2`,
+/// `-3`… when taken.
+const ORIGINAL_SUFFIX: &str = ".mtrack-original";
+
+/// Whether `path` is a file mtrack's own writes leave beside another: a
+/// staged copy (`<file>.<pid>.mtrack-new`) or a kept original
+/// (`<file>.mtrack-original`, `-2`, …). A scan of a directory's files
+/// takes neither for one of them.
+pub fn is_write_leftover(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.ends_with(STAGED_SUFFIX) {
+        return true;
+    }
+    match name.rfind(ORIGINAL_SUFFIX) {
+        Some(at) => {
+            let rest = &name[at + ORIGINAL_SUFFIX.len()..];
+            rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        }
+        None => false,
+    }
+}
 
 /// The path a pending write to `path` from this process is staged under. The
 /// process id keeps two mtrack processes writing one file from sharing it;
@@ -219,10 +344,14 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// The cost is that an in-place rewrite is not atomic — it truncates and then
 /// writes, so losing power midway leaves a short file. To bound that, the
 /// complete new content is first staged in a sidecar (see [`staged_path`]) and
-/// flushed to disk, and only removed once the destination is durable. A sidecar
-/// left behind therefore means the last write to that file may not have
-/// completed, and holds the content it was trying to write. Recovery is
-/// currently manual: copy the sidecar over the destination. A reader can see
+/// flushed to disk, and removed once the destination is durable. A sidecar
+/// left behind holds the content a write was writing: after a crash, or a
+/// failure past the destination's truncation, the content the destination
+/// may be missing; a lighting writer that puts the file back, or keeps its
+/// original beside it, removes it then ([`restore_file`]). One can also
+/// stay, rarely, beside a file written in full, when even a second try at
+/// removing it fails.
+/// Recovery is otherwise manual: copy the sidecar over the destination. A reader can see
 /// the short file too, while the rewrite is under way, unless it reads
 /// through [`read_file`].
 ///
@@ -235,83 +364,452 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// the new content is staged, so a write that fails before then (a full
 /// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
+    write_file_tracked(path, contents, WriteMode::CreateOrReplace).map_err(|failed| failed.error)
+}
 
+/// [`write_file`] for a file that must not be there yet: the destination is
+/// opened with `create_new`, so the filesystem itself refuses one already
+/// there (`ErrorKind::AlreadyExists`), including one a case-insensitive or
+/// normalization-insensitive filesystem takes for the same name, and one
+/// made since it was looked up. Nothing is written over it.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_file_tracked(path, contents, WriteMode::CreateNew).map_err(|failed| failed.error)
+}
+
+/// How [`write_file_tracked`] opens its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMode {
+    /// [`write_file`]: made if missing, else rewritten.
+    CreateOrReplace,
+    /// [`write_new_file`]: made, and refused (`AlreadyExists`) if there.
+    CreateNew,
+    /// Rewritten only if there: one gone since it was read is `NotFound`,
+    /// never made again.
+    ReplaceExisting,
+}
+
+/// A failed [`write_file_tracked`], and whether it left the destination
+/// changed: rewritten part way, past its truncation (its staged copy,
+/// [`staged_path`], is kept beside it, holding the full content). One that
+/// did not leaves the destination as it was, or as another writer left it.
+/// A file a [`WriteMode::CreateNew`] write made is removed again, with its
+/// staged copy, and is untouched; touched only if that removal failed.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub error: std::io::Error,
+    pub touched: bool,
+}
+
+/// [`write_file`], opening the destination as `mode` says and saying on
+/// failure whether it was left changed ([`WriteFailure`]), so a writer
+/// undoing its changes undoes this one's only when there is one. Every
+/// decision about the staged copy is made here, under the file's writer
+/// lock: a write whose only failure is the staged copy's removal, after the
+/// destination is fully written, retries it once and is written (the copy
+/// may stay, holding what the destination holds).
+pub fn write_file_tracked(
+    path: &Path,
+    contents: &[u8],
+    mode: WriteMode,
+) -> Result<(), WriteFailure> {
     // Take turns from before staging: a writer staging while another
     // rewrites would overwrite its sidecar, and whichever removed it first
     // left the other's removal to fail (#578).
     let writer_lock = writer_lock(path);
     let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    write_locked(path, contents, mode)
+}
+
+/// [`write_file_tracked`] with `path`'s writer lock held.
+fn write_locked(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let result = write_steps(path, contents, mode);
+    match result {
+        // A file this write made is taken away again, with its staged copy.
+        Err(failure) if mode == WriteMode::CreateNew && failure.touched => {
+            let gone = match remove_with_staged(path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+            Err(WriteFailure {
+                error: failure.error,
+                touched: !gone,
+            })
+        }
+        other => other,
+    }
+}
+
+fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let new = mode == WriteMode::CreateNew;
+    let untouched = |error| WriteFailure {
+        error,
+        touched: false,
+    };
+    let touched = |error| WriteFailure {
+        error,
+        touched: true,
+    };
+    #[cfg(test)]
+    let fault = next_fault();
+    use std::io::Write;
 
     // Read the ownership we are aiming for before creating anything, since
     // creating the destination would otherwise answer the question with the
     // freshly created file's own ownership.
-    let intended = intended_ownership(path)?;
+    let intended = intended_ownership(path).map_err(untouched)?;
 
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
     let staged = staged_path(path);
     let stage = || -> std::io::Result<()> {
+        // A fresh file, never one a kept original is linked to: truncating
+        // a leftover staged copy in place would empty that original too.
+        match std::fs::remove_file(&staged) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let mut file = std::fs::File::create(&staged)?;
         if let Some(ownership) = intended {
             ownership.apply(&file, &staged)?;
         }
         file.write_all(contents)?;
         #[cfg(test)]
-        if FAIL_STAGING.get() {
+        if fault == Fault::Staging {
             return Err(std::io::Error::other("injected staging failure"));
         }
         file.sync_all()?;
         // Flushing the file is not enough on its own: without syncing the
         // directory too, the sidecar's *name* may not survive a crash, and
         // an unnamed file is no use to recover from.
-        if let Some(parent) = parent_of(path) {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
+        sync_parent_dir(path)
     };
 
     // Lock before truncating, not as part of the open: opening with
     // truncation would discard another process's content before we had any
     // claim to the file.
-    let claim = || -> std::io::Result<std::fs::File> {
+    // A file it made is this write's from then on, even if what follows
+    // fails; one it only opened is untouched until it is truncated.
+    let claim = || -> Result<std::fs::File, WriteFailure> {
         let destination = std::fs::OpenOptions::new()
-            .create(true)
+            .create(mode == WriteMode::CreateOrReplace)
+            .create_new(new)
             .write(true)
             .truncate(false)
-            .open(path)?;
-        destination.lock()?;
+            .open(path)
+            .map_err(untouched)?;
+        let made = |error| WriteFailure {
+            error,
+            touched: new,
+        };
+        destination.lock().map_err(made)?;
         if let Some(ownership) = intended {
-            ownership.apply(&destination, path)?;
+            ownership.apply(&destination, path).map_err(made)?;
         }
         Ok(destination)
     };
 
+    // Whether this write gives the destination its name: always a new
+    // file's; a create-or-replace's only when nothing had the name before
+    // the claim. Only then is the directory synced after the rewrite.
+    let names_it = match mode {
+        WriteMode::CreateNew => true,
+        WriteMode::CreateOrReplace => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        WriteMode::ReplaceExisting => false,
+    };
     // Until the truncation the destination is as it was, so a failure up to
     // then takes the sidecar with it: left, it would claim a write that never
     // touched the destination may not have completed (#578).
-    let mut destination = match stage().and_then(|()| claim()) {
+    let mut destination = match stage().map_err(untouched).and_then(|()| claim()) {
         Ok(destination) => destination,
         Err(e) => {
             let _ = std::fs::remove_file(&staged);
             return Err(e);
         }
     };
-    destination.set_len(0)?;
-    destination.write_all(contents)?;
-    destination.sync_all()?;
+    let mut rewrite = || -> std::io::Result<()> {
+        destination.set_len(0)?;
+        #[cfg(test)]
+        if fault == Fault::AfterTruncating {
+            return Err(std::io::Error::other("injected failure after truncating"));
+        }
+        destination.write_all(contents)?;
+        destination.sync_all()
+    };
+    // Past the truncation the sidecar is the one full copy of the content:
+    // it stays, for whoever puts the destination back or for a person to
+    // recover from.
+    rewrite().map_err(touched)?;
+    // A destination this write made has a name only once its directory is
+    // synced: until then a crash may keep the staged copy's removal below
+    // and lose the new name, and the content with it. Best effort, as the
+    // destination itself is written: a failure keeps the staged copy. A
+    // destination already named needs no sync: its rewrite is in place.
+    if names_it && sync_parent_dir(path).is_err() {
+        return Ok(());
+    }
 
     // The destination is durable, so the staged copy has served its purpose.
-    // Leaving it behind would falsely advertise an interrupted write. The
-    // lock goes with the file, after.
-    std::fs::remove_file(&staged)
+    // It is removed (a second try if the first fails); one that stays even
+    // so holds what the destination holds.
+    let removed = std::fs::remove_file(&staged);
+    #[cfg(test)]
+    let removed = match fault {
+        Fault::SidecarRemoval => Err(std::io::Error::other("injected sidecar removal failure")),
+        _ => removed,
+    };
+    if removed.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    Ok(())
+}
+
+/// Removes `path`, a file a write made, and its staged copy, taking turns
+/// with the file's writers.
+pub fn remove_written(path: &Path) -> std::io::Result<()> {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    remove_with_staged(path)
+}
+
+/// Removes `path`, then its staged copy, best effort: the one step of
+/// taking away a file a write made ([`remove_written`], and a failed
+/// [`WriteMode::CreateNew`] write's own cleanup). The caller holds the
+/// file's writer lock. Answers the file's removal.
+fn remove_with_staged(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    let removed = match next_fault() {
+        Fault::Removal => Err(std::io::Error::other("injected removal failure")),
+        _ => std::fs::remove_file(path),
+    };
+    #[cfg(not(test))]
+    let removed = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(staged_path(path));
+    removed
+}
+
+/// Syncs the directory `path` is in, so a name made or removed there
+/// survives a crash: a file's own sync covers its content, not its name.
+/// Unix only: elsewhere a directory cannot be opened to sync, and this
+/// does nothing.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = parent_of(path) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// What [`restore_file`] did.
+#[derive(Debug)]
+pub enum Restored {
+    /// The file holds what it held again.
+    Yes,
+    /// It could not be put back (`error`): it is left as the failed write
+    /// left it, and its original content is where `original` says.
+    No {
+        error: std::io::Error,
+        original: Original,
+    },
+}
+
+/// Where a file's original content is after a restore that failed.
+#[derive(Debug)]
+pub enum Original {
+    /// In a new file of its own beside it (named), which no later write
+    /// writes over: `<file>.mtrack-original`, `-2`, `-3`….
+    Kept(String),
+    /// Only in the restore's staged copy (named), which is left, and which
+    /// the next write of the file from this process writes over: it must
+    /// be copied elsewhere first. Only when the original could be neither
+    /// linked, written out nor moved to a name of its own.
+    Staged(String),
+    /// Nowhere: it could not be written (why).
+    Lost(std::io::Error),
+}
+
+/// Puts `path` back as it held `was`, as a writer undoing its change does,
+/// under the file's writer lock. When that fails, the original is kept
+/// before anything holding it is let go: the restore's staged copy (which
+/// holds `was`, synced, once the restore got past truncating) is linked
+/// to a new `<file>.mtrack-original`, taking no space; failing that, `was`
+/// is written to one; and only once one holds it, its name synced, is the
+/// staged copy removed. Failing both (no links on the filesystem, and no
+/// space), the staged copy is renamed to one, which needs neither: no
+/// later write uses that name. Only if that fails too does the staged copy
+/// stay, named.
+pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let failure = match write_locked(path, was, WriteMode::CreateOrReplace) {
+        Ok(()) => return Restored::Yes,
+        Err(failure) => failure,
+    };
+    let staged = staged_path(path);
+    // Past its truncation the restore kept its staged copy, holding `was`.
+    let original = if failure.touched {
+        match link_original(path, &staged).or_else(|_| write_original(path, was)) {
+            Ok(name) => {
+                // The original's name is durable before the staged copy,
+                // the other file holding it, goes.
+                if sync_parent_dir(path).is_ok() && std::fs::remove_file(&staged).is_ok() {
+                    let _ = sync_parent_dir(path);
+                }
+                Original::Kept(name)
+            }
+            Err(_) => match rename_original(path, &staged) {
+                Ok(name) => {
+                    let _ = sync_parent_dir(path);
+                    Original::Kept(name)
+                }
+                Err(_) => Original::Staged(
+                    staged
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+            },
+        }
+    } else {
+        match write_original(path, was) {
+            // Written through `write_file_tracked`, which syncs the name.
+            Ok(name) => Original::Kept(name),
+            Err(e) => Original::Lost(e),
+        }
+    };
+    Restored::No {
+        error: failure.error,
+        original,
+    }
+}
+
+/// The names a file kept beside `path` may take, in turn, with the name
+/// alone: `<file><suffix>`, then `<file><suffix>-2`, `-3`…, appended to
+/// the whole file name. A kept original's (`.mtrack-original`) and `mtrack
+/// migrate`'s backups' (`.bak`).
+pub fn kept_names<'a>(
+    path: &'a Path,
+    suffix: &'a str,
+) -> impl Iterator<Item = (String, PathBuf)> + 'a {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    (1u32..).map(move |n| {
+        let candidate = if n == 1 {
+            format!("{name}{suffix}")
+        } else {
+            format!("{name}{suffix}-{n}")
+        };
+        let file = path.with_file_name(&candidate);
+        (candidate, file)
+    })
+}
+
+/// Makes a file at the first free one of `path`'s [`kept_names`] with
+/// `make`, which makes it new and answers `AlreadyExists` for a name
+/// taken, so nothing there is written over: the next name is tried.
+/// Answers the name made and its path.
+pub fn make_first_free(
+    path: &Path,
+    suffix: &str,
+    mut make: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<(String, PathBuf)> {
+    for (name, file) in kept_names(path, suffix) {
+        match make(&file) {
+            Ok(()) => return Ok((name, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only with the integers")
+}
+
+/// Links `staged` to the first free original name of `path`; its name.
+fn link_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    if next_fault() == Fault::Link {
+        return Err(std::io::Error::other("injected link failure"));
+    }
+    make_first_free(path, ORIGINAL_SUFFIX, |file| {
+        std::fs::hard_link(staged, file)
+    })
+    .map(|(name, _)| name)
+}
+
+/// Moves `staged` to the first free original name of `path`; its name.
+/// A rename replaces what is at its target, so a name is taken only when
+/// nothing is there. That is checked before the rename, not by it: the
+/// file's writer lock, which the caller holds, keeps this process's other
+/// writers out between the two, but it is this process's alone, so another
+/// process making that name in between is written over. Only a last
+/// resort, when the original can be neither linked nor written out, runs
+/// this.
+fn rename_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    if next_fault() == Fault::Rename {
+        return Err(std::io::Error::other("injected rename failure"));
+    }
+    make_first_free(
+        path,
+        ORIGINAL_SUFFIX,
+        |file| match std::fs::symlink_metadata(file) {
+            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(staged, file),
+            Err(e) => Err(e),
+        },
+    )
+    .map(|(name, _)| name)
+}
+
+/// Writes `was` to the first free original name of `path`, made new; its
+/// name.
+fn write_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
+    make_first_free(path, ORIGINAL_SUFFIX, |file| write_new_file(file, was)).map(|(name, _)| name)
+}
+
+/// A failure a test injects into [`write_file_tracked`] (and so every
+/// [`write_file`] and [`write_new_file`]) on its thread, into
+/// [`restore_file`]'s link or rename of the original, or into the removal
+/// of a file a write made, one per step in turn ([`inject_faults`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// This write (or link) goes through.
+    Pass,
+    /// Staging fails, before the destination is touched.
+    Staging,
+    /// The write fails just after truncating the destination, as a disk
+    /// that fills mid-write would.
+    AfterTruncating,
+    /// Only the sidecar's first removal fails, the destination written.
+    SidecarRemoval,
+    /// The link of a kept original fails, as on a filesystem without them.
+    Link,
+    /// The rename of a restore's staged copy to a kept original fails.
+    Rename,
+    /// The removal of a file a write made fails ([`remove_written`], and a
+    /// failed new file's cleanup).
+    Removal,
+}
+
+/// The faults the next writes (and links) on this thread meet, in order;
+/// after them, everything goes through. Replaces any not yet met.
+#[cfg(test)]
+pub fn inject_faults(faults: &[Fault]) {
+    FAULTS.with(|f| *f.borrow_mut() = faults.iter().copied().collect());
+}
+
+#[cfg(test)]
+fn next_fault() -> Fault {
+    FAULTS.with(|f| f.borrow_mut().pop_front().unwrap_or(Fault::Pass))
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Fails [`write_file`]'s staging on this thread once the sidecar holds
-    /// the content, as a full disk would fail its flush.
-    static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The faults [`inject_faults`] queued.
+    static FAULTS: std::cell::RefCell<std::collections::VecDeque<Fault>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Reads all of `path`, as [`write_file`] last wrote it, never the empty or
@@ -364,6 +862,18 @@ pub fn yaml_source(
         _ => ::config::FileFormat::Yaml,
     };
     Ok(::config::File::from_str(&text, format))
+}
+
+/// What a failed write of `target` says, naming it, with the hint for
+/// fixing it ([`write_failure_hint`]): the one wording every writer's
+/// failure takes.
+pub fn write_failure_message(target: WriteTarget<'_>, e: &std::io::Error) -> String {
+    let mut message = format!("could not write {}: {e}", target.path().display());
+    if let Some(hint) = write_failure_hint(target, e) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
+    }
+    message
 }
 
 /// Explains a write failure whose cause is not the file's own permissions.
@@ -913,6 +1423,52 @@ pub fn resolved_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// What kind of fault an error a client caused or met is: classified once,
+/// by the error itself, for each transport to answer with its own code (a
+/// one-line table each in gRPC, the web API and MCP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaultKind {
+    /// What was named is not there.
+    NotFound,
+    /// The player or the config is not in the state the request needs.
+    Precondition,
+    /// The request itself is wrong.
+    Invalid,
+    /// mtrack's own fault.
+    Internal,
+}
+
+/// What tells a file has changed: its modified time and its length, for two
+/// saves within one tick of the clock -- a truncate, then the write. Compared
+/// for inequality, never ordered: a backup restored moves the time backwards,
+/// and that is a change too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub modified: std::time::SystemTime,
+    pub len: u64,
+}
+
+impl FileStamp {
+    /// The stamp of `path`, if it can be read.
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        })
+    }
+}
+
+/// Whether a path a config or a client names could leave the directory it is
+/// joined to: absolute, or with a `..` component. The one rule for a path that
+/// must stay inside the project; a `..` inside a name (`v1..2`) is no escape.
+pub fn escapes_project(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
 /// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
@@ -924,6 +1480,42 @@ pub fn project_dir_of(config_path: &Path) -> PathBuf {
     parent_of(config_path)
         .map(|parent| parent.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Whether `path`, which need not exist, is `dir` or inside it. `path` is
+/// expected already resolved, as `SafePath` resolves a request's path: a
+/// `..` after a component that is not there is not normalised here. The
+/// nearest of `path` and its ancestors that is there is canonicalized
+/// (symlinks), then it and each ancestor of it is compared
+/// with `dir` by identity (device and inode on Unix), so a name in another
+/// case on a case-insensitive file system, or a second path to the same
+/// directory, is the same directory. `false` when `dir` is not there:
+/// nothing is in it.
+pub fn is_within_dir(path: &Path, dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    let Some(existing) = path.ancestors().find_map(|a| std::fs::canonicalize(a).ok()) else {
+        return false;
+    };
+    if existing.starts_with(&dir) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(wanted) = std::fs::metadata(&dir) else {
+            return false;
+        };
+        existing.ancestors().any(|a| {
+            std::fs::metadata(a).is_ok_and(|m| m.dev() == wanted.dev() && m.ino() == wanted.ino())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let fold = |p: &Path| p.to_string_lossy().to_lowercase();
+        std::path::Path::new(&fold(&existing)).starts_with(fold(&dir))
+    }
 }
 
 /// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
@@ -1130,6 +1722,45 @@ mod ownership_test {
     }
 
     #[test]
+    fn a_write_never_truncates_a_kept_original_linked_to_its_staged_name() {
+        // A kept original linked to a staged copy that stayed (its removal
+        // failed): the next write stages afresh, leaving the original whole.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("club.venue");
+        std::fs::write(&dest, "failed save\n").unwrap();
+        std::fs::write(staged_path(&dest), "was\n").unwrap();
+        let original = dir.path().join("club.venue.mtrack-original");
+        std::fs::hard_link(staged_path(&dest), &original).unwrap();
+
+        write_file(&dest, b"new\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new\n");
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "was\n");
+        assert!(!staged_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_write_s_leftovers_are_known_by_name() {
+        for leftover in [
+            "par.zip.1234.mtrack-new",
+            "club.venue.mtrack-original",
+            "club.venue.mtrack-original-2",
+            "club.venue.mtrack-original-17",
+        ] {
+            assert!(is_write_leftover(Path::new(leftover)), "{leftover}");
+        }
+        for file in [
+            "par.zip",
+            "synth.gdtf",
+            "club.venue.mtrack-original-x",
+            "club.venue.mtrack-original-",
+            "mtrack-original.gdtf",
+        ] {
+            assert!(!is_write_leftover(Path::new(file)), "{file}");
+        }
+    }
+
+    #[test]
     fn write_file_takes_the_staged_copy_with_a_failed_staging() {
         // #578: a staging that failed left its sidecar, which reads as a
         // write to the destination that may not have completed.
@@ -1137,13 +1768,38 @@ mod ownership_test {
         let dest = dir.path().join("config.yaml");
         std::fs::write(&dest, "before").unwrap();
 
-        super::FAIL_STAGING.set(true);
+        super::inject_faults(&[super::Fault::Staging]);
         let result = write_file(&dest, b"after");
-        super::FAIL_STAGING.set(false);
+        super::inject_faults(&[]);
 
         assert!(result.is_err());
         assert!(!staged_path(&dest).exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "before");
+    }
+
+    /// #685: a new file whose write fails past its truncation is taken
+    /// away with its staged copy, by the one removal step; one whose
+    /// removal fails too is reported touched, and its staged copy goes.
+    #[test]
+    fn a_failed_new_file_is_removed_with_its_staged_copy_or_reported_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("new.yaml");
+
+        super::inject_faults(&[super::Fault::AfterTruncating]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(!failure.touched);
+        assert!(!dest.exists());
+        assert!(!staged_path(&dest).exists());
+
+        super::inject_faults(&[super::Fault::AfterTruncating, super::Fault::Removal]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(failure.touched, "left, so the writer can say so");
+        assert!(dest.exists());
+        assert!(!staged_path(&dest).exists());
+        remove_written(&dest).unwrap();
+        assert!(!dest.exists());
     }
 
     #[test]
@@ -1257,6 +1913,156 @@ mod ownership_test {
 #[cfg(test)]
 mod test {
 
+    /// The lookup by a listing alone (no filesystem): a name's file is
+    /// `<name>.yaml`, else `<name>.yml`, as listed, else a new `<name>.yaml`.
+    /// Only a name as listed is found, so on a case-insensitive filesystem
+    /// a `set.YML` is not `set.yml`; and a new file named as a listed one
+    /// but for case (`Set.yaml`, `set.YAML`) is refused, not written into.
+    #[test]
+    fn a_names_file_is_found_by_the_listing() {
+        use super::{file_among, yaml_file_among, CaseClash, NamedFile};
+        let dir = std::path::Path::new("/p");
+        let names = |listed: &[&str]| listed.iter().map(|n| dir.join(n)).collect::<Vec<_>>();
+        let found = |file: &str| Ok(NamedFile::Found(dir.join(file)));
+        let new = |file: &str| Ok(NamedFile::New(dir.join(file)));
+        let clash = |file: &str| Err(CaseClash(file.to_string()));
+
+        assert_eq!(yaml_file_among(dir, &names(&[]), "set"), new("set.yaml"));
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml", "set.yaml"]), "set"),
+            found("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YML", "set.yml.bak"]), "set"),
+            new("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yaml"]), "set"),
+            clash("Set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YAML"]), "set"),
+            clash("set.YAML")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yml", "set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["a.b.yml"]), "a.b"),
+            found("a.b.yml")
+        );
+
+        assert_eq!(
+            file_among(
+                dir,
+                &names(&["stage.yml"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
+            found("stage.yml")
+        );
+        assert_eq!(
+            file_among(
+                dir,
+                &names(&["Stage.YML"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
+            clash("Stage.YML")
+        );
+        assert_eq!(
+            file_among(dir, &names(&[]), std::ffi::OsStr::new("stage.yml")),
+            new("stage.yml")
+        );
+    }
+
+    /// The listing keeps a name that is not UTF-8 as the filesystem has it,
+    /// and the one rule finds its YAML file by it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_listing_keeps_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
+        std::fs::write(dir.join(name), "").unwrap();
+        assert_eq!(super::files_in(dir).unwrap(), vec![dir.join(name)]);
+        assert_eq!(
+            super::yaml_files_by_name(dir).unwrap(),
+            vec![(dir.join(name), None)]
+        );
+    }
+
+    /// A create is only a create: a file made between the lookup and the
+    /// write (here, after `yaml_file_at` said `New`) is refused by the
+    /// filesystem and left as it was.
+    #[test]
+    fn a_create_racing_a_new_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let file = super::yaml_file_at(dir, "set").unwrap();
+        assert_eq!(file, super::NamedFile::New(dir.join("set.yaml")));
+        std::fs::write(dir.join("set.yaml"), "theirs").unwrap();
+        let error = super::write_new_file(file.path(), b"ours").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("set.yaml")).unwrap(),
+            "theirs"
+        );
+        assert!(!super::staged_path(file.path()).exists());
+
+        super::write_new_file(&dir.join("new.yaml"), b"ours").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("new.yaml")).unwrap(),
+            "ours"
+        );
+    }
+
+    /// On disk, the lookup lists the directory: regular files only, so a
+    /// folder named `folder.yaml` is not found; one name is listed once, by
+    /// its file, with the other it has.
+    #[test]
+    fn a_names_yaml_file_on_disk() {
+        use super::{yaml_config_files, yaml_file_at, yaml_files_by_name, NamedFile};
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(
+            yaml_file_at(&dir.join("missing"), "set"),
+            Ok(NamedFile::New(dir.join("missing/set.yaml")))
+        );
+        std::fs::write(dir.join("set.yml"), "").unwrap();
+        std::fs::write(dir.join("set.yaml"), "").unwrap();
+        std::fs::write(dir.join("a.b.yml"), "").unwrap();
+        std::fs::write(dir.join("loud.YAML"), "").unwrap();
+        std::fs::create_dir(dir.join("folder.yaml")).unwrap();
+        assert_eq!(
+            yaml_file_at(dir, "set"),
+            Ok(NamedFile::Found(dir.join("set.yaml")))
+        );
+        assert_eq!(
+            yaml_file_at(dir, "folder"),
+            Ok(NamedFile::New(dir.join("folder.yaml")))
+        );
+        assert_eq!(
+            yaml_files_by_name(dir).unwrap(),
+            vec![
+                (dir.join("a.b.yml"), None),
+                (dir.join("set.yaml"), Some(dir.join("set.yml")))
+            ]
+        );
+        assert_eq!(
+            yaml_config_files(dir).unwrap(),
+            vec![
+                dir.join("a.b.yml"),
+                dir.join("set.yaml"),
+                dir.join("set.yml")
+            ]
+        );
+    }
+
     #[test]
     fn duration_from_secs_turns_down_what_no_duration_holds() {
         use super::duration_from_secs;
@@ -1294,7 +2100,71 @@ mod test {
 
     use std::time::Duration;
 
-    use crate::util::duration_minutes_seconds;
+    use crate::util::{duration_minutes_seconds, escapes_project};
+
+    /// A save within the clock's tick of the last, and a backup restored
+    /// over the file, both read as changes.
+    #[test]
+    fn a_file_stamp_changes_with_the_length_and_with_time_moved_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("show.light");
+        std::fs::write(&path, "a").unwrap();
+        let first = crate::util::FileStamp::of(&path).unwrap();
+        std::fs::write(&path, "ab").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(first.modified)
+            .unwrap();
+        let same_tick = crate::util::FileStamp::of(&path).unwrap();
+        assert_eq!(same_tick.modified, first.modified);
+        assert_ne!(same_tick, first);
+
+        let earlier = first.modified - Duration::from_secs(60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        std::fs::write(&path, "a").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        assert_ne!(crate::util::FileStamp::of(&path).unwrap(), first);
+        assert!(crate::util::FileStamp::of(&dir.path().join("none")).is_none());
+    }
+
+    /// Every spelling a surface takes, the CLI's `@` included.
+    #[test]
+    fn a_position_parses_in_every_spelling() {
+        use crate::util::parse_position;
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            (" 1:30 ", 90.0),
+            ("1:30.5s", 90.5),
+            ("@1:30", 90.0),
+            ("@ 45.25", 45.25),
+            ("1:23.456789", 83.456789),
+        ] {
+            assert_eq!(
+                parse_position(given),
+                Ok(Duration::from_secs_f64(secs)),
+                "{given}"
+            );
+        }
+        assert!(parse_position("chorus").is_err());
+        assert!(parse_position("@").is_err());
+    }
+
+    #[test]
+    fn a_path_escapes_the_project_as_absolute_or_by_a_parent_component() {
+        for escapes in ["/etc/passwd", "../x", "a/../../x", "a/.."] {
+            assert!(escapes_project(std::path::Path::new(escapes)), "{escapes}");
+        }
+        for inside in ["x", "a/b", "v1..2", "..a/b", "./a"] {
+            assert!(!escapes_project(std::path::Path::new(inside)), "{inside}");
+        }
+    }
 
     #[test]
     fn test_duration_minutes_strings() {

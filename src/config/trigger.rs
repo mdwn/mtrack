@@ -42,7 +42,11 @@ fn default_gain() -> f32 {
     1.0
 }
 
-fn default_fixed_velocity() -> u8 {
+/// The velocities an audio trigger's hit plays at, whatever its curve: a
+/// hit is a note on, which a velocity of 0 is not.
+pub const TRIGGER_VELOCITY: std::ops::RangeInclusive<u8> = 1..=127;
+
+pub(super) fn default_fixed_velocity() -> u8 {
     127
 }
 
@@ -51,27 +55,35 @@ fn default_noise_floor_decay_ms() -> u32 {
 }
 
 /// Configuration for the trigger system.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TriggerConfig {
     /// The audio input device name (matched against cpal input devices).
     /// Only required when audio inputs are configured.
+    #[serde(default)]
     device: Option<String>,
     /// Optional sample rate override for the input stream.
+    #[serde(default)]
     sample_rate: Option<u32>,
     /// Target sample format ("int" or "float"). Default: device native.
+    #[serde(default)]
     sample_format: Option<String>,
     /// Target bits per sample (16 or 32). Default: device native.
+    #[serde(default)]
     bits_per_sample: Option<u16>,
     /// Stream buffer size in frames. Default: device default.
+    #[serde(default)]
     buffer_size: Option<usize>,
     /// Per-channel input configurations.
     #[serde(default)]
     inputs: Vec<TriggerInput>,
     /// Crosstalk suppression window in ms after any channel fires.
     /// Both `crosstalk_window_ms` and `crosstalk_threshold` must be set to enable suppression.
+    #[serde(default)]
     crosstalk_window_ms: Option<u32>,
     /// Threshold multiplier during crosstalk suppression window.
     /// Both `crosstalk_window_ms` and `crosstalk_threshold` must be set to enable suppression.
+    #[serde(default)]
     crosstalk_threshold: Option<f32>,
 }
 
@@ -167,6 +179,7 @@ impl TriggerConfig {
 }
 
 /// A trigger input, discriminated by `kind`.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerInput {
@@ -177,7 +190,10 @@ pub enum TriggerInput {
 }
 
 /// What action an input channel performs when triggered.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerInputAction {
     /// Fire a sample (default).
@@ -188,7 +204,10 @@ pub enum TriggerInputAction {
 }
 
 /// How amplitude maps to velocity (0-127).
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityCurve {
     /// Linear mapping: velocity = peak * 127.
@@ -201,11 +220,13 @@ pub enum VelocityCurve {
 }
 
 /// Configuration for a single audio input channel used as a trigger.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AudioTriggerInput {
     /// 1-indexed input channel number.
     channel: u16,
     /// Sample name to trigger (from samples config). Required when action is "trigger".
+    #[serde(default)]
     sample: Option<String>,
     /// Minimum amplitude to trigger (0.0-1.0).
     #[serde(default = "default_threshold")]
@@ -226,17 +247,21 @@ pub struct AudioTriggerInput {
     #[serde(default = "default_fixed_velocity")]
     fixed_velocity: u8,
     /// Optional release group name for voice management.
+    #[serde(default)]
     release_group: Option<String>,
     /// What action this input performs (trigger or release).
     #[serde(default)]
     action: TriggerInputAction,
     /// High-pass filter cutoff frequency in Hz.
+    #[serde(default)]
     highpass_freq: Option<f32>,
     /// Decay time for adaptive/dynamic threshold in ms.
+    #[serde(default)]
     dynamic_threshold_decay_ms: Option<u32>,
     /// Noise floor tracking sensitivity multiplier. The adaptive noise floor
     /// estimate is multiplied by this value to derive a minimum threshold.
     /// Default: None (disabled). Typical value: 5.0.
+    #[serde(default)]
     noise_floor_sensitivity: Option<f32>,
     /// Time constant for noise floor EMA in ms. Controls how quickly the
     /// estimate tracks changing ambient levels.
@@ -393,10 +418,11 @@ impl AudioTriggerInput {
 }
 
 /// Configuration for a MIDI event trigger input.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct MidiTriggerInput {
     /// The MIDI event to listen for.
-    event: super::midi::Event,
+    event: super::midi_event::MidiEvent,
     /// The sample name to trigger.
     sample: String,
 }

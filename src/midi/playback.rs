@@ -31,9 +31,207 @@ pub(crate) struct PrecomputedMidi {
 }
 
 /// A tempo change at a specific tick position.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TempoEntry {
     pub(crate) tick: u64,
-    pub(crate) micros_per_tick: f64,
+    pub(crate) micros_per_beat: u32,
+}
+
+/// A time signature from a specific tick position.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SignatureEntry {
+    pub(crate) tick: u64,
+    pub(crate) numerator: u8,
+    /// The denominator is `2^denominator_power`, as the file has it.
+    pub(crate) denominator_power: u8,
+}
+
+/// Default tempo: 120 BPM = 500_000 microseconds per beat, until a file's
+/// first tempo event.
+pub(crate) const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
+
+/// A MIDI file's timing: its tempo and time-signature events at their
+/// ticks, by the one rule for where a file's tempo lives. A Format 0 file's
+/// are on its track; a Format 1 file's on the conductor track (track 0) and
+/// nowhere else; a Format 2 file's on each track, offset by the tracks
+/// before it. The tempo is 120 BPM until the first tempo event, and the
+/// last event at a tick wins. Playback, the beat clock and the tempo guess
+/// all read a file through this.
+pub(crate) struct MidiTiming {
+    pub(crate) tempo: Vec<TempoEntry>,
+    pub(crate) signatures: Vec<SignatureEntry>,
+    pub(crate) ticks_per_beat: u16,
+    /// The file's length in ticks: the longest track's.
+    pub(crate) total_ticks: u64,
+}
+
+impl MidiTiming {
+    /// The timing of a parsed file's tracks.
+    pub(crate) fn of(tracks: &[Vec<TrackEvent<'_>>], ticks_per_beat: u16, format: Format) -> Self {
+        let mut timing = MidiTiming {
+            tempo: Vec::new(),
+            signatures: Vec::new(),
+            ticks_per_beat,
+            total_ticks: 0,
+        };
+        match format {
+            Format::SingleTrack | Format::Parallel => {
+                if let Some(track) = tracks.first() {
+                    (timing.tempo, timing.signatures) = extract_meta(track);
+                }
+                // A Format 0 file has one track, and is as long as it; a
+                // non-conformant one with more is not lengthened by them,
+                // as they are not played.
+                timing.total_ticks = match format {
+                    Format::SingleTrack => tracks.first().map_or(0, |t| track_ticks(t)),
+                    _ => tracks.iter().map(|t| track_ticks(t)).max().unwrap_or(0),
+                };
+            }
+            Format::Sequential => {
+                // Each track follows the one before, so its events are
+                // placed after the ticks before it.
+                for track in tracks {
+                    let (tempo, signatures) = extract_meta(track);
+                    let offset = timing.total_ticks;
+                    timing.tempo.extend(tempo.into_iter().map(|e| TempoEntry {
+                        tick: e.tick + offset,
+                        ..e
+                    }));
+                    timing
+                        .signatures
+                        .extend(signatures.into_iter().map(|e| SignatureEntry {
+                            tick: e.tick + offset,
+                            ..e
+                        }));
+                    timing.total_ticks += track_ticks(track);
+                }
+            }
+        }
+        timing
+    }
+
+    /// The clock's pulse times over the file, and on past its end at its
+    /// last tempo until `until` (see
+    /// [`super::beat_clock::PrecomputedBeatClock::from_timing_until`]).
+    pub(crate) fn beat_clock_until(&self, until: Duration) -> Vec<Duration> {
+        super::beat_clock::PrecomputedBeatClock::from_timing_until(self, until)
+            .ticks_from(Duration::ZERO)
+            .to_vec()
+    }
+}
+
+/// A track's length in ticks.
+fn track_ticks(track: &[TrackEvent<'_>]) -> u64 {
+    track.iter().map(|e| e.delta.as_int() as u64).sum()
+}
+
+/// A track's tempo and time-signature events at their ticks.
+fn extract_meta(track: &[TrackEvent<'_>]) -> (Vec<TempoEntry>, Vec<SignatureEntry>) {
+    let mut tempo = Vec::new();
+    let mut signatures = Vec::new();
+    let mut tick: u64 = 0;
+    for event in track {
+        tick += event.delta.as_int() as u64;
+        match event.kind {
+            TrackEventKind::Meta(MetaMessage::Tempo(micros_per_beat)) => tempo.push(TempoEntry {
+                tick,
+                micros_per_beat: micros_per_beat.as_int(),
+            }),
+            TrackEventKind::Meta(MetaMessage::TimeSignature(
+                numerator,
+                denominator_power,
+                _,
+                _,
+            )) => signatures.push(SignatureEntry {
+                tick,
+                numerator,
+                denominator_power,
+            }),
+            _ => {}
+        }
+    }
+    (tempo, signatures)
+}
+
+/// The one walk from a file's ticks to its time and back: 120 BPM until
+/// the first tempo event, each event's tempo from its tick on, the last at
+/// a tick winning. A walk only goes forward; a position behind the last is
+/// answered as the last.
+pub(crate) struct TempoWalk<'a> {
+    tempo: &'a [TempoEntry],
+    ticks_per_beat: f64,
+    next: usize,
+    /// The position reached, in ticks and in microseconds, and the tempo
+    /// there.
+    tick: f64,
+    micros: f64,
+    micros_per_tick: f64,
+}
+
+impl<'a> TempoWalk<'a> {
+    pub(crate) fn new(tempo: &'a [TempoEntry], ticks_per_beat: u16) -> Self {
+        let ticks_per_beat = ticks_per_beat as f64;
+        TempoWalk {
+            tempo,
+            ticks_per_beat,
+            next: 0,
+            tick: 0.0,
+            micros: 0.0,
+            micros_per_tick: DEFAULT_MICROS_PER_BEAT as f64 / ticks_per_beat,
+        }
+    }
+
+    /// Takes the next tempo event, which starts at or before the position.
+    fn take(&mut self, entry: &TempoEntry) {
+        self.micros_per_tick = entry.micros_per_beat as f64 / self.ticks_per_beat;
+        self.next += 1;
+    }
+
+    /// The time at `tick`, in microseconds, the walk advanced to it.
+    pub(crate) fn micros_at(&mut self, tick: f64) -> f64 {
+        while let Some(entry) = self.tempo.get(self.next) {
+            if entry.tick as f64 > tick {
+                break;
+            }
+            if entry.tick as f64 > self.tick {
+                self.micros += (entry.tick as f64 - self.tick) * self.micros_per_tick;
+                self.tick = entry.tick as f64;
+            }
+            self.take(entry);
+        }
+        if tick > self.tick {
+            self.micros += (tick - self.tick) * self.micros_per_tick;
+            self.tick = tick;
+        }
+        self.micros
+    }
+
+    /// The tick at `micros`, the walk advanced to the tempo in effect there.
+    pub(crate) fn tick_at(&mut self, micros: f64) -> f64 {
+        while let Some(entry) = self.tempo.get(self.next) {
+            if entry.tick as f64 > self.tick {
+                let at = self.micros + (entry.tick as f64 - self.tick) * self.micros_per_tick;
+                if at > micros {
+                    break;
+                }
+                self.micros = at;
+                self.tick = entry.tick as f64;
+            }
+            self.take(entry);
+        }
+        // A tempo of no length (or none) never gets anywhere: the position
+        // reached is the answer.
+        let rate = self.micros_per_tick;
+        if micros <= self.micros || !rate.is_finite() || rate <= 0.0 {
+            return self.tick;
+        }
+        self.tick + (micros - self.micros) / self.micros_per_tick
+    }
+
+    /// The tempo at the position reached, as microseconds per tick.
+    pub(crate) fn micros_per_tick(&self) -> f64 {
+        self.micros_per_tick
+    }
 }
 
 /// Result of processing a single track: MIDI events and total track duration.
@@ -44,43 +242,42 @@ struct TrackResult {
 }
 
 impl PrecomputedMidi {
-    /// Builds a pre-computed MIDI timeline from parsed tracks.
+    /// Builds a pre-computed MIDI timeline from parsed tracks, timed by
+    /// `timing` ([`MidiTiming::of`] the same tracks).
     ///
     /// Single-pass algorithm: for each track, accumulates tick positions and
     /// converts to absolute time using tempo changes. For Format 1 (parallel),
     /// the conductor track (track 0) provides the tempo map for all tracks.
     pub fn from_tracks(
         tracks: &[Vec<TrackEvent<'_>>],
-        ticks_per_beat: u16,
+        timing: &MidiTiming,
         format: Format,
     ) -> Self {
-        let tpb = ticks_per_beat as f64;
-        // Default tempo: 120 BPM = 500_000 microseconds per beat
-        let default_micros_per_tick = 500_000.0 / tpb;
-
+        let tpb = timing.ticks_per_beat;
         match format {
             Format::SingleTrack => {
                 let events = if let Some(track) = tracks.first() {
-                    Self::process_track(track, default_micros_per_tick, tpb, &[]).events
+                    Self::process_track(track, tpb, &timing.tempo).events
                 } else {
                     Vec::new()
                 };
                 PrecomputedMidi { events }
             }
             Format::Parallel => {
-                // Extract tempo map from conductor track (track 0)
-                let tempo_map = tracks
-                    .first()
-                    .map(|track| Self::extract_tempo_map(track, tpb))
-                    .unwrap_or_default();
-
                 // Skip track 0 (conductor) — it provides the tempo map but should
                 // not emit MIDI events. Non-conformant files with MIDI events on
-                // track 0 would otherwise get double-tempo-mapped.
+                // track 0 would otherwise get double-tempo-mapped. A file whose
+                // conductor sets no tempo leaves each track to its own events.
                 let mut all_events = Vec::new();
                 for track in tracks.iter().skip(1) {
-                    let mut track_events =
-                        Self::process_track(track, default_micros_per_tick, tpb, &tempo_map).events;
+                    let own;
+                    let tempo: &[TempoEntry] = if timing.tempo.is_empty() {
+                        own = extract_meta(track).0;
+                        &own
+                    } else {
+                        &timing.tempo
+                    };
+                    let mut track_events = Self::process_track(track, tpb, tempo).events;
                     all_events.append(&mut track_events);
                 }
                 all_events.sort_by(|a, b| a.time.cmp(&b.time));
@@ -93,7 +290,7 @@ impl PrecomputedMidi {
                 let mut all_events = Vec::new();
                 let mut cumulative_offset = Duration::ZERO;
                 for track in tracks {
-                    let result = Self::process_track(track, default_micros_per_tick, tpb, &[]);
+                    let result = Self::process_track(track, tpb, &extract_meta(track).0);
                     for event in result.events {
                         all_events.push(TimedMidiEvent {
                             time: event.time + cumulative_offset,
@@ -109,84 +306,26 @@ impl PrecomputedMidi {
         }
     }
 
-    /// Extracts a tempo map from a track (tick position → micros_per_tick).
-    pub(crate) fn extract_tempo_map(track: &[TrackEvent<'_>], tpb: f64) -> Vec<TempoEntry> {
-        let mut tempo_map = Vec::new();
-        let mut tick_position: u64 = 0;
-        for event in track {
-            tick_position += event.delta.as_int() as u64;
-            if let TrackEventKind::Meta(MetaMessage::Tempo(tempo)) = event.kind {
-                tempo_map.push(TempoEntry {
-                    tick: tick_position,
-                    micros_per_tick: tempo.as_int() as f64 / tpb,
-                });
-            }
-        }
-        tempo_map
-    }
-
-    /// Processes a single track into timed events, using an optional external tempo map.
-    /// Returns both the MIDI events and the total track duration (including trailing silence).
-    fn process_track(
-        track: &[TrackEvent<'_>],
-        default_micros_per_tick: f64,
-        tpb: f64,
-        external_tempo_map: &[TempoEntry],
-    ) -> TrackResult {
+    /// Processes a single track into timed events, timed by `tempo`: the
+    /// conductor's, or the track's own. Returns both the MIDI events and the
+    /// total track duration (including trailing silence).
+    ///
+    /// Per the MIDI spec, a delta is timed at the tempo current when it
+    /// starts: a tempo change at the same tick as a note applies to the
+    /// *next* delta, not retroactively, which is how the walk has it.
+    fn process_track(track: &[TrackEvent<'_>], tpb: u16, tempo: &[TempoEntry]) -> TrackResult {
         let mut events = Vec::new();
-        let mut tick_position: u64 = 0;
-        let mut elapsed_micros: f64 = 0.0;
-        let mut last_tick: u64 = 0;
-        let mut micros_per_tick = default_micros_per_tick;
-
-        // Index into external tempo map for efficient traversal
-        let mut tempo_idx: usize = 0;
+        let mut walk = TempoWalk::new(tempo, tpb);
+        let mut tick: u64 = 0;
 
         for event in track {
-            let delta = event.delta.as_int() as u64;
-            tick_position += delta;
-
-            // Apply any tempo changes from the external map that fall within this delta
-            if !external_tempo_map.is_empty() {
-                let mut remaining_ticks = tick_position - last_tick;
-                let mut cursor = last_tick;
-                while tempo_idx < external_tempo_map.len()
-                    && external_tempo_map[tempo_idx].tick <= tick_position
-                {
-                    let entry = &external_tempo_map[tempo_idx];
-                    if entry.tick > cursor {
-                        let ticks_at_old_tempo = entry.tick - cursor;
-                        elapsed_micros += ticks_at_old_tempo as f64 * micros_per_tick;
-                        remaining_ticks -= ticks_at_old_tempo;
-                        cursor = entry.tick;
-                    }
-                    micros_per_tick = entry.micros_per_tick;
-                    tempo_idx += 1;
-                }
-                // Remaining ticks at current tempo
-                elapsed_micros += remaining_ticks as f64 * micros_per_tick;
-            } else {
-                // No external tempo map — handle inline tempo changes.
-                // For single-track (Format 0) or sequential tracks.
-                // Per the MIDI spec, the delta is timed at the *current* tempo.
-                // A tempo change at the same tick as a note applies to the *next* delta,
-                // not retroactively. This is correct: we accumulate time first, then
-                // update the tempo for subsequent events.
-                let ticks_since_last = tick_position - last_tick;
-                elapsed_micros += ticks_since_last as f64 * micros_per_tick;
-
-                // Update tempo for subsequent deltas
-                if let TrackEventKind::Meta(MetaMessage::Tempo(tempo)) = event.kind {
-                    micros_per_tick = tempo.as_int() as f64 / tpb;
-                }
-            }
-
-            last_tick = tick_position;
+            tick += event.delta.as_int() as u64;
+            let micros = walk.micros_at(tick as f64);
 
             // Emit MIDI events (skip meta events)
             if let TrackEventKind::Midi { channel, message } = event.kind {
                 events.push(TimedMidiEvent {
-                    time: Duration::from_micros(elapsed_micros.round() as u64),
+                    time: Duration::from_micros(micros.round() as u64),
                     channel: channel.as_int(),
                     message,
                 });
@@ -195,59 +334,7 @@ impl PrecomputedMidi {
 
         TrackResult {
             events,
-            total_duration: Duration::from_micros(elapsed_micros.round() as u64),
-        }
-    }
-
-    /// Builds the tempo map and total duration (in ticks) from parsed tracks.
-    /// Returns (tempo_map, ticks_per_beat, total_ticks).
-    pub(crate) fn build_tempo_info(
-        tracks: &[Vec<TrackEvent<'_>>],
-        ticks_per_beat: u16,
-        format: Format,
-    ) -> (Vec<TempoEntry>, u16, u64) {
-        let tpb = ticks_per_beat as f64;
-
-        match format {
-            Format::SingleTrack => {
-                let (tempo_map, total_ticks) = if let Some(track) = tracks.first() {
-                    let map = Self::extract_tempo_map(track, tpb);
-                    let total = track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>();
-                    (map, total)
-                } else {
-                    (Vec::new(), 0)
-                };
-                (tempo_map, ticks_per_beat, total_ticks)
-            }
-            Format::Parallel => {
-                let tempo_map = tracks
-                    .first()
-                    .map(|track| Self::extract_tempo_map(track, tpb))
-                    .unwrap_or_default();
-                // Total ticks is the max across all tracks
-                let total_ticks = tracks
-                    .iter()
-                    .map(|track| track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>())
-                    .max()
-                    .unwrap_or(0);
-                (tempo_map, ticks_per_beat, total_ticks)
-            }
-            Format::Sequential => {
-                // For sequential, concatenate tempo maps with tick offsets
-                let mut combined_map = Vec::new();
-                let mut total_ticks: u64 = 0;
-                for track in tracks {
-                    let map = Self::extract_tempo_map(track, tpb);
-                    for entry in map {
-                        combined_map.push(TempoEntry {
-                            tick: entry.tick + total_ticks,
-                            micros_per_tick: entry.micros_per_tick,
-                        });
-                    }
-                    total_ticks += track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>();
-                }
-                (combined_map, ticks_per_beat, total_ticks)
-            }
+            total_duration: Duration::from_micros(walk.micros_at(tick as f64).round() as u64),
         }
     }
 
@@ -284,6 +371,11 @@ impl PrecomputedMidi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file's events timed by its own timing, as the sheet loader has it.
+    fn precomputed(tracks: &[Vec<TrackEvent<'_>>], tpb: u16, format: Format) -> PrecomputedMidi {
+        PrecomputedMidi::from_tracks(tracks, &MidiTiming::of(tracks, tpb, format), format)
+    }
     use midly::{num::u7, MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
 
     /// Helper: build a TrackEvent with a delta and MIDI note-on.
@@ -318,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_empty_tracks() {
-        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Parallel);
+        let midi = precomputed(&[], 480, Format::Parallel);
         assert!(midi.is_empty());
         assert_eq!(midi.len(), 0);
     }
@@ -334,7 +426,7 @@ mod tests {
             note_on(480, 0, 64, 100), // t=2 beats = 1_000_000 µs = 1.0s
             end_of_track(0),
         ];
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+        let midi = precomputed(&[track], tpb, Format::SingleTrack);
 
         assert_eq!(midi.len(), 3);
         assert_eq!(midi.events()[0].time, Duration::from_micros(0));
@@ -359,7 +451,7 @@ mod tests {
             end_of_track(0),
         ];
 
-        let midi = PrecomputedMidi::from_tracks(&[track0, track1, track2], tpb, Format::Parallel);
+        let midi = precomputed(&[track0, track1, track2], tpb, Format::Parallel);
 
         assert_eq!(midi.len(), 3);
         // Events should be sorted by time: beat 0, beat 1, beat 2
@@ -385,7 +477,7 @@ mod tests {
             end_of_track(0),
         ];
 
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+        let midi = precomputed(&[track], tpb, Format::SingleTrack);
 
         assert_eq!(midi.len(), 3);
         assert_eq!(midi.events()[0].time, Duration::from_micros(0));
@@ -410,7 +502,7 @@ mod tests {
             end_of_track(0),
         ];
 
-        let midi = PrecomputedMidi::from_tracks(&[track0, track1], tpb, Format::Parallel);
+        let midi = precomputed(&[track0, track1], tpb, Format::Parallel);
 
         assert_eq!(midi.len(), 3);
         assert_eq!(midi.events()[0].time, Duration::from_micros(0));
@@ -428,7 +520,7 @@ mod tests {
             note_on(480, 0, 65, 100), // t=1.5s
             end_of_track(0),
         ];
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+        let midi = precomputed(&[track], tpb, Format::SingleTrack);
 
         // Seek to 0 — all events
         let from_zero = midi.events_from(Duration::ZERO);
@@ -458,7 +550,7 @@ mod tests {
             note_on(0, 15, 64, 100),
             end_of_track(0),
         ];
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+        let midi = precomputed(&[track], tpb, Format::SingleTrack);
 
         assert_eq!(midi.len(), 3);
         assert_eq!(midi.events()[0].channel, 3);
@@ -482,7 +574,7 @@ mod tests {
             end_of_track(0),
         ];
 
-        let midi = PrecomputedMidi::from_tracks(&[track1, track2], tpb, Format::Sequential);
+        let midi = precomputed(&[track1, track2], tpb, Format::Sequential);
 
         assert_eq!(midi.len(), 3);
         // Track 1 events
@@ -535,7 +627,7 @@ mod tests {
             note_on(480, 0, 64, 100), // t=1.0s
             end_of_track(0),
         ];
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+        let midi = precomputed(&[track], tpb, Format::SingleTrack);
 
         // Exact boundary: events_from at exactly an event time
         let from_exact = midi.events_from(Duration::from_micros(500_000));
@@ -554,7 +646,7 @@ mod tests {
             end_of_track(0),
         ];
 
-        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::Sequential);
+        let midi = precomputed(&[track], tpb, Format::Sequential);
         assert_eq!(midi.len(), 2);
         assert_eq!(midi.events()[0].time, Duration::from_micros(0));
         assert_eq!(midi.events()[1].time, Duration::from_micros(1_500_000));
@@ -566,38 +658,56 @@ mod tests {
         let tpb = 480;
         let track0 = vec![note_on(0, 0, 60, 100), end_of_track(0)];
 
-        let midi = PrecomputedMidi::from_tracks(&[track0], tpb, Format::Parallel);
+        let midi = precomputed(&[track0], tpb, Format::Parallel);
         // Track 0 is the conductor and is skipped in Parallel format
         assert_eq!(midi.len(), 0);
     }
 
     #[test]
     fn test_parallel_empty_tracks() {
-        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Parallel);
+        let midi = precomputed(&[], 480, Format::Parallel);
         assert!(midi.is_empty());
     }
 
     #[test]
     fn test_single_track_empty() {
-        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::SingleTrack);
+        let midi = precomputed(&[], 480, Format::SingleTrack);
         assert!(midi.is_empty());
     }
 
     #[test]
     fn test_sequential_empty() {
-        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Sequential);
+        let midi = precomputed(&[], 480, Format::Sequential);
         assert!(midi.is_empty());
+    }
+
+    /// A Format 0 file with a second track (midly parses one) is as long
+    /// as its first track, the one played: the beat clock runs over it,
+    /// not over the stray track.
+    #[test]
+    fn a_format_0_file_is_as_long_as_its_only_played_track() {
+        let track0 = vec![note_on(0, 0, 60, 100), end_of_track(3991)];
+        let track1 = vec![note_on(0, 0, 60, 100), end_of_track(15962)];
+        let timing = MidiTiming::of(&[track0, track1], 480, Format::SingleTrack);
+        assert_eq!(timing.total_ticks, 3991);
+        let pulses = crate::midi::beat_clock::PrecomputedBeatClock::from_timing_until(
+            &timing,
+            Duration::ZERO,
+        )
+        .ticks_from(Duration::ZERO)
+        .len();
+        // 3991 ticks of 480 a beat: 199.55 pulses of 20 ticks, so 200 start inside the file.
+        assert_eq!(pulses, 200);
     }
 
     #[test]
     fn test_build_tempo_info_no_tempo_events() {
         let tpb = 480;
         let track = vec![note_on(0, 0, 60, 100), end_of_track(480)];
-        let (tempo_map, returned_tpb, total_ticks) =
-            PrecomputedMidi::build_tempo_info(&[track], tpb, Format::SingleTrack);
-        assert!(tempo_map.is_empty());
-        assert_eq!(returned_tpb, tpb);
-        assert_eq!(total_ticks, 480);
+        let timing = MidiTiming::of(&[track], tpb, Format::SingleTrack);
+        assert!(timing.tempo.is_empty());
+        assert_eq!(timing.ticks_per_beat, tpb);
+        assert_eq!(timing.total_ticks, 480);
     }
 
     #[test]
@@ -608,8 +718,8 @@ mod tests {
             note_on(480, 0, 60, 100),
             end_of_track(480),
         ];
-        let (tempo_map, _, total_ticks) =
-            PrecomputedMidi::build_tempo_info(&[track], tpb, Format::SingleTrack);
+        let timing = MidiTiming::of(&[track], tpb, Format::SingleTrack);
+        let (tempo_map, total_ticks) = (&timing.tempo, timing.total_ticks);
         assert_eq!(tempo_map.len(), 1);
         assert_eq!(tempo_map[0].tick, 0);
         assert_eq!(total_ticks, 960);
@@ -624,8 +734,8 @@ mod tests {
             end_of_track(0),
         ];
         let track1 = vec![note_on(0, 0, 60, 100), end_of_track(960)];
-        let (tempo_map, _, total_ticks) =
-            PrecomputedMidi::build_tempo_info(&[track0, track1], tpb, Format::Parallel);
+        let timing = MidiTiming::of(&[track0, track1], tpb, Format::Parallel);
+        let (tempo_map, total_ticks) = (&timing.tempo, timing.total_ticks);
         assert_eq!(tempo_map.len(), 2);
         assert_eq!(tempo_map[0].tick, 0);
         assert_eq!(tempo_map[1].tick, 480);
@@ -638,8 +748,8 @@ mod tests {
         let tpb = 480;
         let track1 = vec![tempo_event(0, 500_000), end_of_track(480)];
         let track2 = vec![tempo_event(0, 1_000_000), end_of_track(480)];
-        let (tempo_map, _, total_ticks) =
-            PrecomputedMidi::build_tempo_info(&[track1, track2], tpb, Format::Sequential);
+        let timing = MidiTiming::of(&[track1, track2], tpb, Format::Sequential);
+        let (tempo_map, total_ticks) = (&timing.tempo, timing.total_ticks);
         assert_eq!(tempo_map.len(), 2);
         assert_eq!(tempo_map[0].tick, 0);
         // Second track's tempo change is offset by first track's total ticks
@@ -649,8 +759,9 @@ mod tests {
 
     #[test]
     fn test_build_tempo_info_empty_tracks() {
+        let timing = MidiTiming::of(&[], 480, Format::Parallel);
         let (tempo_map, tpb, total_ticks) =
-            PrecomputedMidi::build_tempo_info(&[], 480, Format::Parallel);
+            (&timing.tempo, timing.ticks_per_beat, timing.total_ticks);
         assert!(tempo_map.is_empty());
         assert_eq!(tpb, 480);
         assert_eq!(total_ticks, 0);

@@ -13,37 +13,20 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
+import { sendWs } from "../support/ws";
+import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
 
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
+function playbackState(
+  overrides: Parameters<typeof sharedPlaybackState>[0] = {},
 ) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
-
-function playbackState(overrides: Record<string, unknown> = {}) {
-  return {
-    type: "playback",
+  return sharedPlaybackState({
     is_playing: true,
     elapsed_ms: 30000,
-    song_name: "Test Song Beta",
-    song_duration_ms: 240000,
-    playlist_name: "setlist",
-    playlist_position: 1,
-    playlist_songs: ["Test Song Alpha", "Test Song Beta"],
-    tracks: [],
-    available_playlists: ["all_songs", "setlist"],
-    persisted_playlist_name: "setlist",
-    locked: false,
-    available_sections: [],
-    active_section: null,
     ...overrides,
-  };
+  });
 }
 
 test.describe("Seek", () => {
@@ -54,16 +37,7 @@ test.describe("Seek", () => {
     // per-worker counters can otherwise collide within the same millisecond.
     wsId = `seek-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/grpc-web+proto",
-          "grpc-status": "0",
-        },
-        body: Buffer.alloc(0),
-      });
-    });
+    await stubPlayerService(page);
 
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toContainText(
@@ -72,7 +46,7 @@ test.describe("Seek", () => {
   });
 
   test("clicking the progress bar sends a Seek gRPC call", async ({ page }) => {
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     const scrub = page.locator(".scrub");
     await expect(scrub).toBeVisible();
@@ -90,7 +64,7 @@ test.describe("Seek", () => {
   test("arrow keys on the focused progress bar seek instead of navigating", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     const scrub = page.locator(".scrub");
     await scrub.focus();
@@ -103,7 +77,7 @@ test.describe("Seek", () => {
   });
 
   test("pending seek position marker shows while stopped", async ({ page }) => {
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackState({
@@ -116,7 +90,7 @@ test.describe("Seek", () => {
     await expect(page.locator(".scrub__pending")).toBeVisible();
 
     // Marker disappears once playback starts (pending consumed).
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackState({ is_playing: true, pending_start_ms: null }),

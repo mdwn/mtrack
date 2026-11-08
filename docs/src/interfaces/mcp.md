@@ -57,14 +57,15 @@ client's MCP server settings.
 
 ### Tools
 
-About 60 tools are available. They fall into a few groups:
+About 65 tools are available. They fall into a few groups:
 
 - **Status & discovery** — current playback status, host/runtime info, and listings of songs,
   playlists, groups, venues, and fixture types. `status` also reports the
-  [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {mode, show, state}`,
-  where `mode` is `auto`, `on` or `off` and `state` is `pending` while its delay runs,
-  `playing`, `off`, or `unavailable` when `on` has no show to play; `null` without a DMX
-  engine) and a song about to [auto play](../getting-started/playlists.md#auto-play)
+  [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {mode, show, source, state}`,
+  where `mode` is `auto`, `on` or `off`, `source` is whose settings the show plays (`profile`,
+  `playlist` or `entry`; `null` with no show), and `state` is `pending` while its delay runs,
+  `playing`, `off`, or `unavailable` when `on` has no show to play; `{available: false,
+  reason}` when its state could not be read; `null` without a DMX engine) and a song about to [auto play](../getting-started/playlists.md#auto-play)
   (`auto_play: {song, starts_in_seconds}`, `null` when there is none).
 - **Playback control** — play, stop, next/previous, play-from-a-time, play-a-named-song-from-a-time,
   seek within the current song (to a time or a named section), switch playlist, stop triggered
@@ -79,8 +80,12 @@ About 60 tools are available. They fall into a few groups:
   detailed song metadata and beat-grid queries. A playlist write is checked as the player would
   load it: each entry's `fade_out`, `fade_in` and `auto_play`, and the playlist's `ambient`.
 - **Lighting authoring** — read, write, validate, patch, and delete `.light` DSL files for songs,
-  venues, and fixture types (venue tools also take `.venue` files, fixture-type tools `.fixture`),
-  list the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
+  and venues and fixture types by name, by the web UI's rules: a new one is written to its own
+  `<stem>.venue` or `<stem>.fixture`, an existing one only where its file is its alone (a shared,
+  broken or doubly declared one is read-only, refused with the file and why), and `from` renames.
+  The listings give every file in the host's profile's directories, at any depth, with each
+  name's owner, and `read_venue` / `read_fixture_type` read any of those files by path. List
+  the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
   venue files import through `list_gdtf_modes` / `import_gdtf` and `inspect_mvr` / `import_mvr`
   (and go back out through `export_mvr`),
   so an agent can fetch a GDTF or a venue's MVR, read its modes or pick the origin, and wire it in.
@@ -89,7 +94,7 @@ About 60 tools are available. They fall into a few groups:
   names one (`mode "…"`), which `list_gdtf_modes` lists with footprints. `list_fixture_types`
   lists hand-written types with their channels and GDTF fixtures with their archive and modes,
   each with its `strobe_curve` (null when automatic) and the `strobe_curve_in_use`. A GDTF
-  fixture's own settings (its record) are written with the fixture-type tools as a `.fixture`
+  fixture's own settings (its record) are written with the fixture-type tools, in its `.fixture`
   file. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
   left with a dangling reference.
   `validate_lighting` returns each show's resolved cue timeline alongside the parse result, so
@@ -126,7 +131,9 @@ About 60 tools are available. They fall into a few groups:
   not light. `evaluate_show`
   needs no audio, no DMX output, and no real-time waiting, so a show can be verified without
   playing the song through the PA and the rig — and without perturbing playback if a song *is*
-  running.
+  running. A setting still moving when its effect ends or a cue cuts it (a zoom
+  fading down, a head mid-move) evaluates where it got to at that instant; the live rig can hold
+  it one output frame short of that (about 23 ms on a Pi, longer under load).
 
 Every write and patch tool validates its input (YAML schema or `.light` DSL parse) **before** it
 writes to disk, so a malformed edit is rejected rather than corrupting a project file.

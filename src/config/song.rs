@@ -24,6 +24,7 @@ use super::{
     notification::SongNotificationConfig,
     pilot::PilotConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
+    section::Section,
     tempo::TempoConfig,
     track::Track,
 };
@@ -90,105 +91,7 @@ pub struct Song {
     notification_audio: Option<SongNotificationConfig>,
 }
 
-/// How long consecutive passes of a looping song overlap.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LoopCrossfade {
-    /// A fixed length of time.
-    Time(std::time::Duration),
-    /// A number of beats, counted back from the end of the song.
-    Beats(f64),
-    /// A number of measures, counted back from the end of the song.
-    Measures(f64),
-}
-
-impl std::fmt::Display for LoopCrossfade {
-    /// As it would be written in song.yaml.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LoopCrossfade::Time(length) => write!(f, "{}s", length.as_secs_f64()),
-            LoopCrossfade::Beats(beats) if *beats == 1.0 => write!(f, "1beat"),
-            LoopCrossfade::Beats(beats) => write!(f, "{beats}beats"),
-            LoopCrossfade::Measures(measures) if *measures == 1.0 => write!(f, "1measure"),
-            LoopCrossfade::Measures(measures) => write!(f, "{measures}measures"),
-        }
-    }
-}
-
-impl LoopCrossfade {
-    /// Parses `"6s"`, `"500ms"`, `"8beats"` or `"2measures"` (singular units
-    /// too). The length must be greater than zero.
-    pub fn parse(value: &str) -> Result<LoopCrossfade, String> {
-        LoopCrossfade::parse_field("loop_crossfade", value)
-    }
-
-    /// Parses a length as [`LoopCrossfade::parse`] does, errors naming
-    /// `field`.
-    pub fn parse_field(field: &str, value: &str) -> Result<LoopCrossfade, String> {
-        let value = value.trim();
-        let invalid = || {
-            format!(
-                "{field}: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
-                 \"8beats\" or \"2measures\")"
-            )
-        };
-        let number = |n: &str| -> Result<f64, String> {
-            let n: f64 = n.trim().parse().map_err(|_| invalid())?;
-            if !(n.is_finite() && n > 0.0) {
-                return Err(format!("{field}: {value:?} must be greater than zero"));
-            }
-            // Far past any song, in any unit; a bound, so a typo cannot
-            // overflow the time arithmetic downstream.
-            if n > 1e6 {
-                return Err(format!("{field}: {value:?} is longer than any song"));
-            }
-            Ok(n)
-        };
-        if let Some(n) = value
-            .strip_suffix("measures")
-            .or_else(|| value.strip_suffix("measure"))
-        {
-            Ok(LoopCrossfade::Measures(number(n)?))
-        } else if let Some(n) = value
-            .strip_suffix("beats")
-            .or_else(|| value.strip_suffix("beat"))
-        {
-            Ok(LoopCrossfade::Beats(number(n)?))
-        } else if let Some(n) = value.strip_suffix("ms") {
-            Ok(LoopCrossfade::Time(std::time::Duration::from_secs_f64(
-                number(n)? / 1000.0,
-            )))
-        } else if let Some(n) = value.strip_suffix('s') {
-            Ok(LoopCrossfade::Time(std::time::Duration::from_secs_f64(
-                number(n)?,
-            )))
-        } else {
-            Err(invalid())
-        }
-    }
-}
-
-/// A named section of a song defined by measure boundaries.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct Section {
-    /// Display name for this section (e.g., "verse", "chorus").
-    pub name: String,
-    /// Start measure (1-indexed, inclusive).
-    pub start_measure: usize,
-    /// End measure (1-indexed, exclusive).
-    pub end_measure: usize,
-    /// Start beat within the start measure (1-based, fractional allowed;
-    /// omitted = 1, the measure boundary).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_beat: Option<f64>,
-    /// End beat within the end measure (1-based, fractional allowed;
-    /// omitted = 1, keeping the end bound exclusive at the measure line).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_beat: Option<f64>,
-    /// Optional display color for the web UI timeline (hex "#rrggbb").
-    /// Without one the UI rotates through its palette.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-}
+pub use super::length::LoopCrossfade;
 
 impl Song {
     /// Creates a new song configuration.

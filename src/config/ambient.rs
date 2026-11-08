@@ -16,7 +16,8 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use super::playlist_settings::parse_duration;
+pub use super::playlist_settings::{Ambient, PlaylistAmbient};
 
 /// How long the last song's frame holds before ambient fades in.
 pub const DEFAULT_AMBIENT_DELAY: Duration = Duration::ZERO;
@@ -24,34 +25,6 @@ pub const DEFAULT_AMBIENT_DELAY: Duration = Duration::ZERO;
 pub const DEFAULT_AMBIENT_FADE_IN: Duration = Duration::from_secs(2);
 /// How long ambient takes to cross into a song's show.
 pub const DEFAULT_AMBIENT_FADE_OUT: Duration = Duration::from_secs(1);
-
-/// Ambient light as written: under `dmx.lighting.ambient`, or a playlist's
-/// `ambient`, whose settings override the player's one by one.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Ambient {
-    /// The `.light` file to play, relative to the project.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    show: Option<String>,
-    /// How long the last song's frame holds before ambient fades in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    delay: Option<String>,
-    /// How long ambient takes to fade in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fade_in: Option<String>,
-    /// How long ambient takes to cross into a song's show.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fade_out: Option<String>,
-}
-
-/// A playlist's `ambient`: `false` for none, or settings of its own.
-#[derive(Clone, Debug, PartialEq)]
-pub enum PlaylistAmbient {
-    /// No ambient light with this playlist.
-    Off,
-    /// The player's ambient light, with these settings overriding it.
-    On(Ambient),
-}
 
 /// Ambient light, resolved: the show to play and its timings.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,55 +34,6 @@ pub struct ResolvedAmbient {
     pub delay: Duration,
     pub fade_in: Duration,
     pub fade_out: Duration,
-}
-
-impl Ambient {
-    /// Ambient light built in code.
-    pub fn new(
-        show: Option<String>,
-        delay: Option<String>,
-        fade_in: Option<String>,
-        fade_out: Option<String>,
-    ) -> Self {
-        Ambient {
-            show,
-            delay,
-            fade_in,
-            fade_out,
-        }
-    }
-
-    /// The `.light` file, as written.
-    pub fn show(&self) -> Option<&str> {
-        self.show.as_deref()
-    }
-
-    /// Checks the timings read, naming the first that does not.
-    pub fn validate(&self) -> Result<(), String> {
-        for (field, value) in [
-            ("delay", &self.delay),
-            ("fade_in", &self.fade_in),
-            ("fade_out", &self.fade_out),
-        ] {
-            if let Some(value) = value {
-                parse_duration(field, value)?;
-            }
-        }
-        if self
-            .show
-            .as_deref()
-            .is_some_and(|show| show.trim().is_empty())
-        {
-            return Err("ambient show: empty".to_string());
-        }
-        Ok(())
-    }
-}
-
-fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
-    duration_string::DurationString::from_string(value.to_string())
-        .map(Duration::from)
-        .map_err(|_| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
 }
 
 /// Resolves ambient light from the player's settings and the playlist's: a
@@ -174,60 +98,11 @@ pub fn layer(
     }
 }
 
-impl Serialize for PlaylistAmbient {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            PlaylistAmbient::Off => serializer.serialize_bool(false),
-            PlaylistAmbient::On(ambient) => ambient.serialize(serializer),
-        }
-    }
-}
-
-/// By hand: `false` turns ambient off, `true` keeps the player's, and a map
-/// overrides its settings.
-impl<'de> Deserialize<'de> for PlaylistAmbient {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct AmbientVisitor;
-        impl<'de> serde::de::Visitor<'de> for AmbientVisitor {
-            type Value = PlaylistAmbient;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("false, or a map of ambient settings")
-            }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(if v {
-                    PlaylistAmbient::On(Ambient::default())
-                } else {
-                    PlaylistAmbient::Off
-                })
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> Result<Self::Value, A::Error> {
-                Ambient::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-                    .map(PlaylistAmbient::On)
-            }
-        }
-        deserializer.deserialize_any(AmbientVisitor)
-    }
-}
-
-impl PlaylistAmbient {
-    /// Checks the timings read.
-    pub fn validate(&self) -> Result<(), String> {
-        match self {
-            PlaylistAmbient::Off => Ok(()),
-            PlaylistAmbient::On(ambient) => ambient.validate(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Deserialize)]
+    #[derive(serde::Deserialize)]
     struct Wrapper<T> {
         ambient: T,
     }

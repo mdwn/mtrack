@@ -12,77 +12,17 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The venue inspector's patch check, as plain values (no browser): the same
-// rule as the server's lighting::patch — a gang is not an overlap.
+// The venue editor's placement of a new row and its row checks, as plain
+// values (no browser), through the player's rules module loaded under
+// node. The patch rule itself (what overlaps, what gangs) and the row
+// checks (`lighting/venue_rows.rs`) are tested where they live.
 
 import { test, expect } from "@playwright/test";
-import {
-  collisions,
-  ganged,
-  nextPatch,
-  room,
-  stripCells,
-  stripWindow,
-  type Span,
-} from "../../src/lib/lighting/patch";
-import {
-  channelProblems,
-  nextFixtureName,
-  rowProblems,
-} from "../../src/lib/lighting/venueRows";
+import { nextFixtureName, nextPatch } from "../../src/lib/lighting/venueRows";
+import { rules } from "../../src/lib/rules";
+import { loadRules } from "./rules-node";
 
-const span = (
-  fixture: string,
-  address: number,
-  footprint: number | null,
-  universe = 1,
-): Span => ({ fixture, universe, address, footprint });
-
-const bricks = Array.from({ length: 8 }, (_, i) =>
-  span(`Brick${i + 1}`, 1 + i * 4, 4),
-);
-
-test("a wider mode collides with the next fixture, by name and addresses", () => {
-  const hits = collisions(bricks, span("Brick3", 9, 7));
-  expect(hits).toEqual([{ fixture: "Brick4", from: 13, to: 15 }]);
-  expect(collisions(bricks, span("Brick3", 9, 4))).toEqual([]);
-  expect(collisions(bricks, span("Brick3", 9, 3))).toEqual([]);
-});
-
-test("a gang is not a collision, and an unknown footprint is never guessed", () => {
-  const spans = [span("A", 1, 4), span("B", 1, 4), span("C", 3, null)];
-  expect(ganged(spans[0], spans[1])).toBe(true);
-  expect(collisions(spans, span("A", 1, 4))).toEqual([]);
-  // Wider than its gang mate: now it is an overlap.
-  expect(collisions(spans, span("A", 1, 5))).toEqual([
-    { fixture: "B", from: 1, to: 4 },
-  ]);
-  expect(collisions(spans, span("D", 3, 1))).toEqual([
-    { fixture: "A", from: 3, to: 3 },
-    { fixture: "B", from: 3, to: 3 },
-  ]);
-  // Another universe never collides.
-  expect(collisions(spans, span("E", 1, 4, 2))).toEqual([]);
-});
-
-test("room is how many addresses fit before the next fixture", () => {
-  expect(room(bricks, span("Brick3", 9, 7))).toBe(4);
-  expect(room(bricks, span("Brick8", 29, 7))).toBe(512 - 29 + 1);
-  // Starting inside someone else's addresses leaves none.
-  expect(room(bricks, span("X", 10, 1))).toBe(0);
-});
-
-test("the strip is a bounded window around the fixture", () => {
-  expect(stripWindow(9, 4)).toEqual({ from: 1, to: 32 });
-  expect(stripWindow(200, 4)).toEqual({ from: 186, to: 217 });
-  expect(stripWindow(510, 4)).toEqual({ from: 481, to: 512 });
-  const cells = stripCells(bricks, span("Brick3", 9, 7), 1, 32);
-  expect(cells).toHaveLength(32);
-  const at = (a: number) => cells.find((c) => c.address === a)!;
-  expect(at(9)).toMatchObject({ mine: true, clash: false, owners: [] });
-  expect(at(13)).toMatchObject({ mine: true, clash: true, owners: ["Brick4"] });
-  expect(at(16)).toMatchObject({ mine: false, owners: ["Brick4"] });
-});
+test.beforeAll(loadRules);
 
 test("a new fixture continues the patch: 1 → 4 → 8", () => {
   // Fixture 1 has 3 channels at 1: the next starts at 4. That one has 4
@@ -130,27 +70,46 @@ test("rows that cannot be saved are named, never dropped", () => {
     universe,
     start_channel,
   });
-  const found = rowProblems([
-    row("A"),
-    row(""),
-    row("A"),
-    row("B", ""),
-    row("C", "par", 0, 0),
-  ]);
-  expect([...found]).toEqual([
+  const byRow = (found: { row: number; problems: string[] }[] | undefined) =>
+    (found ?? []).map((p) => [p.row, p.problems]);
+  const found = rules.venue_row_problems(
+    [row("A"), row(""), row(" A"), row("B", ""), row("C", "par", 0, 0)],
+    [],
+  );
+  // ` A` and `A` are one name, as the save has it.
+  expect(byRow(found)).toEqual([
     [0, ["duplicateName"]],
     [1, ["noName"]],
     [2, ["duplicateName"]],
     [3, ["noType"]],
     [4, ["badUniverse", "badAddress"]],
   ]);
-  expect([
-    ...channelProblems([
-      { name: "red", offset: 1 },
-      { name: "red", offset: 2 },
-      { name: " ", offset: 0 },
-    ]),
-  ]).toEqual([
+  // A blank field (null) is its own row's problem alone.
+  expect(
+    byRow(
+      rules.venue_row_problems(
+        [row("A"), row("A"), { ...row("E"), universe: null }],
+        [],
+      ),
+    ),
+  ).toEqual([
+    [0, ["duplicateName"]],
+    [1, ["duplicateName"]],
+    [2, ["badUniverse"]],
+  ]);
+  // Past any universe the player addresses.
+  expect(byRow(rules.venue_row_problems([row("D", "par", 70000)], []))).toEqual(
+    [[0, ["badUniverse"]]],
+  );
+  expect(
+    byRow(
+      rules.channel_row_problems([
+        { name: "red", offset: 1 },
+        { name: "red", offset: 2 },
+        { name: " ", offset: 0 },
+      ]),
+    ),
+  ).toEqual([
     [0, ["duplicateName"]],
     [1, ["duplicateName"]],
     [2, ["noName", "badOffset"]],

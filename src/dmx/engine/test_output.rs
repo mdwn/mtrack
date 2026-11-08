@@ -24,6 +24,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::player::TestOutputStatus;
+
 use super::Engine;
 
 /// How long a test holds after its last update.
@@ -53,17 +55,6 @@ pub struct TestOutput {
     pub mode: Option<String>,
     /// 1-based DMX channel and value, for the whole span.
     pub channels: Vec<(u16, u8)>,
-}
-
-/// What `/api/status` says about a running test.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct TestOutputStatus {
-    pub universe: u16,
-    pub address: u16,
-    pub footprint: u16,
-    pub fixture_type: String,
-    pub mode: Option<String>,
-    pub expires_in_secs: f64,
 }
 
 /// The test in force, with when it lapses.
@@ -229,7 +220,7 @@ mod tests {
 
     /// Waits for universe 1's frame to start with `want`.
     fn frame_becomes(sent: &Sent, want: &[u8]) -> Result<(), Box<dyn Error>> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + crate::testutil::PATIENCE;
         loop {
             let last = sent
                 .lock()

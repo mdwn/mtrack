@@ -13,26 +13,22 @@
      *
      * -->
 <script lang="ts">
+  import type { PilotHint } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import type {
-    PilotHintConfig,
-    SongFile,
-    TempoConfig,
-  } from "../../lib/api/songs";
-  import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
+  import type { BeatGrid, SongFile, TempoConfig } from "../../lib/api/songs";
+  import { rules } from "../../lib/rules";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type PositionValue } from "./PositionPicker.svelte";
   import PlayheadCapture from "./PlayheadCapture.svelte";
-  import { positionAtTime } from "../../lib/util/beatGrid";
   import SongFileField from "./SongFileField.svelte";
 
   interface Props {
-    hint: PilotHintConfig;
+    hint: PilotHint;
     hasBeatGrid?: boolean;
     /** Beat times (seconds) + measure start indices, for converting the
      * position when switching between measure and time anchoring. */
-    beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    beatGrid?: BeatGrid | null;
     /** The song's tempo map, for the meter of each measure. */
     tempo?: TempoConfig | null;
     /** The song's measure count, bounding the position picker. */
@@ -42,7 +38,7 @@
     songName?: string;
     /** The song directory listing, for the clip picker. */
     songFiles?: SongFile[];
-    onchange: (patch: Partial<PilotHintConfig>) => void;
+    onchange: (patch: Partial<PilotHint>) => void;
     ondelete: () => void;
     onclose: () => void;
   }
@@ -82,13 +78,23 @@
       writePosition({ kind: "time", time: playheadTime });
       return;
     }
-    const at = positionAtTime(beatGrid, playheadTime);
-    if (at)
-      writePosition({
-        kind: "beat",
-        measure: at.measure,
-        beat: Math.round(at.beat),
-      });
+    const at = playheadBeat(playheadTime);
+    if (at) writePosition({ kind: "beat", measure: at.measure, beat: at.beat });
+  }
+
+  /** The beat nearest a time, as the player snaps a time to one. */
+  function playheadBeat(time: number) {
+    return beatGrid
+      ? rules.grid_query(beatGrid, { secs: time, snap: { step: 1 } })
+      : undefined;
+  }
+
+  /** The player's tempo map answers for the measure the picker asks about;
+   * 4/4 without a tempo block or while it makes no map. */
+  function meterAt(measure: number): [number, number] | undefined {
+    return tempo
+      ? rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.sig
+      : undefined;
   }
 
   /** Writes the anchoring the picker reports; beat 1 stays implicit and a
@@ -128,16 +134,16 @@
         stores="either"
         {maxMeasure}
         {beatGrid}
-        beatsIn={(m) => beatsInMeasure(tempo, m)}
-        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        beatsIn={(m) => meterAt(m)?.[0] ?? 4}
+        sigOf={(m) => meterAt(m)?.join("/")}
         ghostTime={playheadTime}
         onchange={writePosition}
       />
       {#if playheadTime !== null}
-        {@const at = positionAtTime(beatGrid, playheadTime)}
+        {@const at = playheadBeat(playheadTime)}
         <PlayheadCapture
           time={playheadTime}
-          position={at ? `m${at.measure} · b${Math.round(at.beat)}` : undefined}
+          position={at ? `m${at.measure} · b${at.beat}` : undefined}
         >
           {#snippet actions()}
             <button type="button" class="btn btn-sm" onclick={capturePlayhead}
@@ -179,14 +185,14 @@
           class="seg-btn"
           class:active={(hint.align ?? "end") === "end"}
           onclick={() => onchange({ align: "end" })}
-          >{$t("pilot.alignEnd")}</button
+          >{$t("pilot.aligns.end")}</button
         >
         <button
           type="button"
           class="seg-btn"
           class:active={hint.align === "start"}
           onclick={() => onchange({ align: "start" })}
-          >{$t("pilot.alignStart")}</button
+          >{$t("pilot.aligns.start")}</button
         >
       </div>
     {:else}

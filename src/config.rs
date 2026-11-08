@@ -15,20 +15,27 @@ pub mod ambient;
 mod audio;
 mod controller;
 mod dmx;
+mod duration;
 mod error;
+mod fade;
 mod hostname;
+mod kind_data;
+pub(crate) mod length;
 pub mod lighting;
 pub mod metronome;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
+mod midi_event;
 pub mod notification;
 pub mod pilot;
 mod player;
 mod playlist;
+mod playlist_settings;
 mod profile;
 pub mod samples;
+mod section;
 mod song;
 mod statusevents;
 pub mod store;
@@ -39,6 +46,7 @@ pub mod trigger;
 
 pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
 pub use self::controller::Controller;
+pub use self::controller::ControllerKind;
 pub use self::controller::CustomModel;
 pub use self::controller::GrpcController;
 pub use self::controller::McpController;
@@ -67,19 +75,23 @@ pub use self::player::{MetronomeDefaults, Player};
 #[allow(unused_imports)]
 pub use self::playlist::{
     AutoPlayConfig, ConfiguredEntry, EntryFades, EntryTransitions, Fade, FadeConfig, FadeCurve,
-    Playlist, PlaylistEntry,
+    FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
+pub(crate) use self::duration::{parse_playback_delay, playback_delay_problem};
 pub use self::hostname::resolve_hostname;
-pub use self::notification::{NotificationConfig, SongNotificationConfig};
-pub(crate) use self::player::list_profile_files;
+pub use self::notification::{
+    section_key, NotificationConfig, NotificationKind, SongNotificationConfig,
+};
+pub(crate) use self::player::{list_profile_files, profile_file};
 pub use self::profile::Profile;
 #[allow(unused_imports)]
 pub use self::samples::{
     ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
-pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section, Song};
+pub use self::section::Section;
+pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};
@@ -87,17 +99,3 @@ pub use self::track::Track;
 
 mod kind;
 pub use self::kind::{peek_kind, ConfigKind};
-
-use std::time::Duration;
-
-/// Parses an optional duration string (e.g. "500ms") into a `Duration`,
-/// returning `default` when `raw` is `None`.
-pub(crate) fn parse_playback_delay(
-    raw: &Option<String>,
-    default: Duration,
-) -> Result<Duration, Box<dyn std::error::Error>> {
-    match raw {
-        Some(s) => Ok(duration_string::DurationString::from_string(s.clone())?.into()),
-        None => Ok(default),
-    }
-}

@@ -52,6 +52,66 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
+
+    /// What the output thread's diagnostics name this output by.
+    fn describe(&self) -> OutputDescription;
+}
+
+/// The device and period an output stream is built for, for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputDescription {
+    /// The device name, as configured.
+    pub(crate) device: String,
+    /// The stream's period in frames, or `None` where the backend chose it.
+    pub(crate) period_frames: Option<u32>,
+    /// The stream's sample rate.
+    pub(crate) sample_rate: u32,
+    /// Which setting chose the period, so advice names the one to change.
+    pub(crate) period_setting: PeriodSetting,
+}
+
+/// Which configuration setting the stream's period came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeriodSetting {
+    /// `stream_buffer_size` unset: the period is `buffer_size`.
+    BufferSize,
+    /// `stream_buffer_size: <n>`.
+    Fixed,
+    /// `stream_buffer_size: default`: the backend chose.
+    BackendDefault,
+    /// `stream_buffer_size: min`, at the device's reported minimum.
+    Min,
+    /// `stream_buffer_size: min`, but the device reported no minimum, so the
+    /// period fell back to `buffer_size`.
+    MinFallback,
+}
+
+impl PeriodSetting {
+    /// What to change for a longer period.
+    pub(crate) fn advice(self) -> &'static str {
+        match self {
+            PeriodSetting::BufferSize => {
+                "raise audio.buffer_size, or set audio.stream_buffer_size to a larger period"
+            }
+            PeriodSetting::Fixed => {
+                "raise audio.stream_buffer_size (audio.buffer_size does not set the period \
+                 while stream_buffer_size is set)"
+            }
+            PeriodSetting::BackendDefault => {
+                "set audio.stream_buffer_size to a frame count above the backend's default \
+                 (audio.buffer_size does not set the period while stream_buffer_size is set)"
+            }
+            PeriodSetting::Min => {
+                "audio.stream_buffer_size is min, the smallest period the device allows; \
+                 set it to a larger frame count"
+            }
+            PeriodSetting::MinFallback => {
+                "audio.stream_buffer_size is min, but the device reports no minimum, so the \
+                 period fell back to audio.buffer_size: raise audio.buffer_size, or set \
+                 stream_buffer_size to a larger frame count"
+            }
+        }
+    }
 }
 
 /// Wraps a `cpal::Stream` so it satisfies `OutputStream`.
@@ -80,6 +140,7 @@ pub(super) struct CpalOutputStreamFactory {
     target_format: TargetFormat,
     config: cpal::StreamConfig,
     max_samples: usize,
+    period_setting: PeriodSetting,
 }
 
 impl CpalOutputStreamFactory {
@@ -88,6 +149,7 @@ impl CpalOutputStreamFactory {
         device_name: String,
         target_format: TargetFormat,
         output_buffer_size: Option<u32>,
+        period_setting: PeriodSetting,
     ) -> Self {
         let buffer_size = match output_buffer_size {
             Some(size) => cpal::BufferSize::Fixed(size),
@@ -110,11 +172,24 @@ impl CpalOutputStreamFactory {
             target_format,
             config,
             max_samples,
+            period_setting,
         }
     }
 }
 
 impl OutputStreamFactory for CpalOutputStreamFactory {
+    fn describe(&self) -> OutputDescription {
+        OutputDescription {
+            device: self.device_name.clone(),
+            period_frames: match self.config.buffer_size {
+                cpal::BufferSize::Fixed(frames) => Some(frames),
+                cpal::BufferSize::Default => None,
+            },
+            sample_rate: self.target_format.sample_rate,
+            period_setting: self.period_setting,
+        }
+    }
+
     /// Builds a stream, re-resolving the device by name if the handle we hold
     /// turns out to be dead.
     ///
@@ -477,45 +552,15 @@ pub(super) mod test {
 
     use super::super::CondvarNotify;
     use super::*;
-    use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
-    use crate::playsync::CancelHandle;
+    use crate::audio::mixer::AudioMixer;
+
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    fn make_test_source(
-        samples: Vec<f32>,
-        channels: u16,
-        labels: Vec<Vec<String>>,
-    ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
-        let memory_source =
-            crate::audio::sample_source::MemorySampleSource::new(samples, channels, 44100);
-        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
-            Box::new(memory_source),
-            labels,
-            channels,
-        ))
-    }
-
-    fn make_active_source(
-        source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
-        track_mappings: HashMap<String, Vec<u16>>,
-    ) -> MixerActiveSource {
-        MixerActiveSource {
-            id: crate::audio::next_source_id(),
-            cached_source_channel_count: source.source_channel_count(),
-            source,
-            track_mappings,
-            channel_mappings: Vec::new(),
-            cancel_handle: CancelHandle::new(),
-            is_finished: Arc::new(AtomicBool::new(false)),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-            break_envelope: None,
-        }
-    }
+    use crate::testutil::mixer::{
+        active_source as make_active_source, memory_source as make_test_source,
+    };
 
     /// A mock output stream that stays alive until dropped.
     struct MockOutputStream {
@@ -547,7 +592,38 @@ pub(super) mod test {
         }
     }
 
+    /// `buffer_size` is ignored once `stream_buffer_size` is set, so advice
+    /// to raise it is advice to change nothing.
+    #[test]
+    fn underrun_advice_names_the_setting_in_force() {
+        assert!(PeriodSetting::BufferSize
+            .advice()
+            .starts_with("raise audio.buffer_size"));
+        for setting in [PeriodSetting::Fixed, PeriodSetting::BackendDefault] {
+            let advice = setting.advice();
+            assert!(advice.contains("audio.stream_buffer_size"), "{advice}");
+            assert!(!advice.starts_with("raise audio.buffer_size"), "{advice}");
+        }
+        assert!(PeriodSetting::MinFallback
+            .advice()
+            .contains("fell back to audio.buffer_size"));
+    }
+
+    /// What every mock factory describes itself as.
+    fn mock_description() -> OutputDescription {
+        OutputDescription {
+            device: "mock".to_string(),
+            period_frames: Some(512),
+            sample_rate: 44100,
+            period_setting: PeriodSetting::BufferSize,
+        }
+    }
+
     impl OutputStreamFactory for MockOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -567,6 +643,10 @@ pub(super) mod test {
     pub(in crate::audio::cpal) struct FailingOutputStreamFactory;
 
     impl OutputStreamFactory for FailingOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -583,7 +663,12 @@ pub(super) mod test {
     /// after the factory has been moved into the output thread.
     struct ErrorCapturingState {
         alive: Arc<AtomicBool>,
-        build_count: std::sync::atomic::AtomicU32,
+        /// Builds attempted, counted once each is done: a stream built is
+        /// counted once its error notify is captured, so a fault triggered
+        /// after the count has risen reaches that stream, not the one before.
+        builds: parking_lot::Mutex<u32>,
+        /// Notified on each count.
+        built: parking_lot::Condvar,
         captured_error_notify: parking_lot::Mutex<Option<CondvarNotify>>,
         /// Number of upcoming builds that should fail, simulating a device that is
         /// mid-re-enumeration and not yet openable.
@@ -611,7 +696,25 @@ pub(super) mod test {
         }
 
         pub(in crate::audio::cpal) fn build_count(&self) -> u32 {
-            self.state.build_count.load(Ordering::Relaxed)
+            *self.state.builds.lock()
+        }
+
+        /// Waits for the build count to reach `count`. Bounded only as a
+        /// guard against a test hanging: a build takes no time.
+        pub(in crate::audio::cpal) fn wait_for_builds(&self, count: u32) {
+            let mut builds = self.state.builds.lock();
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
+            while *builds < count {
+                assert!(
+                    !self
+                        .state
+                        .built
+                        .wait_until(&mut builds, deadline)
+                        .timed_out(),
+                    "{} builds, never {count}",
+                    *builds
+                );
+            }
         }
 
         pub(in crate::audio::cpal) fn is_alive(&self) -> bool {
@@ -629,7 +732,8 @@ pub(super) mod test {
         pub(in crate::audio::cpal) fn new() -> (Self, ErrorCapturingHandle) {
             let state = Arc::new(ErrorCapturingState {
                 alive: Arc::new(AtomicBool::new(false)),
-                build_count: std::sync::atomic::AtomicU32::new(0),
+                builds: parking_lot::Mutex::new(0),
+                built: parking_lot::Condvar::new(),
                 captured_error_notify: parking_lot::Mutex::new(None),
                 fail_next: std::sync::atomic::AtomicU32::new(0),
             });
@@ -641,6 +745,10 @@ pub(super) mod test {
     }
 
     impl OutputStreamFactory for ErrorCapturingFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -649,20 +757,23 @@ pub(super) mod test {
             error_notify: CondvarNotify,
             _health: Arc<OutputHealth>,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
-            self.state.build_count.fetch_add(1, Ordering::Relaxed);
-            if self
+            let built = if self
                 .state
                 .fail_next
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_ok()
             {
-                return Err("device is not available".into());
-            }
-            *self.state.captured_error_notify.lock() = Some(error_notify);
-            self.state.alive.store(true, Ordering::Relaxed);
-            Ok(Box::new(MockOutputStream {
-                _alive: self.state.alive.clone(),
-            }))
+                Err("device is not available".into())
+            } else {
+                *self.state.captured_error_notify.lock() = Some(error_notify);
+                self.state.alive.store(true, Ordering::Relaxed);
+                Ok(Box::new(MockOutputStream {
+                    _alive: self.state.alive.clone(),
+                }) as Box<dyn OutputStream>)
+            };
+            *self.state.builds.lock() += 1;
+            self.state.built.notify_all();
+            built
         }
     }
 

@@ -20,12 +20,14 @@
 </script>
 
 <script lang="ts">
+  import type { NotificationConfig } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import Tooltip from "./Tooltip.svelte";
   import FileUpload from "../songs/FileUpload.svelte";
 
   interface Props {
-    notifications: Record<string, unknown>;
+    notifications: NotificationConfig;
     onchange: () => void;
     onbrowse?: (target: NotifBrowseTarget) => void;
     onupload?: (files: File[]) => void;
@@ -45,7 +47,10 @@
     sectionNames = [],
   }: Props = $props();
 
-  const eventFields: [string, string, string][] = [
+  /** The events a notification sounds for, each a field of the config. */
+  type EventField = Exclude<keyof NotificationConfig, "sections">;
+
+  const eventFields: [EventField, string, string][] = [
     [
       "loop_armed",
       "notifications.loopArmed",
@@ -68,7 +73,7 @@
     ],
   ];
 
-  function updateField(key: string, value: string) {
+  function updateField(key: EventField, value: string) {
     if (value.trim()) {
       notifications[key] = value.trim();
     } else {
@@ -83,7 +88,7 @@
       const name = target.field.slice("section:".length);
       updateSectionFile(name, path);
     } else {
-      updateField(target.field, path);
+      updateField(target.field as EventField, path);
     }
   }
 
@@ -100,7 +105,7 @@
     if (!notifications.sections || typeof notifications.sections !== "object") {
       notifications.sections = {};
     }
-    const existing = notifications.sections as Record<string, string>;
+    const existing = (notifications.sections ??= {});
     let name = "section";
     let i = 1;
     while (name in existing) {
@@ -112,7 +117,7 @@
   }
 
   function removeSection(name: string) {
-    const s = notifications.sections as Record<string, string> | undefined;
+    const s = notifications.sections;
     if (s) {
       delete s[name];
       if (Object.keys(s).length === 0) {
@@ -124,7 +129,7 @@
   }
 
   function updateSectionName(oldName: string, newName: string) {
-    const s = notifications.sections as Record<string, string>;
+    const s = (notifications.sections ??= {});
     if (!s || newName === oldName) return;
     const trimmed = newName.trim();
     if (!trimmed || trimmed in s) return;
@@ -136,7 +141,7 @@
   }
 
   function updateSectionFile(name: string, value: string) {
-    const s = notifications.sections as Record<string, string>;
+    const s = (notifications.sections ??= {});
     if (!s) return;
     s[name] = value;
     onchange();
@@ -157,7 +162,7 @@
           class="input"
           type="text"
           placeholder={$t("notifications.filePlaceholder")}
-          value={(notifications[key] as string) ?? ""}
+          value={notifications[key] ?? ""}
           onchange={(e) =>
             updateField(key, (e.target as HTMLInputElement).value)}
         />
@@ -219,7 +224,7 @@
   {#if onupload}
     <div class="upload-area">
       <FileUpload
-        accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.aiff,.aif"
+        accept={audioAccept()}
         label={uploading
           ? $t("common.uploading")
           : $t("notifications.dropAudio")}

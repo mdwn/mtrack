@@ -152,13 +152,563 @@ Upgrade notes:
   turning the hue the short way while blending saturation and brightness. A plain `fade` blends
   red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to
   blue is grey halfway); a hue fade stays vivid. `fade` is unchanged.
+- **`"pink"` is a named colour**: `color: "pink"` is CSS pink, `#FFC0CB`, the pink the web UI's
+  colour picker offers; the player refused it as an invalid colour.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+- **A warning when audio keeps underrunning**: the output callback counted buffer underruns
+  (`host_info.audio_output.underruns`, and the status page) but never said so, so the journal was
+  silent about a device underrunning twelve times a second -- which, as the clock follows
+  delivered audio, also runs songs slow. The output thread now warns when underruns are
+  sustained: at least 3 in each of two consecutive 10-second windows. It names the device, the
+  count and rate in the last window, the total, and the period in frames and milliseconds, and
+  names the setting to change: `audio.buffer_size` (or setting `audio.stream_buffer_size`) where
+  `stream_buffer_size` is unset, `stream_buffer_size` where it is a frame count or `default` --
+  `buffer_size` does not set the period then -- and, for `min`, whether the device's minimum or
+  the `buffer_size` fallback is in force. At most one warning a minute, and none for an isolated
+  underrun, a single burst, or the underruns around a stream rebuild. The health verdict is
+  unchanged.
+
 ### Changed
+
+- **One file name rule for venues and fixture types** (`lighting::files::stem`): the name is
+  NFC-normalised and lowercased one character at a time, so "Café Par" typed on a Mac
+  (decomposed, `e` and a combining accent) and elsewhere give one stem, `café_par`, and "ΟΔΟΣ"
+  gives `οδοσ`; letters, digits and `-` kept, with any combining mark on a kept letter
+  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept), and a mark after
+  a separator a separator, even one that is also a letter ("a \u{93F}b" gives `a_b`); any other run
+  of characters one `_`; no `_` at either end; at most 247 bytes, cut before a letter and its
+  marks rather than through them (a 300-letter name gives a 247-letter stem); `untitled` when
+  nothing is left. It replaces the web UI's rule and the importers' rule, which differed. Files already there load and are found by what they declare, as before; only the
+  name a new file is given changes:
+  - A new fixture type saved in the web UI (`PUT /api/lighting/fixture-types/<name>`) and a new
+    venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: "Wash (Front)" is
+    written as `wash_front.light` (or `.fixture`, `.venue`), where it was `wash__front_.light`.
+    A name of nothing but punctuation ("///") is written as `untitled.light`, where it was
+    `___.light`. A name too long for a file name is cut to fit, with room for `.fixture`,
+    where the save failed.
+  - A GDTF imported under a pinned name (`mtrack import-gdtf --name`, the web UI's GDTF import,
+    MCP `import_gdtf`) and a record the Fixture settings save writes for a library fixture keep
+    `-` and letters outside ASCII: "Astera-PixelBrick" is written as
+    `astera-pixelbrick.fixture`, where it was `astera_pixelbrick.fixture`, and "Café Par" as
+    `café_par.fixture`, where it was `caf_par.fixture`. A name of nothing but other characters
+    ("///") gives `untitled.fixture`, where it gave `fixture.fixture`. A file already at that
+    name still gets a `_2` suffix, now after the new stem (`astera-pixelbrick_2.fixture`); a
+    suffixed name is not cut, so one at the length cap can still be too long to write.
+  - A venue seeded from an MVR (`mtrack import-mvr --write`, the web UI's MVR import, MCP
+    `import_mvr`) is written as `built-in.venue` for "built-in", where it was `built_in.venue`.
+    A re-import that finds no venue of that name checks `built-in.venue` and `built-in.light`
+    for another venue in the way, where it checked `built_in.venue` and `built_in.light`.
+  - An MVR export keeps its own file name: the venue "built-in" still exports as
+    `lighting/export/built_in.mvr`.
+- **The web UI writes only venue and fixture type files it can prove are one thing's**
+  (`PUT`/`DELETE /api/lighting/venues/<name>`, `PUT`/`DELETE /api/lighting/fixture-types/<name>`,
+  the Venues and Fixtures pages): a name's file is the one the loader read it from, and it is
+  written only when it parses and holds that one venue or type and nothing else. What changes:
+  - A venue or type whose file holds anything else (another venue or type, a show, a fixture type
+    beside a venue) or whose name is declared twice is read-only. A save, rename or delete answers
+    409 with `read_only: true`, the `file`, the reason, and the file's `others` or the name's
+    `files`, and writes nothing. Saving "Club" from `tour/all.light`, which also holds venue
+    "Arena", answers "Defined in tour/all.light alongside venue "Arena"; edit that file by hand.",
+    where a form save patched Club's block inside the file and a text save replaced the whole
+    file. A type in both `mover.light` and `mover.fixture` is read-only, where a text save kept
+    one and removed the other.
+  - The venue and fixture editors show a read-only venue or type with its file and that reason,
+    and its Save, Name (rename) and Delete are disabled.
+  - A new venue is written as `<stem>.venue` and a new type as `<stem>.fixture`, whatever they
+    hold: "Club (Main)" goes to `lighting/venues/club_main.venue` and the channel map's "Wash Par"
+    to `lighting/fixture_types/wash_par.fixture`, where both were `.light`. `?ext=light` no
+    longer makes a new `.light`. A `.fixture` is not written back as `.light`: `?ext=light` on
+    one answers 400, where it moved the type to a `.light`.
+  - The channel map edits only a type it can say all of: a file holding that one type and only
+    `channels`, `channel_map` and the strobe frequencies and offset, with no comment. The listing
+    says which, `form_editable`; any other type opens as text, and a form save of it answers 400
+    ("edit this type as text"), where it answered 409 (for a `.fixture`). The count, if
+    given, must be the map's, and no field or channel may be given twice. A data-loss fix: a `.light` type with a comment, a
+    `strobe_curve`, `special_cases` or `movement` limits opened in the channel map, and its save
+    regenerated the file without them. A plain `.fixture` (as a new type from the channel map
+    is) opens in the channel map, where every `.fixture` opened as text.
+  - A new name whose file is taken is refused with 409: "club main" when `club_main.venue` holds
+    "Club Main" answers "club_main.venue is taken by "Club Main"; choose another name", and a new
+    type at a `<stem>.light` or `<stem>.fixture` declaring another type is refused, where that
+    file was overwritten. A new type may not take the name of a GDTF in the library with no
+    record.
+  - A text body must declare this one venue or type and nothing else, or the save answers 400:
+    `venue "House" { … }` followed by `venue "Annex" { … }`, or by a `show`, where the file
+    became whatever the text declared.
+  - A `.light` whose edit needs the newer format moves to a `.venue` or `.fixture` of its own
+    name beside it, as before ("Big Room" in `tour/old.light` gaining a GDTF mode is written to
+    `tour/old.venue`); a `.light` type saved with rich channels now moves too, where it was
+    refused with 400. It is refused with 409, nothing written, when that file or one of the same
+    stem in another case (`tour/OLD.venue`) is there; a case variant was not looked for. If the
+    `.light` cannot be removed after, the new file is removed again and the save fails, where the
+    two were left declaring the name twice.
+  - A rename in either editor is one save, `PUT …/<new name>?from=<old name>` at the old file's
+    version, where it saved the new name to a new file and then deleted the old one (and a venue's
+    comments went with it). A file at the old name's own place (`<dir>/<stem>.venue`, `.light` or
+    `.fixture`) moves to the new name's: "House" in `house.venue` renamed "Big Room" becomes
+    `big_room.venue`, comments kept, refused when `big_room.venue` is taken. Any other file keeps
+    its name and the block is renamed in it: "House" in `tour/2024.venue` renamed "Arena" stays in
+    `tour/2024.venue`. A new name declared anywhere, or a library GDTF's, is refused.
+  - A file that does not parse is never searched for a name, and a file at a name's stem that
+    does not declare it is not that name's. A venue only `rig.venue`, which does not parse,
+    mentions is not found: GET answers 404 (was 500), DELETE 404 (was: `rig.venue` deleted), and
+    a save writes a new `house.venue` (was 409); a broken `house.venue` itself refuses that save
+    (409), untouched. DELETE and the fixture settings of a type named only by a stem file that
+    does not declare it answer 404, where DELETE deleted that file and the settings read it;
+    `GET /api/lighting/fixture-types/<name>` and `…/<name>/gdtf` for a name whose stem file does
+    not parse answer 404, or the library's GDTF of that name, where they answered 500.
+  - A data-loss fix: DELETE of a venue whose file also holds a fixture type or a show, or of a
+    type whose file also holds a venue, answers 409 and deletes nothing, where it deleted the
+    whole file and everything else in it (only other venues, or other types, were checked for).
+  - Adding aim points to a venue (`POST /api/lighting/venues/<name>/aim-points`, the MVR export
+    dialog) writes by the same rule: a venue whose file is not its alone answers the same 409 and
+    the dialog does not offer it, saying why, where the points were patched into the shared,
+    mixed or first duplicate file; and a `.light` venue moves to its `.venue`, which focus points
+    need, where they were written into the `.light`.
+  - The listings say who owns each name: `GET /api/lighting/venues` adds `owners`, and
+    `GET /api/lighting/fixture-types` and `GET /api/lighting/fixture-types/<name>` add each type's
+    `owner` (`null` for a library GDTF with no record), as `{file, editable, reason}`. A file that
+    does not parse is in `errors`, with no name.
+  - The harness's files stay editable where they are: `astera_pixelbrick.fixture` (declaring
+    "Astera-PixelBrick", whose own file would be `astera-pixelbrick.fixture`), `built-in.venue` and
+    `test.venue`.
+- **The importers and fixture settings write venue and fixture type files by the web UI's
+  rules**: a new record or venue is claimed at its own file, an existing one is written only
+  where its file is its alone, and nothing is suffixed. What changes:
+  - A GDTF import that pins a name (`mtrack import-gdtf --name`, `POST /api/lighting/gdtf/import?name=`,
+    MCP `import_gdtf`, an MVR import's `Name (stem)`) writes its record at `<stem>.fixture` only
+    if that file, and every file of its stem in another case, is free: importing "Par" when
+    `par.fixture` holds "Old Par" is refused with "par.fixture is taken by "Old Par"; choose
+    another name", where it wrote `par_2.fixture`; "wash" when `Wash.fixture` is there is refused
+    too, where Linux wrote `wash.fixture` beside it. A name another type declares (in any case)
+    is refused naming its file ("fixture type "Brick" is already declared in brick.fixture"), and
+    the web import answers these with 409, where it answered 400. The record is made with
+    `create_new`, never written over one made meanwhile. The library's own naming of an
+    unrecorded archive ("Synth Brick (v2)", `#2`) is unchanged.
+  - An MVR import (`mtrack import-mvr --write`, `POST /api/lighting/mvr/import`, MCP
+    `import_mvr`) writes its venue by the venue save's rule. A new venue is claimed at
+    `<venues dir>/<stem>.venue`: "Club (Main)" goes to `club_main.venue`, and a name whose file
+    is there in any case is refused ("cannot import venue "kellys": Kellys.venue is taken by
+    "Other"; choose another name"), as is one whose file does not parse ("broken.venue already
+    exists"), where those said the file "exists but does not define" the venue or "does not
+    parse"; `Kellys.venue` was not looked for on Linux. A re-import merges into the venue's file
+    where it lives only when that file is the venue's alone: "kellys" in `all.venue`, which also
+    holds venue "Annex", is refused ("cannot import venue "kellys": Defined in all.venue alongside
+    venue "Annex"; edit that file by hand.") and nothing is written, the library's MVR included,
+    where the import patched kellys' block inside the shared file. The web import answers these
+    with 409 (it answered every refusal with 400), the plan (`write=false`) too. A `.light`
+    venue moves to its own `.venue` beside it when merged (`tour/old.light` to `tour/old.venue`,
+    the `.light` removed), as a web save does, where the provenance was written into the
+    `.light`; refused when that `.venue` is there, in any case. A venue declared twice (in two
+    files, or twice in one) or sharing its file with a show or a fixture type is refused the
+    same way, where the first file's block was patched.
+  - An MVR inspection (`POST /api/lighting/mvr/inspect`, MCP `inspect_mvr`) refuses what the
+    import would: inspecting "kellys" above answers 409 with the same reason, where it answered
+    with a plan (and the web, with 400 for other refusals). The web's refusals of an import or
+    inspection carry `kind` (`venue`, `record`, `name`, `library`, `write`). After a `venue`
+    refusal the import wizard keeps the venue name field, with "Check again" (an empty name
+    checks the file's own), so another name can be inspected; it showed only the error. Other
+    refusals show their message alone.
+  - An MVR whose embedded GDTF needs a pinned record whose file is taken is refused as a whole,
+    with what to do, never written beside it as `_2`: "lighting/fixture_types/
+    synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import
+    Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name
+    <name>`, or the Fixtures page)". Two of one MVR's GDTFs whose records would be one file
+    ("Synth Brick (X_1)" and "Synth Brick (x 1)" both `synth_brick_x_1.fixture`) are refused
+    when planned, "… would also be the record of "Synth Brick (X_1)", another GDTF in this MVR",
+    where the second's write failed after the first was written. The web answers these with 409.
+  - A GDTF fixture's settings (`POST /api/lighting/fixture-types/<name>/settings`, the fixture
+    page's form) write its record by the same rules. The first change to a library fixture with
+    no record claims `<stem>.fixture` for the name it will hold: "Synth Brick" when
+    `synth_brick.fixture` (or `Synth_Brick.fixture`) holds "Old" answers 409 "synth_brick.fixture
+    is taken by "Old"; choose another name", where it wrote `synth_brick_2.fixture` (and, on
+    Linux, `synth_brick.fixture` beside `Synth_Brick.fixture`); a pin for a fixture sharing its
+    name is claimed alike. A record whose file is not its alone is read-only: changing "Brick"'s
+    limits in `brick.fixture`, which also holds "Old", answers 409 "Defined in brick.fixture
+    alongside fixture type "Old"; edit that file by hand.", where the block was patched inside
+    the shared file; a record declared twice, or beside a venue or show, likewise, where the
+    first file's block was patched. A record in a `.light` file moves to its `.fixture` beside it
+    when its settings are saved (`types/brick.light` to `types/brick.fixture`, the `.light`
+    removed), as a GDTF record needs, where the `.light` was patched.
+  - A rename there moves the record by the editor's rule: "Brick" in `brick.fixture` renamed
+    "PixelBrick" becomes `pixelbrick.fixture`, comments kept, where the file kept its old name;
+    the harness's "Astera-PixelBrick" in `astera_pixelbrick.fixture` (not its own name's file)
+    is renamed in place. A rename onto a name another type declares answers "fixture type "Other"
+    is already declared in other.light; choose another name", where it said "there is already a
+    fixture type named".
+  - A rename retypes every venue line naming the type only if every venue using it is its file's
+    alone; otherwise nothing is written and the 409 names each such venue: renaming "Brick" when
+    venue "arena" in `all.venue`, which also holds venue "annex", uses it answers "fixture type
+    "Brick" cannot be renamed, so nothing was written; venue "arena" in all.venue uses it: Defined
+    in all.venue alongside venue "annex"; edit that file by hand.", where every venue in the
+    shared file was patched. A file that does not parse refuses the rename, as before.
+  - Renaming a fixture type in the type editor (`PUT /api/lighting/fixture-types/<new>?from=<old>`,
+    now with `venues_dir`) is the same rename: the venue lines naming the old name are retyped
+    with it, refused by the same rule, and the answer adds `rename` (`{from, to, venues, lines}`)
+    and `venue_error`; the engine reloads its types and venues once after. Renaming "Par" to
+    "Wash" rewrites `fixture "A" Par @ 1:1` in `club.venue` to `fixture "A" Wash @ 1:1`, where
+    the venues were left naming a type that no longer existed. The editor says so as the
+    settings form does ("Saved. Renamed in 2 venue lines: club (1), arena (1).", or that the
+    current venue no longer loads).
+  - The web UI's, MCP's and the importers' writes of venue and fixture type files are all or
+    nothing (MCP's `write_venue`, `write_fixture_type`, `patch_venue` and `patch_fixture_type` now
+    write through the web UI's own writers): a web or MCP save, the fixture settings, an MVR import's revised MVR, records and venue, a GDTF
+    import's record, and both renames, which write the type's file, then the venue files, and
+    remove the old type file last. Any failure, the old file's removal included, puts back what
+    was written before it and what the failing write itself changed (a file it made is removed,
+    a file it began rewriting is restored), and never a file someone else made since it was
+    claimed; the answer ends "nothing was saved", or "nothing was saved, but <file> (<why>) could
+    not be put back". Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when
+    `brick.fixture` cannot be removed answers 500 "cannot remove brick.fixture: …; nothing was
+    saved", `pixelbrick.fixture` removed and the venues as they were, where the venues were left
+    renamed. A failed venue or type write likewise, where the venues written before it stayed
+    renamed. An import's new library copies stand, as before, and the answer says so: an MVR
+    import whose venue cannot be written removes the GDTF records it wrote, puts back a revised
+    MVR's previous copy (the baseline the next re-import merges against) and ends "only the
+    library copies lighting/library/k.mvr and lighting/library/Astera_PB15.gdtf were saved",
+    where the records and the revised MVR stayed and the answer did not say what had been
+    written. Everything an import can check without its copies is done before the first is
+    written, and a copy that fails names those written before it the same way; a copy that
+    fails part way is removed with its staged copy, so no partial `.gdtf` or `.mvr` (nor a
+    `.mtrack-new` beside it, which a re-import took for the same archive) is left in the
+    library.
+  - A file one of these writes cannot put back is left as the failed write left it, and its
+    original goes to a new file beside it that no later save writes over,
+    `<file>.mtrack-original` (`-2`, `-3`… when taken), a link to the staged copy that holds it
+    (so a full disk loses nothing), else written out: "nothing was saved, but club.venue (<why>;
+    it is left as the failed save wrote it, perhaps empty, and its original is in
+    club.venue.mtrack-original) could not be put back". When no such file can be made, the
+    staged copy (`<file>.<pid>.mtrack-new`) is kept and named instead ("its original is only in
+    club.venue.1234.mtrack-new; keep that file"), or the answer says the original could not be
+    kept. Otherwise these writes' staged copies are removed once the file is put back or its
+    original kept; a write interrupted by a crash still leaves its staged copy.
+  - A web save's file that was removed since it was read is not made again (409): "club.venue
+    was removed while saving and was not made again; try again", where the save made it anew
+    (or left it empty). MCP's writes, which now go through the same writers, do not make it again
+    either.
+  - A file a save claimed that appears before it is written is refused in one wording wherever
+    it happens, shown as its writer's user knows it (relative to the venues or fixture types
+    directory, or the project for a GDTF record): "pixelbrick.fixture appeared after it was
+    claimed and was not written over; move or remove it by hand, then try again", where the web
+    showed the full path and said "already exists" and a settings pin said "is there now".
+  - A failed write reported with its file (a web save of a venue or fixture type, the player
+    config, a playlist or profile, a song's files, the config store, the song cache) says "could
+    not write <file>: <reason>", where it said "Failed to write <file>: <reason>" (a playlist or
+    profile, "Failed to write playlist: Failed to write <file>: <reason>"), as the importers and
+    the startup writes already did.
+  - A directory that cannot be read while a name is claimed answers 500 wherever it happens,
+    the GDTF import (`POST /api/lighting/gdtf/import?name=`) and the MVR import and inspection
+    included, where those answered 400 (the GDTF import answered 409 only for a different
+    archive of the same file name, as it still does).
+- **MCP's venue and fixture type tools write by name, by the web UI's rules**: `write_venue`,
+  `patch_venue`, `delete_venue`, `write_fixture_type`, `patch_fixture_type` and
+  `delete_fixture_type` take the venue's or type's `name` (and `from` to rename; `ext` for a type)
+  where they took a file name, and go through the web UI's own save, rename and delete. What
+  changes:
+  - A new name is written at its own file: `write_venue {name: "Club (Main)", source}` writes
+    `<venues dir>/club_main.venue`, and `write_fixture_type {name: "New Par"}` writes
+    `<fixture types dir>/new_par.fixture`, where the caller's file name was used as given. A name
+    another file declares, or whose file is there in any case, is refused as on the web ("old.light
+    is taken by "Old"; choose another name"), as is a fixture type named like an unrecorded
+    library GDTF.
+  - An existing name is written where it lives, only when its file is its alone; otherwise it is
+    read-only and the tool is refused with the web UI's reason: writing, patching or deleting
+    venue "A" in `tour/shared.light`, which also holds venue "B", answers "Defined in
+    tour/shared.light alongside venue "B"; edit that file by hand.", where the whole file was
+    overwritten, patched or deleted. `source` (and a patch's result) must declare this one name
+    and nothing else ("the DSL declares no venue named "New" (it declares "Else")…"), where any
+    number of blocks, of any names, was written.
+  - `from` renames as the editors do: "Club (Main)" in `club_main.venue` renamed "Hall" moves to
+    `hall.venue`; a fixture type's rename retypes every venue line naming it, and the answer
+    carries `rename`.
+  - A `.light` venue or type whose new text needs the newer format moves to its own `.venue` or
+    `.fixture` beside it: `write_venue {name: "Old"}` with a fixture `mode` turns `old.light` into
+    `old.venue`, and rich channel syntax turns `old_par.light` into `old_par.fixture`, where a
+    venue was written into the `.light` and a type was refused ("write it as … .fixture instead").
+  - `delete_fixture_type` also removes the type's GDTF archive when no other type uses it, and
+    deletes an unrecorded library GDTF by its name, as the web UI does. `delete_venue` of a name
+    no file declares answers "Venue not found: Hall".
+  - `read_venue` and `read_fixture_type` still read any file in the directory, now by its path
+    relative to it, nested too (`tour/shared.light`), where only a top-level basename was taken.
+  - A write that fails says "could not write <file>: <reason>", as the web UI does, where MCP said
+    "write failed: <reason>"; this holds for every MCP file write.
+  - The venue and fixture type tools no longer make the configured directory on every call (a
+    listing, a read, a refused write): a save makes it once its text has passed its checks, and a
+    fixture type save makes only the fixture types directory.
+- **MCP lists venues and fixture types as the loader reads them, in the host's directories**:
+  `list_venue_files` and `list_fixture_type_files` list every venue or type file at any depth
+  (`tour/shared.light`), where only top-level files were listed, and add each name's owner
+  (`venues` / `fixture_types`: `{name, file, editable, reason}`, `name` null for a file that does
+  not parse) and, for types, the library's unrecorded GDTFs (`library`: `{name, archive}`). Every
+  MCP lighting tool (these, the writes, `import_gdtf`, `import_mvr`, `export_mvr`) now uses the
+  directories of the profile this host runs, as the engine does, where it used the first
+  profile's: with a profile for `pi-a` naming `other/venues` listed before one for this host
+  naming `rig/venues`, MCP now reads and writes `rig/venues`.
+- **Every config read of the lighting section uses the profile this host runs**: with no engine
+  running, the web UI's lighting groups (`GET /api/lighting/groups`), the current venue a venue or
+  fixture type save checks (`venue_error`), and `mtrack verify-light-show --config` now read this
+  host's profile, as the engine does, where they read the first profile: with a profile for
+  `pi-a` declaring group `elsewhere` listed before this host's declaring `here`, the groups are
+  `here`. `verify-light-show` says "No lighting configuration found in this host's profile" where
+  it said there was none in the DMX config, or no DMX configuration.
+- **`PUT` and `DELETE /api/lighting/<path>` write song light shows only**: a path inside the
+  venues or fixture types directory this host's profile gives is refused with 400 ("lighting/
+  venues/club.light is in the venues directory (lighting/venues): a venue is saved by name, on
+  the Lighting page or with MCP's venue tools; this endpoint is for song light shows"), however
+  it is spelled (`shows/../lighting/venues/club.light`, a symlink into the directory, another
+  case on a file system that folds case), where, with the songs root holding the lighting
+  directories (`songs: "."`), it replaced or deleted a venue or type file.
+- **`mtrack import-gdtf`, `import-mvr` and `export-mvr` use the project's configured
+  directories**: without `--fixture-types-dir` or `--venues-dir`, they use the directories the
+  project's `mtrack.yaml` gives this host's profile, as the player, the web UI and MCP do, where
+  they used the defaults: with `directories: {fixture_types: rig/types}`, `import-gdtf
+  x.gdtf --name Brick` writes `rig/types/brick.fixture`, not
+  `lighting/fixture_types/brick.fixture`. `--project` also takes the config file itself
+  (`--project live/mtrack.yaml`). A project with no `mtrack.yaml` keeps the defaults; one whose
+  config does not load is refused, saying why.
+- **One walk finds the song folders for `songs --init` and the bulk import**
+  (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
+  regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,
+  found at any depth below directories that hold none, and not looked into. Hidden and symlinked
+  directories are passed over, and the folder walked is never a song itself. `songs --init` and
+  the web UI's bulk import (`POST /api/browse/bulk-import`) both take it. The player's song
+  loader loads what it loaded. What changes:
+  - `mtrack songs --init .` in a project no longer writes a `song.yaml` into `.git/`,
+    `lighting/`, `playlists/`, `profiles/` or any other folder with no audio, MIDI or song config;
+    it wrote one into each folder directly under the path. A folder holding only light shows
+    (`Intro/show.light`) no longer becomes a song with no tracks.
+  - `songs --init` finds nested songs: `songs --init /mnt/library` writes
+    `artist/album/Song/song.yaml`, where it wrote an empty `artist/song.yaml`.
+  - The bulk import takes a MIDI-only folder (`Backing/notes.mid`) as a song; it needed audio.
+    It no longer imports a folder whose only audio is hidden (`._Bass.wav`) or a symlink as a song
+    with no tracks.
+  - The bulk import no longer follows a symlinked folder (`lib/Linked -> /elsewhere`), so it
+    writes no `song.yaml` outside the folder imported; `songs --init` never followed one.
+  - The bulk import skips a folder whose song config is not `song.yaml` (`Ballad/song.yml`,
+    `Ballad/album.yaml`, the hidden `Ballad/.song.yaml`, any file declaring `kind: song`), with or
+    without audio beside it, and does not look into it; beside audio it wrote a second config,
+    `song.yaml`, and without audio it looked into the folder. A folder holding only a `song.yaml`
+    of another kind (`kind: playlist`) and no audio or MIDI is now looked into rather than
+    reported skipped.
+  - A subdirectory that cannot be read is passed over with a warning by both; the bulk import
+    passed over it silently, and `songs --init` failed. A directory to import from that cannot
+    be read is now an error (`500`, "Failed to read directory") from the bulk import; it answered
+    with nothing imported. The player's loader still fails on an unreadable folder.
+- **Nothing is written over a song config, or a `song.yaml` of another kind**
+  (`songs::song_config_to_write`): the one guard of every writer of a new song config:
+  `songs --init`, the bulk import, the web UI's create-song from a folder, `POST
+  /api/songs/<name>` and the config a track upload writes. What changes:
+  - `songs --init` leaves a folder that has a song config as it is: `songs --init songs` no
+    longer overwrites a hand-edited `songs/Foo/song.yaml`, nor writes a `song.yaml` beside
+    `Foo/song.yml` or `Foo/album.yaml`.
+  - A `song.yaml` or `song.yml` of another kind (`Pl/song.yaml` holding `kind: playlist`) is
+    kept: `songs --init` and the bulk import skip the folder, create-song from it (`POST
+    /api/browse/create-song`, `{"path": "/Pl"}`) and `POST /api/songs/Pl` answer 409, and a track
+    uploaded to it writes no config; each wrote over it.
+- **One naming rule for new songs** (`songs::new_songs`): a song new to `songs --init` or the
+  bulk import takes its folder's name, unless another new song has that name too, or a song
+  configured under the folder walked (loaded, or failing to load under the name its config
+  declares), or, for the bulk import, one the player has or one configured under the songs
+  folder, has it; then it takes its path below the folder walked, and if that is taken too, the
+  first free ` (2)`, ` (3)`, and so on. The names are read from the configs without loading the
+  songs. `lib/SongA/stems/a.wav` and `lib/SongB/stems/b.wav` are now `SongA/stems` and
+  `SongB/stems`, where both were `stems` and the player loaded one; a new `Intro/` beside an
+  `Old/song.yaml` naming its song "Intro" is `Intro (2)`, where the player loaded one of the two.
+  A song that nothing contests keeps its own name before another is given a suffix: beside
+  `Old/song.yaml` naming "B", new `B/` and `B (2)/` are `B (3)` and `B (2)`. A failed save from
+  `songs --init` now reads "Failed to save: ...", as the bulk import's does. A bulk-imported
+  folder whose name is not UTF-8 is named "unreadable file name", as `songs --init` names it;
+  it was "unknown".
+- **The web UI opens a song whose name holds a `/`**: the address takes the song's name as one
+  encoded segment (`#/songs/SongA%2Ftracks`), read before it is decoded. A song named
+  `SongA/tracks` (or ending in `/config`, `/lighting` and the other tabs) opened the song
+  `SongA` on that tab, and the page title named `SongA`.
+
+- **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
+  dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is
+  shown (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`; `auto_play: 1.0005s`
+  reads `1.0005s` on both, where the next-up line said `1s`, and `auto_play: 0.5ms` is a gap
+  there too, where it said the song starts at once). The status's `next.auto_play_ms` is exact
+  (a fraction of a millisecond where there is one), where it was truncated to whole milliseconds.
+- **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
+  `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one parser:
+  decimal numbers with `ms`, `s`, `m` (minutes), `h`, `ns`, `us`, `d`, `w` or `y`, summed (`1m30s`);
+  fades take `beats` and `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere
+  the `duration_string` crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a
+  fade of none, and fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which was
+  "longer than any song"; the bound is now 1,000,000 seconds in every unit). The crate's other units
+  read as they did: `ns`, `us`, `d`, `w` and `y` (a year being 31,556,926 seconds), now with
+  decimals too, and a fade takes them as well. No longer accepted: a fade of `0mm`, `0ss` or `0sm`,
+  which read as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as `1.5s`, not
+  `1500ms`; a `playback_delay` the clock refuses now says `playback_delay '<text>' is not a valid
+  duration`. The `duration-string` dependency is gone. The clock reads a number as Rust reads a
+  decimal, so `1e2s`, `+2s`, `-0s` (none), `5.s` and `.5s` are now taken in every clock field. A
+  fade of `00s` or `-0s` is now none (a cut) and `1 000ms` (a space in the number) is one second;
+  both were refused.
+- **The TUI and the web UI show a fixture in the same colour**: the TUI drew a fixture in its raw
+  red, green and blue, so `red 255` under `dimmer 0` showed full red, a dimmer-only fixture black,
+  and a CMY fixture, a GDTF profile's sections and an amber-only fixture no colour, where the web
+  UI's stage views drew their own reading. Both now draw the player's one reading, beside its test
+  of a lit fixture: each emitter of each part that lights the fixture -- red, green, blue, white,
+  amber, lime, UV, warm and cool white, ... -- in its own colour at its level, added, times the
+  part's dimmer; a fixture mixing subtractively in the white its cyan, magenta and yellow flags
+  pass; a dimmer alone a warm white; and black exactly where nothing lights it. In the TUI, `red
+  255` under `dimmer 0` is black, a dimmer alone a warm white, white adds to the mix, a CMY fixture
+  shows the white its flags pass, a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`)
+  show their colours under their own dimmers, and amber alone shows amber. In the stage views: `cyan
+  255` under a full dimmer on a CMY fixture is cyan (was a warm white); sections and mirrors show
+  their colours under their own dimmers (they showed as a warm white at the fixture's dimmer, or
+  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black (was
+  a warm white); and an RGBA, RGBW+UV or RGB+WW fixture lit by its amber, UV or warm white shows
+  that colour (`red 0, green 0, blue 0, amber 255` is amber, was black; amber or UV alone was a warm
+  white at the dimmer).
+
+- **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to its
+  byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI DMX.
+  Both now round to the nearest by one rule, so a show's 8-bit channel may go out one count higher
+  than before: `dimmer: 50%` is 128 (was 127), `0.999` is 255 (was 254), and a colour byte or a
+  crossfade's level likewise. A `rainbow`'s colours, and a `cycle`'s hue fade, round too: hue 30 at
+  full is 255, 128, 0 (was 255, 127, 0). 16-bit channels are as they were. The fixture snapshot (the
+  web UI's stage views, the TUI, MCP `get_fixture_state`) shows the same rounded byte. A strobe rate
+  on a fixture without a step table may go out one count higher too, and the rate the player reports
+  for a strobe byte is read at the byte rather than half a byte above it; 10 Hz on a PixelBrick's
+  period curve is 249 (was 248), and 0.04 Hz on a 20 Hz unit with no strobe function is byte 1, its
+  slowest rate (was 0, off). A step table's 8-bit bytes are as they were; on a 16-bit strobe channel
+  a step table's coarse byte is now exactly the step's (a step at DMX 127 to 254 went out one
+  higher, 128 to 255). A MIDI DMX value that is not a number goes out as 0 (was 255).
+
+- **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
+  its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
+  fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes
+  subtractively (cyan, magenta and yellow, no red, green or blue), the three are flags filtering
+  white: open is lit, all three closed is dark; elsewhere they are emitters. Each section of a GDTF
+  profile (`red:2`) and each cell is lit by its own dimmer -- else its section's, else the
+  fixture's -- times its own emitters, and a section that is a dimmer alone is lit by it. A colour
+  under a closed dimmer (red 255, dimmer 0) and an open dimmer with no colour (RGB 0, dimmer 255)
+  were counted lit; MCP's `evaluate_show` now reports `dark: true` for both, and the web UI's stage
+  views draw every fixture lit or dark by the same rule.
+
+- **A fixture type's strobe rate is its first strobe function's**: the strobe fields
+  (`strobe_dmx_offset`, `min_strobe_frequency`, `max_strobe_frequency`) come from the first
+  function named `strobe` on the `strobe` channel, the one the engine drives. Where that one has
+  no rate range and a later `strobe` function does, they came from the later one and the first
+  was rewritten to its range; the type now has no strobe rate, as its strobe function has none.
+- **The lighting timeline's beat lines are the click grid's beats**: one line per beat of the
+  time signature's denominator, so a 6/8 bar has six, where it had three quarter-note lines. The
+  timeline and the song's beat grid walk the bars once, the same way.
+- **A section's unset bounds are left out of its JSON**: a section with no `start_beat`,
+  `end_beat` or `color` now leaves the field out instead of sending it as `null`, as the song's
+  YAML does -- in the web UI's playback updates, `GET /api/songs` and MCP's song summary.
+- **`GET /api/lighting/venues/{name}/patch` names an overlap's fields as the player does**:
+  `first`, `second`, `first_gang` and `second_gang` instead of `a`, `b`, `a_gang` and `b_gang`.
+- **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
+  reads a `.light` file through the player's grammar (its document model, compiled to
+  WebAssembly with the parser) and places every cue, effect and sequence pass where the player
+  fires it, under the player's own tempo map; it no longer re-derives the DSL, the tempo map
+  or sequence expansion in TypeScript. What this corrects on the timeline: a sequence placed by
+  its earliest cue rather than its first-written one; a pass as long as its effects' fade in,
+  hold and fade out (`up_time`/`down_time` counted, as the player counts them); nested sequence
+  references and inline `loop { }` blocks drawn; a `loop:` reference running to the song's end;
+  several `offset`s under one cue added up. A file the player refuses -- an effect with no
+  duration, a cue past its sequence's length, a bar-and-beat cue with no tempo, a missing
+  include, an unquoted `#` colour (a comment, to the grammar) -- is refused in the editor with
+  the player's words, where the old timeline drew it anyway. A file that defines a fixture type or a
+  venue, or gives a show its own `tempo` block, is edited as text. Inline loops and every
+  parameter a line carries are written back as read, where a save used to drop them.
+  Included files are fetched for the layout (each file's resolve against its own folder), and a
+  file's `include` lines survive a save. One difference from the player remains: it reads an
+  included file by its canonical path, so one reached through a symlink is read once and must
+  lie inside the songs folder; the editor resolves the path as written (`..` folded) and asks
+  the server for it, so a symlinked include is fetched by its written path. Comments are kept
+  where they were, as written, and written back; parameters as written, repeats included.
+
+- **A Format 1 MIDI file's tempo lives on its conductor track**: the web UI's tempo guess read
+  tempo and time-signature events from every track; it reads the conductor track (track 0) as
+  playback does, so a file with its tempo events elsewhere now gets no suggestion from the
+  MIDI file (the click track's, if any, instead) rather than one playback does not follow.
+- **The web UI's tempo guess from a click track is the map lighting plays to**: the suggestion
+  for a song without a MIDI file is derived from the beat grid as `@bar/beat` cueing derives it
+  (each steady run's measured tempo, to a hundredth of a BPM, a change where the tempo moves by
+  more than half a percent or the bar length changes), in place of a separate estimator that
+  rounded to whole BPM and snapped boundaries by its own rules.
+- **gRPC `next` and `previous` answer as the player does**: the song the player is on after
+  the move -- the one it moved to, or the one it stays on while a song plays or at the list's
+  end -- as MCP has answered. They refused with `FailedPrecondition` ("can't navigate while
+  playing") and `OutOfRange` ("already at the end") before, from a check of their own, so
+  `mtrack next` while a song plays now prints the song still playing. MCP's
+  `play` says `started` and why not (`reason`), as `play_from` does, the reason read from the
+  player as gRPC reads it.
+- **One rule for a path that must stay inside the project**: the web UI's lighting file paths,
+  new song folders and file names are held to the rule a playlist's ambient show path is held
+  to -- absolute, or with a `..` component, is refused -- so a name with `..` inside it
+  (`v1..2`) is now taken, where the web UI refused any two dots; `.` is refused as a folder to
+  create, as it is as a name.
+- **Milliseconds may be fractional**: `1.5ms` is a duration, a rate and a tempo `start:` like any
+  other; it was an error, milliseconds being read as a whole number. Every time is read through
+  one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
+  allowed it.
+- **An inline loop follows the tempo map**: a `loop { } repeats:` lays its passes in beats
+  through the tempo changes they run through, as a referenced sequence does, and reads each
+  pass's `beats` and `measures` durations at the tempo where it plays; its passes used to be
+  placed a fixed number of seconds apart, the first pass's length, their durations read at
+  the loop's own start. Its effects carry the show `offset` in force at the loop, as a
+  sequence's do. A loop under one tempo is placed as it was.
+- **An effect is refused at load, and reported by lint, by one rule**: a `strobe` needs a
+  strobe channel, a dimmer or colour channels (the engine strobes a dimmer or colour in
+  software; lint used to report a strobe on a group with no strobe channel), a `static`
+  naming a colour, a `cycle` and a `rainbow` need colour channels (RGB or CMY), a `dimmer` and
+  a `pulse` a dimmer or colour channels, a `move` pan or tilt, and a `chase` nothing in
+  particular (it used to need colour channels or a dimmer). A `static` naming a colour, a
+  `dimmer` and a `pulse` on a fixture without what they ask used to load; a `chase` on one
+  with neither colour nor a dimmer used to be refused. The warning printed to stderr at
+  registration for a fixture type named `RGB`, `Strobe` or `MovingHead` without the channels
+  its name suggests is gone; what a fixture can do is read from its channels alone, and lint
+  reports the same.
+- **A fade to dark counts its ticks as a MIDI dim does**: what MIDI DMX holds fades to dark
+  over the ticks `dim_ticks` gives the fade -- one for none, as before, so the bytes sent are
+  the same; there is one rule for it now.
+- **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
+  a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
+  at that time, its own effect first, as a show cue always has; it used to make two, with its
+  own effect after the first sequence's. A block's sequence references are placed after its
+  cues are parsed, in a show as in a sequence: a later cue's parse error is reported before a
+  reference's error, and a reference's error names the reference's line, where it used to
+  name the earliest line in the enclosing sequence. A standalone `offset` in a zero-time cue
+  anchors to the latest cue before it, the passes of a referenced sequence included, inside a
+  sequence as a show always had it.
+- **A unit written twice is no unit**: `5msms` or `2ss` in a duration, rate, angle or tempo
+  `start:` is an error; the unit used to be stripped as often as it repeated. A non-numeric
+  tempo `start:` names the whole value in its error, and an inline loop's `repeats:` is read
+  as a reference's `loop:` is: `repeats: 0` says "Loop count must be at least 1" and
+  `repeats: 2.5` "Invalid loop count: '2.5'. Expected 'once', 'loop', 'pingpong', 'random',
+  or a number".
+- **A tempo change positioned in time before `start:` is applied at the start**: the beat
+  grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
+  times tempo-aware effect rates ran it from its own time, so a ramp written before the start
+  was part way through (or over) by bar 1. It starts at bar 1 now, with the rest (start 2 s,
+  120 bpm, a 4-beat ramp to 60 at 0.5 s: 120 at 2 s, where it read 86.25; 75 at 4 s, where it
+  read 60).
+- **A ramp written at the same instant as a snap ramps from the snapped tempo**: tempo-aware
+  effect rates during such a ramp now ramp from the snapped tempo, as the beat grid already did
+  (the tempo lookup used to read the tempo a nanosecond before the change and ramp from there).
+- **A light show's `tempo {}` refuses a zero time signature**: `time_signature: 0/4` or `3/0`
+  parsed (and made a bar of no length, or of infinite length); the one signature parser now
+  refuses them with a clear error, as a song's `tempo:` always has.
+- **The lint judges an effect by when it really ends**: `past-end-of-song` and `replace-overlap`
+  now take each effect's end as the show plays it, the same end the show's end and `analyze_show`
+  use. A freeze or a slowed layer carries an effect past its written end (now reported if that
+  overruns the song), a sped-up one ends early, a move another takes every head from ends there,
+  and a sequence's passes that never fire, the sequence stopped first, are not checked. They used
+  to cap the written end by clears and stops alone.
+- **A show that leaves a look frozen for good ends by its other looks' real ends**: without audio
+  to cap it, such a show ran to the latest written end of any of its effects; now an effect the
+  speed master sped up counts by when it really ends, as in a show without a held look, and the
+  held look by the end it was written with.
 
 - **A tempo ramp spans exactly its beats**: a ramp written over N beats now lasts exactly N beats,
   as a DAW plays it. One over N measures lasts exactly the beats in those bars. It used to last as
@@ -218,6 +768,734 @@ Upgrade notes:
 
 ### Fixed
 
+- **A fixture's state reports the bytes the rig holds, including what an ended effect left set**:
+  a DMX universe holds a byte until it is sent another, and when an effect ends only its levels
+  and colours are sent 0 (#581); a gobo, zoom, focus, iris, prism, colour wheel or mode it set is
+  held. The fixture's state (the live stream behind the web UI's stage views and the TUI, MCP
+  `get_fixture_state`, `evaluate_show` and its `dark`, and the web UI's preview) read every
+  channel nothing drove any more as 0, or left it out. With `static dimmer: 100%, red: 100%,
+  gobo: 50%, zoom: 40%, duration: 5s` and then, at 5 s, `static dimmer: 100%, red: 100%`, the
+  head keeps gobo 128 and zoom 102 from 5 s on, and the state now says `gobo: 128, zoom: 102`
+  where it said nothing. Live, every channel of a fixture the show has written reads the byte the
+  universe holds -- across a seek, a song change and a stop alike, as the universe does not reset
+  at any of them -- so a fixture no effect drives any more stays in the state at its held bytes
+  rather than dropping out. An evaluation (MCP `evaluate_show`, the web UI's preview) reads the
+  rig playing the show through from its start leaves at that time: what each effect ended before
+  it last sent, a strobe nobody drives any more sent off. Levels and colours read as before, and
+  a CMY head's flags read as the wire holds them (open once nothing drives them, as since #661).
+  A dimmer channel nothing has ever sent a byte reads 0, as the universe holds it, where the
+  state used to leave it out and so judged the fixture by its colour alone: on a fixture with a
+  dimmer channel, `static color: "blue"` with no `dimmer` now reads dark (MCP `dark: true`, drawn
+  dark), as the head is -- give it `dimmer: 100%` to light it.
+  Live state after a seek holds what was last sent before the seek, as the universe does, which is
+  not always what playing through to that time would leave (a gobo set only by an effect the seek
+  jumped over reads as before the seek); `evaluate_show` at that time gives the play-through
+  answer. A setting still moving when its effect ends or a cue cuts it (a zoom fading down, a head
+  mid-move) evaluates where it got to at that instant; live, the last frame lands up to a frame
+  earlier (about 23 ms on a Pi, longer under load), so the rig can hold it one frame short of
+  that. A mover a clear released from pose memory is drawn where its held pan and tilt point,
+  not at rest, and a fixture patched on a universe the profile has no output for reads 0 on every
+  channel, as nothing reaches it.
+  DMX output is unchanged: the live output and the state now share one record of what each
+  channel was last sent (`Wire`), which also carries the release of a level nothing writes (#581)
+  that the output did on its own.
+
+- **A plug node opens at the width of the hardware behind it**: `alsa:plughw:CARD=Headphones,DEV=0`
+  (and any plug node) was opened at cpal's clamped 64 channels, because opening took the node's
+  own report while only the device listing looked up the hardware sibling's real count. The mixer
+  filled 64 channels on every callback for ALSA's plug layer to drop all but the hardware's 8.
+  Opening now takes the listing's count, by the same rule: the plug node opens at 8, as
+  `/proc/asound/card0/pcm0p/sub0/hw_params` already showed. The count is read from the `hw` node's
+  own hw_params through ALSA, before the plug node is held, so it holds where cpal cannot list
+  the raw node at all: `alsa:plughw:CARD=WING` opens at the WING's real width (cpal knows none of
+  its `S24_3LE` formats). Where ALSA cannot say (the `hw` node busy, `default` naming no card),
+  the `hw` node in cpal's listing stands in, and failing that the node opens at its own report,
+  as before, with a warning naming it. A node narrower than its hardware keeps its own width:
+  `alsa:dmix:CARD=Headphones,DEV=0` lists and opens at its 2 channels, not the `hw` node's 8.
+  Only the raw `hw` node counts as the hardware: `front:` and the `surround` nodes, which name the
+  same card with widths of their own, no longer stand in for it. Finding a plug node probes only
+  its own card, and nothing until its name is listed, so waiting for a device at boot does not
+  query every device twice a second. A song mapping a track past the real count -- channel 9 on
+  that node -- fails to play with "9 channels requested for song …, audio device … only has 8",
+  where it played with the track going nowhere; and the player now says so at startup, logging an
+  error naming the tracks and channels and showing it on the status page beside the connected
+  audio device, which it keeps.
+
+- **Startup log lines lost under systemd**: audio device enumeration silenced ALSA by swapping the
+  whole process's stdout and stderr for a pipe, and whatever any other thread wrote in that window
+  went into the pipe and was discarded. Started under systemd with olad already running, the DMX
+  engine comes up while the audio device is opening, so "DMX engine initialized", "Effects loop
+  started", olad's "no output port patched" warning, "Web UI listening" and "mtrack is running"
+  never reached the journal; a web UI device refresh lost other threads' lines the same way,
+  panics and real ALSA errors (a MIDI port failing to open) among them. Enumeration now quiets only
+  ALSA's own error reports (and, on alsa-lib 1.2.15 or later, its log messages), and only on the
+  thread that walks the devices; stdout and stderr are never touched. Input device lookups (the
+  trigger engine and calibration) are now quieted and serialised with the output walks too.
+- **Log lines go to stderr**: headless log lines were written to stdout, mixed into the output of
+  commands such as `mtrack devices` that scripts read. They now go to stderr, which the journal
+  takes the same way. They carry ANSI colour only when stderr is a terminal and `NO_COLOR` is
+  unset: under systemd the escape codes went into every journal line, which the journal then
+  stored as binary data.
+- **Legacy config warnings once per config**: the warnings about legacy top-level config fields
+  -- `status_events` (legacy; used only when the matched profile has none), and
+  `audio`/`audio_device`, `midi`/`midi_device`, `dmx`, `trigger`, `track_mappings`,
+  `sample_triggers` and `controller`/`controllers` ignored beside `profiles`, and inline
+  `profiles` ignored for `profiles_dir` -- were logged again every time the web UI or the API
+  read the config. Each is now logged once, and again only after the config is saved as raw YAML,
+  so a saved config that brings a legacy field back says so. Typed edits such as a playlist switch
+  or a gain change cannot bring one back and do not repeat them. A draft checked with the web UI's
+  validate, or before a save, gives none of them.
+
+- **MCP's song, playlist and song light show tools write by the web UI's rules** (#675):
+  `write_song`, `patch_song`, `write_playlist`, `patch_playlist`, `write_song_lighting`,
+  `patch_song_lighting` and `delete_song_lighting` wrote and deleted files directly, each with
+  checks of its own. Each now goes through the web endpoint's own writer, with its checks,
+  refusals and messages (the error carries the web answer's body as its data):
+  - `write_song` saves a song it finds (loaded, failed, or a folder of that name) as
+    `PUT /api/songs/<name>` does, and creates any other as `POST /api/songs/<name>` does, nested
+    names included. `patch_song` saves as `PUT` does, so a patch renaming `Foo` onto `Bar` while
+    another song is Bar is now refused (`a song named "Bar" already exists; choose another
+    name`), as `write_song` already was. Both now also run the song editor's validation, whose
+    messages they now give.
+  - A song name that resolves to the songs folder itself (`.`, an empty name, `Foo/..`) is
+    refused by `PUT /api/songs/<name>` and `write_song` alike: it named no song, and the save
+    wrote `song.yaml` in the songs folder.
+  - Creating a song with a name the config declares that another song holds is now refused by
+    `POST /api/songs/<name>` (409, naming it in `taken`) and MCP `write_song` alike, before any
+    folder is made: `POST /api/songs/Fresh` with `name: Foo` while Foo exists wrote a second
+    config declaring Foo.
+  - `write_playlist` and `patch_playlist` with a `name` take the web UI's playlist file rules:
+    an unsafe name is `Invalid playlist name`, `all_songs` is `'all_songs' is the player's own
+    playlist and has no file` (now also from `PUT` and `DELETE /api/playlists/all_songs`, which
+    said `Invalid playlist name`), a new name the file system takes
+    for an existing file's is refused, and a new playlist's file is made new (``a playlist file
+    `x.yaml` already exists`` when one appeared since). Their checks of the songs and
+    transitions are the web UI's. A save that is refused no longer leaves behind a playlists
+    directory (or the top-level playlist's directory) it made: the directory is made only once
+    the save is checked, by `PUT /api/playlists/<name>` and these tools alike.
+  - `write_song_lighting`, `patch_song_lighting` and `delete_song_lighting` refuse a file in this
+    host's venues or fixture types directory, as `PUT` and `DELETE /api/lighting/<path>` do
+    (`foo/lighting/show.light is in the venues directory (rig/venues): ...`), before anything is
+    written. A show that does not parse is refused with `Invalid light show DSL: <the parser's
+    message>`, as the venue and fixture type tools say theirs, where it said `invalid .light
+    source:` or `patched .light is invalid:`; `PUT /api/lighting/<path>` now gives each of its
+    `errors` the same prefix. They also hold the show to the songs folder, as the web UI's
+    lighting endpoints do: a song whose `lighting/` folder is a link out of the songs folder, or
+    whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
+    the allowed directory`), where they wrote, patched or deleted the file there. So is a show
+    that is a link leading nowhere, which a write would have made wherever it pointed, by these
+    tools and `PUT /api/lighting/<path>` alike; `read_song_lighting` and `patch_song_lighting`
+    say so (`show.light is a link that leads nowhere; delete it or point it at a show`). Both write only `.light` files, the name written
+    and what a link there leads to: `PUT /api/lighting/b%2Fsong.yaml`, or MCP through
+    `lighting/show.light -> ../song.yaml`, wrote show DSL over the song's config and is now
+    refused (`Can only write .light files`). This is a change for any `.light` link whose target
+    is not a `.light` file: it can still be read and deleted, but it can no longer be written,
+    where before it could be. A show that is a link is deleted as the link, by
+    `delete_song_lighting` and `DELETE /api/lighting/<path>` alike: both deleted what it led to
+    (another song's show, or with `lighting/show.light -> ../song.yaml`, the song's own config),
+    and checked the `.light` name of the target, not of the link. Where the link leads no longer
+    matters to a delete: one leading into the venues directory, or nowhere, is removed (MCP did
+    not find one leading nowhere). A show saved through a link has
+    its `include`s checked beside the link, where the song loader reads them, not beside what it
+    leads to. The song's
+    `lighting:` entry they add or remove is saved as `PUT /api/songs/<name>` saves.
+  - None of these set an old file aside, as the web UI's saves do not.
+
+- **`mtrack migrate` backs up every file it overwrites, and writes none beside one** (#671):
+  only `mtrack.yaml` was backed up. A profile file already in `profiles/` (say `profiles/pi-a.yaml`
+  when an inline profile has `hostname: pi-a`), a playlist already in `playlists/`, and a profile
+  file rewritten without its inline fixtures were written over with no copy kept. Each is now
+  copied first, by one rule: to `<file>.bak`, or `<file>.bak-2` and so on when an earlier backup
+  has that name (an earlier `mtrack.yaml.bak` used to be written over too). A config named
+  `mtrack.yml` is now backed up as `mtrack.yml.bak`, not `mtrack.yaml.bak`.
+  - The legacy playlist goes to the file the playlists directory already has for its name, by
+    the loader's lookup: `playlist: set.yaml` with `playlists/set.yml` there writes `set.yml`
+    (backed up), where it wrote a `set.yaml` beside it that the loader did not read. A profile's
+    file is looked up the same way. A legacy playlist already in the playlists directory is left
+    where it is, where it was copied over itself and deleted.
+  - The retired inline fixtures go to a new venue by the rule for new venue files: `inline_migrated`
+    in `lighting/venues/inline_migrated.venue` (was `inline_migrated.light`), or the first of
+    `inline_migrated_2`, `_3`, ... that no venue file declares and whose file is free, where it
+    wrote over an `inline_migrated.light` already there and could declare a second venue named
+    `inline_migrated`. The venue file is made new, never written over, and before any other file
+    is backed up or rewritten: a venue that cannot be made leaves the profiles with their
+    fixtures. A failure after a folder or the venue is made, or the backups are taken, names them
+    (`... (folders made: ...; files made: lighting/venues/inline_migrated.venue; backups taken:
+    profiles/pi-a.yaml.bak, ...)`).
+
+- **A failed save whose own recovery fails keeps its original safe** (#685): these cases come up
+  only when a save fails and then putting the file back fails too.
+  - When the original could be neither hard-linked nor written out to `<file>.mtrack-original`
+    (a filesystem without hard links that is also full), it stayed only in the save's staged
+    copy, `<file>.<pid>.mtrack-new`, which the next save of that file from the same mtrack wrote
+    over. The staged copy is now renamed to `<file>.mtrack-original` (or `-2`, `-3`, ...), which
+    needs neither. If even that fails, the answer now says the next save writes over the staged
+    copy, so copy it somewhere else first.
+  - The directory is now synced after the original is kept and after the staged copy is removed,
+    and after a save that makes its file, before its staged copy goes, so a crash cannot keep the
+    removal and lose the new name. A save over a file already there is rewritten in place and
+    needs no directory sync.
+  - A GDTF import whose library copy fails part way, and whose cleanup of the partial copy fails
+    too, now says so: `...; lighting/library/<file> is left, perhaps partly written, as removing
+    it failed too: remove it by hand`.
+
+- **A light show's song is found by its resolved folder**: `PUT /api/lighting/<path>` found the
+  show's song, for its tempo, by comparing the resolved show path with the song's folder as
+  spelled. A song whose folder was spelled through a link matched nothing, and a show timed in
+  bars and beats was refused (`Measure-based timing requires a tempo section`). The song loader
+  resolves the folders it loads, so loaded songs were not affected; both sides are now compared
+  resolved.
+
+- **The current venue picker waits for the venue list** (#622): on the Lighting area's Groups
+  page, the current venue field was a text input until the venue list arrived, and then a
+  dropdown; a venue typed or picked as the list arrived went into the input the dropdown replaced.
+  Until the list arrives the field is now a disabled dropdown showing the current venue, then the
+  dropdown of venues, or the text input when none are listed.
+
+- **gRPC and MCP controllers log the address they listen on**: `Starting gRPC server on
+  0.0.0.0:43234`, and the MCP server's start line, name the address bound, so a controller
+  configured with `port: 0` names the port the system picked. A controller that cannot bind its
+  port fails before logging that it started.
+
+- **A DMX reload asks olad afresh about its patch**: olad's patch report (the readiness hub, the
+  fit view, the fixture test's warnings) was cached for 10 s per port across the whole process; it
+  is now cached per DMX engine, so a profile reload asks again rather than answering from the
+  engine before it.
+
+- **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
+  fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
+  red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state
+  still reported `red`, `green` and `blue`, so whether it was lit and the colour drawn for it went
+  by those raw values. A dimmer-and-CMY wash at open white (`static dimmer: 100%, cyan: 0%,
+  magenta: 0%, yellow: 0%`) then `static red: 0%` was reported dark by MCP `evaluate_show`
+  (`dark: true`) and drawn dark in the web UI's stage views, while the head passes green and blue.
+  The fixture's state (the live stream, MCP `evaluate_show` and `get_fixture_state`, the web UI and
+  TUI views) now holds what the head is sent: `cyan: 255, magenta: 0, yellow: 0` and no `red`,
+  `green` or `blue`, so it is lit and drawn cyan. One conversion (`FixtureState::cmy_flags`) feeds
+  both the DMX output, unchanged, and the state. A flag nothing drives is open on the wire, and the
+  state now says so once any flag is in it: `static dimmer: 100%, red: 100%` alone, or
+  `static dimmer: 100%, cyan: 0%` alone, reads as open white (`cyan: 0, magenta: 0, yellow: 0`),
+  not dark. A fixture with both red, green and blue and cyan, magenta and yellow mixes
+  additively, as before: each channel is its own emitter.
+
+- **A 16-bit channel's state shows the coarse byte on the wire**: a fixture's state showed a
+  16-bit channel at its value on the 8-bit scale, while the wire carries the high byte of the
+  16-bit value: a dimmer at 0.3 showed 77 and went out as 76 (0x4CCD). The state now shows the
+  byte the channel goes out as (`physical::coarse_byte`, the DMX output's own rule), a pixel
+  fixture's cells' channels too.
+
+- **Going from one song's page straight to another's shows the new song** (#632): changing the URL
+  from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
+  `#/songs/Rime/lighting`, as the browser's Back and Forward or a pasted link do) changed the
+  heading and title but kept everything else on the first song: its duration, tracks, beat grid,
+  lighting timeline and config. The song page now loads afresh for each song.
+
+- **Saving or deleting a song does not touch another song's config** (#680): with `Foo/song.yaml`
+  declaring `name: Bar`, so that the player loads it as Bar, `PUT /api/songs/Foo` and MCP
+  `write_song{name: "Foo"}` found no song named Foo, fell back to the folder `Foo/` and overwrote
+  Bar's config; `DELETE /api/songs/Foo` deleted it. Each is now refused, the web UI's with a 409
+  and MCP's with an error, naming the song: `Foo/song.yaml is the config of the song "Bar", not of
+  "Foo"; it is left as it is`. One rule (`songs::check_song_config_for`) for both, as the loader
+  names the config's song (a song config that does not read goes by its folder). A save whose
+  config declares the song the file already does is that song's own edit, and is taken: after the
+  song editor renames Bar to Baz in `Bar/song.yaml`, a save sent as `PUT /api/songs/Bar` with
+  `name: Baz` writes it (a delete as Bar is still refused). The song page moves to the new name's
+  page after a save that renames the song, so its next save or delete goes there. Writing a song
+  that has its own config, renaming one in it, and writing a new song are as before.
+
+- **A rename onto a name another song holds is refused** (#689): saving `Foo/song.yaml` as
+  `name: Bar` while another song is Bar, through `PUT /api/songs/Foo` or MCP `write_song`, was
+  written, leaving two configs that declare Bar (the loader kept one), and the song page then went
+  to Bar's. Each is now refused, the web UI's with create-song's 409 naming the song in `taken`
+  and MCP's with an error, and the file is left as it is. One rule
+  (`songs::check_song_name_free`) for both and for create-song with a name. A save that keeps the
+  name, or renames onto a free one, is as before.
+
+- **A track upload's new song is named past the names already taken** (#674): the config a track
+  upload writes for a new song named it after its folder, with no check against the songs already
+  loaded or configured, so it could duplicate one and the loader dropped one with a warning:
+  `PUT /api/songs/Fresh/tracks/kick.wav` with `Other/song.yaml` declaring `name: Fresh` wrote a
+  second `Fresh`. It now takes the bulk import's naming rule (`songs::new_song`, the one rule of
+  `songs --init` and the bulk import): its folder's name, else its path below the songs folder,
+  else the first free ` (2)`, ` (3)`, …; here `Fresh (2)`. The upload's answer gives the name the
+  song got (`"song": "Fresh (2)"`), and the song page opens that song's page after it. The web
+  UI's create-song from a folder (`POST /api/browse/create-song`) takes the same rule: with no
+  name, the folder's (`Song A/` beside a loaded Song A is `Song A (2)`); a name given that a song
+  loaded or configured under the songs folder has already is a 409 naming it (`a song named
+  "Fresh" already exists; choose another name`), which the import dialog shows, where the
+  config used to be written under it.
+
+- **The web UI's lighting endpoints default to this host's lighting directories** (#673): an
+  endpoint given no directory (`?dir=`, `venues_dir`, `fixture_types_dir`) used the default ones,
+  `lighting/fixture_types` and `lighting/venues`, even where this host's profile sets others
+  (`lighting.directories.fixture_types: rig/types`). The GDTF import, which takes no directory,
+  always did: its name check and the record it pins (`?name=Brick`) went to
+  `lighting/fixture_types/brick.fixture`, which the player does not read. They now take the
+  directories this host's profile sets, by the same reader as the CLI and MCP: the GDTF import,
+  the fixture type and venue endpoints, fixture settings, the fixture test and MVR import and
+  export. A directory a request names still wins, and with none configured the defaults are as
+  before. A config that does not load is now a 500 there, as it is to MCP, and at
+  `PUT /api/lighting/<file>`, whose check that a light show is not in the venues or fixture types
+  directory used to take the defaults then.
+
+- **The position reads the start position while a play from part way in starts** (#634): after
+  `play_song_from` with `start_time: "95s"` (or any play, seek or resume from a position), the
+  status (dashboard, MCP `status`, gRPC `Status`) gave `elapsed: 0:00.000` with `playing: true` for
+  most of a second, until the audio, MIDI and DMX were ready and the clock started, while the
+  lights already showed the show at 95 s. It now reads 1:35.000 from the moment the start goes in
+  until the clock starts, and runs on from there. A start turned down (a lighting show that does
+  not validate) leaves no position, as before.
+
+- **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
+  MIDI-written channel a tick at a time, while a seek's replay worked the level out as
+  `from + rate × ticks`, which rounds differently: a dim from 0 to 35 over 44 ticks was 17 live at
+  tick 22 but 18 after a seek there (some 15,000 of 12 million dims and ticks differed by a byte).
+  The replay now takes the same steps, a whole tick at a time, so it lands on the live run's level
+  exactly; part way into a tick it is where that tick's step left it, so every level it gives is one
+  the live run sends.
+
+- **A strobe's DMX offset holds without a minimum frequency** (#633): on the period curve, a fixture
+  type with `strobe_dmx_offset` but no `min_strobe_frequency` drove its strobe channel to `hz / max`
+  of the whole channel, so a slow strobe landed below the offset, where the fixture does not
+  strobe: with `max_strobe_frequency: 20` and `strobe_dmx_offset: 64`, 0.3 to 5 Hz wrote bytes of
+  64 and under, and the state stream read most of them back as no strobe. Any rate over 0 now writes a
+  byte from the offset to 255 (5 Hz: 112), and the state stream reads it back through the same
+  map. A type with no offset writes what it wrote.
+
+- **A `#` or `//` inside a quoted show, sequence or channel name is part of the name** (#656): the
+  grammar skipped comments inside the quotes of a show's or sequence's name, a fixture type's
+  `channel_map` key and a `special_cases` entry, so `show "Truss #3" { … }` read the name as
+  `"Truss ` and the rest of the line as a comment, and the file failed to parse; `show "A // B"`
+  the same. Those names now read exactly as written, as any other quoted string does, in the
+  player and in the web UI's light-show editor. A `#` in a channel name is still refused by its own
+  rule (it marks a ganged repeat).
+
+- **A light show's time signature has a denominator of at most 64** (#635): a `tempo {}` block
+  took any nonzero signature, and under `time_signature: 1/4294967295` a `1measure` duration
+  rounded to nothing, so the show failed, after some 15 s, with `Effect 'static' requires a
+  'duration'`. A denominator over 64 is now refused, naming the signature: `time signature
+  "1/4294967295" has denominator 4294967295; the most it may be is 64`. Any denominator from 1 to
+  64 is still taken, as before (`4/3`, `4/64`); a song's `tempo:` range is unchanged.
+
+- **A near-flat tempo ramp is timed to the nanosecond** (#638): the time a ramp takes to cover some
+  beats was solved in a form that cancels when the ramp is nearly flat, so `{bpm: 60.000001,
+  transition: 16}` after 60 BPM placed its beats tens of nanoseconds off (and up to microseconds
+  for flatter ramps). The solve now uses the numerically stable form of the same root.
+
+- **Same-time cues stack in the order they start, past every power of ten** (#669): two effects on
+  one layer at one priority, cued at the same time, were ordered last by their ids compared as
+  strings, and the ids come from a counter that runs all night. Where the two ids straddled 10, 100,
+  1,000, 10,000 and so on (`song_effect_9999`, `song_effect_10000`), the earlier cue went on top:
+  two shows each cueing a `replace` wash at `@1.500` on `midground` showed the first show's colour
+  instead of the second's, played through and after a seek. The engine now numbers each effect as
+  it starts and puts the one started later on top, so the later cue in the file wins every time.
+  Away from those boundaries the order is as before, save one case: effects from two different
+  sequences cued at the same time on one layer went by the sequences' names (`seq_a_…` under
+  `seq_b_…`); they now go in the order the show starts them, so `sequence "b"` then
+  `sequence "a"` at one cue puts `a`'s look on top where `b`'s used to win. A sequence's effects
+  still go under the show's own at the same time (#599).
+
+- **A song folder's config is found by one rule** (`songs::is_song_config_name`,
+  `songs::has_song_config`, `songs::song_config_file`): a song folder's own config is named
+  `song.yaml` or `song.yml`, exactly as written; a folder already has a song config when it holds
+  a file the song loader takes as a song's (`song.yml`, `album.yaml`, the hidden `.song.yaml`),
+  or a `song.yaml`/`song.yml` that does not read; and a song's config is read from and written to
+  its `song.yaml`, else its `song.yml`, else a new `song.yaml`. The song loader, the song files
+  listing, MCP's song lighting tools, a track upload, the web UI's create-song from a folder and
+  `POST /api/songs/<name>` all take it; the loader still loads what it loaded. A `song.yml` that
+  reads as another `kind` (`kind: playlist`) is no song config, as to the loader. What changes:
+  - A track uploaded to a song whose config is `song.yml` (`PUT
+    /api/songs/Ballad/tracks/guitar.wav`, `Ballad/song.yml`) leaves that config as it is; a
+    second config, `song.yaml`, was written beside it, so the folder held two songs' configs.
+    The same holds for a folder whose song config is `album.yaml`, or a `song.yml` that does not
+    read. A track uploaded to a flat-layout song at the songs root (`songs/flat.yaml`, `PUT
+    /api/songs/Flat/tracks/guitar.wav`) no longer writes a stray `songs/song.yaml`.
+  - MCP's song lighting tools take a song loaded from `Ballad/song.yml` as in its own folder:
+    `write_song_lighting` creating a new light show file for it was refused as "in flat layout".
+  - The web UI's create-song from a folder (`POST /api/browse/create-song`, `{"path":
+    "/songs/Ballad"}`) and `POST /api/songs/Ballad` answer 409 for a folder holding `song.yml`
+    (or `album.yaml`, `.song.yaml`); they wrote a `song.yaml` beside it. The create-song error
+    now reads "a song config already exists in this directory" (it said `song.yaml`).
+    Create-song at a songs root that holds flat-layout songs (`{"path": "/songs"}` beside
+    `songs/flat.yaml`) answers 409 too; it wrote a `songs/song.yaml`.
+- **A hidden file is passed over by one rule** (`songs::is_hidden`): a name starting with a dot
+  (`.git`, `.draft.light`), the AppleDouble files macOS writes beside each file (`._Bass.wav`)
+  among them. The songs walk passes over hidden directories and the file browser and bulk import
+  hidden entries, as before; a hidden config is still loaded (`Ballad/.song.yaml`). What changes:
+  - A new song config (`songs --init`, the web UI's create-song from a folder and bulk import,
+    the config a track upload writes) leaves hidden files out. A folder holding `._Bass.wav`
+    beside `Bass.wav` now gets a config with the one track; the init failed, reading the
+    AppleDouble file as audio. A `.click.wav` is no longer taken as a track, nor a `.draft.light`
+    as a light show.
+  - The song files listing (`GET /api/songs/Ballad/files`, the song editor's file list) leaves
+    out hidden files the song's config does not name: `.draft.light` and `._Bass.wav` were
+    listed. One it names (a track's `file: .click.wav`) is still listed.
+- **A trigger hit's velocity is held to 1-127 by one rule, whatever its curve**
+  (`config::trigger::TRIGGER_VELOCITY`): the `linear` curve could give 0, which plays nothing (a
+  peak of 0.006 over `threshold: 0.005`); it now plays at 1, as the `logarithmic` curve's lowest
+  already did. A `fixed_velocity: 0` plays at 1 and `fixed_velocity: 200` at 127, where they were
+  sent as written. The web UI's trigger editor takes the range from the same rule: its fixed
+  velocity field and tooltip said 0-127, and a typed 0 or 200 was saved as typed; it is now held to
+  1-127 (0 becomes 1, 200 becomes 127) and a blank field to the default.
+- **A file's kind is read by one rule, in any case** (`songs::FileKind`): an audio, MIDI or
+  `.light` file's extension now counts whatever its case everywhere on the song side, as the
+  song file listing and the file browser already read it. `songs --init`, a web song create or
+  bulk import, and the song config an upload writes take `Bass.WAV` as a track, `Song.MID` as
+  the MIDI playback, `dmx_Lights.MID` as a MIDI DMX light show and `Show.LIGHT` as a light show;
+  each was passed over as an unknown extension. A track upload or server import of `Bass.WAV`,
+  `Notes.MID` or `Show.LIGHT`, a MIDI DMX upload or server import of `Show.MID` (named
+  `dmx_Show.MID`), and a sample upload of `Kick.WAV` are taken; each was refused (400) as an
+  unsupported file type. The web UI's lighting file list shows `Show.LIGHT`, its delete removes
+  it (it was refused, "Can only delete .light files"), a new light file named `Show.LIGHT` keeps
+  that name (it became `Show.LIGHT.light`), and MCP's song lighting tools take its name (they
+  refused it: "lighting filename must end with .light"). Two consequences of
+  counting every case in `--init`: a corrupt or empty `X.WAV`, or a `.LIGHT` that does not parse,
+  now fails that song's init, as a lowercase one already did, where it was passed over; and the
+  MIDI playback, the last MIDI file by name, may change (`notes.mid` with `old.MID` now gives
+  `old.MID`, where it gave `notes.mid`). A song, playlist or profile config's `.yaml`/`.yml`
+  stays lowercase: `song.YAML` is not a song config, as before. The web UI's file pickers take
+  their lists from the same rule: the notification sound picker now offers `.mp4`, which the
+  upload always took, and the light show's MIDI DMX picker no longer offers `.midi`, which the
+  upload refuses and `--init` passes over.
+- **A playlist's or profile's file is found by one rule** (`util::yaml_file_at`,
+  `playlist::playlist_file`, `playlist::playlist_files`, `config::profile_file`): a name's file
+  is `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`, matched against the names the
+  directory lists (so a `set.YML` on a case-insensitive filesystem is not taken for `set.yml`).
+  It is used by the playlist loader, the web UI's playlist save and delete, MCP
+  `read_playlist`/`write_playlist`/`patch_playlist`, a song delete taking the song off the
+  playlists, and the web UI's profile read, save and delete. The profile list the config loads
+  is unchanged: profiles are matched by the `hostname` inside them, so every profile file loads,
+  `stage.yaml` and `stage.yml` alike, and the web UI lists both, as before. What changes:
+  - A playlist kept as `set.yml` is saved by the web UI's playlist editor and MCP `write_playlist`
+    (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, and the loader went on
+    reading `set.yml`, so the save had no effect. MCP `read_playlist` and `patch_playlist`
+    (`name: set`) take `set.yml`; they failed, finding no `set.yaml`.
+  - With both `set.yaml` and `set.yml` in the playlists directory, the loader now takes
+    `set.yaml` and logs once, as it loads, "Playlist has two files: .../set.yaml is read,
+    .../set.yml is not"; it took `set.yml` (the later file name) without a warning.
+  - MCP `write_playlist`, `read_playlist` and `patch_playlist` with `name: all_songs` are refused
+    ("'all_songs' is the player's own playlist and has no file"): `write_playlist` wrote an
+    `all_songs.yaml` the loader never reads.
+  - Deleting a song takes it off each playlist's file as the loader reads it: with both
+    `set.yaml` and `set.yml` only `set.yaml` is rewritten (both were), and an `all_songs.yaml`
+    is left alone (the song was taken off it). A playlists directory that cannot be listed is
+    logged, where the song stayed on every playlist silently.
+  - A directory entry that cannot be read is passed over with a warning ("unreadable entry")
+    wherever the playlists or profiles directory is listed or a name looked up in it: the
+    playlist loader and the web UI's profile list passed over it silently, the config's profile
+    load failed with an error, and `mtrack migrate`'s profile step left every profile file
+    unmigrated.
+  - The web UI's playlist list (`GET /api/playlists`) gives each playlist `reserved`, true for
+    `all_songs`; the playlist editor hides the playlist by it, holding no copy of the name.
+  - A new playlist or profile whose file would differ only in case from one already there is
+    refused, on every filesystem, since a case-insensitive one (macOS) would write into that
+    file, which the player then ignores or reads under another name. `PUT /api/playlists/set`
+    beside `Set.yaml` answers 409 "`Set.yaml` already exists; names differ only in case", as do
+    MCP `write_playlist` (`name: set`) and `PUT /api/profiles/Stage` beside `stage.yaml`. Before,
+    the first two created `set.yaml` beside `Set.yaml`, and the third `Stage.yaml` beside
+    `stage.yaml`. A read or delete of such a name gets the same answer: `DELETE
+    /api/playlists/set` and `GET`/`DELETE /api/profiles/Stage` answer 409, and MCP
+    `read_playlist`/`patch_playlist` (`name: set`) give the clash error, where each said the
+    playlist or profile was not found.
+- **Profile files sharing a stem are each shown and edited in the web UI**: with `stage.yaml` and
+  `stage.yml` in `profiles_dir`, the config editor's profile list and the lighting groups page
+  threw (`each_key_duplicate`) and showed nothing, and the `stage.yml` row opened, saved and
+  deleted `stage.yaml`. The web UI now addresses, links and selects a profile file by its full
+  file name (`#/config/stage.yml`, `#/lighting/groups?profile=stage.yml`), and each row acts on
+  its own file. A row shows the stem, or the full file name when the stem could be taken for
+  another file (`stage.yaml` beside `stage.yml`, or beside `stage.yaml.yaml`); a stem no other
+  file shares or is named shows as before (`pi-a`). A link by stem from before (`#/config/stage`)
+  opens the stem's `.yaml`, else its `.yml`. A file whose name is not UTF-8 is listed read-only.
+  `GET /api/profiles` gives each file's full name as `file` beside its stem `filename`, and
+  `addressable`, false for a name the API cannot take back. `/api/profiles/<name>` takes a full
+  file name the directory lists, else a stem (`.yaml`, else `.yml`):
+  - `GET /api/profiles/stage.yml` reads `stage.yml`; it looked for `stage.yml.yaml`, which was
+    not there (404). `GET /api/profiles/stage.yaml` with only `stage.yaml.yaml` there still
+    reads that.
+  - `PUT /api/profiles/x.yml` with neither there creates `x.yml`; it created `x.yml.yaml`.
+  - A save with `If-None-Match: *`, which the web UI sends for a new profile, is only a create:
+    one whose name reaches a file already there is refused (409 "a profile file
+    `stage.yaml.yaml` already exists"), where it was merged into that file (`stage.yaml` with
+    only `stage.yaml.yaml` there, or `stage` with only `stage.yml`).
+  - A file that does not parse is listed by `GET /api/profiles`, with `error` saying why and its
+    sections all false, where it was left out of the list though the API still reached it. The
+    config editor shows the row with the error and does not open it; the groups page's picker
+    leaves it out.
+  - A link naming no profile file (`#/config/gone.yaml`, `#/lighting/groups?profile=gone`, or a
+    name differing only in case) says so and opens none; the groups page opened the running
+    profile in its place.
+  - The status gives the running profile's file as `hardware.profile_file`, and the fixture
+    test's "set up DMX" link opens that file (`#/config/stage.yml/lighting`), where it went by
+    the hostname; an inline profile is linked by its hostname as before.
+- **A new playlist or profile file is only ever created, never written over**: the web UI's and
+  MCP's saves of a new playlist and the web UI's save of a new profile create the file with the
+  filesystem refusing one already there (`create_new`), so a file made since it was looked up,
+  or one the filesystem takes for the same name (case, or Unicode normalization on macOS), is
+  refused (409; MCP: "a file `set.yaml` already exists") and left as it was.
+- **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
+  out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
+  (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
+  not, and `hold_time` stands in for it on the others), listed only the `linear` dimmer curve
+  (there are five) and left `white` off `static`. Its effects table -- each effect, the
+  parameters it reads and their defaults -- and every keyword list (units, named colours,
+  directions, patterns, transitions, curves, easings, layers, blend modes, layer commands,
+  `per` values, the effects that read `color`) now come from the parser's own tables, so they
+  cannot drift. Its closing tip faded out with `dimmer end_level: 0%`, which fades from 0% to
+  0%; it now writes `start_level: 100%`.
+- **Position help names every form**: the MCP `play_from`, `play_song_from`, `seek` and
+  `evaluate_show` argument descriptions and the CLI's `play --from` and `seek` help now say a
+  bare number of seconds (`90`) is a position too, as it always was.
+- **Docs**: the OSC `status` message carries `Playing` or `Stopped` only (player configuration
+  said it carried the elapsed time and duration); a `tempo {}` block may sit anywhere in a show
+  or sequence body, the last one winning; `master`'s `speed` may go above 1; the lighting CLI
+  commands use `--fixture-types-dir`/`--venues-dir`, not the config's `directories`; `migrate`
+  takes a positional path; MIDI sample triggers match other event types exactly; MCP `status`'s
+  `ambient` has a `source`; the web UI page lists MP4 and `.aif`, the MIDI controller's ambient
+  and auto-play events, auto-play status events, and the audio stalled and reconnecting states;
+  Home and End skip only while stopped or paused; a `strobe` can be flashed through a dimmer or
+  colour channels. The docs' tables of effects, defaults, OSC addresses, trigger inputs, MIDI
+  event kinds and CLI commands are now tested against the code.
+
+- **A 6/8 MIDI tempo guess no longer warns of a poor fit**: the MIDI file's beats were scored
+  against the click track's in dotted quarters, two to a 6/8 bar, while the click grid counts six
+  eighths, so a correct 6/8 map from a click in eighths scored about 200 ms off (at 120 BPM) and the
+  tempo editor showed its alignment warning. The score now counts the grid's beats (one per
+  denominator note); where beat 1 falls is still found by the dotted-quarter pulse. Other metres the
+  score now counts differently: 3/8 (three eighths a bar, where it was one dotted quarter), a
+  whole-note denominator (one whole note, where it was a quarter) and denominators of 32 and above
+  (one denominator note, where it was a quarter).
+- **The editor takes as many sequence passes as the player, and a huge count no longer hangs**:
+  setting a sequence's `loop` count in the timeline refused counts past 4,294,967,295 that the
+  player reads; it now asks the player's own rule, which reads a count as a 64-bit number on every
+  target (the web UI and a 32-bit Pi refused `loop: 5000000000`). A sequence count above 10,000
+  (`loop: 5000000000`, or an inline loop's `repeats:`) plays 10,000 passes, the same as `loop`; it
+  used to lay out every pass, which could hang the player and the web editor (`loop: 100000000`
+  did).
+- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a loop
+  break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes each on
+  its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through and
+  overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same blend
+  the web UI's view of the crossfade uses. A fixture's fine bytes and mirrored sections now cross by
+  their channel's rule too -- any channel with a `fine` byte, from a GDTF profile or a fixture
+  type's own `channel "pan" @ 1 fine 2` -- rather than fading each byte: a mirrored strobe or gobo
+  switches at the midpoint (it faded); a mirrored pan or tilt holds where only one side points it
+  (it faded from or to 0); and a mover's fine byte holds where one side does not point it (it faded
+  to 0). Where two channels are patched over one DMX channel -- two fixtures', or one fixture's own
+  (`channels: { dimmer: 1, strobe: 1 }`) -- the crossfade crosses it the same way every time and
+  drops neither's byte: a 16-bit value's fine byte could go out on neither side, and the dimmer and
+  strobe above crossed 0 to 200 as 50 or as 0 a quarter of the way, by run; it fades.
+- **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
+  other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
+  mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
+  the way. Each byte now rounds to the nearest, by the engine's one interpolation, so a shared
+  byte stays put and the rest may come out one higher (black to white halfway is 128, was 127).
+- **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
+  not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
+  song came from; it now writes the file the song was read from, as the web UI's song editor
+  does. A playlist listed as text says why a song is missing (`unable to find song <name>`, or
+  `song <name> failed to load: ...`) where it said `(unable to find song)`.
+- **MCP `set_ambient_mode` takes a mode in any case, as gRPC does**: `{mode: "On"}` was
+  refused by MCP and taken by gRPC `SetAmbientMode`; both now read a mode one way (any case,
+  spaces trimmed), and refuse another name with `unknown ambient mode '<name>': use auto, on or
+  off`.
+- **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
+  answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
+  the song's `lighting:` block for the exact filename it references".
+- **One parse and validation for a config section update, on every surface**: MCP
+  `update_audio`, `update_midi`, `update_dmx` and `update_controllers`, gRPC `UpdateAudio`,
+  `UpdateMidi`, `UpdateDmx` and `UpdateControllers`, and the web API's `PUT /api/config/audio`,
+  `/midi`, `/dmx` and `/controllers` all save through one parse and validation. What changes:
+  - A body that is not the section's shape (MCP `update_audio{body: 5}`) answers `Validation
+    error: invalid audio JSON: ...` everywhere. MCP said `invalid payload: ...`; gRPC said
+    `invalid audio JSON: ...` (`invalid MIDI JSON`, `invalid DMX JSON`, `invalid controllers
+    JSON`); the web API said `{"error": "invalid audio: ..."}`.
+  - A section that parses but does not validate (an audio block with a bad sample format, say)
+    is now refused by MCP and gRPC too, where only the web API checked; the web API now answers
+    `{"error": "Validation error: <errors joined by "; ">"}` where it answered
+    `{"errors": [...]}`.
+  - gRPC `UpdateAudio`, `UpdateMidi` and `UpdateDmx` with `*_json: "null"` now remove the
+    section, as an empty string always did; they were refused.
+  - gRPC `UpdateControllers{controllers_json: ""}` answers `Validation error: invalid
+    controllers JSON: invalid type: null, expected a sequence`, where it answered `invalid
+    controllers JSON: EOF while parsing a value`.
+  - `PUT /api/config/controllers` without a `controllers` field answers that same validation
+    error, where it answered `missing controllers field`.
+  - JSON gRPC cannot parse at all still answers `invalid <section> JSON: ...`, with the config's
+    section name (`audio`, `midi`, `dmx`, `controllers`).
+- **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
+  back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
+  the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's
+  log pane, as it is logged from a controller. An OSC address configured for both a transport
+  action and an OSC-only one (pause, stop samples, loop section, seek, seek section) is now
+  taken as the transport action.
+- **One lock refusal on every surface**: MCP refused a write while locked with the player's
+  `Player is locked. Unlock to make changes.` followed by its own hint naming the tool. It now
+  answers that sentence alone, as gRPC and the web UI do. Which operations stay open while
+  locked is one table for MCP, gRPC and the web UI; what each surface leaves open is unchanged.
+- **A status that could not read ambient light says so on every surface**: when the status's
+  read of the DMX engine timed out or failed, MCP `status` gave the ambient light as
+  `{"available": false, "reason": ...}`, but gRPC `Status` and the web UI's playback message left
+  it out, as though there were no DMX engine. gRPC's `AmbientStatus` now carries
+  `available: false` and `reason` (new fields 5 and 6; mode and state are then empty), and the
+  web UI's playback message carries `{"available": false, "reason": ...}`, shown on the
+  dashboard as "Ambient light: no reading".
+- **`mtrack verify --check` refuses a category it does not know**: `mtrack verify mtrack.yaml
+  --check track_mappings` (a typo) ran no checks and exited 0. It now fails with clap's error
+  listing the categories (`track-mappings`).
+- **One text for "no effect engine"**: with no DMX engine, gRPC `GetActiveEffects` (and so
+  `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
+  answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
+  MCP's lighting resource already said.
+- **A song that failed to load says why on every surface**: a song whose files are there but
+  did not load (a `.light` file that does not parse, say) was "unable to find song broken" to
+  every MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to
+  gRPC `PlaySongFrom`, and 404 `Song not found: broken` to the web API's waveform, tempo guess
+  and files (`GET /api/songs/broken/waveform`, `/tempo-guess`, `/files`). They now answer
+  `song broken failed to load: <the load error>` (400 on the web API). An unknown song answers
+  `unable to find song <name>` everywhere: gRPC `PlaySongFrom` said `Song '<name>' not found`,
+  the web API (those three, `GET /api/songs/<name>`, and the song file uploads) `Song not found:
+  <name>`, and the web preview (`POST /api/lighting/evaluate`)
+  `unknown song: <name>`; the preview's failed-to-load answer gains the `song <name> failed to
+  load: ` prefix.
+- **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
+  time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
+  now refuses more than 64 times (`at most 64 times per request`) and a time past a week
+  (`time out of range`). The web UI's preview now checks the song, and that it has lighting,
+  before these bounds: 65 times for an unknown song answers 404 `unable to find song <name>`
+  rather than 400, and for a song with no lighting `song `<name>` has no lighting loaded` rather
+  than `at most 64 times per request`.
+- **A per-section notification sound that does not load is logged like the others**: a section
+  override (`notifications.sections.<name>`, global or per song) that failed to load was logged
+  as `Failed to load section notification override` (or `Failed to load song section
+  notification override`) with a `section` field; it is now logged as `Failed to load
+  notification audio override` with `key=section:<name>`, as the event overrides are.
+- **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
+  to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
+  test's overlay already had it.
+- **A fixture test of a type with no channels lights no venue fixture**: the web UI's fixture
+  test warned that a type with no channels was lit over the venue fixture at its address. It
+  occupies nothing, as the venue's patch check has it.
+- **A tempo start keeps its time when its unit is switched**: in the web UI's tempo editor,
+  switching a light show's tempo `start:` between ms and s relabelled the number, so `500ms`
+  became `500s` and the tempo map moved by minutes. The switch now converts the value
+  (`500ms` is `0.5s`, `1.5s` is `1500ms`) to the same time as the player reads it.
+- **Resizing one loop on the timeline changes only that loop**: dropping a resized loop block
+  wrote its pass count to every sequence reference in the cue; it now writes it to the dragged
+  reference alone.
+- **The stage views strobe at the rig's rate**: the plot, the timeline preview and the 3D view
+  flashed a strobing fixture at a rate guessed from its strobe byte alone (2–20 Hz, the same
+  for every fixture), ignoring the fixture's strobe range and curve, so a PixelBrick at 10 Hz
+  flickered at about 19 Hz on screen. The player now says the rate: each fixture's strobe byte
+  read back through its own strobe rule (a `strobe_rates` map beside the bytes in the `state`
+  message and in `/api/lighting/evaluate`), and, in an evaluation only, the effect's own rate for a
+  fixture with no strobe channel, whose colour or brightness the player flashes (on the live
+  stream those bytes flash by themselves, so no rate rides with them). The views flash at
+  that; the guess is gone.
+- **MCP positions never read `1:60.000`**: `format_duration` rounded the seconds to the
+  millisecond on their own, so 119.9996 s came out as `1:60.000`; it is `1:59.999` now, the
+  minutes and seconds every surface shows with the milliseconds truncated after them.
+- **A tempo guessed from a MIDI file in 6/8 lands on the right bar** (#636): the guess rolled a
+  bar over every *numerator* quarter notes, so in any metre but x/4 a tempo or signature change
+  was placed bars early (a 6/8 file's change at bar 5 was guessed at bar 3), further the longer
+  the file. A bar is as many quarter notes as the tempo map has it. The file's tempo is now read
+  as playback reads it: 120 BPM until its first tempo event, the conductor track's events for a
+  Format 1 file, each track's own (offset) for a Format 2 file, the last event at a tick winning.
+- **MCP reports a caller's fault as the caller's**: a stale config checksum, a profile index
+  past the end, a seek or a section loop the player refused (nothing playing, no such section)
+  and a play that could not start came back as `internal_error`; they are `invalid_params`
+  now, as a config that would not validate already was. Every transport maps one
+  classification of each error (not found, precondition, invalid, internal) to its own codes;
+  gRPC answers a bad profile index with `InvalidArgument` rather than `OutOfRange`.
+- **The light show watcher sees every save**: it reloaded a `.light` file only when its
+  modified time had moved forward, so a second save within one tick of the clock, or a backup
+  restored over the file, went unnoticed until the next edit. It now goes by the file's
+  modified time and length, as the song's own reload of a show does.
+- **The web UI reads a flat-layout song's own YAML**: `GET /api/songs/<name>` looked for
+  `song.yaml` or `song.yml` in the song's folder, so a song kept as `<name>.yaml` beside others,
+  or loaded from a `config.yaml`, answered with a bare summary (or another song's file). It now reads the file the song was
+  loaded from, as every other surface does.
+- **`mtrack seek 90s` seeks**: the CLI parsed a position with the lighting DSL's time parser,
+  which does not take an `s` suffix, so `90s` or `1:30s` fell through to a seek to a *section*
+  of that name. It now parses positions as every other surface does (`90`, `90s`, `1:30`,
+  `1:30.5s`), with the leading `@` the DSL's parser took (`@1:30`), surrounding whitespace
+  trimmed, and fractions kept to the microsecond where the DSL's parser cut them to the
+  millisecond.
+- **MIDI DMX writes a channel's fine byte and mirrors**: a 16-bit channel driven from MIDI got
+  its coarse byte alone, and a ganged channel its first copy; both go out as a show's value
+  does, through the one byte resolution. On a 16-bit channel the value is rounded on the
+  16-bit scale, so mid-fade its coarse byte can be one above the truncated byte MIDI used to
+  send; an 8-bit channel's byte is as it was.
+- **`evaluate_show` reads an optic or a setting as dark**: `is_dark` counts only the levels
+  going dark takes to 0 -- not zoom, focus, iris, frost, nor a snap channel such as a gobo --
+  the rule the fade to dark goes by, so a zoom at its setting no longer makes a dark rig read
+  as lit.
+- **A head moves on a `pan:1` or a fine byte**: a fixture's panning and tilting are derived by
+  the rule the crossfade goes by, so a GDTF profile's sectioned pan or tilt, or a fine byte on
+  its own, makes it a mover for lint, validation and the fit, where only a channel named
+  exactly `pan` or `tilt` did.
+- **A GDTF export's home for a head is the centre of the span it is pointed over**: the
+  `Default` of a pan or tilt goes through the one degree span the pointing math uses -- the
+  channel's range, else a function's degrees, else the assumed travel -- where it took the
+  range alone and fell back to 128.
+- **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
+  and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
+  profile names it) parked at centre no longer makes a dark rig read as lit. The MVR export's
+  test of whether a fixture moves goes by the same rule, so a head with only sectioned pan or
+  tilt channels counts as a mover and is not linked to a focus point near its rest beam.
+- **`diff_show` positions are on the map the player plays**: a song's shows all play to the first
+  show's `tempo` block (or the song's tempo), and the diff's `@measure/beat` positions now report
+  where each cue lands on that map. A second file's own block placed its cues' positions, so the
+  diff said a cue was where that file put it, not where it plays.
+- **A light show added in the song editor lands in the song's folder, and the song keeps
+  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
+  was written beside the song folders, and named an added file with the folder, which
+  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
+  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
+  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
+  removal takes the entry out. New files are saved before the config, so the reload the
+  config save starts finds them; the song's other files after it, so a tempo saved with them
+  is the one they are checked against; removed files are deleted last, once the config no
+  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
+  path in it, or one the song already has, is refused. A song already broken this way loads
+  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
+  is in the song's folder.
+- **A sequence written past a tempo change is placed by the beats it spans**: a sequence's
+  cues, and its pass, are counted in beats on the map it was written against, through the
+  tempo changes there, and laid down by that count where it is used. They were counted at the
+  map's starting tempo whatever it did afterwards, so a sequence of one bar at `@3/1`, after a
+  change from 120 to 60 BPM, was placed as two bars. The same count places a sequence inside
+  another, which ran at the outer's starting tempo through every change, with its durations in
+  beats or measures re-read where it plays.
+- **`stop sequence` stops by chain**: an effect belongs to every sequence it was started
+  through, so `stop sequence "inner"` stops every instance of the inner started through an
+  outer, wherever the outer started it, and `stop sequence "outer"` -- written, or a looped
+  outer's own stop at each pass -- stops the inner's effects with the outer's. Expanding the
+  outer used to rename every effect to the outer's, so `stop sequence "inner"` stopped nothing.
+- **A sequence of layer commands loops**: a pass with no effect in it lasts until its last cue,
+  as an inline loop's always has; it lasted no time, stacking every pass on the first. A pass
+  starts at its earliest cue, not the first one written.
+- **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
+  `offset N measures` is its score position's time plus the offset, with every tempo change,
+  positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups
+  already followed. The position walk moved only the time-positioned changes, by the offset's
+  worth of beats on the unshifted map (a cue at @5/1 after a change at 6 s under a one-bar offset
+  fired at 11 s; it fires at 12 s), and the lighting timeline placed, dragged and snapped cues the
+  same wrong way; it follows the one rule now.
+- **A length in measures at a tempo that is not a number no longer hangs**: the bar walk it
+  used looked for a beat position that is not finite for ever; the one bar walk now stops, as the
+  bar-and-beat lookup already did.
+- **A song without a show no longer brings the last song's back on an edit**: the last song's
+  light show file watcher went on running under a song with no show of its own (MIDI DMX only,
+  or no lights, and with ambient light fading in over the last song until it was all the way in),
+  and saving that file put its show back on the rig. It stops with the song now, as it already
+  did when the stage went dark between songs, and an edit it took in just before the song
+  changed reloads nothing.
+- **Ambient Off over a dark stage takes out what was lit since**: setting the mode Off again,
+  with the stage already dark between songs and no ambient up, left lit what nothing writes
+  (MIDI DMX on an unpatched channel, say); going idle while Off already took it out. Both do now.
+- **The web UI shows a loop crossfade's last frame as it goes out**: in the frame a crossfading
+  loop's pass ended, the visualizer and `get_fixture_state` showed the new pass alone -- a mover
+  only the old pass drove dropped from the view -- while the rig got the blend.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status
@@ -693,6 +1971,24 @@ Upgrade notes:
   (prototype poisoning of merged objects), which `svelte-i18n` uses on the web UI's own bundled
   locale files, and `minimatch` in `eslint`, a development tool. Nothing in the served bundle
   changes.
+
+## [0.17.5] - 2026-11-04
+
+### Fixed
+
+- **A light show added in the song editor lands in the song's folder, and the song keeps
+  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
+  was written beside the song folders, and named an added file with the folder, which
+  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
+  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
+  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
+  removal takes the entry out. New files are saved before the config, so the reload the
+  config save starts finds them; the song's other files after it, so a tempo saved with them
+  is the one they are checked against; removed files are deleted last, once the config no
+  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
+  path in it, or one the song already has, is refused. A song already broken this way loads
+  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
+  is in the song's folder.
 
 ## [0.17.4] - 2026-10-26
 

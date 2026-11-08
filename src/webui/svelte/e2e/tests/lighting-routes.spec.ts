@@ -13,16 +13,12 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { card } from "../support/locators";
 
 // What a Lighting page has open is its address: the section's link, the
 // browser's Back and a reload all land where they say. Read-only against the
 // shared mock (nothing is saved).
 
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 const sectionLink = (page: Page, name: string) =>
   page.locator(".lighting__tabs").getByRole("link", { name });
 

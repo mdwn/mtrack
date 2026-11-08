@@ -38,6 +38,7 @@
 //! than inside the cpal implementation so a second backend — or a second
 //! interface, once multi-interface output lands — reports health the same way.
 
+pub use super::output_status::OutputStatus;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -103,6 +104,11 @@ pub fn callback_period(buffer_frames: Option<u32>, sample_rate: u32) -> Option<D
     Some(Duration::from_secs_f64(
         f64::from(frames) / f64::from(sample_rate),
     ))
+}
+
+/// [`callback_period`] in milliseconds, as the logs give it.
+pub fn callback_period_ms(buffer_frames: Option<u32>, sample_rate: u32) -> Option<f64> {
+    callback_period(buffer_frames, sample_rate).map(|period| period.as_secs_f64() * 1000.0)
 }
 
 /// How recently non-silent audio must have been written to count as signalling.
@@ -175,6 +181,12 @@ impl OutputHealth {
     /// at exactly the moments the machine is already struggling.
     pub fn record_underrun(&self) {
         self.underruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Buffer underruns since the device was opened, without building a
+    /// snapshot. For [`UnderrunWatch`], polled from the output thread.
+    pub fn underruns(&self) -> u64 {
+        self.underruns.load(Ordering::Relaxed)
     }
 
     /// Record a stream failure and that a rebuild is coming.
@@ -266,12 +278,6 @@ impl OutputHealth {
     }
 }
 
-impl serde::Serialize for OutputStatus {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 /// A point-in-time read of [`OutputHealth`].
 ///
 /// Deliberately facts rather than a verdict. "Silent" is correct and expected when
@@ -297,61 +303,6 @@ pub struct OutputHealthSnapshot {
     pub since_open: Duration,
     /// The most recent backend error, if there has been one.
     pub last_error: Option<String>,
-}
-
-/// What the output is doing, as one word.
-///
-/// The individual facts are still there for anyone who wants them; this exists
-/// because "is the audio all right?" is the question actually being asked, and
-/// answering it by reading four fields is how an operator ends up looking at
-/// `connected` and believing it.
-///
-/// Deliberately says nothing about whether audio reached the room. `Healthy`
-/// means the callback is running and being handed buffers — a device can still
-/// accept every one and produce nothing, which is not observable from here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputStatus {
-    /// The callback is running.
-    Healthy,
-    /// The callback has stopped, and the output thread is rebuilding the stream.
-    /// Someone is coming for it.
-    Recovering,
-    /// The callback has stopped and no rebuild is in progress. The wedge case:
-    /// the stream still looks open and nothing is going to fix it.
-    Stalled,
-    /// The device is open but the callback has never run once.
-    NeverStarted,
-}
-
-impl OutputStatus {
-    /// The canonical name for this state.
-    ///
-    /// One vocabulary for every surface — the JSON status endpoint, the gRPC
-    /// status response, the OSC broadcast and the web UI all use these exact
-    /// strings, and the UI switches on them. Serialization goes through here so
-    /// they cannot drift apart.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            OutputStatus::Healthy => "healthy",
-            OutputStatus::Recovering => "recovering",
-            OutputStatus::Stalled => "stalled",
-            OutputStatus::NeverStarted => "never_started",
-        }
-    }
-
-    /// Whether this state should be shown to an operator as something wrong.
-    ///
-    /// `NeverStarted` is not a fault: it only survives for one liveness window
-    /// after the device opens, and flagging it would make every start look
-    /// broken for its first moments. A device that never calls back is reported
-    /// as `Stalled` once that window passes, which is a fault.
-    ///
-    /// Kept in step with `StatusPage.audioFault()` deliberately — the two used to
-    /// disagree about `NeverStarted`, so the first caller to reach for this
-    /// helper would have contradicted the UI sitting next to it.
-    pub fn is_fault(&self) -> bool {
-        matches!(self, OutputStatus::Recovering | OutputStatus::Stalled)
-    }
 }
 
 impl OutputHealthSnapshot {
@@ -411,6 +362,114 @@ pub fn has_output_signal(data: &[f32]) -> bool {
     data.iter().any(|sample| sample.abs() > SILENCE_FLOOR)
 }
 
+/// How long underruns are counted over, per verdict, by [`UnderrunWatch`].
+pub const UNDERRUN_WINDOW: Duration = Duration::from_secs(10);
+
+/// Underruns within one [`UNDERRUN_WINDOW`] for that window to count as
+/// underrunning.
+///
+/// Three, not one: a single XRUN at a song load or a system hiccup is a click
+/// nobody needs to read about, and two can be one stall reported on both sides
+/// of `prepare()`. Three in ten seconds is already a glitch every few seconds,
+/// which is audible and worth a line in the journal.
+pub const UNDERRUNS_PER_WINDOW: u64 = 3;
+
+/// The least time between two underrun warnings.
+///
+/// A device underrunning twelve times a second would otherwise fill the journal;
+/// once a minute is enough to say it is still happening.
+pub const UNDERRUN_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Decides when buffer underruns have become sustained enough to warn about.
+///
+/// The callback only counts underruns ([`OutputHealth::record_underrun`]); this
+/// reads that count from a non-realtime thread and says when to warn, so the
+/// warning's allocation and I/O stay off the audio thread.
+///
+/// Sustained means two consecutive [`UNDERRUN_WINDOW`]s each with at least
+/// [`UNDERRUNS_PER_WINDOW`] underruns: twenty seconds of trouble, not one burst.
+/// After a warning the next waits at least [`UNDERRUN_WARN_INTERVAL`], and is
+/// given only if the underruns are still sustained then.
+///
+/// Time is passed in rather than read, so a test sets it.
+#[derive(Debug, Default)]
+pub struct UnderrunWatch {
+    /// When the current window began, and the underrun count then.
+    window: Option<(Instant, u64)>,
+    /// Whether the window before the current one was underrunning.
+    previous_underrunning: bool,
+    /// When the last warning was given.
+    last_warned: Option<Instant>,
+}
+
+/// What [`UnderrunWatch::observe`] reports when it is time to warn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SustainedUnderruns {
+    /// Underruns in the window just ended.
+    pub in_window: u64,
+    /// How long that window was.
+    pub window: Duration,
+    /// Underruns since the device was opened.
+    pub total: u64,
+}
+
+impl SustainedUnderruns {
+    /// Underruns per second over the window just ended.
+    pub fn per_second(&self) -> f64 {
+        let secs = self.window.as_secs_f64();
+        if secs > 0.0 {
+            self.in_window as f64 / secs
+        } else {
+            0.0
+        }
+    }
+}
+
+impl UnderrunWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts a fresh window at the next [`observe`](Self::observe), for a
+    /// rebuilt stream: the outage between streams, and the underruns counted
+    /// on the way down, belong to no window.
+    pub fn restart_window(&mut self) {
+        self.window = None;
+    }
+
+    /// Takes the underrun count since the device opened, as of `now`, and says
+    /// whether to warn. Call it at any steady interval well under
+    /// [`UNDERRUN_WINDOW`]; a window closes at the first call past its end.
+    pub fn observe(&mut self, now: Instant, total: u64) -> Option<SustainedUnderruns> {
+        let (start, at_start) = *self.window.get_or_insert((now, total));
+        let elapsed = now.saturating_duration_since(start);
+        if elapsed < UNDERRUN_WINDOW {
+            return None;
+        }
+        self.window = Some((now, total));
+
+        let in_window = total.saturating_sub(at_start);
+        let underrunning = in_window >= UNDERRUNS_PER_WINDOW;
+        let sustained = underrunning && self.previous_underrunning;
+        self.previous_underrunning = underrunning;
+        if !sustained {
+            return None;
+        }
+        if self
+            .last_warned
+            .is_some_and(|at| now.saturating_duration_since(at) < UNDERRUN_WARN_INTERVAL)
+        {
+            return None;
+        }
+        self.last_warned = Some(now);
+        Some(SustainedUnderruns {
+            in_window,
+            window: elapsed,
+            total,
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -467,6 +526,96 @@ mod test {
             health.snapshot().status(LIVENESS_WINDOW),
             OutputStatus::Recovering
         );
+    }
+
+    /// Polls an [`UnderrunWatch`] every 100ms, as the output thread does, for
+    /// `secs` seconds from `start`, with `underruns_at` giving the running count
+    /// at each poll's offset. Returns the offsets at which it warned.
+    fn watch_for(
+        watch: &mut UnderrunWatch,
+        start: Instant,
+        secs: u64,
+        underruns_at: impl Fn(Duration) -> u64,
+    ) -> Vec<(Duration, SustainedUnderruns)> {
+        let tick = Duration::from_millis(100);
+        let mut warnings = Vec::new();
+        for i in 0..=(secs * 10) {
+            let at = tick * i as u32;
+            if let Some(warning) = watch.observe(start + at, underruns_at(at)) {
+                warnings.push((at, warning));
+            }
+        }
+        warnings
+    }
+
+    #[test]
+    fn a_single_underrun_is_not_warned_about() {
+        let mut watch = UnderrunWatch::new();
+        let warnings = watch_for(&mut watch, Instant::now(), 300, |at| {
+            u64::from(at >= Duration::from_secs(15))
+        });
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn one_burst_is_not_sustained() {
+        // Ten underruns at a song load, then none: one bad window, not two.
+        let mut watch = UnderrunWatch::new();
+        let warnings = watch_for(&mut watch, Instant::now(), 300, |at| {
+            if at >= Duration::from_secs(12) {
+                10
+            } else {
+                0
+            }
+        });
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The harness Pi at a 512-frame period: twelve underruns a second, for as
+    /// long as it plays. Warned once two windows in, then once a minute.
+    #[test]
+    fn sustained_underruns_warn_once_a_minute() {
+        let mut watch = UnderrunWatch::new();
+        let per_second = 12;
+        let warnings = watch_for(&mut watch, Instant::now(), 150, |at| {
+            (at.as_secs_f64() * per_second as f64) as u64
+        });
+        let at: Vec<u64> = warnings.iter().map(|(at, _)| at.as_secs()).collect();
+        assert_eq!(at, vec![20, 80, 140]);
+
+        let (_, first) = warnings[0];
+        assert_eq!(first.window, UNDERRUN_WINDOW);
+        assert_eq!(first.in_window, 120);
+        assert_eq!(first.total, 240);
+        assert!((first.per_second() - 12.0).abs() < 1e-9);
+    }
+
+    /// Underruns counted across a rebuild do not land in, or stretch, a window:
+    /// a window restarted at the new stream sees only what that stream does.
+    #[test]
+    fn a_rebuild_restarts_the_window() {
+        let mut watch = UnderrunWatch::new();
+        let start = Instant::now();
+        // One underrunning window, then a 15s outage counting 40 underruns.
+        assert_eq!(watch.observe(start, 0), None);
+        assert_eq!(watch.observe(start + Duration::from_secs(10), 5), None);
+        watch.restart_window();
+        let back = start + Duration::from_secs(25);
+        assert_eq!(watch.observe(back, 45), None);
+        // A clean window after it: nothing, where the stretched window would
+        // have counted the outage's 40 and warned.
+        assert_eq!(watch.observe(back + Duration::from_secs(10), 45), None);
+    }
+
+    #[test]
+    fn warnings_stop_when_the_underruns_do() {
+        // Sustained for 30s, then clean: one warning, and no more.
+        let mut watch = UnderrunWatch::new();
+        let warnings = watch_for(&mut watch, Instant::now(), 300, |at| {
+            at.min(Duration::from_secs(30)).as_secs()
+        });
+        let at: Vec<u64> = warnings.iter().map(|(at, _)| at.as_secs()).collect();
+        assert_eq!(at, vec![20]);
     }
 
     #[test]

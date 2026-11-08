@@ -75,6 +75,17 @@ pub fn parse_archive(bytes: &[u8]) -> Result<Scene, MvrError> {
     parse_scene(&xml)
 }
 
+/// An archive entry's file name: what follows its last `/`.
+pub(crate) fn entry_basename(entry: &str) -> &str {
+    entry.rsplit('/').next().unwrap_or(entry)
+}
+
+/// An entry's file name without its `.gdtf`, if it has one.
+fn gdtf_stem(entry: &str) -> &str {
+    let base = entry_basename(entry);
+    base.strip_suffix(".gdtf").unwrap_or(base)
+}
+
 /// Finds the embedded entry a fixture's `GDTFSpec` names. Console exports
 /// drift from the spec here too: the reference may omit the `.gdtf`
 /// extension, or the entry may sit under a path prefix.
@@ -83,17 +94,15 @@ pub fn resolve_gdtf_entry<'a>(
     spec: &str,
 ) -> Result<Option<&'a str>, MvrError> {
     let spec = spec.trim();
-    let basename = spec.rsplit('/').next().unwrap_or(spec);
-    let wanted = basename.strip_suffix(".gdtf").unwrap_or(basename);
+    let basename = entry_basename(spec);
+    let wanted = gdtf_stem(spec);
     if let Some(exact) = entries.iter().find(|name| name.as_str() == spec) {
         return Ok(Some(exact.as_str()));
     }
     let by_name: Vec<&String> = entries
         .iter()
         .filter(|name| {
-            let entry_base = name.rsplit('/').next().unwrap_or(name);
-            let entry_stem = entry_base.strip_suffix(".gdtf").unwrap_or(entry_base);
-            entry_base == basename || entry_stem.eq_ignore_ascii_case(wanted)
+            entry_basename(name) == basename || gdtf_stem(name).eq_ignore_ascii_case(wanted)
         })
         .collect();
     if let Some(first) = by_name.first() {
@@ -105,9 +114,7 @@ pub fn resolve_gdtf_entry<'a>(
     let unprefixed: Vec<&String> = entries
         .iter()
         .filter(|name| {
-            let entry_base = name.rsplit('/').next().unwrap_or(name);
-            let entry_stem = entry_base.strip_suffix(".gdtf").unwrap_or(entry_base);
-            entry_stem
+            gdtf_stem(name)
                 .split_once('@')
                 .is_some_and(|(_, f)| f.eq_ignore_ascii_case(wanted))
         })
@@ -174,10 +181,7 @@ mod tests {
     /// fixture type.
     #[test]
     fn scene_to_embedded_gdtf_to_distilled_fixture() {
-        let gdtf_bytes = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf_bytes = crate::testutil::lighting::synthetic_gdtf();
         let mvr_bytes = crate::lighting::gdtf::build_zip(&[
             (
                 "GeneralSceneDescription.xml",

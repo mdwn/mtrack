@@ -17,7 +17,9 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
-  import { browseDirectory, type BrowseEntry } from "../../lib/api/songs";
+  import { browseDirectory } from "../../lib/api/songs";
+  import type { BrowseEntry } from "../../gen/rules/mtrack_rules";
+  import { breadcrumbs, parentPath } from "../../lib/util/paths";
 
   interface Props {
     /** File types to show (in addition to directories). Empty = show all. */
@@ -75,14 +77,6 @@
 
   let atRoot = $derived(currentPath === "/");
 
-  function parentPath(): string {
-    if (atRoot) return "/";
-    const parts = currentPath.replace(/\/+$/, "").split("/");
-    if (parts.length <= 2) return "/";
-    parts.pop();
-    return parts.join("/");
-  }
-
   let visibleEntries = $derived(
     filter.length === 0
       ? entries
@@ -126,18 +120,7 @@
     }
   }
 
-  let breadcrumbs = $derived.by(() => {
-    const crumbs: { name: string; path: string }[] = [{ name: "/", path: "/" }];
-    if (currentPath !== "/") {
-      const parts = currentPath.split("/").filter(Boolean);
-      let acc = "";
-      for (const part of parts) {
-        acc += "/" + part;
-        crumbs.push({ name: part, path: acc });
-      }
-    }
-    return crumbs;
-  });
+  let crumbs = $derived(breadcrumbs(currentPath));
 
   let fileCount = $derived(visibleEntries.filter((e) => !e.is_dir).length);
 
@@ -171,7 +154,7 @@
       <button class="btn" onclick={navigateToInput}>{$t("common.go")}</button>
     </div>
     <div class="breadcrumbs">
-      {#each breadcrumbs as crumb, i (crumb.path)}
+      {#each crumbs as crumb, i (crumb.path)}
         {#if i > 0}<span class="sep">/</span>{/if}
         <button class="crumb" onclick={() => navigate(crumb.path)}
           >{crumb.name}</button
@@ -190,7 +173,10 @@
     {:else}
       <div class="entry-list">
         {#if !atRoot}
-          <button class="entry" onclick={() => navigate(parentPath())}>
+          <button
+            class="entry"
+            onclick={() => navigate(parentPath(currentPath))}
+          >
             <span class="entry-icon">⬆️</span>
             <span class="entry-name">..</span>
           </button>

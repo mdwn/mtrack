@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { card } from "../support/locators";
 
 // The venue form: a save shows on the page at once, and each GDTF row
 // chooses its own mode. Every test serves its own venue directory from a
@@ -136,10 +137,6 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
   return { puts, venues };
 }
 
-const card = (page: Page, name: string) =>
-  page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
 const rows = (page: Page) => page.getByTestId("venue-fixture-row");
 const save = (page: Page) =>
   page.locator(".editor-form").getByRole("button", { name: "Save" }).click();
@@ -294,6 +291,80 @@ test.describe("A mode per fixture in the venue form", () => {
       "8: RGBS",
       "9: RGBWS",
     ]);
+  });
+
+  test("a row the patch rule cannot read gets its own word and mutes no other", async ({
+    page,
+  }) => {
+    const { puts } = await serve(page, {
+      rig: [
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("B", 5), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("C", 20), fixture_type: "brick", mode: "8: RGBS" },
+      ],
+    });
+    await card(page, "rig").locator('[data-testid^="venue-edit-"]').click();
+    await rows(page)
+      .nth(0)
+      .getByTestId("venue-row-mode")
+      .selectOption("9: RGBWS");
+    await page.locator("#fix-channel-2").fill("70000");
+    await expect(rows(page).nth(0).getByTestId("venue-row-overlap")).toHaveText(
+      "Runs into B (addresses 5–5).",
+    );
+    await expect(rows(page).nth(1).getByTestId("venue-row-overlap")).toHaveText(
+      "Runs into A (addresses 5–5).",
+    );
+    await expect(rows(page).nth(2).getByTestId("venue-row-overlap")).toHaveText(
+      /Beyond any DMX patch/,
+    );
+    // An address past 65535 is no address: the row check refuses the save
+    // (as the player does), marking C alone; A and B keep their words.
+    await save(page);
+    await expect(rows(page).nth(2).getByTestId("venue-row-error")).toHaveText(
+      "The address must be a whole number from 1 to 65535.",
+    );
+    await expect(rows(page).nth(0).getByTestId("venue-row-error")).toHaveCount(
+      0,
+    );
+    await expect(rows(page).nth(0).getByTestId("venue-row-overlap")).toHaveText(
+      "Runs into B (addresses 5–5).",
+    );
+    await page.waitForTimeout(300);
+    expect(puts).toHaveLength(0);
+  });
+
+  test("a blank universe marks its own row and leaves the others checked", async ({
+    page,
+  }) => {
+    // A cleared number field is null; it is that row's problem, and the
+    // check goes on for every other row (a duplicate name here). The venue
+    // file keys fixtures by name, so the duplicate is made in the form.
+    const { puts } = await serve(page, {
+      rig: [
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("B", 20), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("C", 40), fixture_type: "brick", mode: "8: RGBS" },
+      ],
+    });
+    await card(page, "rig").locator('[data-testid^="venue-edit-"]').click();
+    await expect(rows(page)).toHaveCount(3);
+    await rows(page)
+      .nth(1)
+      .getByRole("textbox", { name: "Fixture name" })
+      .fill("A");
+    await page.locator("#fix-universe-2").fill("");
+    await save(page);
+    await expect(rows(page).nth(2).getByTestId("venue-row-error")).toHaveText(
+      "The universe must be a whole number from 1 to 65535.",
+    );
+    for (const i of [0, 1]) {
+      await expect(rows(page).nth(i).getByTestId("venue-row-error")).toHaveText(
+        "Another fixture has this name.",
+      );
+    }
+    await page.waitForTimeout(300);
+    expect(puts).toHaveLength(0);
   });
 
   test("an overlap is marked, and the save asks first", async ({ page }) => {

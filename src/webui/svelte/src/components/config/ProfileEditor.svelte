@@ -13,11 +13,15 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { ProfileDraft } from "../../lib/api/config";
+
+  import type {
+    AudioDeviceInfo,
+    MidiDeviceInfo,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
-  import type { AudioDeviceInfo, MidiDeviceInfo } from "../../lib/api/config";
   import Tooltip from "./Tooltip.svelte";
   import AudioSection from "./AudioSection.svelte";
   import MidiSection from "./MidiSection.svelte";
@@ -29,7 +33,7 @@
   import StatusEventsSection from "./StatusEventsSection.svelte";
 
   interface Props {
-    profile: any;
+    profile: ProfileDraft;
     audioDevices: AudioDeviceInfo[];
     midiDevices: MidiDeviceInfo[];
     trackNames: string[];
@@ -84,9 +88,8 @@
   }
   let activeTab = $state<TabKey>(getInitialTab());
 
-  function isEnabled(key: string): boolean {
-    if (key === "lighting") return profile.dmx != null;
-    return profile[key] != null;
+  function isEnabled(key: TabKey): boolean {
+    return (key === "lighting" ? profile.dmx : profile[key]) != null;
   }
 
   function toggleSection(section: string, enabled: boolean) {

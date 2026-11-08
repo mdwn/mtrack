@@ -27,18 +27,10 @@
 // answers from the correct one, rather than merely approximate ones.
 
 import { test, expect } from "@playwright/test";
+import { sendWs } from "../support/ws";
+import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
-
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /**
  * 120bpm 4/4 over five measures: a beat every 0.5s, a bar every 2s.
@@ -58,25 +50,14 @@ function fourFourGrid() {
   return { beats, measure_starts };
 }
 
-function playbackState(overrides: Record<string, unknown> = {}) {
-  return {
-    type: "playback",
-    is_playing: false,
-    elapsed_ms: 0,
-    song_name: "Test Song Beta",
+function playbackState(
+  overrides: Parameters<typeof sharedPlaybackState>[0] = {},
+) {
+  return sharedPlaybackState({
     song_duration_ms: 10000,
-    playlist_name: "setlist",
-    playlist_position: 1,
-    playlist_songs: ["Test Song Alpha", "Test Song Beta"],
-    tracks: [],
-    available_playlists: ["all_songs", "setlist"],
-    persisted_playlist_name: "setlist",
-    locked: false,
     beat_grid: fourFourGrid(),
-    available_sections: [],
-    active_section: null,
     ...overrides,
-  };
+  });
 }
 
 /** The inline percentage the component wrote, as a number. */
@@ -103,7 +84,7 @@ test.describe("Section regions on the transport", () => {
   test("a measure-aligned section ends where the exclusive bound says", async ({
     page,
   }) => {
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackState({
@@ -126,7 +107,7 @@ test.describe("Section regions on the transport", () => {
   test("beat offsets move the boundary within its measure", async ({
     page,
   }) => {
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackState({
@@ -156,7 +137,7 @@ test.describe("Section regions on the transport", () => {
   test("a fractional beat interpolates between grid beats", async ({
     page,
   }) => {
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackState({

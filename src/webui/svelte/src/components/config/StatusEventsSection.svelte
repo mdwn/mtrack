@@ -13,20 +13,19 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { MidiEvent, StatusEvents } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import MidiEventEditor from "./MidiEventEditor.svelte";
-  import type { MidiEvent } from "./MidiEventEditor.svelte";
+  import MidiEventEditor, { newMidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
-    statusEvents: Record<string, any>;
+    statusEvents: StatusEvents;
     onchange: () => void;
   }
 
   let { statusEvents = $bindable(), onchange }: Props = $props();
 
-  const eventGroups: [string, string, string][] = [
+  const eventGroups: [keyof StatusEvents, string, string][] = [
     ["off_events", "statusEvents.offEvents", "tooltips.statusEvents.offEvents"],
     [
       "idling_events",
@@ -45,23 +44,16 @@
     ],
   ];
 
-  function defaultEvent(): MidiEvent {
-    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
+  function getEvents(key: keyof StatusEvents): MidiEvent[] {
+    return statusEvents[key] ?? [];
   }
 
-  function getEvents(key: string): MidiEvent[] {
-    return (statusEvents[key] as MidiEvent[]) ?? [];
-  }
-
-  function addEvent(key: string) {
-    if (!statusEvents[key]) {
-      statusEvents[key] = [];
-    }
-    statusEvents[key] = [...statusEvents[key], defaultEvent()];
+  function addEvent(key: keyof StatusEvents) {
+    statusEvents[key] = [...getEvents(key), newMidiEvent()];
     onchange();
   }
 
-  function removeEvent(key: string, index: number) {
+  function removeEvent(key: keyof StatusEvents, index: number) {
     const list = [...getEvents(key)];
     list.splice(index, 1);
     statusEvents[key] = list;
@@ -93,7 +85,7 @@
       {#each getEvents(key) as _evt, i (i)}
         <div class="event-row">
           <MidiEventEditor
-            bind:event={statusEvents[key][i]}
+            bind:event={statusEvents[key]![i]}
             onchange={onEventChange}
             idPrefix="status-{key}-{i}"
           />

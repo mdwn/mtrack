@@ -12,7 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 // The Venues page's plot for a venue that is not the current one: it shows
 // that venue's file (not live), and place / arrange / aim save to that venue
@@ -20,7 +22,6 @@ import { test, expect, type Page } from "@playwright/test";
 // its own venue API, with a per-test venue name, so nothing depends on state
 // another test left in the shared mock server.
 
-type Vec3 = [number, number, number];
 interface FixtureBody {
   name: string;
   fixture_type: string;
@@ -44,12 +45,6 @@ interface Put {
 let counter = 0;
 const uniq = (prefix: string) =>
   `${prefix}-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
-
-async function sendWs(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 const BRICK_TYPE = {
   fixture_type: {

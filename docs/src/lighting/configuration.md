@@ -72,8 +72,9 @@ Fixtures are patched in venue files, never in the configuration. A profile that 
 an inline `fixtures:` map under `lighting` (`emergency_light: "Emergency @ 1:500"`) is refused
 at load with `dmx.lighting.fixtures is no longer supported: fixtures are patched in venue files
 — run `mtrack migrate --apply` to move these into one`. That command writes them to
-`lighting/venues/inline_migrated.light` and removes the map; make that venue current or copy
-its lines into your own (see the [command-line reference](../reference/cli.md#mtrack-migrate)).
+`lighting/venues/inline_migrated.venue` (`inline_migrated_2`, and so on, when taken) and removes
+the map; make that venue current or copy its lines into your own (see the
+[command-line reference](../reference/cli.md#mtrack-migrate)).
 
 ### The universe must exist in olad
 
@@ -103,7 +104,9 @@ A project's fixture types are read from `lighting/fixture_types/` and its venues
 `directories` setting, and the web UI's Lighting area saves to the same places. `directories`
 moves them — `fixture_types`, `venues`, or both; one you do not name stays at its default. A
 default directory that does not exist is simply empty. The engine, the web UI, MCP and the
-`import-gdtf`, `import-mvr` and `export-mvr` commands all read and write the same directories.
+`import-gdtf`, `import-mvr` and `export-mvr` commands all read and write the same directories:
+those of the profile this host runs. The commands take `--fixture-types-dir` (and, for the MVR
+commands, `--venues-dir`) to work elsewhere.
 Every file in those directories is loaded, so keep unrelated files out of them.
 
 ## Fixture Type Definitions (`lighting/fixture_types/`)
@@ -292,7 +295,11 @@ Notes:
   a show's colours directly. A mover with CMY flags — `cyan`, `magenta` and
   `yellow`, which is how GDTF's `ColorSub_C/M/Y` import — takes the same
   colours as their complement: `color: "red"` opens cyan fully and closes
-  magenta and yellow. A colour wheel is not driven by `color:`, a colour
+  magenta and yellow. Its state (the stage views, MCP `evaluate_show` and
+  `get_fixture_state`) shows those flags as the head is sent them, not the
+  red, green and blue a show named. A fixture with both red, green and blue
+  and cyan, magenta and yellow mixes additively: each is a colour of its own.
+  A colour wheel is not driven by `color:`, a colour
   cycle or a rainbow: those leave a wheel-only fixture white, lint says so,
   and Stage 3D draws it white. Choose a wheel slot with a `static` naming
   the channel (`color1: 40%`), at a level inside the slot's DMX range from

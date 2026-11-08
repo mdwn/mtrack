@@ -13,22 +13,17 @@
      *
      * -->
 <script lang="ts">
+  import type { Track, TrackPeaks } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type { SongFile } from "../../lib/api/songs";
-  import type { WaveformTrack } from "../../lib/api/songs";
   import Waveform from "./Waveform.svelte";
-
-  interface TrackEntry {
-    name: string;
-    file: string;
-    file_channel?: number;
-  }
+  import { withoutExtension } from "../../lib/util/paths";
 
   interface Props {
-    tracks: TrackEntry[];
+    tracks: Track[];
     files: SongFile[];
-    waveformTracks: WaveformTrack[];
-    onchange: (tracks: TrackEntry[]) => void;
+    waveformTracks: TrackPeaks[];
+    onchange: (tracks: Track[]) => void;
     /** Open a file browser for the given track index (or -1 for "add new"). */
     onbrowse: (trackIndex: number) => void;
   }
@@ -39,8 +34,8 @@
 
   function updateTrack(
     index: number,
-    field: keyof TrackEntry,
-    value: string | number | undefined,
+    field: keyof Track,
+    value: string | number | null,
   ) {
     const updated = tracks.map((t, i) =>
       i === index ? { ...t, [field]: value } : t,
@@ -54,7 +49,10 @@
 
   function addTrack() {
     const file = audioFiles.length > 0 ? audioFiles[0].name : "";
-    onchange([...tracks, { name: file.replace(/\.[^.]+$/, ""), file }]);
+    onchange([
+      ...tracks,
+      { name: withoutExtension(file), file, file_channel: null },
+    ]);
   }
 
   function peaksForTrack(name: string): number[] {
@@ -121,7 +119,7 @@
             value={track.file_channel ?? 1}
             oninput={(e) => {
               const v = parseInt(e.currentTarget.value);
-              updateTrack(i, "file_channel", isNaN(v) ? undefined : v);
+              updateTrack(i, "file_channel", isNaN(v) ? null : v);
             }}
           />
         </label>

@@ -23,8 +23,8 @@ use tracing::{error, info};
 use crate::{dmx, playsync::CancelHandle, songs::Song};
 
 use super::{
-    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayHandles,
-    PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
+    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayDeclined,
+    PlayHandles, PlayPosition, PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
 };
 
 /// The entry whose gap the player is in on `playlist`: the one it is on,
@@ -42,6 +42,18 @@ impl Player {
     /// and playback starts there instead of the beginning.
     pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         self.play_at(None).await
+    }
+
+    /// Why a play returned no song, read from the player's state rather than
+    /// assumed: the one derivation every surface answers with.
+    pub async fn play_declined(&self) -> PlayDeclined {
+        if self.is_playing().await {
+            PlayDeclined::AlreadyPlaying
+        } else if self.get_playlist().songs().is_empty() {
+            PlayDeclined::EmptyPlaylist
+        } else {
+            PlayDeclined::NotStarted
+        }
     }
 
     /// Plays the song starting from a specific time position.
@@ -175,6 +187,14 @@ impl Player {
             return Err(e.into());
         }
 
+        // The song is at its start position from here until its clock
+        // starts (#634): stamped before the pending position goes, so a
+        // status in between reads one or the other, and before the playback
+        // that stamps the running clock goes in. (Out of the span: its guard
+        // cannot be held over an await.)
+        drop(_enter);
+        *self.play_start_time.lock().await = Some(PlayPosition::Starting(start_time));
+        let _enter = self.span.enter();
         // Any explicit playback start supersedes a pending seek position, and
         // an auto play waiting to start.
         self.clear_pending_start();
@@ -209,15 +229,21 @@ impl Player {
         let hw = self.hardware.read().clone();
 
         // Validate lighting shows before starting playback
-        if let Some(ref dmx_engine) = hw.dmx_engine {
-            if let Err(e) = dmx_engine.validate_song_lighting(&song) {
-                error!(
-                    song = song.name(),
-                    err = %e,
-                    "Lighting show validation failed, preventing song playback"
-                );
-                return Err(e);
-            }
+        let invalid = hw.dmx_engine.as_ref().and_then(|dmx_engine| {
+            let e = dmx_engine.validate_song_lighting(&song).err()?;
+            error!(
+                song = song.name(),
+                err = %e,
+                "Lighting show validation failed, preventing song playback"
+            );
+            // Its message: the error itself cannot be held over the await.
+            Some(e.to_string())
+        });
+        if let Some(message) = invalid {
+            // Nothing starts: no position.
+            drop(_enter);
+            *self.play_start_time.lock().await = None;
+            return Err(message.into());
         }
 
         // Warn about tracks with no mapping in the config.
@@ -275,7 +301,6 @@ impl Player {
         *join = Some(PlayHandles {
             join: join_handle,
             cancel: cancel_handle.clone(),
-            start_time,
         });
 
         // The playback's cleanup cancels this as it goes, however it ends. A
@@ -658,8 +683,9 @@ impl Player {
         // Start the clock — this is the "go" signal for all subsystems.
         clock.start();
 
-        // Set play_start_time NOW, at the exact moment playback begins.
-        // Offset backwards by start_time so elapsed() reflects song position.
+        // Set play_start_time NOW, at the exact moment playback begins: it
+        // has read as the start position (Starting) until now. Offset
+        // backwards by start_time so elapsed() reflects song position.
         // We use blocking_lock because we're in a spawn_blocking context.
         //
         // Skip it if this playback was cancelled during startup: stop() and
@@ -670,7 +696,7 @@ impl Player {
         {
             let mut pst = play_start_time.blocking_lock();
             if !cancel_handle.is_cancelled() {
-                *pst = Some(SystemTime::now() - start_time);
+                *pst = Some(PlayPosition::Running(SystemTime::now() - start_time));
             }
         }
 
@@ -1013,7 +1039,13 @@ impl Player {
             Some(song) => song,
             None => {
                 info!("Playlist is empty, nothing to stop.");
-                play_handles.cancel.cancel();
+                // No position either: cancelled under the lock, as below, so
+                // a playback still starting cannot stamp one after (#634).
+                {
+                    let mut play_start_time = self.play_start_time.lock().await;
+                    play_handles.cancel.cancel();
+                    *play_start_time = None;
+                }
                 drop(play_handles.join);
                 return (None, false);
             }
@@ -1145,7 +1177,8 @@ impl Player {
     pub async fn elapsed(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let play_start_time = self.play_start_time.lock().await;
         Ok(match *play_start_time {
-            Some(play_start_time) => {
+            Some(PlayPosition::Starting(start_time)) => Some(start_time),
+            Some(PlayPosition::Running(play_start_time)) => {
                 // On the playback's own clock, once it runs: the timeline the
                 // section loop jumps are on, counted from the log as they fall
                 // due (the counter was bumped up to a monitor poll late, so
@@ -1329,16 +1362,7 @@ impl Player {
         // the crossfade is only ever heard that way). Taken up, it loops the
         // next time playback reaches it, the song's pass held off for it.
         let crossing_out = self.section_jumps.lock().crossing_out();
-        let section_at = |at: Duration| {
-            sections.iter().find_map(|s| {
-                let (start, end) = song.resolve_section(&s.name)?;
-                (at >= start && at < end).then(|| super::SectionBounds {
-                    name: s.name.clone(),
-                    start_time: start,
-                    end_time: end,
-                })
-            })
-        };
+        let section_at = |at: Duration| super::SectionBounds::at(&song, at);
         let current_section = section_at(elapsed).or_else(|| crossing_out.and_then(section_at));
 
         let mut state = self.section_loop.reactive.write();

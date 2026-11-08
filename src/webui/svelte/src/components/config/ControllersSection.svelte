@@ -14,13 +14,14 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { Controller } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import MidiEventEditor from "./MidiEventEditor.svelte";
-  import type { MidiEvent } from "./MidiEventEditor.svelte";
+  import { rules } from "../../lib/rules";
+  import MidiEventEditor, { newMidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
-    controllers: any[];
+    controllers: Controller[];
     onchange: () => void;
   }
 
@@ -144,7 +145,7 @@
     onchange();
   }
 
-  function getMorningstarModel(ctrl: any): string {
+  function getMorningstarModel(ctrl: Controller): string {
     const ms = ctrl.morningstar;
     if (!ms?.model) return "mc4pro";
     if (typeof ms.model === "string") return ms.model;
@@ -166,7 +167,7 @@
     onchange();
   }
 
-  function getCustomModelId(ctrl: any): number {
+  function getCustomModelId(ctrl: Controller): number {
     const model = ctrl.morningstar?.model;
     if (typeof model === "object" && model.custom) {
       return model.custom.model_id ?? 0;
@@ -198,19 +199,18 @@
     ["cancel_auto_play", "controllers.midiCancelAutoPlay", false],
   ];
 
-  function defaultMidiEvent(): MidiEvent {
-    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
-  }
+  /** A 7-bit MIDI data byte's range, as the player reads one. */
+  const dataByte = rules.midi_event_shapes().ranges.value;
 
   function addMidiController() {
     const newCtrl: any = {
       kind: "midi",
-      play: defaultMidiEvent(),
-      prev: { ...defaultMidiEvent(), key: 61 },
-      next: { ...defaultMidiEvent(), key: 62 },
-      stop: { ...defaultMidiEvent(), key: 63 },
-      all_songs: { ...defaultMidiEvent(), key: 64 },
-      playlist: { ...defaultMidiEvent(), key: 65 },
+      play: newMidiEvent(),
+      prev: { ...newMidiEvent(), key: 61 },
+      next: { ...newMidiEvent(), key: 62 },
+      stop: { ...newMidiEvent(), key: 63 },
+      all_songs: { ...newMidiEvent(), key: 64 },
+      playlist: { ...newMidiEvent(), key: 65 },
     };
     controllers = [...controllers, newCtrl];
     controllerKeys = [...controllerKeys, nextId++];
@@ -226,7 +226,7 @@
     if (controllers[ci][field]) {
       delete controllers[ci][field];
     } else {
-      controllers[ci][field] = defaultMidiEvent();
+      controllers[ci][field] = newMidiEvent();
     }
     onchange();
   }
@@ -426,8 +426,8 @@
                     id="ms-custom-id-{i}"
                     type="number"
                     class="input"
-                    min="0"
-                    max="127"
+                    min={dataByte[0]}
+                    max={dataByte[1]}
                     value={getCustomModelId(ctrl)}
                     onchange={(e) =>
                       setCustomModelId(

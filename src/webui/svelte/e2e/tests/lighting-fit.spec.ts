@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { FIT } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 // Every test routes its own fit facts, venue file and profile with
 // `page.route`, so no test depends on state another one left in the shared
@@ -35,12 +36,6 @@ type VenueBody = {
 };
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Serves a copy of the fit facts, changed by `change`. */
 async function routeFit(page: Page, change: (f: FitFacts) => void = () => {}) {
@@ -140,7 +135,7 @@ async function openWithPlan(
   const wsId = `fit-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
   await page.goto(`/?wsId=${wsId}${hash}`);
   await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
-  await sendWsMessage(page, wsId, planMetadata());
+  await sendWs(page, wsId, planMetadata());
   await expect
     .poll(async () =>
       page

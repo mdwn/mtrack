@@ -25,7 +25,7 @@ tempo map; see [Where the tempo comes from](cueing.md#where-the-tempo-comes-from
 is twice a second, `1beat` is once a beat.
 
 **Colors.** `color` takes a named color in quotes — `"red"`, `"green"`, `"blue"`, `"white"`,
-`"black"`, `"yellow"`, `"cyan"`, `"magenta"`, `"orange"`, `"purple"` — a hex color (`#FF8800`,
+`"black"`, `"yellow"`, `"cyan"`, `"magenta"`, `"orange"`, `"purple"`, `"pink"` — a hex color (`#FF8800`,
 quoted or not), or `rgb(255, 128, 0)`.
 
 ## Effect Types
@@ -164,7 +164,7 @@ bar's cells into the next bar's. See `per` under
 **Example:**
 ```light
 @00:25.000
-movers: static color: "red", duration: 10s, layer: background
+movers: static color: "red", dimmer: 100%, duration: 10s, layer: background
 movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s, layer: midground
 bars: chase pattern: linear, direction: left_to_right, per: cell, duration: 10s, layer: midground
 ```

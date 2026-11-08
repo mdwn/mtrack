@@ -15,44 +15,22 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { CueEffect, EffectType } from "../../lib/lighting/types";
-  import {
-    EFFECT_TYPES,
-    EASINGS,
-    LAYERS,
-    BLEND_MODES,
-    CURVES,
-    CYCLE_DIRECTIONS,
-    CHASE_DIRECTIONS,
-    CHASE_PATTERNS,
-  } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
+  import type { EffectEdit, MoveParam } from "../../gen/rules/mtrack_rules";
+  import { rules } from "../../lib/rules";
   import { venueStore } from "../../lib/ws/stores";
 
-  /** A `move` aims at a focus point or at angles, never both: setting one
-   *  clears the other, so the form always shows what will be written. */
-  function updateMoveTarget(key: "focus" | "pan" | "tilt", value?: string) {
-    const next = { ...effect.effect, [key]: value };
-    if (key === "focus" && value) {
-      next.pan = undefined;
-      next.tilt = undefined;
-    } else if (key !== "focus" && value) {
-      next.focus = undefined;
-    }
-    onchange({ ...effect, effect: next });
+  /** The effect with a form's edit made, the value written by the
+   *  player's writer (`rules.effect_edit`): only the edited text changes. */
+  function edit(change: EffectEdit) {
+    onchange(rules.effect_edit(effect, change) ?? effect);
   }
 
-  function updateMoveStart(
-    key: "from" | "from_pan" | "from_tilt",
-    value?: string,
-  ) {
-    const next = { ...effect.effect, [key]: value };
-    if (key === "from" && value) {
-      next.from_pan = undefined;
-      next.from_tilt = undefined;
-    } else if (key !== "from" && value) {
-      next.from = undefined;
-    }
-    onchange({ ...effect, effect: next });
+  /** A `move` aims (and starts) at a focus point or at angles, never
+   *  both: setting one clears the other, so the form always shows what
+   *  will be written. */
+  function updateMove(key: MoveParam, value?: string) {
+    edit({ op: "move", key, value });
   }
 
   /** The current venue's focus points, offered as `move` targets. */
@@ -69,6 +47,13 @@
 
   let { effect, groups = [], onchange, ondelete }: Props = $props();
 
+  /** The parameters by name, the last of each as written, for the
+   *  controls (a `to:` reads as `focus`; a focus point without its
+   *  quotes), and the colours: `rules.effect_view`. */
+  let view = $derived(rules.effect_view(effect.effect));
+  let p = $derived<Record<string, string | undefined>>(view?.values ?? {});
+  let colors = $derived(view?.colors ?? []);
+
   let expanded = $state(false);
 
   let groupText = $derived(effect.groups.join(", "));
@@ -81,82 +66,24 @@
     onchange({ ...effect, groups: newGroups });
   }
 
-  /** What each effect type actually reads, mirroring the engine's own arms. */
-  const USED_PARAMS: Record<EffectType, string[]> = {
-    static: [
-      "dimmer",
-      "intensity",
-      "red",
-      "green",
-      "blue",
-      "white",
-      "duration",
-    ],
-    cycle: ["speed", "direction", "transition", "duration"],
-    strobe: ["frequency", "duration"],
-    move: [
-      "focus",
-      "to",
-      "from",
-      "from_pan",
-      "from_tilt",
-      "pan",
-      "tilt",
-      "easing",
-      "duration",
-    ],
-    pulse: [
-      "base_level",
-      "pulse_amplitude",
-      "intensity",
-      "frequency",
-      "duration",
-    ],
-    chase: ["pattern", "speed", "direction", "transition", "duration"],
-    dimmer: ["start_level", "end_level", "curve", "duration"],
-    rainbow: ["speed", "saturation", "brightness", "duration"],
-  };
+  /** The effects, the parameters each reads, and the values of each
+   *  keyword parameter: the parser's own tables. */
+  const words = rules.vocabulary();
 
-  /** Whether a type reads colours at all. */
-  const USES_COLOR: EffectType[] = ["static", "cycle"];
-
-  function updateType(type: EffectType) {
-    // Changing the type used to carry every field across. A cycle with speed,
-    // direction, transition and a colour became a strobe still carrying all of
-    // them — parameters the strobe ignores, written to the file on the next
-    // save. Only what the new type reads survives; the timing fields live on
-    // the effect wrapper, not here, so they are untouched.
-    const keep = USED_PARAMS[type] ?? [];
-    const carried: Record<string, unknown> = {};
-    for (const key of keep) {
-      const value = (effect.effect as unknown as Record<string, unknown>)[key];
-      if (value !== undefined) {
-        carried[key] = value;
-      }
-    }
-    onchange({
-      ...effect,
-      effect: {
-        ...carried,
-        type,
-        colors: USES_COLOR.includes(type) ? effect.effect.colors : [],
-        extra: effect.effect.extra,
-      } as typeof effect.effect,
-    });
+  /** A new type keeps only what it reads, with the layer, blend and
+   *  timing parameters every type takes (`EffectEdit::Kind`). */
+  function updateType(kind: EffectType) {
+    edit({ op: "kind", kind });
   }
 
   function updateParam(key: string, value: unknown) {
-    onchange({
-      ...effect,
-      effect: { ...effect.effect, [key]: value },
-    });
+    const text =
+      value === undefined || value === "" ? undefined : String(value);
+    edit({ op: "set", name: key, value: text });
   }
 
   function updateColors(colors: string[]) {
-    onchange({
-      ...effect,
-      effect: { ...effect.effect, colors },
-    });
+    edit({ op: "colors", colors });
   }
 
   // Only the effect types that actually use a colour. `EffectType::Strobe`,
@@ -165,7 +92,9 @@
   // never did anything — the same defect as the rainbow direction control
   // removed in #398, which is how these were found.
   let showsColor = $derived(
-    effect.effect.type === "static" || effect.effect.type === "cycle",
+    words.effects
+      .find((e) => e.kind === effect.effect.type)
+      ?.params.includes("color") ?? false,
   );
 
   let isMultiColor = $derived(
@@ -174,19 +103,15 @@
 
   // Build a compact summary of key params for the collapsed view
   let paramSummary = $derived.by(() => {
-    const p = effect.effect;
     const parts: string[] = [];
-    if (p.colors.length > 0) {
-      // Shown as swatches, skip text
-    }
     // Only where the effect reads them, or the collapsed row advertises a value
-    // that has no control to edit it and is dropped on the next save.
+    // that has no control to edit it.
     if (p.dimmer && effect.effect.type === "static") parts.push(p.dimmer);
     if (
       p.intensity !== undefined &&
       (effect.effect.type === "static" || effect.effect.type === "pulse")
     )
-      parts.push(`${Math.round(p.intensity * 100)}%`);
+      parts.push(p.intensity);
     if (p.speed) parts.push(`spd:${p.speed}`);
     if (p.frequency) parts.push(`freq:${p.frequency}`);
     if (p.duration) parts.push(p.duration);
@@ -240,15 +165,15 @@
       onchange={(e) =>
         updateType((e.target as HTMLSelectElement).value as EffectType)}
     >
-      {#each EFFECT_TYPES as t (t)}
-        <option value={t}>{t}</option>
+      {#each words.effects as { kind } (kind)}
+        <option value={kind}>{kind}</option>
       {/each}
     </select>
 
     <!-- Color swatches inline -->
-    {#if showsColor && effect.effect.colors.length > 0}
+    {#if showsColor && colors.length > 0}
       <span class="color-swatches">
-        {#each effect.effect.colors.slice(0, 4) as c, ci (ci)}
+        {#each colors.slice(0, 4) as c, ci (ci)}
           <span
             class="color-swatch"
             style:background={c.startsWith("#") || c.startsWith("rgb")
@@ -277,11 +202,7 @@
       {#if showsColor}
         <div class="detail-row">
           <span class="detail-label">{$t("effect.colors")}</span>
-          <ColorInput
-            colors={effect.effect.colors}
-            onchange={updateColors}
-            multi={isMultiColor}
-          />
+          <ColorInput {colors} onchange={updateColors} multi={isMultiColor} />
         </div>
       {/if}
 
@@ -295,10 +216,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.intensity ?? ""}
+              value={p.intensity ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("intensity", v ? parseFloat(v) : undefined);
+                updateParam("intensity", v || undefined);
               }}
             />
           </label>
@@ -308,7 +229,7 @@
               type="text"
               class="param-input"
               placeholder="100%"
-              value={effect.effect.dimmer ?? ""}
+              value={p.dimmer ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
                 updateParam("dimmer", v || undefined);
@@ -320,7 +241,7 @@
               type="text"
               class="param-input"
               placeholder="5s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -334,7 +255,7 @@
               type="text"
               class="param-input"
               placeholder="1.0"
-              value={effect.effect.speed ?? ""}
+              value={p.speed ?? ""}
               onchange={(e) =>
                 updateParam(
                   "speed",
@@ -347,7 +268,7 @@
               type="text"
               class="param-input"
               placeholder="2s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -359,7 +280,7 @@
             ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
-              value={effect.effect.direction ?? ""}
+              value={p.direction ?? ""}
               onchange={(e) =>
                 updateParam(
                   "direction",
@@ -367,7 +288,8 @@
                 )}
             >
               <option value="">--</option>
-              {#each CYCLE_DIRECTIONS as d (d)}<option value={d}>{d}</option
+              {#each words.cycle_directions as d (d)}<option value={d}
+                  >{d}</option
                 >{/each}
             </select>
           </label>
@@ -377,7 +299,7 @@
               type="text"
               class="param-input"
               placeholder="8"
-              value={effect.effect.frequency ?? ""}
+              value={p.frequency ?? ""}
               onchange={(e) =>
                 updateParam(
                   "frequency",
@@ -390,7 +312,7 @@
               type="text"
               class="param-input"
               placeholder="4s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -407,7 +329,7 @@
               type="text"
               class="param-input"
               placeholder="4"
-              value={effect.effect.frequency ?? ""}
+              value={p.frequency ?? ""}
               onchange={(e) =>
                 updateParam(
                   "frequency",
@@ -422,10 +344,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.intensity ?? ""}
+              value={p.intensity ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("intensity", v ? parseFloat(v) : undefined);
+                updateParam("intensity", v || undefined);
               }}
             /></label
           >
@@ -436,10 +358,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.base_level ?? ""}
+              value={p.base_level ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("base_level", v ? parseFloat(v) : undefined);
+                updateParam("base_level", v || undefined);
               }}
             /></label
           >
@@ -450,10 +372,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.pulse_amplitude ?? ""}
+              value={p.pulse_amplitude ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("pulse_amplitude", v ? parseFloat(v) : undefined);
+                updateParam("pulse_amplitude", v || undefined);
               }}
             /></label
           >
@@ -462,7 +384,7 @@
               type="text"
               class="param-input"
               placeholder="500ms"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -476,7 +398,7 @@
               type="text"
               class="param-input"
               placeholder="2.0"
-              value={effect.effect.speed ?? ""}
+              value={p.speed ?? ""}
               onchange={(e) =>
                 updateParam(
                   "speed",
@@ -488,7 +410,7 @@
             ><span class="param-label">{$t("effect.pattern")}</span>
             <select
               class="param-input"
-              value={effect.effect.pattern ?? ""}
+              value={p.pattern ?? ""}
               onchange={(e) =>
                 updateParam(
                   "pattern",
@@ -496,7 +418,7 @@
                 )}
             >
               <option value="">--</option>
-              {#each CHASE_PATTERNS as p (p)}<option value={p}>{p}</option
+              {#each words.chase_patterns as p (p)}<option value={p}>{p}</option
                 >{/each}
             </select>
           </label>
@@ -505,7 +427,7 @@
               type="text"
               class="param-input"
               placeholder="1s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -517,7 +439,7 @@
             ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
-              value={effect.effect.direction ?? ""}
+              value={p.direction ?? ""}
               onchange={(e) =>
                 updateParam(
                   "direction",
@@ -525,7 +447,8 @@
                 )}
             >
               <option value="">--</option
-              >{#each CHASE_DIRECTIONS as d (d)}<option value={d}>{d}</option
+              >{#each words.chase_directions as d (d)}<option value={d}
+                  >{d}</option
                 >{/each}
             </select>
           </label>
@@ -537,10 +460,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.start_level ?? ""}
+              value={p.start_level ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("start_level", v ? parseFloat(v) : undefined);
+                updateParam("start_level", v || undefined);
               }}
             /></label
           >
@@ -551,10 +474,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.end_level ?? ""}
+              value={p.end_level ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("end_level", v ? parseFloat(v) : undefined);
+                updateParam("end_level", v || undefined);
               }}
             /></label
           >
@@ -563,7 +486,7 @@
               type="text"
               class="param-input"
               placeholder="0.5s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -575,14 +498,14 @@
             ><span class="param-label">{$t("effect.curve")}</span>
             <select
               class="param-input"
-              value={effect.effect.curve ?? ""}
+              value={p.curve ?? ""}
               onchange={(e) =>
                 updateParam(
                   "curve",
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option>{#each CURVES as c (c)}<option
+              <option value="">--</option>{#each words.curves as c (c)}<option
                   value={c}>{c}</option
                 >{/each}
             </select>
@@ -595,9 +518,9 @@
               class="param-input"
               list="focus-points"
               placeholder="drummer"
-              value={effect.effect.focus ?? ""}
+              value={p.focus ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "focus",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -615,9 +538,9 @@
               class="param-input"
               list="focus-points"
               placeholder="center-stage"
-              value={effect.effect.from ?? ""}
+              value={p.from ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -628,9 +551,9 @@
               type="text"
               class="param-input"
               placeholder="45deg"
-              value={effect.effect.pan ?? ""}
+              value={p.pan ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "pan",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -641,9 +564,9 @@
               type="text"
               class="param-input"
               placeholder="-20deg"
-              value={effect.effect.tilt ?? ""}
+              value={p.tilt ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "tilt",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -654,9 +577,9 @@
               type="text"
               class="param-input"
               placeholder="0deg"
-              value={effect.effect.from_pan ?? ""}
+              value={p.from_pan ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from_pan",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -667,9 +590,9 @@
               type="text"
               class="param-input"
               placeholder="0deg"
-              value={effect.effect.from_tilt ?? ""}
+              value={p.from_tilt ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from_tilt",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -679,14 +602,14 @@
             ><span class="param-label">{$t("effect.easing")}</span>
             <select
               class="param-input"
-              value={effect.effect.easing ?? ""}
+              value={p.easing ?? ""}
               onchange={(e) =>
                 updateParam(
                   "easing",
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option>{#each EASINGS as z (z)}<option
+              <option value="">--</option>{#each words.easings as z (z)}<option
                   value={z}>{z}</option
                 >{/each}
             </select>
@@ -696,7 +619,7 @@
               type="text"
               class="param-input"
               placeholder="2s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -711,7 +634,7 @@
               type="text"
               class="param-input"
               placeholder="2.0"
-              value={effect.effect.speed ?? ""}
+              value={p.speed ?? ""}
               onchange={(e) =>
                 updateParam(
                   "speed",
@@ -726,10 +649,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.saturation ?? ""}
+              value={p.saturation ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("saturation", v ? parseFloat(v) : undefined);
+                updateParam("saturation", v || undefined);
               }}
             /></label
           >
@@ -740,10 +663,10 @@
               min="0"
               max="1"
               step="0.1"
-              value={effect.effect.brightness ?? ""}
+              value={p.brightness ?? ""}
               onchange={(e) => {
                 const v = (e.target as HTMLInputElement).value;
-                updateParam("brightness", v ? parseFloat(v) : undefined);
+                updateParam("brightness", v || undefined);
               }}
             /></label
           >
@@ -752,7 +675,7 @@
               type="text"
               class="param-input"
               placeholder="3s"
-              value={effect.effect.duration ?? ""}
+              value={p.duration ?? ""}
               onchange={(e) =>
                 updateParam(
                   "duration",
@@ -767,15 +690,15 @@
           ><span class="param-label">{$t("effect.layer")}</span>
           <select
             class="param-input"
-            value={effect.effect.layer ?? ""}
+            value={p.layer ?? ""}
             onchange={(e) =>
               updateParam(
                 "layer",
                 (e.target as HTMLSelectElement).value || undefined,
               )}
           >
-            <option value="">--</option>{#each LAYERS as l (l)}<option value={l}
-                >{l}</option
+            <option value="">--</option>{#each words.layers as l (l)}<option
+                value={l}>{l}</option
               >{/each}
           </select>
         </label>
@@ -783,15 +706,15 @@
           ><span class="param-label">{$t("effect.blend")}</span>
           <select
             class="param-input"
-            value={effect.effect.blend_mode ?? ""}
+            value={p.blend_mode ?? ""}
             onchange={(e) =>
               updateParam(
                 "blend_mode",
                 (e.target as HTMLSelectElement).value || undefined,
               )}
           >
-            <option value="">--</option>{#each BLEND_MODES as b (b)}<option
-                value={b}>{b}</option
+            <option value="">--</option
+            >{#each words.blend_modes as b (b)}<option value={b}>{b}</option
               >{/each}
           </select>
         </label>
@@ -802,7 +725,7 @@
             type="text"
             class="param-input"
             placeholder="fade in"
-            value={effect.effect.up_time ?? ""}
+            value={p.up_time ?? ""}
             onchange={(e) =>
               updateParam(
                 "up_time",
@@ -815,7 +738,7 @@
             type="text"
             class="param-input"
             placeholder="hold"
-            value={effect.effect.hold_time ?? ""}
+            value={p.hold_time ?? ""}
             onchange={(e) =>
               updateParam(
                 "hold_time",
@@ -828,7 +751,7 @@
             type="text"
             class="param-input"
             placeholder="fade out"
-            value={effect.effect.down_time ?? ""}
+            value={p.down_time ?? ""}
             onchange={(e) =>
               updateParam(
                 "down_time",

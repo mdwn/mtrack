@@ -460,7 +460,7 @@ show "Test Show" {
     // All effects should be marked with sequence name
     for cue in &show.cues {
         for effect in &cue.effects {
-            assert_eq!(effect.sequence_name, Some("simple_sequence".to_string()));
+            assert_eq!(effect.sequences, vec!["simple_sequence".to_string()]);
         }
     }
 
@@ -993,14 +993,17 @@ show "Test Show" {
     // The sequence was parsed at 110 BPM. Its internal cue relative times:
     //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
     //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
-    //   In beats at 110 BPM: 5.5454 * (110/60) = ~10.167 beats
+    //   In beats, counted on the map the sequence was written against, which
+    //   changes to 160 BPM at measure 3 (8 beats, 4.3636s): 8 beats to there,
+    //   then (5.5454 - 4.3636) * 160/60 = 3.1515 beats, ~11.152 beats in all.
     //
     // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
-    // Iteration spacing = 10.167 beats * 0.375s/beat = ~3.8125s
+    // Iteration spacing = 11.152 beats * 0.375s/beat = ~4.1818s
     // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
     let beat_at_160 = 60.0 / 160.0; // 0.375s
-    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time at 110 BPM)
-    let duration_beats = duration_internal * (110.0 / 60.0); // convert to beats
+    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time)
+    let change_at = 8.0 * 60.0 / 110.0; // measure 3 on the sequence's map
+    let duration_beats = 8.0 + (duration_internal - change_at) * (160.0 / 60.0);
     let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
 
     // Check iteration spacing: first cue of each iteration
@@ -1366,4 +1369,638 @@ show "Test" {
     let musical = past.replace("length: 1s", "length: 1measure");
     let err = parse_light_shows(&musical).expect_err("musical length needs a tempo");
     assert!(err.to_string().contains("tempo"), "{err}");
+}
+
+// ── One placement for a sequence reference, in a show or inside a sequence ──
+
+/// A sequence written past a tempo change on its own map, counted in beats
+/// through that change.
+const SEQUENCE_PAST_A_CHANGE: &str = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+sequence "inner" {
+    @3/1
+    a: static, color: "red", duration: 1s
+
+    @4/1
+    b: static, color: "blue", duration: 1s
+}
+"#;
+
+#[test]
+fn test_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // The sequence runs from @3/1 to @4/1 on its map: one bar, four beats at
+    // 60 BPM. Placed at @1/1, its second cue lands a bar later, at @2/1 = 2s.
+    // The bar used to be counted at the map's starting tempo (4s = 8 beats
+    // at 120), landing the cue at @3/1 = 4s.
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+show \"Test\" {{
+    @1/1
+    sequence \"inner\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::ZERO, Duration::from_secs(2)]);
+}
+
+#[test]
+fn test_nested_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // The same bar, referenced from an outer sequence placed at @1/1: the
+    // outer's reference cue is at @3/1 on its map, so the inner's cues fall
+    // at @3/1 and @4/1, with the outer's own effect at @1/1.
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+sequence \"outer\" {{
+    @1/1
+    c: static, color: \"green\", duration: 1s
+
+    @3/1
+    sequence \"inner\"
+}}
+
+show \"Test\" {{
+    @1/1
+    sequence \"outer\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(4),
+            Duration::from_secs(8)
+        ]
+    );
+}
+
+#[test]
+fn test_stop_sequence_stops_an_inner_sequence_inside_an_outer() {
+    // An effect belongs to every sequence it is started through, so `stop
+    // sequence "inner"` names it as `stop sequence "outer"` does. Expanding
+    // the outer used to rename every effect to the outer's, leaving nothing
+    // for the inner's stop.
+    let content = r#"
+sequence "inner" {
+    @0.000
+    a: static, color: "red", duration: 10s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "inner"
+    b: static, color: "blue", duration: 10s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+
+    @5.000
+    stop sequence "inner"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let owners: Vec<(&str, Option<&str>)> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| (e.groups[0].as_str(), e.sequence_name()))
+        .collect();
+    assert_eq!(owners, vec![("b", Some("outer")), ("a", Some("inner"))]);
+    assert_eq!(show.cues[0].effects[1].sequences, ["inner", "outer"]);
+    assert_eq!(show.cues[1].stop_sequences, vec!["inner".to_string()]);
+}
+
+#[test]
+fn test_nested_musical_duration_resolves_where_its_pass_plays() {
+    // The inner's 2 beats are 1s where it is written (120 BPM) and 2s where
+    // the outer places it (@3/1, 60 BPM); the outer's pass ends with it, so
+    // its second pass starts 2 beats on, at @3/3 = 6s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+sequence "inner" {
+    @1/1
+    a: static, color: "red", duration: 2beats
+}
+
+sequence "outer" {
+    @3/1
+    sequence "inner"
+}
+
+show "Test" {
+    @3/1
+    sequence "outer", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::from_secs(4), Duration::from_secs(6)]);
+    for cue in &show.cues {
+        assert_eq!(cue.effects[0].total_duration(), Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn test_nested_cue_merges_the_sequences_it_references_into_itself() {
+    // A cue holding effects of its own and references merges each
+    // reference's same-time cue into itself, inside a sequence as in a show:
+    // one cue, the cue's own effects first. The nested expansion used to
+    // append the cue's effects to the first reference's first cue and keep
+    // the second reference's apart.
+    let content = r#"
+sequence "i1" {
+    @0.000
+    a: static, color: "red", duration: 1s
+}
+
+sequence "i2" {
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "i1"
+    sequence "i2"
+    c: static, color: "green", duration: 1s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    assert_eq!(show.cues.len(), 1);
+    let groups: Vec<&str> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| e.groups[0].as_str())
+        .collect();
+    assert_eq!(groups, vec!["c", "a", "b"]);
+    assert_eq!(
+        show.cues[0].start_sequences,
+        vec!["i1".to_string(), "i2".to_string(), "outer".to_string()]
+    );
+}
+
+// ── One pass length for sequences and inline loops ──
+
+#[test]
+fn test_sequence_without_effects_passes_last_cue_to_last_cue() {
+    // A pass with no effect in it lasts until its last cue, as an inline
+    // loop's always has; a sequence's used to last no time, stacking every
+    // pass on the first.
+    let content = r#"
+sequence "clears" {
+    @0.000
+    clear(layer: foreground)
+
+    @2.000
+    clear(layer: background)
+}
+
+show "Test" {
+    @1.000
+    sequence "clears", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_pass_starts_at_its_earliest_cue() {
+    // Written out of time order, a sequence still starts at its earliest
+    // cue, as an inline loop body does; it used to start at the first one
+    // written, dropping the earlier cue onto it.
+    let content = r#"
+sequence "backwards" {
+    @1.000
+    a: static, color: "red", duration: 1s
+
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+show "Test" {
+    @5.000
+    sequence "backwards"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let placed: Vec<(Duration, &str)> = show
+        .cues
+        .iter()
+        .map(|c| (c.time, c.effects[0].groups[0].as_str()))
+        .collect();
+    assert_eq!(
+        placed,
+        vec![(Duration::from_secs(5), "b"), (Duration::from_secs(6), "a")]
+    );
+}
+
+#[test]
+fn test_inline_loop_without_effects_passes_last_cue_to_last_cue() {
+    let content = r#"
+show "Test" {
+    @1.000
+    loop {
+        @0.000
+        clear(layer: foreground)
+
+        @2.000
+        clear(layer: background)
+    }, repeats: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+// ── `length:` is checked against the cues as written ──
+
+#[test]
+fn test_sequence_length_is_checked_against_its_cues_as_written() {
+    // The passes of a sequence a cue references may run past the length; a
+    // pass is cut off by the next, as a longer effect is. Checked against
+    // the expanded cues, this errored with "a cue starts 4.000s in".
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    x: static, color: "red", duration: 1beat
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    sequence "long"
+}
+
+show "Show" {
+    @1/1
+    sequence "short", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(6)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_length_rejects_a_written_cue_past_it_whatever_it_expands_to() {
+    // A cue holding only a reference to a sequence with no cues expands to
+    // nothing, but it is written at or past the length all the same.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "empty" {
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "empty"
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("a written cue past the length is rejected");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
+
+// ── Stop by chain: an effect belongs to every sequence it started through ──
+
+/// When each effect of `content`'s one show really ends, by cue order.
+fn effect_ends(content: &str) -> Vec<Duration> {
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.values().next().unwrap();
+    crate::lighting::timeline::effect_ends(&show.cues)
+        .into_iter()
+        .map(|end| end.until())
+        .collect()
+}
+
+#[test]
+fn test_a_pass_stops_the_inner_sequences_of_the_pass_before() {
+    // Each pass of "outer" stops the pass before it, inner chase included:
+    // the chases of passes 1 and 2 end where the next pass starts (2s, 4s),
+    // and the show's `stop sequence "outer"` at @4/1 ends pass 3's at 6s,
+    // with it still running.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: chase, speed: 1beats, duration: 16beats, blend_mode: multiply
+}
+
+sequence "outer", length: 1measure {
+    @1/1
+    sequence "inner"
+    o: static, color: "white", duration: 1s
+}
+
+show "Show" {
+    @1/1
+    sequence "outer", loop: 3
+
+    @4/1
+    stop sequence "outer"
+}
+"#;
+    let ends = effect_ends(content);
+    // Cue by cue: pass 1 (o, x), pass 2, pass 3; o lasts its second.
+    assert_eq!(
+        ends,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(3),
+            Duration::from_secs(4),
+            Duration::from_secs(5),
+            Duration::from_secs(6),
+        ]
+    );
+}
+
+#[test]
+fn test_stop_outer_ends_only_the_inner_started_through_it() {
+    // "inner" started by the show itself, then through "outer": `stop
+    // sequence "outer"` at 4s ends the second only; `stop sequence
+    // "inner"` at 6s ends the first.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: static, color: "red", duration: 16beats
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner"
+}
+
+show "Show" {
+    @1/1
+    sequence "inner"
+
+    @2/1
+    sequence "outer"
+
+    @3/1
+    stop sequence "outer"
+
+    @4/1
+    stop sequence "inner"
+}
+"#;
+    assert_eq!(
+        effect_ends(content),
+        vec![Duration::from_secs(6), Duration::from_secs(4)]
+    );
+}
+
+#[test]
+fn test_stop_inner_from_the_show_ends_every_instance_started_through_it() {
+    // "inner" started through "outer" is stopped by the outer's own `stop
+    // sequence "inner"` at @2/1 (2s); the stop written in the same cue as
+    // the start is a pass boundary and ends nothing. Started by the show
+    // at @4/1 after a stop, it runs its 4s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: static, color: "red", duration: 8beats
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner"
+    stop sequence "inner"
+    o: static, color: "green", duration: 1s
+
+    @2/1
+    stop sequence "inner"
+}
+
+show "Show" {
+    @1/1
+    sequence "outer"
+
+    @3/1
+    stop sequence "inner"
+
+    @4/1
+    sequence "inner"
+}
+"#;
+    assert_eq!(
+        effect_ends(content),
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(10)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_length_is_checked_before_its_references_expand() {
+    // A written cue past the length is the error, whatever the cue would
+    // expand to: the reference to a sequence that does not exist is never
+    // reached (nor would a huge one be expanded).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "nope", loop: loop
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("the length is checked first");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_a_standalone_offset_anchors_past_the_referenced_passes() {
+    // "long" placed at @1/1 reaches @6/1 = 12s, past the change to 60 BPM
+    // at @5/1; the `offset 1 measures` in the zero-time cue after it is a
+    // bar there, 4s, and @7/1 (16s) lands at 20s with it.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 60 }
+    ]
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1s
+
+    @6/1
+    x: static, color: "blue", duration: 1s
+}
+
+show "Show" {
+    @1/1
+    sequence "long"
+
+    @0.0
+    offset 1 measures
+
+    @7/1
+    front_wash: static, color: "white", duration: 1s
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let last = show.cues.last().unwrap();
+    assert_eq!(last.time, Duration::from_secs(20));
+    assert_eq!(last.effects[0].tempo_offset_secs, 4.0);
+}
+
+/// A count past `loop`'s practical infinity plays as `loop` does, on every
+/// target, a sequence reference's and an inline loop's alike: 10,000
+/// passes, not every pass written (which never finishes laying out).
+#[test]
+fn a_count_past_loops_passes_lays_as_many_as_loop() {
+    let shows = parse_light_shows(
+        r#"
+sequence "beat" {
+    @0.000
+    front_wash: static color: "red", duration: 1s
+}
+
+show "Reference" {
+    @0.000
+    sequence "beat", loop: 5000000000
+}
+
+show "Loop" {
+    @0.000
+    sequence "beat", loop: loop
+}
+
+show "Inline" {
+    @0.000
+    loop {
+        @0.000
+        front_wash: static color: "red", duration: 1s
+    }, repeats: 5000000000
+}
+
+show "Exact" {
+    @0.000
+    sequence "beat", loop: 10000
+}
+"#,
+    )
+    .unwrap();
+    let loop_passes = shows["Loop"].cues.len();
+    assert_eq!(loop_passes, 10_000);
+    for name in ["Reference", "Inline", "Exact"] {
+        assert_eq!(shows[name].cues.len(), loop_passes, "{name}");
+    }
 }

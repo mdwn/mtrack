@@ -26,18 +26,15 @@
   import EffectForm from "../EffectForm.svelte";
   import LayerCommandForm from "../LayerCommandForm.svelte";
   import SequenceRefForm from "../SequenceRefForm.svelte";
-  import {
-    formatMs,
-    timestampToMs,
-  } from "../../../lib/lighting/timeline-state";
-  import type { TempoSection } from "../../../lib/lighting/types";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     cue: Cue;
     laneName: string;
     groups: string[];
     sequenceNames: string[];
-    tempo?: TempoSection;
+    /** When the cue fires, from the player's layout. */
+    cueMs: number;
     focusTab?: SubLaneType | null;
     onchange: (cue: Cue) => void;
     ondelete: () => void;
@@ -49,7 +46,7 @@
     laneName,
     groups,
     sequenceNames,
-    tempo,
+    cueMs,
     focusTab,
     onchange,
     ondelete,
@@ -64,7 +61,7 @@
     if (tab.startsWith("effects:")) return "effects";
     return tab;
   });
-  let absTime = $derived(formatMs(timestampToMs(cue.timestamp, tempo)));
+  let absTime = $derived(rules.clock(cueMs / 1000, 3));
 
   let sectionLabels = $derived({
     effects: $t("timeline.properties.effects"),
@@ -89,7 +86,7 @@
   function addEffect() {
     const newEffect: CueEffect = {
       groups: ["all"],
-      effect: { type: "static", colors: [], extra: {} },
+      effect: { type: "static", params: [] },
     };
     onchange({ ...cue, effects: [...cue.effects, newEffect] });
   }

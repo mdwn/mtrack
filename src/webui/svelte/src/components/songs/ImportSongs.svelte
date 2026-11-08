@@ -19,9 +19,9 @@
     browseDirectory,
     createSongInDirectory,
     bulkImportSongs,
-    type BrowseEntry,
-    type BulkImportResult,
   } from "../../lib/api/songs";
+  import type { BrowseEntry, BulkImport } from "../../gen/rules/mtrack_rules";
+  import { breadcrumbs, parentPath } from "../../lib/util/paths";
 
   interface Props {
     onimported: () => void;
@@ -48,7 +48,7 @@
 
   // Bulk import state
   let bulkImporting = $state(false);
-  let bulkResult = $state<BulkImportResult | null>(null);
+  let bulkResult = $state<BulkImport | null>(null);
   let bulkError = $state("");
 
   async function navigate(path?: string) {
@@ -76,14 +76,6 @@
 
   let atRoot = $derived(currentPath === "/");
 
-  function parentPath(): string {
-    if (atRoot) return "/";
-    const parts = currentPath.replace(/\/+$/, "").split("/");
-    if (parts.length <= 2) return "/";
-    parts.pop();
-    return parts.join("/");
-  }
-
   let dirEntries = $derived(entries.filter((e) => e.is_dir));
   let fileEntries = $derived(entries.filter((e) => !e.is_dir));
   let audioFiles = $derived(fileEntries.filter((e) => e.type === "audio"));
@@ -93,18 +85,7 @@
   );
   let hasAudioFiles = $derived(audioFiles.length > 0);
 
-  let breadcrumbs = $derived.by(() => {
-    const crumbs: { name: string; path: string }[] = [{ name: "/", path: "/" }];
-    if (currentPath !== "/") {
-      const parts = currentPath.split("/").filter(Boolean);
-      let acc = "";
-      for (const part of parts) {
-        acc += "/" + part;
-        crumbs.push({ name: part, path: acc });
-      }
-    }
-    return crumbs;
-  });
+  let crumbs = $derived(breadcrumbs(currentPath));
 
   function selectDirectory() {
     songDir = currentPath;
@@ -124,7 +105,12 @@
     try {
       const res = await createSongInDirectory(songDir, songName.trim());
       if (res.status === 409) {
-        createError = get(t)("songs.import.songExists");
+        // A name another song has already (#674), else a config there.
+        const data = await res.json().catch(() => null);
+        createError =
+          typeof data?.taken === "string"
+            ? get(t)("songs.import.nameTaken", { values: { name: data.taken } })
+            : get(t)("songs.import.songExists");
         return;
       }
       if (!res.ok) {
@@ -198,7 +184,7 @@
           >
         </div>
         <div class="breadcrumbs">
-          {#each breadcrumbs as crumb, i (crumb.path)}
+          {#each crumbs as crumb, i (crumb.path)}
             {#if i > 0}<span class="sep">/</span>{/if}
             <button class="crumb" onclick={() => navigate(crumb.path)}
               >{crumb.name}</button
@@ -215,7 +201,10 @@
         {:else}
           <div class="entry-list">
             {#if !atRoot}
-              <button class="entry" onclick={() => navigate(parentPath())}>
+              <button
+                class="entry"
+                onclick={() => navigate(parentPath(currentPath))}
+              >
                 <span class="entry-icon">⬆️</span>
                 <span class="entry-name">..</span>
               </button>

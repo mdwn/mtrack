@@ -14,12 +14,22 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    ReleaseBehavior,
+    RetriggerBehavior,
+    SampleDefinition,
+    VelocityMode,
+  } from "../../gen/rules/mtrack_rules";
   import FileUpload from "../songs/FileUpload.svelte";
   import { uploadSampleFile } from "../../lib/api/config";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   export type SampleBrowseTarget = {
     sampleName: string;
@@ -28,7 +38,7 @@
   };
 
   interface Props {
-    samples: Record<string, any>;
+    samples: Record<string, SampleDefinition>;
     onchange: () => void;
     onbrowse: (target: SampleBrowseTarget) => void;
   }
@@ -41,7 +51,7 @@
   let uploading = $state(false);
   let uploadMsg = $state("");
 
-  function hasAdvancedSettings(def: any): boolean {
+  function hasAdvancedSettings(def: SampleDefinition): boolean {
     return (
       (def.release_behavior && def.release_behavior !== "play_to_completion") ||
       (def.retrigger && def.retrigger !== "cut") ||
@@ -93,27 +103,33 @@
     collapsed[name] = !collapsed[name];
   }
 
-  function setOrDelete(name: string, key: string, value: any) {
+  function setOrDelete<K extends keyof SampleDefinition>(
+    name: string,
+    key: K,
+    value: SampleDefinition[K] | "" | null | undefined,
+  ) {
     if (value === undefined || value === "" || value === null) {
-      delete samples[name][key];
+      delete (samples[name] as Partial<SampleDefinition>)[key];
     } else {
-      samples[name][key] = value;
+      samples[name][key] = value as SampleDefinition[K];
     }
     onchange();
   }
 
+  /** The range a MIDI velocity takes, as the player reads it. */
+  const [VELOCITY_MIN, VELOCITY_MAX] =
+    rules.midi_event_shapes().ranges.velocity;
+
   function addLayer(name: string) {
-    if (!samples[name].velocity) samples[name].velocity = {};
-    if (!samples[name].velocity.layers) samples[name].velocity.layers = [];
-    samples[name].velocity.layers.push({ range: [1, 127], file: "" });
+    const velocity = (samples[name].velocity ??= {});
+    (velocity.layers ??= []).push({ range: [1, VELOCITY_MAX], file: "" });
     onchange();
   }
 
   function removeLayer(name: string, index: number) {
-    samples[name].velocity.layers.splice(index, 1);
-    if (samples[name].velocity.layers.length === 0) {
-      delete samples[name].velocity.layers;
-    }
+    const velocity = samples[name].velocity;
+    velocity?.layers?.splice(index, 1);
+    if (velocity?.layers?.length === 0) delete velocity.layers;
     onchange();
   }
 
@@ -123,7 +139,8 @@
     if (field === "file") {
       samples[sampleName].file = path;
     } else if (field === "layer" && layerIndex !== undefined) {
-      samples[sampleName].velocity.layers[layerIndex].file = path;
+      const layer = samples[sampleName].velocity?.layers?.[layerIndex];
+      if (layer) layer.file = path;
     }
     onchange();
   }
@@ -142,7 +159,8 @@
       if (field === "file") {
         samples[sampleName].file = result.path;
       } else if (field === "layer" && layerIndex !== undefined) {
-        samples[sampleName].velocity.layers[layerIndex].file = result.path;
+        const layer = samples[sampleName].velocity?.layers?.[layerIndex];
+        if (layer) layer.file = result.path;
       }
       uploadMsg = get(t)("samples.uploadedFile", {
         values: { name: files[0].name },
@@ -272,7 +290,7 @@
             </div>
             <div class="upload-area">
               <FileUpload
-                accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+                accept={audioAccept()}
                 label={uploading
                   ? $t("common.uploading")
                   : $t("samples.dropAudio")}
@@ -332,7 +350,8 @@
                     class="input"
                     value={def.release_behavior ?? "play_to_completion"}
                     onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
+                      const v = (e.target as HTMLSelectElement)
+                        .value as ReleaseBehavior;
                       setOrDelete(
                         name,
                         "release_behavior",
@@ -340,11 +359,9 @@
                       );
                     }}
                   >
-                    <option value="play_to_completion"
-                      >{$t("samples.playToCompletion")}</option
-                    >
-                    <option value="stop">{$t("samples.releaseStop")}</option>
-                    <option value="fade">{$t("samples.releaseFade")}</option>
+                    {#each choices.release_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.releases.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
 
@@ -359,7 +376,8 @@
                     class="input"
                     value={def.retrigger ?? "cut"}
                     onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
+                      const v = (e.target as HTMLSelectElement)
+                        .value as RetriggerBehavior;
                       setOrDelete(
                         name,
                         "retrigger",
@@ -367,10 +385,9 @@
                       );
                     }}
                   >
-                    <option value="cut">{$t("samples.retriggerCut")}</option>
-                    <option value="polyphonic"
-                      >{$t("samples.retriggerPolyphonic")}</option
-                    >
+                    {#each choices.retrigger_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.retriggers.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
               </div>
@@ -445,22 +462,17 @@
                         if (v === "ignore") {
                           delete samples[name].velocity;
                         } else {
-                          if (!samples[name].velocity)
-                            samples[name].velocity = {};
-                          samples[name].velocity.mode = v;
+                          (samples[name].velocity ??= {}).mode =
+                            v as VelocityMode;
                         }
                         onchange();
                       }}
                     >
-                      <option value="ignore"
-                        >{$t("samples.velocityIgnore")}</option
-                      >
-                      <option value="scale"
-                        >{$t("samples.velocityScale")}</option
-                      >
-                      <option value="layers"
-                        >{$t("samples.velocityLayers")}</option
-                      >
+                      {#each choices.velocity_modes as m (m)}
+                        <option value={m}
+                          >{$t(`samples.velocityModes.${m}`)}</option
+                        >
+                      {/each}
                     </select>
                   </div>
 
@@ -475,15 +487,15 @@
                         id="sample-vel-default-{name}"
                         class="input"
                         type="number"
-                        min="0"
-                        max="127"
+                        min={VELOCITY_MIN}
+                        max={VELOCITY_MAX}
                         placeholder="100"
                         value={def.velocity?.default ?? ""}
                         onchange={(e) => {
                           const v = (e.target as HTMLInputElement).value;
-                          if (!def.velocity) samples[name].velocity = {};
+                          const velocity = (samples[name].velocity ??= {});
                           if (v) {
-                            samples[name].velocity.default = parseInt(v);
+                            velocity.default = parseInt(v);
                           } else {
                             delete samples[name].velocity?.default;
                           }
@@ -530,20 +542,20 @@
                         <div class="layer-row">
                           <span class="layer-label"
                             >Velocity {layer.range?.[0] ?? 0}-{layer
-                              .range?.[1] ?? 127}</span
+                              .range?.[1] ?? VELOCITY_MAX}</span
                           >
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Min"
                             value={layer.range?.[0] ?? ""}
                             onchange={(e) => {
-                              samples[name].velocity.layers[li].range[0] =
+                              layer.range[0] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 0;
+                                ) || VELOCITY_MIN;
                               onchange();
                             }}
                           />
@@ -551,15 +563,15 @@
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Max"
                             value={layer.range?.[1] ?? ""}
                             onchange={(e) => {
-                              samples[name].velocity.layers[li].range[1] =
+                              layer.range[1] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 127;
+                                ) || VELOCITY_MAX;
                               onchange();
                             }}
                           />
@@ -574,7 +586,7 @@
                           placeholder={$t("samples.layerFilePlaceholder")}
                           value={layer.file ?? ""}
                           onchange={(e) => {
-                            samples[name].velocity.layers[li].file = (
+                            layer.file = (
                               e.target as HTMLInputElement
                             ).value.trim();
                             onchange();
@@ -594,7 +606,7 @@
                         </div>
                         <div class="upload-area">
                           <FileUpload
-                            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+                            accept={audioAccept()}
                             label={uploading
                               ? $t("common.uploading")
                               : $t("samples.dropAudio")}

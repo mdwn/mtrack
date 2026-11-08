@@ -66,6 +66,19 @@ test.describe("DMX Configuration", () => {
     await expect(page.locator(".universe-row")).toHaveCount(1);
   });
 
+  test("removing the last universe saves an empty list", async ({ page }) => {
+    await page.getByRole("button", { name: "Add" }).first().click();
+    await page.locator(".universe-row").first().locator(".btn-danger").click();
+    await expect(page.locator(".universe-row")).toHaveCount(0);
+
+    const saved = page.waitForRequest(
+      (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
+    );
+    await page.getByRole("button", { name: "Save" }).click();
+    expect((await saved).postDataJSON().profile.dmx.universes).toEqual([]);
+    await expect(page.locator(".save-msg")).toContainText("Saved");
+  });
+
   test("OLA port accepts numeric input", async ({ page }) => {
     const input = page.locator("#dmx-ola-port");
     await input.fill("9090");

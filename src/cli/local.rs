@@ -124,12 +124,7 @@ fn annotate_write(target: crate::util::WriteTarget<'_>, error: std::io::Error) -
     // The path goes in whether or not there is a hint to add. Propagating the
     // bare `io::Error` reached the operator as `Error: Read-only file system
     // (os error 30)` in a restart loop, naming no file at all.
-    let mut message = format!("could not write {}: {error}", target.path().display());
-    if let Some(hint) = crate::util::write_failure_hint(target, &error) {
-        message.push_str("\n\n");
-        message.push_str(&hint);
-    }
-    message.into()
+    crate::util::write_failure_message(target, &error).into()
 }
 
 pub async fn start(
@@ -142,13 +137,7 @@ pub async fn start(
 
     // Resolve path: if it's a file or has a YAML extension, use it directly (legacy).
     // Otherwise treat it as a project directory and look for mtrack.yaml inside.
-    let input = Path::new(path);
-    let player_path =
-        &if input.is_file() || input.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-            input.to_path_buf()
-        } else {
-            input.join("mtrack.yaml")
-        };
+    let player_path = &super::migrate::resolve_config_path(path);
 
     // Load or create config
     let player_config = match config::Player::deserialize(player_path) {
@@ -267,7 +256,7 @@ pub async fn start(
         // it to the DMX engine when it comes up.
         player.set_broadcast_tx(broadcast_tx.clone());
 
-        let profiles_dir = player_config.profiles_dir_resolved(player_path);
+        let profiles_dir = player_config.resolved_profiles_dir(player_path);
 
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
@@ -367,17 +356,15 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
         } else {
             match config::Player::deserialize(config_file) {
                 Ok(player_config) => {
-                    if let Some(dmx) = player_config.dmx() {
-                        if let Some(lighting) = dmx.lighting() {
-                            let groups_count = lighting.groups().len();
-                            // Clone the lighting config to own it
-                            (Some(lighting.clone()), groups_count)
-                        } else {
-                            eprintln!("⚠️  Warning: No lighting configuration found in DMX config");
-                            (None, 0)
-                        }
+                    // This host's profile, as the player reads it.
+                    if let Some(lighting) = player_config.host_lighting() {
+                        let groups_count = lighting.groups().len();
+                        // Clone the lighting config to own it
+                        (Some(lighting.clone()), groups_count)
                     } else {
-                        eprintln!("⚠️  Warning: No DMX configuration found in config file");
+                        eprintln!(
+                            "⚠️  Warning: No lighting configuration found in this host's profile"
+                        );
                         (None, 0)
                     }
                 }
@@ -489,7 +476,7 @@ pub fn test_audio(config: &str, hostname: Option<String>) -> Result<(), Box<dyn 
 
 pub fn verify(
     config: &str,
-    check: Option<Vec<String>>,
+    check: Option<Vec<verify::Check>>,
     hostname: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let config_path = Path::new(config);
@@ -503,12 +490,12 @@ pub fn verify(
     }
 
     let run_all = check.is_none();
-    let checks: Vec<String> = check.unwrap_or_default();
+    let checks: Vec<verify::Check> = check.unwrap_or_default();
 
     let mut report = verify::VerificationReport::default();
 
     // Track mapping checks.
-    if run_all || checks.iter().any(|c| c == "track-mappings") {
+    if run_all || checks.contains(&verify::Check::TrackMappings) {
         let all_profiles = player_config.all_profiles();
 
         if all_profiles.len() > 1 {
@@ -590,22 +577,44 @@ pub(crate) fn parse_origin_mm(text: &str) -> Result<[f64; 3], Box<dyn Error>> {
     Ok(origin)
 }
 
+/// The project a lighting command works in, `project` naming its directory
+/// or its config file ([`super::migrate::resolve_config_path`]), and its
+/// lighting directories relative to it: those given, else the ones its
+/// config gives this host's profile (`Player::lighting_dirs`, as the engine,
+/// the web UI and MCP read them), else the defaults when it has no config.
+/// The library is the project's `lighting/library`.
+pub(super) fn project_lighting(
+    project: &str,
+    fixture_types_dir: Option<String>,
+    venues_dir: Option<String>,
+) -> Result<(std::path::PathBuf, crate::config::lighting::ProjectDirs), Box<dyn Error>> {
+    let config_path = super::migrate::resolve_config_path(project);
+    let dirs = config::Player::lighting_dirs_at(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    let dirs = crate::config::lighting::ProjectDirs {
+        fixture_types: fixture_types_dir.unwrap_or(dirs.fixture_types),
+        venues: venues_dir.unwrap_or(dirs.venues),
+    };
+    Ok((crate::util::project_dir_of(&config_path), dirs))
+}
+
 pub fn import_mvr(
     mvr_path: &str,
     write: bool,
     name: Option<String>,
     origin: Option<&str>,
     project: &str,
-    fixture_types_dir: String,
-    venues_dir: String,
+    fixture_types_dir: Option<String>,
+    venues_dir: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     use crate::lighting::import::{import_mvr, inspect_mvr, MvrImportOptions, MvrPlan};
 
+    let (project, dirs) = project_lighting(project, fixture_types_dir, venues_dir)?;
     let options = MvrImportOptions {
         name,
         origin_mm: origin.map(parse_origin_mm).transpose()?,
-        fixture_types_dir,
-        venues_dir,
+        fixture_types_dir: dirs.fixture_types,
+        venues_dir: dirs.venues,
         keep: Default::default(),
     };
 
@@ -742,13 +751,13 @@ pub fn import_mvr(
     }
 
     if !write {
-        let plan = inspect_mvr(Path::new(mvr_path), &options, Path::new(project))?;
+        let plan = inspect_mvr(Path::new(mvr_path), &options, &project)?;
         print_plan(&plan);
         println!("\nNothing written. Re-run with --write to import.");
         return Ok(());
     }
 
-    let report = import_mvr(Path::new(mvr_path), &options, Path::new(project))?;
+    let report = import_mvr(Path::new(mvr_path), &options, &project)?;
     print_plan(&report.plan);
     println!("  written:");
     for file in &report.written {
@@ -770,19 +779,20 @@ pub fn export_mvr(
     output: Option<String>,
     layers_from_tags: bool,
     project: &str,
-    fixture_types_dir: String,
-    venues_dir: String,
+    fixture_types_dir: Option<String>,
+    venues_dir: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     use crate::lighting::export::{export_mvr, MvrExportOptions};
 
+    let (project, dirs) = project_lighting(project, fixture_types_dir, venues_dir)?;
     let options = MvrExportOptions {
         venue: venue.to_string(),
         output,
-        fixture_types_dir,
-        venues_dir,
+        fixture_types_dir: dirs.fixture_types,
+        venues_dir: dirs.venues,
         layers_from_tags,
     };
-    let report = export_mvr(&options, Path::new(project))?;
+    let report = export_mvr(&options, &project)?;
     println!(
         "Venue \"{}\" → {} ({} fixtures, {} focus points)",
         report.venue, report.output, report.fixtures, report.focus_points
@@ -810,7 +820,7 @@ pub fn import_gdtf(
     name: Option<&str>,
     list_modes: bool,
     project: &str,
-    fixture_types_dir: &str,
+    fixture_types_dir: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     use crate::lighting::gdtf;
 
@@ -835,11 +845,12 @@ pub fn import_gdtf(
         return Ok(());
     }
 
+    let (project, dirs) = project_lighting(project, fixture_types_dir, None)?;
     let report = crate::lighting::import::import_gdtf(
         Path::new(gdtf_path),
         name,
-        Path::new(project),
-        fixture_types_dir,
+        &project,
+        &dirs.fixture_types,
     )?;
 
     if report.already_imported {
@@ -875,18 +886,7 @@ pub fn import_gdtf(
 mod import_gdtf_tests {
     use super::*;
 
-    fn write_synthetic_gdtf(dir: &Path) -> PathBuf {
-        let path = dir.join("synth.gdtf");
-        std::fs::write(
-            &path,
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
-        )
-        .unwrap();
-        path
-    }
+    use crate::testutil::lighting::write_synthetic_gdtf;
 
     #[test]
     fn listing_modes_writes_nothing() {
@@ -900,7 +900,7 @@ mod import_gdtf_tests {
             None,
             true,
             project.to_str().unwrap(),
-            "lighting/fixture_types",
+            None,
         )
         .unwrap();
         assert!(!project.join("lighting").exists(), "listing must not write");
@@ -918,7 +918,7 @@ mod import_gdtf_tests {
             None,
             false,
             project.to_str().unwrap(),
-            "lighting/fixture_types",
+            None,
         )
         .unwrap();
         assert!(project.join("lighting/library/synth.gdtf").is_file());
@@ -937,7 +937,7 @@ mod import_gdtf_tests {
             Some("Brick"),
             false,
             project.to_str().unwrap(),
-            "lighting/fixture_types",
+            None,
         )
         .unwrap();
         let record =
@@ -946,6 +946,79 @@ mod import_gdtf_tests {
             record.contains("fixture_type \"Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"),
             "{record}"
         );
+    }
+
+    /// A config naming its lighting directories in the profile this host
+    /// runs (a profile for another host comes first, as the engine skips
+    /// it).
+    fn project_with_dirs(root: &Path) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(
+            root.join("mtrack.yaml"),
+            r#"songs: songs
+profiles:
+  - hostname: not-this-host-x9
+    dmx:
+      universes: []
+      lighting:
+        directories:
+          fixture_types: other/types
+          venues: other/venues
+  - dmx:
+      universes: []
+      lighting:
+        directories:
+          fixture_types: rig/types
+          venues: rig/venues
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_lighting_dirs_come_from_the_hosts_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        project_with_dirs(&project);
+        for given in [
+            project.to_str().unwrap().to_string(),
+            project.join("mtrack.yaml").to_str().unwrap().to_string(),
+        ] {
+            let (root, dirs) = project_lighting(&given, None, None).unwrap();
+            assert_eq!(root, project);
+            assert_eq!(dirs.fixture_types, "rig/types");
+            assert_eq!(dirs.venues, "rig/venues");
+        }
+        // Given ones win; without a config, the defaults.
+        let (_, dirs) =
+            project_lighting(project.to_str().unwrap(), Some("t".into()), None).unwrap();
+        assert_eq!(
+            (dirs.fixture_types.as_str(), dirs.venues.as_str()),
+            ("t", "rig/venues")
+        );
+        let bare = dir.path().join("bare");
+        let (_, dirs) = project_lighting(bare.to_str().unwrap(), None, None).unwrap();
+        assert_eq!(dirs, crate::config::lighting::ProjectDirs::of(None));
+    }
+
+    #[test]
+    fn a_named_import_writes_its_record_in_the_configured_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let gdtf = write_synthetic_gdtf(dir.path());
+        let project = dir.path().join("project");
+        project_with_dirs(&project);
+
+        import_gdtf(
+            gdtf.to_str().unwrap(),
+            Some("Brick"),
+            false,
+            project.to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(project.join("rig/types/brick.fixture").is_file());
+        assert!(project.join("lighting/library/synth.gdtf").is_file());
+        assert!(!project.join("lighting/fixture_types").exists());
     }
 }
 
@@ -1565,7 +1638,7 @@ dmx:
             // Provide a specific check
             assert!(verify(
                 config_path.to_str().unwrap(),
-                Some(vec!["track-mappings".to_string()]),
+                Some(vec![verify::Check::TrackMappings]),
                 None
             )
             .is_ok());
@@ -1584,13 +1657,8 @@ dmx:
                 ),
             )
             .unwrap();
-            // Provide a check that doesn't match track-mappings, so that branch is skipped
-            assert!(verify(
-                config_path.to_str().unwrap(),
-                Some(vec!["other-check".to_string()]),
-                None
-            )
-            .is_ok());
+            // Select no checks, so the track-mappings branch is skipped
+            assert!(verify(config_path.to_str().unwrap(), Some(vec![]), None).is_ok());
         }
 
         #[test]

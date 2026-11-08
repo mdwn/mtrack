@@ -14,6 +14,7 @@
 
 import { test, expect, type Page, type Request } from "@playwright/test";
 import { MVR_INSPECTION, MVR_EXPORT_SUMMARY } from "../mock-server/test-data";
+import type { VenueList } from "../../src/gen/rules/mtrack_rules";
 
 // MVR import (the wizard at #/lighting/import) and export (the dialog on
 // Venues), design section 11. Every test routes its own answers with
@@ -168,6 +169,123 @@ test.describe("MVR import wizard", () => {
     await alert.getByRole("button", { name: "Retry" }).click();
     await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
     await expect(alert).toHaveCount(0);
+  });
+
+  test("a venue name the files refuse keeps the name field, and another name re-inspects", async ({
+    page,
+  }) => {
+    const names: string[] = [];
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      const name = fields(route.request()).name ?? "";
+      names.push(name);
+      if (name === "Kellys") {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error:
+              'cannot import venue "Kellys": Defined in all.venue alongside venue "Annex"; edit that file by hand.',
+            kind: "venue",
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MVR_INSPECTION),
+        });
+      }
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+
+    // The reason, and the name field to change: not a dead end.
+    await expect(page.getByTestId("mvr-error")).toContainText(
+      "Defined in all.venue alongside venue",
+    );
+    const name = page.getByTestId("mvr-venue-name");
+    await expect(name).toHaveValue("Kellys");
+    await expect(page.getByTestId("mvr-refused-hint")).toBeVisible();
+    await expect(page.getByTestId("mvr-continue")).toHaveCount(0);
+
+    await name.fill("Kellys 2026");
+    await page.getByTestId("mvr-recheck").click();
+    await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
+    await expect(page.getByTestId("mvr-error")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-refused-hint")).toHaveCount(0);
+    await expect(name).toHaveValue("Kellys 2026");
+    expect(names).toEqual(["Kellys", "Kellys 2026"]);
+  });
+
+  test("a refusal that another venue name cannot answer offers no rename", async ({
+    page,
+  }) => {
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error:
+            'lighting/fixture_types/synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name <name>`, or the Fixtures page)',
+          kind: "record",
+        }),
+      });
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+
+    await expect(page.getByTestId("mvr-error")).toContainText(
+      "synth_brick_astera_pb15.fixture holds",
+    );
+    await expect(page.getByTestId("mvr-venue-name")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-refused-hint")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-recheck")).toHaveCount(0);
+  });
+
+  test("an empty venue name can be checked again, as the file's own name", async ({
+    page,
+  }) => {
+    let calls = 0;
+    const names: (string | undefined)[] = [];
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      calls++;
+      names.push(fields(route.request()).name);
+      await route.fulfill(
+        calls === 1
+          ? {
+              status: 409,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: 'cannot import venue "Kellys": Kellys.venue is taken',
+                kind: "venue",
+              }),
+            }
+          : {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify(MVR_INSPECTION),
+            },
+      );
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-venue-name").fill("");
+    const recheck = page.getByTestId("mvr-recheck");
+    await expect(recheck).toBeEnabled();
+    await recheck.click();
+    await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
+    expect(names).toEqual(["Kellys", undefined]);
+
+    // Empty means the file's own name for Continue too: on to the origin,
+    // with no second inspection.
+    const proceed = page.getByTestId("mvr-continue");
+    await expect(proceed).toBeEnabled();
+    await proceed.click();
+    await expect(page.getByTestId("mvr-step-origin")).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
+    expect(names).toEqual(["Kellys", undefined]);
   });
 
   test("step 2 marks the deck suggestion, applies it, and takes a click", async ({
@@ -728,6 +846,41 @@ test.describe("MVR export dialog", () => {
     expect(new URL(summaries[0].url()).searchParams.get("venue")).toBe(
       "test-venue",
     );
+  });
+
+  test("does not offer aim points for a venue whose file is not its alone", async ({
+    page,
+  }) => {
+    const { aims } = await routeExport(page);
+    const reason =
+      'Defined in tour/all.light alongside venue "Arena"; edit that file by hand.';
+    await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          venues: {
+            "test-venue": {
+              name: "test-venue",
+              fixtures: {},
+              focus_points: {},
+              source: null,
+            },
+          },
+          owners: {
+            "test-venue": { file: "tour/all.light", editable: false, reason },
+          },
+          errors: [],
+          versions: { "test-venue": "v1" },
+        } satisfies VenueList,
+      }),
+    );
+    await page.goto("/#/lighting/venues");
+    await page.getByTestId("venue-export-mvr-test-venue").click();
+    await expect(page.getByTestId("mvr-export-unlinked")).toBeVisible();
+    await expect(page.getByTestId("mvr-export-add-aim")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-export-read-only")).toHaveText(reason);
+    // Exporting as it is stays on offer.
+    await expect(page.getByTestId("mvr-export-as-is")).toBeVisible();
+    expect(aims).toHaveLength(0);
   });
 
   test("adds an aim point per fixture, refreshes, then downloads", async ({

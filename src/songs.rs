@@ -28,17 +28,14 @@ use tracing::{debug, info, warn};
 
 use crate::audio::TargetFormat;
 use crate::config;
-use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
-use crate::util::filename_display;
+use crate::util::{filename_display, FileStamp};
 
-/// Returns true if the extension is a supported audio (non-MIDI) format.
-pub fn is_supported_audio_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        "wav" | "flac" | "mp3" | "ogg" | "aac" | "m4a" | "mp4" | "aiff" | "aif"
-    )
-}
+mod file_kind;
+pub use file_kind::{
+    extension_of, has_exact_extension, has_extension, is_yaml_config, FileKind, AUDIO_EXTENSIONS,
+    LIGHTING_EXTENSIONS, MIDI_EXTENSIONS, YAML_EXTENSIONS,
+};
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 ///
@@ -89,14 +86,16 @@ impl Clone for DslLightingShow {
     }
 }
 
-/// What tells a file has changed: its modified time, and its size, for two
-/// saves within one tick of the clock -- a truncate, then the write.
-type FileStamp = (std::time::SystemTime, u64);
-
-/// The [`FileStamp`] of `path`, if it can be read.
-fn modified_time(path: &Path) -> Option<FileStamp> {
-    let metadata = fs::metadata(path).ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
+/// The tempo map a song's `.light` files are parsed with: the song's
+/// explicit `tempo:` block if it has one, otherwise one derived from the
+/// click track's beat grid. See [`Song::lighting_tempo_map`].
+fn lighting_tempo(
+    tempo_map: Option<&crate::tempo::TempoMap>,
+    beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+) -> Option<crate::tempo::TempoMap> {
+    tempo_map
+        .cloned()
+        .or_else(|| beat_grid.and_then(|grid| grid.to_tempo_map()))
 }
 
 /// Reads and parses a DSL file.
@@ -154,7 +153,7 @@ impl DslLightingShow {
     ) -> Result<Self, Box<dyn Error>> {
         // Read before parsing: an edit landing in between is newer than the
         // time kept, and parsed again next time.
-        let modified = modified_time(&file_path);
+        let modified = FileStamp::of(&file_path);
         let shows = parse_dsl_file(&file_path, tempo_map)?;
         Ok(Self::with_shows(file_path, shows, tempo_map, modified))
     }
@@ -200,7 +199,7 @@ impl DslLightingShow {
     fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
         let mut parsed = self.parsed.lock();
         if parsed.modified.is_some() {
-            let modified = modified_time(&self.file_path);
+            let modified = FileStamp::of(&self.file_path);
             if modified.is_some() && modified != parsed.modified {
                 parsed.modified = modified;
                 match parse_dsl_file(&self.file_path, self.tempo_map.as_ref()) {
@@ -388,9 +387,7 @@ impl Song {
         // song's `tempo:` config, else the click-derived beat grid. Parsing has
         // to happen here rather than earlier: the grid is what makes the third
         // option possible, and the parser resolves `@bar/beat` up front.
-        let lighting_tempo = tempo_map
-            .clone()
-            .or_else(|| beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()));
+        let lighting_tempo = lighting_tempo(tempo_map.as_ref(), beat_grid.as_ref());
         let dsl_lighting_shows = match config.lighting() {
             Some(lighting_shows) => lighting_shows
                 .iter()
@@ -502,11 +499,7 @@ impl Song {
             let (start_secs, end_secs, file) = match &hint.file {
                 None => (at_secs, at_secs, None),
                 Some(file) => {
-                    let path = if Path::new(file).is_absolute() {
-                        PathBuf::from(file)
-                    } else {
-                        start_path.join(file)
-                    };
+                    let path = start_path.join(file);
                     let source = crate::audio::sample_source::create_sample_source_from_file(
                         &path, None, 1024,
                     )
@@ -594,6 +587,11 @@ impl Song {
         let mut midi_playback = None;
         let mut tracks = vec![];
         for entry in song_files {
+            // A hidden file (`.draft.light`, the AppleDouble `._Bass.wav`)
+            // is left out of the new config.
+            if is_hidden(&entry.path()) {
+                continue;
+            }
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
@@ -609,13 +607,8 @@ impl Song {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Unreadable file stem");
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("Unreadable file extension");
-
-            match extension {
-                "mid" => {
+            match FileKind::of(&path) {
+                FileKind::Midi => {
                     if stem.starts_with("dmx_") {
                         light_shows.push(LightShow {
                             universe_name: "default universe".to_string(),
@@ -629,18 +622,19 @@ impl Song {
                         })
                     }
                 }
-                "light" => {
+                FileKind::Lighting => {
                     // Collected, not parsed: musical timing resolves at parse
                     // time, and the beat grid that supplies it needs the tracks
                     // this scan has not finished reading yet.
                     light_paths.push(path);
                 }
-                ext if is_supported_audio_extension(ext) => {
+                FileKind::Audio => {
                     let mut new_tracks = Track::load_tracks(&path)?;
                     tracks.append(&mut new_tracks);
                 }
-                unknown_extension => {
-                    info!("Unknown extension: {unknown_extension}. Ignoring file.");
+                FileKind::Directory | FileKind::Other => {
+                    let extension = path.extension().unwrap_or_default().to_string_lossy();
+                    info!("Unknown extension: {extension}. Ignoring file.");
                 }
             }
         }
@@ -651,7 +645,7 @@ impl Song {
         // parse them. Same precedence as `Song::new`: a show's own `tempo`
         // block wins, otherwise the click-derived grid.
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
-        let lighting_tempo = beat_grid.as_ref().and_then(|grid| grid.to_tempo_map());
+        let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
         for path in light_paths {
             dsl_lighting_shows.push(DslLightingShow::load(path, lighting_tempo.as_ref())?);
         }
@@ -659,7 +653,7 @@ impl Song {
         let song = Self {
             name,
             base_path: song_directory.clone(),
-            config_path: Some(song_directory.join("song.yaml")),
+            config_path: Some(song_config_file(song_directory)),
             midi_playback,
             light_shows,
             lighting_end: parking_lot::Mutex::new((0, lighting_end(&dsl_lighting_shows))),
@@ -740,6 +734,16 @@ impl Song {
         self.config_path.as_deref()
     }
 
+    /// The YAML file this song is written to: the one it was loaded from, or
+    /// its folder's [`song_config_file`] for one with no such file yet. The one
+    /// answer for every surface that reads or edits a song's YAML; a flat
+    /// `<name>.yaml` song's is that file, not `song.yaml` beside it.
+    pub fn config_path_or_default(&self) -> PathBuf {
+        self.config_path
+            .clone()
+            .unwrap_or_else(|| song_config_file(&self.base_path))
+    }
+
     /// Gets the per-song samples configuration.
     pub fn samples_config(&self) -> &config::SamplesConfig {
         &self.samples_config
@@ -806,6 +810,21 @@ impl Song {
         &self.tracks
     }
 
+    /// The files the song's config names: its tracks, MIDI playback file,
+    /// MIDI DMX light shows and DSL light shows.
+    pub fn named_files(&self) -> impl Iterator<Item = &Path> {
+        self.tracks
+            .iter()
+            .map(Track::file)
+            .chain(self.midi_playback.iter().map(MidiPlayback::file_path))
+            .chain(self.light_shows.iter().map(LightShow::dmx_file_path))
+            .chain(
+                self.dsl_lighting_shows
+                    .iter()
+                    .map(DslLightingShow::file_path),
+            )
+    }
+
     /// Gets the beat grid (from the explicit tempo map when configured,
     /// otherwise from click track analysis), if available.
     pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
@@ -835,7 +854,7 @@ impl Song {
         let end = self.length().max(midi_end);
         // A MIDI file's clock runs on past the file's end at its last tempo.
         if let Some(tempo) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
-            let ticks = tempo.ticks_until(end);
+            let ticks = tempo.beat_clock_until(end);
             if !ticks.is_empty() {
                 return Some(ticks);
             }
@@ -853,9 +872,7 @@ impl Song {
     /// construct outright without a tempo, so the difference is not a matter
     /// of accuracy but of whether the show parses at all.
     pub fn lighting_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
-        self.tempo_map
-            .clone()
-            .or_else(|| self.beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()))
+        lighting_tempo(self.tempo_map.as_ref(), self.beat_grid.as_ref())
     }
 
     /// Where a draft of this song's lighting is taken to live, for resolving
@@ -1228,10 +1245,9 @@ impl Song {
         })
     }
 
-    /// Returns the duration string in minutes and seconds.
+    /// The duration as `M:SS`, as every surface formats one.
     pub fn duration_string(&self) -> String {
-        let secs = self.duration.as_secs();
-        format!("{}:{:02}", secs / 60, secs % 60)
+        crate::util::duration_minutes_seconds(self.duration)
     }
 
     /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.
@@ -1406,9 +1422,19 @@ impl Song {
         Ok(sources)
     }
 
+    /// The song as every surface summarises it; see [`SongSummary`].
+    pub fn summary(&self) -> SongSummary {
+        SongSummary {
+            name: self.name.clone(),
+            duration: self.length(),
+            sections: self.sections.clone(),
+        }
+    }
+
     /// Returns a proto version of the song.
     pub fn to_proto(&self) -> Result<player::v1::Song, std::io::Error> {
-        let duration = match prost_types::Duration::try_from(self.duration) {
+        let summary = self.summary();
+        let duration = match prost_types::Duration::try_from(summary.duration) {
             Ok(duration) => duration,
             Err(e) => return Err(std::io::Error::other(e.to_string())),
         };
@@ -1417,27 +1443,39 @@ impl Song {
             measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
         });
 
-        let sections = self
+        let sections = summary
             .sections
-            .iter()
+            .into_iter()
             .map(|s| player::v1::Section {
-                name: s.name.clone(),
+                name: s.name,
                 start_measure: s.start_measure as u32,
                 end_measure: s.end_measure as u32,
                 start_beat: s.start_beat,
                 end_beat: s.end_beat,
-                color: s.color.clone(),
+                color: s.color,
             })
             .collect();
 
         Ok(player::v1::Song {
-            name: self.name.to_string(),
+            name: summary.name,
             duration: Some(duration),
             tracks: self.output_track_names(),
             beat_grid,
             sections,
         })
     }
+}
+
+/// A song as every surface summarises it: gRPC's `Song`, MCP's song summary
+/// and details, the web UI's song list and playback status, and the OSC
+/// broadcast render this, so they agree. `duration` is [`Song::length`]:
+/// how long the song plays, its lighting included, which is what a progress
+/// bar and a seek bound want.
+#[derive(Clone, Debug)]
+pub struct SongSummary {
+    pub name: String,
+    pub duration: Duration,
+    pub sections: Vec<crate::config::Section>,
 }
 
 impl fmt::Display for Song {
@@ -1466,10 +1504,7 @@ impl fmt::Display for Song {
 /// here as it does there. Computed when the song loads, and again once a
 /// `.light` file has changed on disk (see [`Song::length`]).
 fn lighting_end(shows: &[DslLightingShow]) -> Duration {
-    let all: Vec<ParsedLightShow> = shows
-        .iter()
-        .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-        .collect();
+    let all = crate::lighting::evaluate::shows_in(shows);
     if all.is_empty() {
         return Duration::ZERO;
     }
@@ -1646,24 +1681,17 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         midly::Timing::Metrical(tpb) => tpb.as_int(),
         _ => return Err("timecode-based MIDI timing not supported".into()),
     };
-    let (tempo_map, tpb, total_ticks) = crate::midi::playback::PrecomputedMidi::build_tempo_info(
-        &smf.tracks,
-        ticks_per_beat,
-        smf.header.format,
-    );
+    let timing =
+        crate::midi::playback::MidiTiming::of(&smf.tracks, ticks_per_beat, smf.header.format);
     let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
         &smf.tracks,
-        ticks_per_beat,
+        &timing,
         smf.header.format,
     );
     // Only a file with explicit tempo events has a tempo of its own to clock.
     // One without leaves the clock to the song's `tempo:` or click track, or,
     // with neither, to nobody (`Song::beat_clock`).
-    let beat_clock = (!tempo_map.is_empty()).then_some(MidiTempo {
-        entries: tempo_map,
-        ticks_per_beat: tpb,
-        total_ticks,
-    });
+    let beat_clock = (!timing.tempo.is_empty()).then_some(timing);
     Ok(MidiSheet {
         precomputed,
         beat_clock,
@@ -1802,12 +1830,11 @@ impl Track {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("Unreadable file stem");
-        let extension = track_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("Unreadable file extension");
-
-        if !is_supported_audio_extension(extension) {
+        if FileKind::of(track_path) != FileKind::Audio {
+            let extension = track_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("Unreadable file extension");
             return Err(format!(
                 "Unsupported audio format '.{}' for file '{}'",
                 extension,
@@ -1919,29 +1946,40 @@ fn deduplicate_track_names(tracks: &mut [Track]) {
 /// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
     pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
-    /// The file's tempo, when it has tempo events to drive a beat clock.
-    pub(crate) beat_clock: Option<MidiTempo>,
+    /// The file's timing, when it has tempo events to drive a beat clock.
+    pub(crate) beat_clock: Option<crate::midi::playback::MidiTiming>,
 }
 
-/// A MIDI file's tempo events, from which its beat clock is laid out.
-pub(crate) struct MidiTempo {
-    entries: Vec<crate::midi::playback::TempoEntry>,
-    ticks_per_beat: u16,
-    total_ticks: u64,
+/// Why [`Songs::get`] has no song for a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SongLookupError {
+    /// No song by that name.
+    NotFound(String),
+    /// The song is there but did not load; `error` says why.
+    FailedToLoad { name: String, error: String },
 }
 
-impl MidiTempo {
-    /// The clock's pulse times over the file, and on past its end at its
-    /// last tempo until `until`.
-    pub(crate) fn ticks_until(&self, until: Duration) -> Vec<Duration> {
-        crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
-            &self.entries,
-            self.ticks_per_beat,
-            self.total_ticks,
-            until,
-        )
-        .ticks_from(Duration::ZERO)
-        .to_vec()
+impl fmt::Display for SongLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SongLookupError::NotFound(name) => write!(f, "unable to find song {name}"),
+            SongLookupError::FailedToLoad { name, error } => {
+                write!(f, "song {name} failed to load: {error}")
+            }
+        }
+    }
+}
+
+impl Error for SongLookupError {}
+
+impl SongLookupError {
+    /// What kind of fault this is, for a transport's code: no such song,
+    /// or a song whose files the caller must fix.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SongLookupError::NotFound(_) => crate::util::FaultKind::NotFound,
+            SongLookupError::FailedToLoad { .. } => crate::util::FaultKind::Invalid,
+        }
     }
 }
 
@@ -1950,6 +1988,8 @@ impl MidiTempo {
 pub struct SongLoadFailure {
     name: String,
     base_path: PathBuf,
+    /// The YAML file that did not load.
+    config_path: PathBuf,
     error: String,
 }
 
@@ -1962,6 +2002,12 @@ impl SongLoadFailure {
     /// Returns the base path of the failed song.
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// The YAML file that did not load, as [`Song::config_path_or_default`]
+    /// answers for a song that did.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Returns the error message describing the failure.
@@ -2008,12 +2054,19 @@ impl Songs {
         self.songs.is_empty()
     }
 
-    /// Gets a song from the song registry.
-    pub fn get(&self, name: &str) -> Result<Arc<Song>, Box<dyn Error>> {
-        match self.songs.get(name) {
-            Some(song) => Ok(Arc::clone(song)),
-            None => Err(format!("unable to find song {}", name).into()),
+    /// Gets a song from the song registry. A song whose files are there but
+    /// did not load says why.
+    pub fn get(&self, name: &str) -> Result<Arc<Song>, SongLookupError> {
+        if let Some(song) = self.songs.get(name) {
+            return Ok(Arc::clone(song));
         }
+        Err(match self.failure(name) {
+            Some(failure) => SongLookupError::FailedToLoad {
+                name: name.to_string(),
+                error: failure.error().to_string(),
+            },
+            None => SongLookupError::NotFound(name.to_string()),
+        })
     }
 
     /// Returns an unsorted list of songs in the song registry.
@@ -2040,29 +2093,439 @@ impl Songs {
     pub fn failures(&self) -> &[SongLoadFailure] {
         &self.failures
     }
+
+    /// The load failure of the song by `name`, when it failed to load.
+    pub fn failure(&self, name: &str) -> Option<&SongLoadFailure> {
+        self.failures.iter().find(|f| f.name() == name)
+    }
+
+    /// The YAML file the song by `name` was read from, loaded or not:
+    /// where an edit of it is written back. `None` for a song the registry
+    /// has not seen.
+    pub fn config_path(&self, name: &str) -> Option<PathBuf> {
+        match self.get(name) {
+            Ok(song) => Some(song.config_path_or_default()),
+            Err(_) => self.failure(name).map(|f| f.config_path().to_path_buf()),
+        }
+    }
 }
 
-/// Create default song configurations in a repository of song directories
+/// Create default song configurations in a repository of song directories:
+/// a new config in each song folder under `start_path` that has none to keep
+/// ([`new_songs`]), its song named by [`new_songs`]' rule. The number of song
+/// folders found, written or left as they are.
 pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
-    let song_directories = fs::read_dir(start_path)?;
-    let mut num_songs_found = 0;
-    for song_directory in song_directories {
-        let entry = song_directory?;
-        let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let song_config = match Song::initialize(&entry.path()) {
-            Ok(song) => {
-                num_songs_found += 1;
-                song.get_config()
-            }
-            Err(error) => return Err(error),
-        };
-        song_config.save(entry.path().join("song.yaml").as_path())?
+    let found = new_songs(start_path, HashSet::new())?;
+    for dir in &found.kept {
+        info!(dir = %dir.display(), "Song folder has a config; leaving it");
     }
+    for song in &found.new {
+        song.write()?;
+    }
+    let num_songs_found = found.kept.len() + found.new.len();
     info!("Found {num_songs_found} songs");
     Ok(num_songs_found)
+}
+
+/// The song folders under `root`, in name order: each directory below it
+/// that holds an audio track or a MIDI file ([`FileKind`]) that
+/// [`Song::initialize`] takes (a regular file, not a hidden one), or a song
+/// config ([`has_song_config`]). Found at any depth (`artist/album/song`)
+/// below directories that hold none; a song folder is not looked into.
+/// Hidden directories ([`is_hidden`]) and symlinked ones are passed over, and
+/// `root` itself is never one. A subdirectory that cannot be read is passed
+/// over with a warning; an unreadable `root` is an error. The one walk
+/// `songs --init` and the web UI's bulk import take ([`new_songs`]).
+pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    /// The entries of `dir` that are not hidden, in name order, each with
+    /// its type (a symlink's own, not its target's).
+    fn visible_entries(dir: &Path) -> std::io::Result<Vec<(PathBuf, fs::FileType)>> {
+        // codeql[rust/path-injection] dir is the walked root or one below it.
+        let mut entries = fs::read_dir(dir)?
+            .map(|entry| entry.and_then(|entry| Ok((entry.path(), entry.file_type()?))))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.retain(|(path, _)| !is_hidden(path));
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
+    fn walk(entries: Vec<(PathBuf, fs::FileType)>, found: &mut Vec<PathBuf>) {
+        for (dir, _) in entries.into_iter().filter(|(_, kind)| kind.is_dir()) {
+            let entries = match visible_entries(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(dir = %dir.display(), error = %e, "Cannot read a folder; passing over it");
+                    continue;
+                }
+            };
+            let has_media = entries.iter().any(|(path, kind)| {
+                kind.is_file() && matches!(FileKind::of(path), FileKind::Audio | FileKind::Midi)
+            });
+            if has_media || has_song_config(&dir) {
+                found.push(dir);
+            } else {
+                walk(entries, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(visible_entries(root)?, &mut found);
+    Ok(found)
+}
+
+/// The file a new song config for the folder `dir` is written to
+/// ([`song_config_file`]), or `None` when nothing may be written there: it
+/// has a song config ([`has_song_config`]), or a `song.yaml` or `song.yml`
+/// of another kind, which the new config would overwrite. The one guard of
+/// every writer of a new song config: `songs --init`, the bulk import, the
+/// web UI's create-song from a folder and `POST /api/songs/<name>`, and the
+/// config a track upload writes.
+pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
+    let file = song_config_file(dir);
+    (!has_song_config(dir) && !file.exists()).then_some(file)
+}
+
+/// The song folders [`new_songs`] found under a root.
+#[derive(Debug, Default)]
+pub struct SongDirs {
+    /// The folders whose config is kept ([`song_config_to_write`]).
+    pub kept: Vec<PathBuf>,
+    /// The folders given a new config.
+    pub new: Vec<NewSong>,
+}
+
+/// A song folder to give a new config.
+#[derive(Debug)]
+pub struct NewSong {
+    /// The song folder.
+    pub dir: PathBuf,
+    /// The new song's name ([`new_songs`]).
+    pub name: String,
+    /// The file the config is written to ([`song_config_to_write`]).
+    pub config_path: PathBuf,
+}
+
+impl NewSong {
+    /// Writes the default config of the folder ([`Song::initialize`]),
+    /// under the song's name.
+    pub fn write(&self) -> Result<(), Box<dyn Error>> {
+        let mut config = Song::initialize(&self.dir)?.get_config();
+        config.set_name(&self.name);
+        config
+            .save(&self.config_path)
+            .map_err(|e| format!("Failed to save: {e}"))?;
+        Ok(())
+    }
+}
+
+/// The song folders under `root` ([`song_dirs`]), each with a config to
+/// keep, or new ([`song_config_to_write`]). A new song takes its folder's
+/// name, unless another new song found has that name too, or a song already
+/// configured under `root` has it, loaded or failed
+/// ([`configured_song_names`]), or it is in `taken` (the songs the player
+/// has loaded, for the bulk import); then it takes its path below `root`
+/// (`SongA/stems`), and if that is taken too, the first free ` (2)`,
+/// ` (3)`, …, past the names the other new songs keep. So no two songs are
+/// given one name. The one naming rule of
+/// `songs --init`, the bulk import and a track upload's new song
+/// ([`new_song`]). An unreadable `root` is an error.
+pub fn new_songs(root: &Path, taken: HashSet<String>) -> std::io::Result<SongDirs> {
+    let mut found = SongDirs::default();
+    let mut new = Vec::new();
+    for dir in song_dirs(root)? {
+        match song_config_to_write(&dir) {
+            Some(config_path) => new.push((dir, config_path)),
+            None => found.kept.push(dir),
+        }
+    }
+    found.new = name_new_songs(root, new, taken)?;
+    Ok(found)
+}
+
+/// The song folder `dir` under `root`, to give a new config, named by the
+/// rule of [`new_songs`] as the one new song found: its own name, unless a
+/// song configured under `root` or one in `taken` has it. `None` when it
+/// has a config to keep ([`song_config_to_write`]). Both paths are taken as
+/// the file system has them, for the folder's path below `root`, which a
+/// contested name is given. What a track upload to a new song and the
+/// create-song endpoint write (#674).
+pub fn new_song(
+    root: &Path,
+    dir: &Path,
+    taken: HashSet<String>,
+) -> std::io::Result<Option<NewSong>> {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (root, dir) = (canonical(root), canonical(dir));
+    let Some(config_path) = song_config_to_write(&dir) else {
+        return Ok(None);
+    };
+    Ok(name_new_songs(&root, vec![(dir, config_path)], taken)?.pop())
+}
+
+/// The names no new song may be given: those in `taken` (the songs the
+/// player has loaded or failed) and those configured under `songs_root`
+/// ([`configured_song_names`]). An unreadable `songs_root` is passed over
+/// with a warning, leaving `taken` as it is: the one rule of the bulk
+/// import and a new song with a name asked for.
+pub fn taken_song_names(songs_root: &Path, mut taken: HashSet<String>) -> HashSet<String> {
+    match configured_song_names(songs_root) {
+        Ok(names) => taken.extend(names),
+        Err(e) => warn!(
+            dir = %songs_root.display(),
+            error = %e,
+            "Cannot read the songs folder for its song names"
+        ),
+    }
+    taken
+}
+
+/// The naming rule of [`new_songs`], for the new song folders `new` (each
+/// with the file its config goes to) under `root`.
+fn name_new_songs(
+    root: &Path,
+    new: Vec<(PathBuf, PathBuf)>,
+    mut taken: HashSet<String>,
+) -> std::io::Result<Vec<NewSong>> {
+    let own_name = |dir: &Path| filename_display(dir).to_string();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (dir, _) in &new {
+        *counts.entry(own_name(dir)).or_default() += 1;
+    }
+    taken.extend(configured_song_names(root)?);
+    // Each new song's own name that nothing contests is its, before any
+    // other is given a path or a suffix: a `B (2)/` keeps `B (2)`.
+    let uncontested: HashSet<String> = new
+        .iter()
+        .map(|(dir, _)| own_name(dir))
+        .filter(|own| counts[own] == 1 && !taken.contains(own))
+        .collect();
+    taken.extend(uncontested.iter().cloned());
+    let mut named = Vec::new();
+    for (dir, config_path) in new {
+        let own = own_name(&dir);
+        let name = if !uncontested.contains(&own) {
+            let relative = dir
+                .strip_prefix(root)
+                .unwrap_or(&dir)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            std::iter::once(relative.clone())
+                .chain((2..).map(|n| format!("{relative} ({n})")))
+                .find(|name| !taken.contains(name))
+                .expect("some suffix is free")
+        } else {
+            own
+        };
+        taken.insert(name.clone());
+        named.push(NewSong {
+            dir,
+            name,
+            config_path,
+        });
+    }
+    Ok(named)
+}
+
+/// What a walk of the songs tree does with a folder below its root that it
+/// cannot read ([`song_config_files`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unreadable {
+    /// The walk fails: the player's loader, as it always has.
+    Fail,
+    /// The folder is passed over with a warning: the names init and the
+    /// bulk import read ([`configured_song_names`]).
+    Skip,
+}
+
+/// Every file under `dir` the song loader takes up as a song config
+/// ([`song_yaml`]), in the order it reads them: each directory's entries as
+/// listed, a subdirectory's files where it stands. Hidden directories are
+/// passed over (a hidden config such as `Foo/.song.yaml` is read), and
+/// symlinked ones followed. A folder below `dir` that cannot be read fails
+/// the walk or is passed over with a warning, as `mode` says; an unreadable
+/// `dir` is an error.
+fn song_config_files(dir: &Path, mode: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, mode: Unreadable, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        // codeql[rust/path-injection] dir is the songs directory or one below it.
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                // Skip hidden directories (.git, .claude, etc.).
+                if is_hidden(&path) {
+                    continue;
+                }
+                match (walk(&path, mode, found), mode) {
+                    (Err(e), Unreadable::Skip) => {
+                        warn!(dir = %path.display(), error = %e, "Cannot read a folder; passing over it")
+                    }
+                    (result, _) => result?,
+                }
+            }
+            if song_yaml(&path) != SongYaml::NotOne {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(dir, mode, &mut found)?;
+    Ok(found)
+}
+
+/// The song config the loader reads at `path`: the config, or, for a
+/// `kind: song` file that does not read, the name its failure is recorded
+/// under (its directory's) and why. `None` for a file that is no song's: one
+/// without a `kind` that does not read as a song may be a playlist or other
+/// YAML, skipped silently.
+fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config::ConfigError)>> {
+    let candidate = song_yaml(path);
+    if candidate == SongYaml::NotOne {
+        return None;
+    }
+    match config::Song::deserialize(path) {
+        Ok(song_config) => Some(Ok(song_config)),
+        Err(e) if candidate == SongYaml::Declared => {
+            let name = path
+                .parent()?
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(Err((name, e)))
+        }
+        Err(_) => None,
+    }
+}
+
+/// The song config at `path` is another song's than the one being written
+/// or deleted: [`check_song_config_for`] refuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnotherSongsConfig {
+    /// The file.
+    pub path: PathBuf,
+    /// The song asked for.
+    pub name: String,
+    /// The song the file makes, as the loader names it.
+    pub declares: String,
+}
+
+impl std::fmt::Display for AnotherSongsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The file by its folder and name (`Foo/song.yaml`).
+        let mut shown: Vec<_> = self
+            .path
+            .iter()
+            .rev()
+            .take(2)
+            .map(|c| c.to_string_lossy())
+            .collect();
+        shown.reverse();
+        write!(
+            f,
+            "{} is the config of the song \"{}\", not of \"{}\"; it is left as it is",
+            shown.join("/"),
+            self.declares,
+            self.name
+        )
+    }
+}
+
+impl Error for AnotherSongsConfig {}
+
+/// Whether the config at `path` may be written or deleted as song `name`'s:
+/// not when it is a song config the loader names another song (#680: with
+/// `Foo/song.yaml` declaring `name: Bar`, saving "Foo" fell back to the
+/// folder and overwrote Bar). No file there, a file that is no song's, or
+/// one that does not read and so goes by its folder's name, as the loader
+/// records it, is no other song's. A write whose config declares the same
+/// song the file does (`writing`) is that song's own edit, as after a
+/// rename in the editor, whose page still goes by the old name: taken. A
+/// delete has no such config (`None`). The one rule of the web UI's and
+/// MCP's song writes and deletes.
+pub fn check_song_config_for(
+    path: &Path,
+    name: &str,
+    writing: Option<&str>,
+) -> Result<(), AnotherSongsConfig> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let declares = match read_song_config(path) {
+        None => return Ok(()),
+        Some(Ok(config)) => config.name().to_string(),
+        Some(Err((declares, _))) => declares,
+    };
+    if declares == name || writing == Some(declares.as_str()) {
+        Ok(())
+    } else {
+        Err(AnotherSongsConfig {
+            path: path.to_path_buf(),
+            name: name.to_string(),
+            declares,
+        })
+    }
+}
+
+/// A song name another song holds, refused to a new song or a rename
+/// (#674, #689).
+#[derive(Debug)]
+pub struct SongNameTaken(pub String);
+
+impl std::fmt::Display for SongNameTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a song named \"{}\" already exists; choose another name",
+            self.0
+        )
+    }
+}
+
+impl Error for SongNameTaken {}
+
+/// Whether the config at `path` may be written declaring song `writing`:
+/// not when that gives it a name another song holds, one in `taken` or
+/// configured under `songs_root` ([`taken_song_names`]). A config that
+/// already declares `writing` (a save that keeps the name) is the song's
+/// own; one that declares another, or none there yet, takes the name anew.
+/// The one rule of a new song with a name asked for and a rename, in the
+/// web UI and over MCP.
+pub fn check_song_name_free(
+    path: &Path,
+    writing: &str,
+    songs_root: &Path,
+    taken: HashSet<String>,
+) -> Result<(), SongNameTaken> {
+    let declares = path
+        .is_file()
+        .then(|| read_song_config(path))
+        .flatten()
+        .map(|config| match config {
+            Ok(config) => config.name().to_string(),
+            Err((name, _)) => name,
+        });
+    if declares.as_deref() == Some(writing)
+        || !taken_song_names(songs_root, taken).contains(writing)
+    {
+        Ok(())
+    } else {
+        Err(SongNameTaken(writing.to_string()))
+    }
+}
+
+/// The names the songs configured under `root` have, loaded or failed, as
+/// the loader names them ([`read_song_config`]), read from their configs
+/// without loading the songs. A folder that cannot be read is passed over
+/// with a warning; an unreadable `root` is an error.
+pub fn configured_song_names(root: &Path) -> std::io::Result<HashSet<String>> {
+    Ok(song_config_files(root, Unreadable::Skip)?
+        .iter()
+        .filter_map(|path| match read_song_config(path)? {
+            Ok(config) => Some(config.name().to_string()),
+            Err((name, _)) => Some(name),
+        })
+        .collect())
 }
 
 /// Recurse into the given path and return all valid songs found.
@@ -2082,113 +2545,65 @@ pub fn get_all_songs_with_defaults(
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
     let mut failures: Vec<SongLoadFailure> = Vec::new();
     // codeql[rust/path-injection] path is the songs directory configured at startup.
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            // Skip hidden directories (.git, .claude, etc.).
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.'))
-            {
-                continue;
-            }
-
-            let child = get_all_songs_with_defaults(path.as_path(), default_metronome)?;
-            child.list().iter().for_each(|song| {
-                songs.insert(song.name().to_string(), song.clone());
-            });
-            failures.extend(child.failures().iter().cloned());
-        }
-
-        // Only attempt to deserialize YAML files as song configs.
-        let is_yaml = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext == "yaml" || ext == "yml");
-        if is_yaml {
-            // Peek at the `kind` field to decide how to handle this file:
-            //   kind: song     → deserialize, record failure on error
-            //   kind absent    → deserialize (backward compat), skip silently on error
-            //   kind: playlist → skip (not a song config)
-            let peeked_kind = config::peek_kind(path.as_path());
-            let is_declared_song = peeked_kind.as_ref() == Some(&config::ConfigKind::Song);
-            let should_try = peeked_kind.is_none() || is_declared_song;
-
-            if should_try {
-                match config::Song::deserialize(path.as_path()) {
-                    Ok(song_config) => match path.parent() {
-                        Some(parent) => match parent.canonicalize() {
-                            Ok(canonical_parent) => {
-                                match Song::new(&canonical_parent, &song_config) {
-                                    Ok(mut song) => {
-                                        // Record the exact source yaml so MCP
-                                        // read/patch tools can target it
-                                        // regardless of layout. The path
-                                        // comes from the directory walk
-                                        // above; canonicalize for symlink
-                                        // safety. On the rare canonicalize
-                                        // race (permission flip / symlink
-                                        // rotation) fall back to the
-                                        // un-canonicalized path so flat-
-                                        // layout writes don't silently
-                                        // retarget to `<base>/song.yaml`.
-                                        song.config_path = Some(
-                                            path.canonicalize()
-                                                .unwrap_or_else(|_| path.to_path_buf()),
-                                        );
-                                        song.apply_metronome_default(default_metronome);
-                                        songs.insert(song.name().to_string(), Arc::new(song));
-                                    }
-                                    Err(e) => {
-                                        warn!("Skipping song at {}: {}", path.display(), e);
-                                        // Song::new failures are always recorded — the YAML
-                                        // parsed as a song but its content is invalid.
-                                        failures.push(SongLoadFailure {
-                                            name: song_config.name().to_string(),
-                                            base_path: canonical_parent,
-                                            error: format!("{}", e),
-                                        });
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Skipping song at {}: failed to canonicalize: {}",
-                                    path.display(),
-                                    e
-                                );
-                            }
-                        },
-                        None => {
-                            warn!("Skipping song at {}: no parent directory", path.display());
+    for path in song_config_files(path, Unreadable::Fail)? {
+        match read_song_config(&path) {
+            None => {}
+            Some(Ok(song_config)) => match path.parent() {
+                Some(parent) => match parent.canonicalize() {
+                    Ok(canonical_parent) => match Song::new(&canonical_parent, &song_config) {
+                        Ok(mut song) => {
+                            // Record the exact source yaml so MCP read/patch
+                            // tools can target it regardless of layout. The
+                            // path comes from the directory walk above;
+                            // canonicalize for symlink safety. On the rare
+                            // canonicalize race (permission flip / symlink
+                            // rotation) fall back to the un-canonicalized
+                            // path so flat-layout writes don't silently
+                            // retarget to `<base>/song.yaml`.
+                            song.config_path =
+                                Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+                            song.apply_metronome_default(default_metronome);
+                            songs.insert(song.name().to_string(), Arc::new(song));
+                        }
+                        Err(e) => {
+                            warn!("Skipping song at {}: {}", path.display(), e);
+                            // Song::new failures are always recorded — the YAML
+                            // parsed as a song but its content is invalid.
+                            failures.push(SongLoadFailure {
+                                name: song_config.name().to_string(),
+                                base_path: canonical_parent,
+                                config_path: path
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| path.to_path_buf()),
+                                error: format!("{}", e),
+                            });
                         }
                     },
                     Err(e) => {
-                        // Only record deserialize failures for files with `kind: song`.
-                        // Files without a kind that fail to deserialize are silently
-                        // skipped — they may be playlists or other non-song YAML.
-                        if is_declared_song {
-                            if let Some(parent) = path.parent() {
-                                let name = parent
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                let base_path = parent
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| parent.to_path_buf());
-                                warn!("Failed to deserialize song at {}: {}", path.display(), e);
-                                failures.push(SongLoadFailure {
-                                    name,
-                                    base_path,
-                                    error: format!("{}", e),
-                                });
-                            }
-                        }
+                        warn!(
+                            "Skipping song at {}: failed to canonicalize: {}",
+                            path.display(),
+                            e
+                        );
                     }
+                },
+                None => {
+                    warn!("Skipping song at {}: no parent directory", path.display());
+                }
+            },
+            // Only `kind: song` files that fail to deserialize are recorded.
+            Some(Err((name, e))) => {
+                if let Some(parent) = path.parent() {
+                    let base_path = parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    warn!("Failed to deserialize song at {}: {}", path.display(), e);
+                    failures.push(SongLoadFailure {
+                        name,
+                        base_path,
+                        config_path: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                        error: format!("{}", e),
+                    });
                 }
             }
         }
@@ -2204,6 +2619,90 @@ pub fn get_all_songs_with_defaults(
     }
 
     Ok(Arc::new(Songs::with_failures(songs, failures)))
+}
+
+/// What a file is to the song loader ([`song_yaml`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SongYaml {
+    /// Not a song's config: not YAML ([`is_yaml_config`]), or another
+    /// `kind` (`kind: playlist`).
+    NotOne,
+    /// `kind: song`: a song's config, recorded as a failed song when it
+    /// does not read.
+    Declared,
+    /// No `kind`: a song's config when it reads as one, else passed over.
+    Untyped,
+}
+
+/// What the file `path` is to the song loader, by its name and `kind:`.
+/// The one rule for the loader and [`is_song_config`].
+fn song_yaml(path: &Path) -> SongYaml {
+    if !is_yaml_config(path) {
+        return SongYaml::NotOne;
+    }
+    match config::peek_kind(path) {
+        Some(config::ConfigKind::Song) => SongYaml::Declared,
+        None => SongYaml::Untyped,
+        Some(_) => SongYaml::NotOne,
+    }
+}
+
+/// Whether the loader takes the file `path` as a song's config
+/// ([`song_yaml`]): `kind: song`, or no `kind` and it reads as a song.
+/// Whatever its name (`album.yaml`, `.song.yaml`).
+fn is_song_config(path: &Path) -> bool {
+    match song_yaml(path) {
+        SongYaml::Declared => true,
+        SongYaml::Untyped => config::Song::deserialize(path).is_ok(),
+        SongYaml::NotOne => false,
+    }
+}
+
+/// Whether `path` is hidden: its name starts with a dot (`.git`,
+/// `.draft.light`), the AppleDouble files macOS writes beside each file on
+/// a disk it does not own (`._Bass.wav`) among them. The one hidden rule:
+/// the songs walk passes over hidden directories, and `songs --init`, the
+/// song files listing and the file browser hidden files and directories.
+pub fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
+}
+
+/// The stem of a song directory's own config file: `song.yaml`, else
+/// `song.yml` ([`song_config_file`]).
+const SONG_CONFIG_STEM: &str = "song";
+
+/// Whether `path` is named as a song directory's config: `song.yaml` or
+/// `song.yml`, exactly as written ([`is_yaml_config`]; `song.YAML` and
+/// `.song.yaml` are not). What the song files listing hides and what MCP
+/// takes for the directory layout.
+pub fn is_song_config_name(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem == SONG_CONFIG_STEM)
+        && is_yaml_config(path)
+}
+
+/// Whether the directory `dir` already holds a song config: a file the
+/// loader takes as a song's ([`is_song_config`]: `song.yml`, `album.yaml`,
+/// `.song.yaml`), or one named `song.yaml` or `song.yml` that does not read
+/// ([`is_song_config_name`]), which is the song's to fix, not to write
+/// over. One that reads as another `kind` (`kind: playlist`) is not one, as
+/// to the loader. Nothing is written beside or over one.
+pub fn has_song_config(dir: &Path) -> bool {
+    crate::util::files_to_look_up(dir).iter().any(|file| {
+        is_song_config(file) || (is_song_config_name(file) && song_yaml(file) != SongYaml::NotOne)
+    })
+}
+
+/// The file the config of the song in `dir` is read from and written to:
+/// its `song.yaml`, else its `song.yml`, else a new `song.yaml`
+/// ([`crate::util::yaml_file_at`]). A new `song.yaml` beside a `Song.yaml`
+/// (a case clash) is still `song.yaml`, as it always was.
+pub fn song_config_file(dir: &Path) -> PathBuf {
+    crate::util::yaml_file_at(dir, SONG_CONFIG_STEM)
+        .map(|file| file.path().to_path_buf())
+        .unwrap_or_else(|_| dir.join(format!("{SONG_CONFIG_STEM}.{}", YAML_EXTENSIONS[0])))
 }
 
 #[cfg(test)]
@@ -2923,6 +3422,25 @@ mod test {
         let songs = super::Songs::new(map);
         let song = songs.get("Song A").unwrap();
         assert_eq!(song.name(), "Song A");
+    }
+
+    #[test]
+    fn songs_get_says_why_a_song_did_not_load() {
+        let songs = super::Songs::with_failures(
+            std::collections::HashMap::new(),
+            vec![super::SongLoadFailure {
+                name: "Broken".to_string(),
+                base_path: std::path::PathBuf::from("/songs/Broken"),
+                config_path: std::path::PathBuf::from("/songs/Broken/song.yaml"),
+                error: "bad lighting".to_string(),
+            }],
+        );
+        let err = songs.get("Broken").err().expect("failed to load");
+        assert_eq!(err.to_string(), "song Broken failed to load: bad lighting");
+        assert_eq!(
+            songs.get("Missing").err().expect("missing").to_string(),
+            "unable to find song Missing"
+        );
     }
 
     #[test]
@@ -3932,6 +4450,299 @@ sections:
         Ok(())
     }
 
+    /// The walk finds the folders holding audio, MIDI or a song config, at
+    /// any depth below folders holding none, in name order. It passes over
+    /// hidden folders, a folder holding only hidden media, a project's
+    /// `lighting/` and `playlists/`, the root itself and what lies below a
+    /// song folder.
+    #[test]
+    fn song_dirs_finds_song_folders_at_any_depth() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            "Cfg/sub",
+            "Hid",
+            "Midi",
+            "artist/album/Song",
+            ".git",
+            "lighting/shows",
+            "playlists",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for file in ["root.wav", "Cfg/sub/b.wav", "Hid/.b.wav", ".git/a.wav"] {
+            crate::testutil::write_wav(root.join(file), vec![vec![1_i32, 2]], 44100)?;
+        }
+        crate::testutil::write_wav(
+            root.join("artist/album/Song/a.WAV"),
+            vec![vec![1_i32]],
+            44100,
+        )?;
+        fs::write(root.join("Midi/notes.mid"), "midi data")?;
+        fs::write(root.join("Cfg/song.yml"), "name: Cfg\ntracks: []\n")?;
+        fs::write(root.join("lighting/shows/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs:\n- Cfg\n",
+        )?;
+
+        assert_eq!(
+            super::song_dirs(root)?,
+            [
+                root.join("Cfg"),
+                root.join("Midi"),
+                root.join("artist/album/Song")
+            ]
+        );
+        Ok(())
+    }
+
+    /// An unreadable subdirectory is passed over; an unreadable root fails.
+    #[cfg(unix)]
+    #[test]
+    fn song_dirs_passes_over_an_unreadable_subdirectory() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Foo", "Locked/Bar"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        assert!(super::song_dirs(&root.join("missing")).is_err());
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(root.join("Locked")).is_ok() {
+            // Running as root: the folder reads all the same.
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+            return Ok(());
+        }
+        let dirs = super::song_dirs(root);
+        // On main, init failed here: it read each folder under the root.
+        let count = initialize_songs(root);
+        let locked = super::song_dirs(&root.join("Locked"));
+        // The player's loader still fails on it, as on main.
+        let loaded = get_all_songs(root);
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+        assert_eq!(dirs?, [root.join("Foo")]);
+        assert_eq!(count?, 1);
+        assert!(root.join("Foo/song.yaml").exists());
+        assert!(locked.is_err());
+        assert!(loaded.is_err(), "the loader fails on an unreadable folder");
+        assert!(!root.join("Locked/Bar/song.yaml").exists());
+        Ok(())
+    }
+
+    /// `songs --init .` in a project writes a config into each song folder
+    /// that has none, nested ones too, and nowhere else: not into `.git/`,
+    /// `lighting/` or `playlists/`, and not over a hand-edited `song.yaml`
+    /// or a `song.yaml` of another kind.
+    #[test]
+    fn initialize_songs_writes_into_song_folders_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            ".git",
+            "lighting",
+            "playlists",
+            "songs/Foo",
+            "songs/Bar",
+            "songs/artist/Baz",
+            "songs/Odd",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for dir in ["songs/Foo", "songs/Bar", "songs/artist/Baz", "songs/Odd"] {
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+        fs::write(root.join("lighting/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs: []\n",
+        )?;
+        let hand_edited = "# mine\nname: Foo Live\ntracks:\n  - name: t\n    file: t.wav\n";
+        fs::write(root.join("songs/Foo/song.yaml"), hand_edited)?;
+        let other_kind = "kind: playlist\nsongs: []\n";
+        fs::write(root.join("songs/Odd/song.yaml"), other_kind)?;
+
+        assert_eq!(initialize_songs(root)?, 4);
+
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Foo/song.yaml"))?,
+            hand_edited
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Odd/song.yaml"))?,
+            other_kind
+        );
+        for dir in ["songs/Bar", "songs/artist/Baz"] {
+            assert!(root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
+        for dir in [".git", "lighting", "playlists", "songs", "songs/artist", ""] {
+            assert!(!root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
+        Ok(())
+    }
+
+    /// The names `songs --init` gives its new songs (`new_songs`): two
+    /// `stems/` folders take their paths; a folder named as a song already
+    /// configured (`Old/song.yaml` naming "Intro"), or as a song that fails
+    /// to load but declares a name ("Outro"), takes its path, else the first
+    /// free ` (2)`. The loader then loads every song under its own name.
+    #[test]
+    fn initialize_songs_names_new_songs_past_taken_names() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            "SongA/stems",
+            "SongB/stems",
+            "set/Intro",
+            "Outro",
+            "Old",
+            "Broken",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for dir in ["SongA/stems", "SongB/stems", "set/Intro", "Outro", "Old"] {
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        fs::write(
+            root.join("Broken/song.yaml"),
+            "name: Outro\ntracks:\n  - name: t\n    file: missing.wav\n",
+        )?;
+        let before = get_all_songs(root)?;
+        assert!(before.failure("Outro").is_some(), "Outro fails to load");
+
+        assert_eq!(initialize_songs(root)?, 6);
+
+        let name = |dir: &str| -> Result<String, Box<dyn Error>> {
+            Ok(
+                crate::config::Song::deserialize(&root.join(dir).join("song.yaml"))?
+                    .name()
+                    .to_string(),
+            )
+        };
+        assert_eq!(name("SongA/stems")?, "SongA/stems");
+        assert_eq!(name("SongB/stems")?, "SongB/stems");
+        assert_eq!(name("set/Intro")?, "set/Intro");
+        assert_eq!(name("Outro")?, "Outro (2)");
+        let songs = get_all_songs(root)?;
+        let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "Intro",
+                "Outro (2)",
+                "SongA/stems",
+                "SongB/stems",
+                "set/Intro"
+            ]
+        );
+        Ok(())
+    }
+
+    /// A new song that nothing contests keeps its own name before another is
+    /// given a suffix: beside `Old/song.yaml` naming "B", a new `B/` is
+    /// `B (3)`, as the new `B (2)/` keeps `B (2)`.
+    #[test]
+    fn new_songs_keep_uncontested_names_before_suffixes() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Old", "B", "B (2)"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+
+        let found = super::new_songs(root, std::collections::HashSet::new())?;
+
+        let names: Vec<_> = found
+            .new
+            .iter()
+            .map(|song| (song.dir.clone(), song.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [(root.join("B"), "B (3)"), (root.join("B (2)"), "B (2)")]
+        );
+        assert_eq!(found.kept, [root.join("Old")]);
+        Ok(())
+    }
+
+    /// The names no new song may be given are the player's and those
+    /// configured under the songs root; an unreadable root leaves the
+    /// player's alone, with a warning, rather than failing.
+    #[test]
+    fn taken_song_names_adds_configured_names_and_passes_over_a_missing_root(
+    ) -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Old"))?;
+        crate::testutil::write_wav(root.join("Old/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        let loaded = std::collections::HashSet::from(["Loaded".to_string()]);
+
+        assert_eq!(
+            super::taken_song_names(root, loaded.clone()),
+            std::collections::HashSet::from(["Loaded".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            super::taken_song_names(&root.join("missing"), loaded.clone()),
+            loaded
+        );
+        Ok(())
+    }
+
+    /// `songs --init` does not follow a symlinked folder, as on main: a song
+    /// outside the tree is not written into.
+    #[cfg(unix)]
+    #[test]
+    fn initialize_songs_does_not_follow_symlinked_folders() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path().join("songs");
+        let outside = tempdir.path().join("outside/Song");
+        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&outside)?;
+        crate::testutil::write_wav(outside.join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        std::os::unix::fs::symlink(tempdir.path().join("outside"), root.join("Linked"))?;
+        std::os::unix::fs::symlink(&outside, root.join("Song"))?;
+
+        assert_eq!(super::song_dirs(&root)?, Vec::<PathBuf>::new());
+        assert_eq!(initialize_songs(&root)?, 0);
+        assert!(!outside.join("song.yaml").exists());
+        Ok(())
+    }
+
+    /// A folder holding only a `song.yaml` of another kind, and no audio or
+    /// MIDI, is no song folder: the walk looks into it, and init leaves the
+    /// file as it is.
+    #[test]
+    fn song_dirs_looks_into_a_folder_with_another_kind_of_song_yaml() -> Result<(), Box<dyn Error>>
+    {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Pl/Inner"))?;
+        let playlist = "kind: playlist\nsongs: []\n";
+        fs::write(root.join("Pl/song.yaml"), playlist)?;
+        crate::testutil::write_wav(root.join("Pl/Inner/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+
+        assert_eq!(super::song_dirs(root)?, [root.join("Pl/Inner")]);
+        assert_eq!(initialize_songs(root)?, 1);
+        assert_eq!(fs::read_to_string(root.join("Pl/song.yaml"))?, playlist);
+        assert!(root.join("Pl/Inner/song.yaml").exists());
+        Ok(())
+    }
+
     #[test]
     fn song_initialize_skips_non_file_entries() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?;
@@ -4564,24 +5375,237 @@ pilot:
         Ok(())
     }
 
+    /// `songs --init` reads a file's kind by its extension in any case
+    /// (`FileKind::of`): `Bass.WAV` is a track, `Song.MID` the MIDI
+    /// playback, `dmx_Lights.MID` a MIDI DMX light show and `Show.LIGHT` a
+    /// DSL light show, as the file listing and the upload call them.
     #[test]
-    fn is_supported_audio_extension_accepted() {
-        for ext in &["wav", "mp3", "flac", "ogg", "aac", "m4a", "aiff"] {
-            assert!(
-                super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to be a supported audio extension"
-            );
+    fn initialize_reads_extensions_in_any_case() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("loud");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("Bass.WAV"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("Song.MID"), &midi_bytes)?;
+        fs::write(song_dir.join("dmx_Lights.MID"), &midi_bytes)?;
+        fs::write(
+            song_dir.join("Show.LIGHT"),
+            "show \"loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}",
+        )?;
+
+        let song = super::Song::initialize(&song_dir)?;
+
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "bass");
+        assert!(song.midi_playback().is_some());
+        assert_eq!(song.light_shows().len(), 1);
+        assert_eq!(song.dsl_lighting_shows().len(), 1);
+        Ok(())
+    }
+
+    /// With every case counted, the last MIDI file by name is the playback:
+    /// `notes.mid` and `old.MID` give `old.MID` (main passed it over and
+    /// took `notes.mid`). A corrupt `Bad.WAV` now fails the song's init, as
+    /// a corrupt `bad.wav` already did.
+    #[test]
+    fn initialize_counts_every_case_when_picking_and_reading() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pick");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("notes.mid"), &midi_bytes)?;
+        fs::write(song_dir.join("old.MID"), &midi_bytes)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        let playback = song.midi_playback().expect("MIDI playback");
+        assert!(
+            playback.file_path().ends_with("old.MID"),
+            "{}",
+            playback.file_path().display()
+        );
+
+        fs::write(song_dir.join("Bad.WAV"), "")?;
+        assert!(super::Song::initialize(&song_dir).is_err());
+        Ok(())
+    }
+
+    /// `load_tracks` takes an audio file whatever its extension's case.
+    #[test]
+    fn track_load_tracks_uppercase_extension() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("Bass.WAV");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name(), "bass");
+        Ok(())
+    }
+
+    /// A song config's name stays lowercase (`is_yaml_config`): the loader
+    /// passes over a `song.YAML`, as on main.
+    #[test]
+    fn get_all_songs_passes_over_uppercase_yaml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("shouty");
+        fs::create_dir(&song_dir)?;
+        fs::write(
+            song_dir.join("song.YAML"),
+            "kind: song\nname: Shouty\ntracks: []\n",
+        )?;
+
+        let songs = super::get_all_songs(tempdir.path())?;
+
+        assert!(songs.list().is_empty());
+        assert!(songs.failures().is_empty());
+        Ok(())
+    }
+
+    /// A name is hidden when it starts with a dot, AppleDouble files too.
+    #[test]
+    fn is_hidden_is_a_leading_dot() {
+        for name in [".git", ".draft.light", "._Bass.wav", "Song/.song.yaml"] {
+            assert!(super::is_hidden(Path::new(name)), "{name}");
+        }
+        for name in ["Bass.wav", "a.b", ".git/song.yaml", "Song"] {
+            assert!(!super::is_hidden(Path::new(name)), "{name}");
         }
     }
 
+    /// The loader passes over a hidden directory but reads a hidden config.
     #[test]
-    fn is_supported_audio_extension_rejected() {
-        for ext in &["txt", "yaml", "mid", "light", ""] {
-            assert!(
-                !super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to NOT be a supported audio extension"
+    fn get_all_songs_passes_over_hidden_dirs_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        for (dir, file, name) in [
+            (".git", "song.yaml", "Git"),
+            ("Shown", ".song.yaml", "Shown"),
+        ] {
+            fs::create_dir(tempdir.path().join(dir))?;
+            fs::write(
+                tempdir.path().join(dir).join(file),
+                format!("name: {name}\ntracks: []\n"),
+            )?;
+        }
+        let songs = get_all_songs(tempdir.path())?;
+        let names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        assert_eq!(names, ["Shown"]);
+        Ok(())
+    }
+
+    /// A new config leaves hidden files out: a hidden track, a draft light
+    /// show, and an AppleDouble file, which is no audio and failed the init.
+    #[test]
+    fn initialize_leaves_hidden_files_out() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("song");
+        fs::create_dir(&song_dir)?;
+        for name in ["track.wav", ".click.wav"] {
+            crate::testutil::write_wav(song_dir.join(name), vec![vec![1_i32, 2, 3]], 44100)?;
+        }
+        fs::write(song_dir.join("._track.wav"), [0_u8, 5, 22, 7])?;
+        fs::write(song_dir.join(".draft.light"), "show \"Draft\" {}\n")?;
+
+        let config = super::Song::initialize(&song_dir)?.get_config();
+
+        let tracks: Vec<_> = config
+            .tracks()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(tracks, ["track"]);
+        assert!(config.lighting().is_none());
+        Ok(())
+    }
+
+    /// A song directory's config is named `song.yaml` or `song.yml`,
+    /// exactly as written.
+    #[test]
+    fn is_song_config_name_is_exact() {
+        for name in ["song.yaml", "song.yml", "Artist/Song/song.yml"] {
+            assert!(super::is_song_config_name(Path::new(name)), "{name}");
+        }
+        for name in [
+            "Song.yaml",
+            "song.YAML",
+            ".song.yaml",
+            "song.yaml.bak",
+            "album.yaml",
+            "song",
+        ] {
+            assert!(!super::is_song_config_name(Path::new(name)), "{name}");
+        }
+    }
+
+    /// A directory has a song config when it holds one the loader loads, by
+    /// whatever name (`song.yml`, `album.yaml`, the hidden `.song.yaml`), or a
+    /// `song.yaml`/`song.yml` that does not read. A playlist (`song.yml`
+    /// with `kind: playlist` too), a `song.YAML` (which the loader passes
+    /// over) or media alone is none.
+    #[test]
+    fn has_song_config_answers_as_the_loader_does() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song = |name: &str| format!("name: {name}\ntracks: []\n");
+        let layouts: &[(&str, &str, String, bool)] = &[
+            ("Yml", "song.yml", song("Yml"), true),
+            ("Album", "album.yaml", song("Album"), true),
+            ("Hidden", ".song.yaml", song("Hidden"), true),
+            ("Broken", "song.yaml", "{{not yaml".to_string(), true),
+            ("BrokenYml", "song.yml", "{{not yaml".to_string(), true),
+            (
+                "PlaylistYml",
+                "song.yml",
+                "kind: playlist\nsongs: []\n".to_string(),
+                false,
+            ),
+            (
+                "Set",
+                "set.yaml",
+                "kind: playlist\nsongs: []\n".to_string(),
+                false,
+            ),
+            ("Shouty", "song.YAML", song("Shouty"), false),
+            ("Media", "notes.txt", "hello".to_string(), false),
+        ];
+        for (dir, file, body, _) in layouts {
+            fs::create_dir(tempdir.path().join(dir))?;
+            fs::write(tempdir.path().join(dir).join(file), body)?;
+        }
+        fs::create_dir(tempdir.path().join("Empty"))?;
+        assert!(!super::has_song_config(&tempdir.path().join("Empty")));
+
+        let loaded = super::get_all_songs(tempdir.path())?;
+        for (dir, file, _, has) in layouts {
+            assert_eq!(
+                super::has_song_config(&tempdir.path().join(dir)),
+                *has,
+                "{dir}/{file}"
             );
         }
+        // The loader loads the ones that read, `.song.yaml` among them.
+        let mut names: Vec<_> = loaded.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["Album", "Hidden", "Yml"]);
+        Ok(())
+    }
+
+    /// A song's config file is its `song.yaml`, else its `song.yml`, else a
+    /// new `song.yaml`.
+    #[test]
+    fn song_config_file_is_song_yaml_else_song_yml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        assert_eq!(super::song_config_file(dir), dir.join("song.yaml"));
+        fs::write(dir.join("song.yml"), "name: A\ntracks: []\n")?;
+        assert_eq!(super::song_config_file(dir), dir.join("song.yml"));
+        fs::write(dir.join("song.yaml"), "name: A\ntracks: []\n")?;
+        assert_eq!(super::song_config_file(dir), dir.join("song.yaml"));
+        Ok(())
     }
 
     #[test]
@@ -5073,5 +6097,41 @@ pilot:
             ..song
         };
         assert_eq!(with_audio.length(), Duration::from_secs(200));
+    }
+}
+
+#[cfg(test)]
+mod song_config_for_test {
+    use super::check_song_config_for;
+
+    /// #680: a folder's config may be written or deleted as a song's only
+    /// when it is that song's, or no song's at all.
+    #[test]
+    fn a_config_is_written_only_as_the_song_it_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let config = foo.join("song.yaml");
+        // None there yet.
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Bar", None), Ok(()));
+        let refused = check_song_config_for(&config, "Foo", None).unwrap_err();
+        assert_eq!(refused.declares, "Bar");
+        assert_eq!(
+            refused.to_string(),
+            "Foo/song.yaml is the config of the song \"Bar\", not of \"Foo\"; it is left as it is"
+        );
+        // A song config that does not read goes by its folder, as the
+        // loader records its failure.
+        std::fs::write(&config, "kind: song\nname: Bar\ntracks: 5\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        assert!(check_song_config_for(&config, "Bar", None).is_err());
+        // A write of Bar's own config, under the folder's name, is Bar's
+        // edit; another song's config over it is not.
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", Some("Bar")), Ok(()));
+        assert!(check_song_config_for(&config, "Foo", Some("Foo")).is_err());
+        assert!(check_song_config_for(&config, "Foo", Some("Qux")).is_err());
     }
 }

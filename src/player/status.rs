@@ -15,6 +15,7 @@
 use std::{sync::Arc, time::Duration};
 
 use super::{Player, ReactiveLoopState, ReactiveLoopStateKind, SectionBounds, TransportSnapshot};
+use crate::webui::wire::messages::{AmbientReading, AmbientState, AmbientUnread};
 use crate::{dmx::engine::AmbientReport, playlist::Playlist, songs::Song};
 
 /// How long a status read waits on the DMX engine. The effects loop holds
@@ -40,6 +41,33 @@ pub struct AmbientStatus {
     pub report: AmbientReport,
     /// Whose settings the show plays, when there is a show.
     pub source: Option<crate::playlist::AmbientSource>,
+}
+
+/// Why a status has no ambient light to report from a read that did not
+/// answer.
+pub const AMBIENT_UNREAD: &str = "could not read the ambient light's state";
+
+impl DmxRead<AmbientStatus> {
+    /// Ambient light as every surface reports it: the web UI's playback
+    /// message and MCP's `status` serialize this, gRPC's `Status` maps it.
+    pub fn view(&self) -> AmbientState {
+        match self {
+            DmxRead::Read(ambient) => AmbientState::Read(AmbientReading {
+                mode: ambient.report.mode,
+                source: ambient.source,
+                show: ambient
+                    .report
+                    .show
+                    .as_ref()
+                    .map(|show| show.display().to_string()),
+                state: ambient.report.state.to_string(),
+            }),
+            DmxRead::TimedOut | DmxRead::Failed(_) => AmbientState::Unread(AmbientUnread {
+                available: false,
+                reason: AMBIENT_UNREAD.to_string(),
+            }),
+        }
+    }
 }
 
 /// Whether the current song's lighting will fire: armed, how many cues it
@@ -83,6 +111,11 @@ pub struct PlayerStatus {
     /// The current song's lighting, `None` without a DMX engine;
     /// `Some(Read(None))` with no show loaded.
     pub lighting: Option<DmxRead<Option<LightingStatus>>>,
+    /// Whether audio is actually leaving the machine, when the device can
+    /// report it. The transport says what it is doing; a surface wants
+    /// both -- "playing" next to "stalled" is the combination worth a red
+    /// light.
+    pub audio_health: Option<super::AudioOutputHealth>,
 }
 
 impl PlayerStatus {
@@ -277,6 +310,7 @@ impl Player {
             deferred_reloads: self.deferred_reloads(),
             ambient: None,
             lighting: None,
+            audio_health: self.hardware_status().audio_output,
         }
     }
 }
@@ -284,6 +318,36 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every surface reports ambient light from this one view: a read says
+    /// what it is doing, and a read that did not answer says so rather
+    /// than passing for no DMX engine.
+    #[test]
+    fn ambient_view_says_when_the_read_did_not_answer() {
+        let read = DmxRead::Read(AmbientStatus {
+            report: AmbientReport {
+                mode: crate::dmx::engine::AmbientMode::On,
+                show: Some(std::path::PathBuf::from("lighting/walk_in.light")),
+                state: "playing",
+            },
+            source: Some(crate::playlist::AmbientSource::Profile),
+        });
+        assert_eq!(
+            serde_json::to_value(read.view()).unwrap(),
+            serde_json::json!({
+                "mode": "on",
+                "source": "profile",
+                "show": "lighting/walk_in.light",
+                "state": "playing",
+            })
+        );
+        for unread in [DmxRead::TimedOut, DmxRead::Failed("gone".to_string())] {
+            assert_eq!(
+                serde_json::to_value(unread.view()).unwrap(),
+                serde_json::json!({ "available": false, "reason": AMBIENT_UNREAD })
+            );
+        }
+    }
 
     /// A DMX read that does not come back in time is reported as timed
     /// out, not waited on, and every read asked while it is outstanding
@@ -346,7 +410,7 @@ mod tests {
         assert!(matches!(read, DmxRead::TimedOut));
         released.store(true, std::sync::atomic::Ordering::SeqCst);
         // The read finishes with nobody waiting on it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !reads
             .pending
             .lock()

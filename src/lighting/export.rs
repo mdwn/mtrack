@@ -30,15 +30,16 @@
 
 pub mod gdtf;
 
+pub use super::mvr_types::{FixedFixture, MvrExport};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
 use std::path::Path;
 
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::import::fixture_filename_stem;
+use super::effects::out_of_frame;
+use super::mvr_types::export_file_name;
 use super::types::{ChannelDef, Fixture, FixtureType, Vec3, Venue};
 
 /// How an export is run.
@@ -71,40 +72,6 @@ impl MvrExportOptions {
             layers_from_tags: false,
         }
     }
-}
-
-/// What an export produced, for reporting.
-#[derive(Debug, Serialize)]
-pub struct MvrExport {
-    /// The venue's name.
-    pub venue: String,
-    /// The `.mvr` written, project-relative.
-    pub output: String,
-    /// Fixtures in the scene.
-    pub fixtures: usize,
-    /// Focus points in the scene.
-    pub focus_points: usize,
-    /// GDTF archives embedded from the library, by entry name.
-    pub embedded_gdtfs: Vec<String>,
-    /// GDTF archives generated for native fixture types: entry name →
-    /// fixture type.
-    pub generated_gdtfs: BTreeMap<String, String>,
-    /// Fixtures with a position (so with a transform in the scene).
-    pub positioned_fixtures: usize,
-    /// The fixed fixtures (types with no pan or tilt) that have a position,
-    /// each with the focus point it is aimed at, if any. A pre-viz tool aims
-    /// the unlinked ones at the origin.
-    pub fixed_fixtures: Vec<FixedFixture>,
-    /// What was skipped or approximated.
-    pub warnings: Vec<String>,
-}
-
-/// A fixed fixture and the focus point the export links it to.
-#[derive(Clone, Debug, Serialize)]
-pub struct FixedFixture {
-    pub name: String,
-    /// The focus point its rest beam passes within a degree of, if any.
-    pub focus: Option<String>,
 }
 
 /// Exports a venue to a `.mvr` in the project. All validation runs before
@@ -175,8 +142,7 @@ pub fn write_export(
     Ok(report)
 }
 
-/// Where exports land, relative to the project.
-pub const EXPORT_DIR: &str = "lighting/export";
+pub use super::mvr_types::EXPORT_DIR;
 
 /// [`export_mvr`] without the write: the archive bytes and the report
 /// (whose `output` names where [`export_mvr`] would put them).
@@ -452,23 +418,9 @@ pub fn export_mvr_bytes(
     ))
 }
 
-/// The output's bare file name: `.mvr`, no directories, nothing hidden.
+/// The output's bare file name ([`export_file_name`]).
 fn output_path(options: &MvrExportOptions) -> Result<String, Box<dyn Error>> {
-    let output = match &options.output {
-        Some(output) => output.trim().to_string(),
-        None => format!("{}.mvr", fixture_filename_stem(&options.venue)),
-    };
-    let bare = Path::new(&output).file_name() == Some(std::ffi::OsStr::new(output.as_str()));
-    if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
-        return Err(format!(
-            "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
-        )
-        .into());
-    }
-    if !output.to_ascii_lowercase().ends_with(".mvr") || output.len() <= 4 {
-        return Err(format!("output \"{output}\" must end in .mvr").into());
-    }
-    Ok(output)
+    Ok(export_file_name(options.output.as_deref(), &options.venue)?)
 }
 
 /// A zip entry name for a source: the wanted name, or the first free
@@ -638,7 +590,9 @@ fn render_scene(
 
 /// Whether a type has a pose to aim: a pan or a tilt channel.
 fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
-    channels.contains_key("pan") || channels.contains_key("tilt")
+    channels
+        .keys()
+        .any(|channel| super::engine::is_position_channel(channel))
 }
 
 /// How far, in degrees, a fixed fixture's beam may pass from a focus point
@@ -646,16 +600,12 @@ fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
 /// lens a few centimetres off the mounting point, both fit well inside it.
 const FOCUS_TOLERANCE_DEG: f64 = 1.0;
 
-/// The direction a fixture's beam points at rest, a unit vector in stage
-/// space: −(third column of R = Rz·Ry·Rx), the mounting's −Z. Straight down
-/// for an unrotated fixture.
+/// The direction a fixture's beam points at rest ([`effects::rest_beam`]
+/// of its mounting).
+///
+/// [`effects::rest_beam`]: super::effects::rest_beam
 pub fn rest_beam(fixture: &Fixture) -> Vec3 {
-    let [rx, ry, rz] = fixture.rotation().unwrap_or([0.0; 3]).map(f64::to_radians);
-    [
-        -(rz.cos() * ry.sin() * rx.cos() + rz.sin() * rx.sin()),
-        -(rz.sin() * ry.sin() * rx.cos() - rz.cos() * rx.sin()),
-        -(ry.cos() * rx.cos()),
-    ]
+    super::effects::rest_beam(fixture.rotation().unwrap_or([0.0; 3]))
 }
 
 /// How far along the beam an aim point sits when the beam never meets the
@@ -723,22 +673,9 @@ fn aimed_at<'a>(fixture: &Fixture, venue: &'a Venue) -> Option<&'a str> {
 ///
 /// [`Matrix::rotation_degrees`]: super::mvr::Matrix::rotation_degrees
 fn matrix_text(position: &Vec3, rotation_deg: &Vec3, origin_mm: &Vec3) -> String {
-    let (rx, ry, rz) = (
-        rotation_deg[0].to_radians(),
-        rotation_deg[1].to_radians(),
-        rotation_deg[2].to_radians(),
-    );
-    let rotate = |v: [f64; 3]| -> [f64; 3] {
-        let (cx, sx) = (rx.cos(), rx.sin());
-        let v = [v[0], cx * v[1] - sx * v[2], sx * v[1] + cx * v[2]];
-        let (cy, sy) = (ry.cos(), ry.sin());
-        let v = [cy * v[0] + sy * v[2], v[1], -sy * v[0] + cy * v[2]];
-        let (cz, sz) = (rz.cos(), rz.sin());
-        [cz * v[0] - sz * v[1], sz * v[0] + cz * v[1], v[2]]
-    };
-    let u = rotate([1.0, 0.0, 0.0]);
-    let v = rotate([0.0, 1.0, 0.0]);
-    let w = rotate([0.0, 0.0, 1.0]);
+    let u = out_of_frame(*rotation_deg, [1.0, 0.0, 0.0]);
+    let v = out_of_frame(*rotation_deg, [0.0, 1.0, 0.0]);
+    let w = out_of_frame(*rotation_deg, [0.0, 0.0, 1.0]);
     let o = [
         position[0] * 1000.0 + origin_mm[0],
         position[1] * 1000.0 + origin_mm[1],
@@ -880,6 +817,17 @@ mod tests {
     use crate::lighting::parser::parse_venues;
     use std::path::PathBuf;
 
+    #[test]
+    fn an_export_keeps_its_own_file_naming() {
+        // Not the venue file stem (`built-in`): a kept export is not renamed.
+        assert_eq!(export_file_name(None, "built-in").unwrap(), "built_in.mvr");
+        assert_eq!(
+            export_file_name(None, "Robe-Esprite Rig").unwrap(),
+            "robe_esprite_rig.mvr"
+        );
+        assert_eq!(export_file_name(None, "///").unwrap(), "fixture.mvr");
+    }
+
     /// The scene the tests seed from: two bricks and a mover of the
     /// synthetic GDTF, a focus point, one layer.
     const SCENE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -902,10 +850,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let gdtf = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let bytes = crate::lighting::gdtf::build_zip(&[
             ("GeneralSceneDescription.xml", SCENE.as_bytes()),
             ("Astera_PB15.gdtf", gdtf.as_slice()),
@@ -1387,12 +1332,9 @@ mod tests {
         // directory, and a type that uses it.
         let other_dir = project.join("lighting/library/other");
         std::fs::create_dir_all(&other_dir).unwrap();
-        let other = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", "Other Brick")
-                .as_bytes(),
-        )]);
+        let other = crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Synth Brick", "Other Brick"),
+        );
         std::fs::write(other_dir.join("Astera_PB15.gdtf"), &other).unwrap();
         std::fs::create_dir_all(project.join("lighting/fixture_types")).unwrap();
         std::fs::write(

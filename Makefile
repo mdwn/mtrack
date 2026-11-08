@@ -13,9 +13,11 @@
 #
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
+WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
+WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -30,10 +32,18 @@ setup-dev:
 ## Build everything
 build: build-ui build-rust
 
-## Compute a hash of all frontend inputs (source, proto, lockfile).
-# src/gen is generated from src/proto (hashed here already) and gitignored, so it is left
-# out: a checkout that has never run buf would otherwise never match a stamp built elsewhere.
-FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
+## The player sources the rules crate compiles into the web UI's WebAssembly
+## module: read off the crate's `#[path]` includes (each a `../`-prefixed path
+## under the player's src/, in lib.rs and its lighting module), so the list
+## lives in the crate alone; and the grammar its parser derives from.
+WASM_SOURCES := $(shell grep -ho '\[path = "[^"]*"\]' $(WASM_CRATE_DIR)/src/*.rs $(WASM_CRATE_DIR)/src/lighting/*.rs | sed 's|.*"\(\.\./\)*\(src/[^"]*\)"\]|$(ROOT_DIR)/\2|') $(ROOT_DIR)/src/lighting/grammar.pest
+
+## Compute a hash of all frontend inputs (source, proto, lockfile, the rules crate and the
+## player sources it compiles).
+# src/gen is generated from src/proto and the rules crate (hashed here already) and gitignored,
+# so it is left out: a checkout that has never run buf would otherwise never match a stamp
+# built elsewhere.
+FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto $(WASM_CRATE_DIR) $(WASM_SOURCES) -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
 FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
 
 ## Install frontend dependencies
@@ -44,12 +54,21 @@ install-ui:
 gen-proto:
 	cd $(SVELTE_DIR) && npx @bufbuild/buf generate
 
+## Compile the player's rules (beat grid, tempo map, metronome) to WebAssembly for the
+## web UI, with their TypeScript types. Generated into src/gen like the proto bindings.
+## wasm-pack uses the wasm-bindgen CLI on PATH (pinned to the crate's wasm-bindgen; setup.sh
+## and CI install it) and the module is optimised with the pinned wasm-opt
+## (scripts/install-binaryen.sh), so nothing is downloaded at build time.
+gen-wasm:
+	cd $(WASM_CRATE_DIR) && wasm-pack build --release --target web --out-dir $(WASM_GEN_DIR) --out-name mtrack_rules
+	wasm-opt -Os -o $(WASM_GEN_DIR)/mtrack_rules_bg.wasm $(WASM_GEN_DIR)/mtrack_rules_bg.wasm
+
 ## Build the Svelte frontend (skips if sources unchanged)
 build-ui:
 	@if [ -f "$(FRONTEND_STAMP)" ] && [ "$$(cat "$(FRONTEND_STAMP)")" = "$(FRONTEND_HASH)" ]; then \
 		echo "Frontend up to date, skipping build."; \
 	else \
-		$(MAKE) install-ui gen-proto && \
+		$(MAKE) install-ui gen-proto gen-wasm && \
 		cd $(SVELTE_DIR) && MTRACK_UI_BUILD=$(FRONTEND_HASH) npm run build && \
 		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
 	fi
@@ -58,9 +77,9 @@ build-ui:
 build-rust:
 	cargo build --release --manifest-path $(ROOT_DIR)/Cargo.toml
 
-## Run all tests
+## Run all tests (the player's, the harness's and the rules crate's equality test)
 test: test-ui
-	cargo test --manifest-path $(ROOT_DIR)/Cargo.toml
+	cargo test --workspace --manifest-path $(ROOT_DIR)/Cargo.toml
 
 ## Run Playwright UI tests (mock server)
 test-ui:
@@ -203,4 +222,4 @@ docs-clean:
 ## Clean build artifacts
 clean: docs-clean
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml
-	rm -rf $(SVELTE_DIR)/dist
+	rm -rf $(SVELTE_DIR)/dist $(WASM_GEN_DIR)

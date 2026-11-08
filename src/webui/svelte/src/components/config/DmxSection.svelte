@@ -13,18 +13,18 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { Dmx, Universe } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
 
   interface Props {
-    dmx: any;
+    dmx: Dmx;
     onchange: () => void;
   }
 
   let { dmx = $bindable(), onchange }: Props = $props();
 
-  function setOrDelete(key: string, value: any) {
+  function setOrDelete<K extends keyof Dmx>(key: K, value: Dmx[K] | "") {
     if (value === undefined || value === "") {
       delete dmx[key];
     } else {
@@ -34,27 +34,26 @@
   }
 
   // Universe helpers
-  let universes: { universe: number; name: string }[] = $derived(
-    dmx.universes || [],
-  );
+  let universes: Universe[] = $derived(dmx.universes);
 
   function addUniverse() {
-    if (!dmx.universes) dmx.universes = [];
+    const all = dmx.universes;
     const next =
-      dmx.universes.length > 0
-        ? Math.max(...dmx.universes.map((u: any) => u.universe)) + 1
-        : 1;
-    dmx.universes.push({ universe: next, name: "" });
+      all.length > 0 ? Math.max(...all.map((u) => u.universe)) + 1 : 1;
+    all.push({ universe: next, name: "" });
     onchange();
   }
 
   function removeUniverse(i: number) {
     dmx.universes.splice(i, 1);
-    if (dmx.universes.length === 0) delete dmx.universes;
     onchange();
   }
 
-  function updateUniverse(i: number, key: string, value: any) {
+  function updateUniverse<K extends keyof Universe>(
+    i: number,
+    key: K,
+    value: Universe[K],
+  ) {
     dmx.universes[i][key] = value;
     onchange();
   }

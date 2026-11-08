@@ -196,11 +196,7 @@ mod match_tests {
     use super::*;
 
     fn description() -> Description {
-        let xml = read_description_xml(&build_zip(&[(
-            "description.xml",
-            SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]))
-        .unwrap();
+        let xml = read_description_xml(&crate::testutil::lighting::synthetic_gdtf()).unwrap();
         parse_description(&xml).unwrap()
     }
 

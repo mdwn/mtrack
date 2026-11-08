@@ -1,5 +1,5 @@
 [workspace]
-members = ["harness"]
+members = ["harness", "crates/mtrack-rules-wasm"]
 exclude = ["fuzz"]
 
 [package]
@@ -32,6 +32,14 @@ include = [
     "!src/webui/svelte/playwright-report/**",
     "!src/webui/svelte/.playwright-mcp/**",
 ]
+
+[features]
+# Never needed by the player itself. `crates/mtrack-rules-wasm` compiles some
+# of these sources (tempo, beat grid, the tempo and metronome configs) into
+# the web UI's WebAssembly module with this feature on, deriving their
+# TypeScript types; declaring it here keeps the `cfg_attr` in those files a
+# known cfg, and `--all-features` (make lint-rust) still builds.
+tsify = ["dep:tsify-next", "dep:wasm-bindgen"]
 
 [package.metadata.deb]
 # Depends are hand-written, NOT `$auto`. dpkg-shlibdeps emits *versioned*
@@ -78,7 +86,8 @@ config = "0.15.19"
 cpal = "0.18.1"
 rayon = "1.11.0"
 num_cpus = "1.17.0"
-duration-string = "0.5.3"
+# Every variant of a config enum, for the web UI's selects (`VariantArray`).
+strum = { version = "0.28", features = ["derive"] }
 symphonia = { version = "0.6", features = ["all"] }
 midir = "0.11.0"
 midly = "0.5.3"
@@ -91,7 +100,8 @@ rubato = "3"
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 yaml-rust2 = "0.11"
-shh = "1.0.1"
+# One stem for a name typed composed or decomposed (`lighting::files::stem`).
+unicode-normalization = "0.1.26"
 spin_sleep = "1.3.3"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = [
@@ -117,6 +127,9 @@ pest = "2.8"
 pest_derive = "2.8"
 indexmap = { version = "2", features = ["serde"] }
 serde_json = "1.0"
+# Only with the `tsify` feature (see [features]).
+tsify-next = { version = "0.5", default-features = false, features = ["js"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 sha2 = "0.10"
 ratatui = "0.30"
 crossterm = "0.29"
@@ -139,6 +152,17 @@ futures-util = "0.3"
 tempfile = "3.26.0"
 quick-xml = "0.41.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+
+# ALSA's thread-local error handler, to quiet device enumeration (already in
+# the tree through cpal). libc looks up alsa-lib 1.2.15's log API at runtime,
+# since alsa-sys does not bind it and older alsa-lib does not have it. `alsa`
+# reads a plug node's width from the hw node's hw_params, which cpal cannot
+# where it knows none of the node's formats (the WING); the version cpal
+# already pulls in.
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.11.0"
+alsa-sys = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.7"

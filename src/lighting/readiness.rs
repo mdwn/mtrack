@@ -19,12 +19,13 @@
 //! both build their [`LintContext`] here rather than each resolving groups and
 //! universes on its own.
 
+pub use crate::lighting::findings::VenueError;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::dmx::engine::Engine;
 use crate::lighting::lint::{
-    lint_shows, universe_coverage, GroupCapabilities, LintContext, Warning,
+    lint_shows, universe_coverage, GroupCapabilities, LintContext, Severity, Warning,
 };
 use crate::lighting::parser::LightShow;
 use crate::lighting::system::LightingSystem;
@@ -54,12 +55,7 @@ pub fn songs_with_lighting(songs: &crate::songs::Songs) -> Vec<(Arc<Song>, Vec<L
         if song.dsl_lighting_shows().is_empty() {
             continue;
         }
-        // In the order the player has them.
-        let shows: Vec<LightShow> = song
-            .dsl_lighting_shows()
-            .iter()
-            .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-            .collect();
+        let shows = crate::lighting::evaluate::registered_shows(&song);
         out.push((song, shows));
     }
     out
@@ -91,14 +87,6 @@ pub struct VenueFacts {
     pub venue_error: Option<VenueError>,
 }
 
-/// A venue that does not register: the fixture that fails it and why.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct VenueError {
-    pub venue: String,
-    pub fixture: String,
-    pub reason: String,
-}
-
 impl VenueFacts {
     /// Resolves `names` against the current venue of `system`.
     ///
@@ -123,21 +111,13 @@ impl VenueFacts {
         }
         // A venue that does not register lights nothing; say why rather than
         // letting it read as an empty rig.
-        let fixtures = match system.get_current_venue_fixtures() {
+        let fixtures = match system.load_current_venue_fixtures() {
             Ok(fixtures) => fixtures,
-            Err(e) => {
-                let venue = system.current_venue().unwrap_or_default().to_string();
-                facts.venue_error = Some(match system.venue_problem(&venue) {
-                    Some((fixture, reason)) => VenueError {
-                        venue,
-                        fixture,
-                        reason,
-                    },
-                    None => VenueError {
-                        venue,
-                        fixture: String::new(),
-                        reason: e.to_string(),
-                    },
+            Err(fault) => {
+                facts.venue_error = Some(VenueError {
+                    venue: fault.venue.unwrap_or_default(),
+                    fixture: fault.fixture.unwrap_or_default(),
+                    reason: fault.reason,
                 });
                 Vec::new()
             }
@@ -163,6 +143,7 @@ impl VenueFacts {
             .map(|overlap| Warning {
                 kind: "patch-overlap",
                 message: overlap.to_string(),
+                severity: Severity::Attention,
             })
             .chain(
                 system
@@ -171,6 +152,7 @@ impl VenueFacts {
                     .map(|overrun| Warning {
                         kind: "patch-overrun",
                         message: overrun.to_string(),
+                        severity: Severity::Attention,
                     }),
             )
             .collect();

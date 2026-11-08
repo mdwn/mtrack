@@ -13,13 +13,17 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    BeatClockSeams,
+    Midi,
+    MidiDeviceInfo,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import type { MidiDeviceInfo } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
 
   interface Props {
-    midi: any;
+    midi: Midi;
     devices: MidiDeviceInfo[];
     onrefresh: () => void | Promise<void>;
     onchange: () => void;
@@ -42,12 +46,12 @@
     devices.filter((d) => d.has_output).map((d) => d.name),
   );
 
-  function set(key: string, value: any) {
+  function set<K extends keyof Midi>(key: K, value: Midi[K]) {
     midi[key] = value;
     onchange();
   }
 
-  function setOrDelete(key: string, value: any) {
+  function setOrDelete<K extends keyof Midi>(key: K, value: Midi[K] | "") {
     if (value === undefined || value === "") {
       delete midi[key];
     } else {
@@ -143,15 +147,16 @@
       value={midi.beat_clock_seams ?? "run_through"}
       disabled={!(midi.beat_clock ?? false)}
       onchange={(e) => {
-        const value = (e.target as HTMLSelectElement).value;
+        const value = (e.target as HTMLSelectElement).value as BeatClockSeams;
         setOrDelete(
           "beat_clock_seams",
           value === "run_through" ? undefined : value,
         );
       }}
     >
-      <option value="run_through">{$t("midi.beatClockSeamsRunThrough")}</option>
-      <option value="relocate">{$t("midi.beatClockSeamsRelocate")}</option>
+      {#each rules.config_choices().beat_clock_seams as s (s)}
+        <option value={s}>{$t(`midi.seams.${s}`)}</option>
+      {/each}
     </select>
   </div>
 </div>

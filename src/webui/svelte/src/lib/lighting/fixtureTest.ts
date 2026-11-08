@@ -20,51 +20,17 @@
  * on, and releases them when it stops.
  */
 
-/** Why testing cannot happen now. */
-export type TestUnavailable = "locked" | "playing" | "no_dmx" | "no_universes";
+import type {
+  FrameChannel,
+  TestAnswer,
+  TestMode,
+  TestOptions,
+  TestRequest,
+} from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
+import { dirParams } from "../api/config";
 
-export interface TestModeControls {
-  color: boolean;
-  /** `channel`: a dimmer channel; `folded`: no dimmer channel, so the level
-   *  scales the colour; null: no level at all. */
-  dimmer: "channel" | "folded" | null;
-  strobe: { min_hz: number; max_hz: number } | null;
-  pan: { min: number; max: number } | null;
-  tilt: { min: number; max: number } | null;
-  /** Further colour channels (white, amber, uv, …), each 0..1. */
-  levels: string[];
-}
-
-export interface TestMode {
-  /** null for a hand-written type, which has one way of being driven. */
-  name: string | null;
-  drivable: boolean;
-  error: string | null;
-  footprint: number;
-  controls: TestModeControls;
-  channels: { offset: number; name: string }[];
-}
-
-export interface TestUniverse {
-  universe: number;
-  name: string;
-  /** Whether olad has an output patched; null when it was not asked. */
-  patched: boolean | null;
-}
-
-export interface TestOptions {
-  fixture_type: string;
-  gdtf: boolean;
-  modes: TestMode[];
-  default_mode: string | null;
-  universes: TestUniverse[];
-  olad: { reachable: boolean | null; port: number } | null;
-  available: boolean;
-  unavailable: TestUnavailable | null;
-  /** The server's own sentence for `unavailable`. */
-  unavailable_message?: string | null;
-}
-
+/** The controls the panel holds, whatever the mode can take of them. */
 export interface TestControls {
   color: string;
   dimmer: number;
@@ -73,42 +39,6 @@ export interface TestControls {
   pan: number;
   tilt: number;
   levels: Record<string, number>;
-}
-
-export interface FrameChannel {
-  offset: number;
-  address: number;
-  name: string;
-  value: number;
-  raw: boolean;
-}
-
-export interface TestWarning {
-  kind: string;
-  message: string;
-  fixtures?: string[];
-  control?: string;
-}
-
-export interface TestAnswer {
-  active: boolean;
-  universe: number;
-  address: number;
-  footprint: number;
-  fixture_type: string;
-  mode: string | null;
-  expires_in_secs: number;
-  frame: FrameChannel[];
-  warnings: TestWarning[];
-}
-
-export interface TestBody {
-  fixture_type: string;
-  mode: string | null;
-  universe: number;
-  address: number;
-  controls: Record<string, string | number | null>;
-  raw: Record<string, number>;
 }
 
 const BASE = "/api/lighting/fixture-test";
@@ -129,7 +59,7 @@ export class TestRefused extends Error {
  *  so a healthy fixture visibly answers. */
 export function startingControls(mode: TestMode | null): TestControls {
   const levels: Record<string, number> = {};
-  for (const name of mode?.controls.levels ?? []) levels[name] = 0;
+  for (const name of mode?.controls?.levels ?? []) levels[name] = 0;
   return {
     color: "#ffffff",
     dimmer: 1,
@@ -149,15 +79,15 @@ export function testBody(
   address: number,
   controls: TestControls,
   raw: Record<number, number>,
-): TestBody {
+): TestRequest {
   const c = mode.controls;
   const out: Record<string, string | number | null> = {};
-  if (c.color) out.color = controls.color;
-  if (c.dimmer) out.dimmer = controls.dimmer;
-  if (c.strobe) out.strobe = controls.strobe;
-  if (c.pan) out.pan = controls.pan;
-  if (c.tilt) out.tilt = controls.tilt;
-  for (const name of c.levels) out[name] = controls.levels[name] ?? 0;
+  if (c?.color) out.color = controls.color;
+  if (c?.dimmer) out.dimmer = controls.dimmer;
+  if (c?.strobe) out.strobe = controls.strobe;
+  if (c?.pan) out.pan = controls.pan;
+  if (c?.tilt) out.tilt = controls.tilt;
+  for (const name of c?.levels ?? []) out[name] = controls.levels[name] ?? 0;
   const rawOut: Record<string, number> = {};
   for (const [offset, value] of Object.entries(raw)) rawOut[offset] = value;
   return {
@@ -170,9 +100,13 @@ export function testBody(
   };
 }
 
-/** The last address the fixture takes. */
+/** The last address the fixture takes (`PatchSpan::last`); a mode that
+ *  writes nothing is shown at its own address. */
 export function lastAddress(address: number, footprint: number): number {
-  return address + Math.max(1, footprint) - 1;
+  return (
+    rules.patch_last({ fixture: "", universe: 1, address, footprint }) ??
+    address
+  );
 }
 
 /** The named values the 3D view's live inputs take (0–255), from a frame. */
@@ -182,13 +116,6 @@ export function frameChannels(frame: FrameChannel[]): Record<string, number> {
     if (!(ch.name in out)) out[ch.name] = ch.value;
   }
   return out;
-}
-
-function dirParams(dir?: string, venuesDir?: string): URLSearchParams {
-  const params = new URLSearchParams();
-  if (dir) params.set("dir", dir);
-  if (venuesDir) params.set("venues_dir", venuesDir);
-  return params;
 }
 
 async function refusal(res: Response, fallback: string): Promise<TestRefused> {
@@ -207,20 +134,18 @@ export async function fetchTestOptions(
   dir?: string,
   venuesDir?: string,
 ): Promise<TestOptions> {
-  const params = dirParams(dir, venuesDir);
-  params.set("fixture_type", fixtureType);
-  const res = await fetch(`${BASE}/options?${params}`);
+  const query = dirParams(dir, venuesDir, { fixture_type: fixtureType });
+  const res = await fetch(`${BASE}/options${query}`);
   if (!res.ok) throw await refusal(res, "Failed to read the test options");
   return res.json();
 }
 
 export async function sendTest(
-  body: TestBody,
+  body: TestRequest,
   dir?: string,
   venuesDir?: string,
 ): Promise<TestAnswer> {
-  const query = dirParams(dir, venuesDir).toString();
-  const res = await fetch(query ? `${BASE}?${query}` : BASE, {
+  const res = await fetch(`${BASE}${dirParams(dir, venuesDir)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

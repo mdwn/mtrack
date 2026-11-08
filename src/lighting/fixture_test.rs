@@ -27,8 +27,11 @@
 //! physical range and fine byte (design §15.2), CMY fixtures get the
 //! complement. Raw per-channel values then override single bytes.
 
+mod types;
+
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+pub use types::*;
 
 use super::effects::{
     degree_span, Color, Easing, EffectInstance, EffectLayer, EffectType, FixtureInfo, MoveTarget,
@@ -68,55 +71,14 @@ pub struct TestControls {
     pub levels: BTreeMap<String, f64>,
 }
 
-/// What a mode lets a test do.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct ControlSupport {
-    /// The mode mixes colour (RGB or CMY).
-    pub color: bool,
-    /// `channel` (a dimmer channel), `folded` (none: the level scales the
-    /// colour), or none at all.
-    pub dimmer: Option<&'static str>,
-    /// The strobe's rate range in Hz, when the mode has a strobe channel.
-    pub strobe: Option<HzRange>,
-    pub pan: Option<DegreeRange>,
-    pub tilt: Option<DegreeRange>,
-    /// Extra colour levels the mode has.
-    pub levels: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
-pub struct HzRange {
-    pub min_hz: f64,
-    pub max_hz: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
-pub struct DegreeRange {
-    pub min: f64,
-    pub max: f64,
-}
-
-/// One channel of the fixture as a test frame sets it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct FrameChannel {
-    /// 1-based offset within the fixture.
-    pub offset: u16,
-    /// The DMX address it lands on.
-    pub address: u16,
-    pub name: String,
-    pub value: u8,
-    /// Set by a raw value rather than a control.
-    pub raw: bool,
-}
-
 /// What the mode can do, read from the fixture as the engine sees it.
 pub fn control_support(info: &FixtureInfo) -> ControlSupport {
     let channels = &info.channels;
     let color = info.takes_channel("red") && info.takes_channel("green");
     let dimmer = if channels.contains_key("dimmer") {
-        Some("channel")
+        Some(DimmerControl::Channel)
     } else if color {
-        Some("folded")
+        Some(DimmerControl::Folded)
     } else {
         None
     };
@@ -228,18 +190,18 @@ pub fn resolve_frame(
     let values = resolve_controls(info, controls);
     channel_names(info)
         .into_iter()
-        .map(|(offset, name)| {
+        .filter_map(|(offset, name)| {
             let (value, raw) = match raw.get(&offset) {
                 Some(&v) => (v, true),
                 None => (values.get(&offset).copied().unwrap_or(0), false),
             };
-            FrameChannel {
+            Some(FrameChannel {
                 offset,
-                address: info.address + offset - 1,
+                address: info.dmx_channel(offset)?,
                 name,
                 value,
                 raw,
-            }
+            })
         })
         .collect()
 }
@@ -371,10 +333,13 @@ mod tests {
             },
             &BTreeMap::new(),
         );
-        // The dimmer byte is the engine's own for 0.5 (it truncates), as
+        // The dimmer byte is the engine's own for 0.5 (it rounds), as
         // `resolve_normalized` writes it for any show.
-        let half = crate::lighting::effects::resolve_normalized(&ChannelDef::at(1), 0.5)[0].1;
-        assert_eq!(half, 127);
+        let half = crate::lighting::effects::resolve_normalized(&ChannelDef::at(1), 0.5)
+            .next()
+            .unwrap()
+            .1;
+        assert_eq!(half, 128);
         assert_eq!(
             values(&frame),
             vec![
@@ -392,7 +357,7 @@ mod tests {
     #[test]
     fn rgb_without_a_dimmer_folds_the_level_into_the_colour() {
         let info = fixture(&[("red", 1), ("green", 2), ("blue", 3), ("strobe", 4)]);
-        assert_eq!(control_support(&info).dimmer, Some("folded"));
+        assert_eq!(control_support(&info).dimmer, Some(DimmerControl::Folded));
         let frame = resolve_frame(&info, &white(0.5), &BTreeMap::new());
         let v = values(&frame);
         // The engine's own rounding of 0.5 × 255, on every primary.

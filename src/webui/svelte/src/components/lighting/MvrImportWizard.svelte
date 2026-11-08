@@ -13,19 +13,19 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    HandEdit,
+    MvrImport,
+    MvrInspection,
+    MvrKeep,
+    MvrPlan,
+    PlannedFixtureType,
+    Vec3,
+    VenueError,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import {
-    importMvr,
-    inspectMvr,
-    type MvrHandEdit,
-    type MvrImportReport,
-    type MvrInspection,
-    type MvrKeep,
-    type MvrPlan,
-    type MvrPlannedType,
-    type MvrVenueError,
-    type Vec3Mm,
-  } from "../../lib/api/config";
+  import { importMvr, inspectMvr } from "../../lib/api/config";
+  import { ApiError } from "../../lib/api/rest";
   import {
     defaultVenueName,
     fromPage,
@@ -57,13 +57,16 @@
   let inspection = $state<MvrInspection | null>(null);
   let busy = $state(false);
   let error = $state("");
+  /** The last inspection was refused for the venue's name or file: the
+   *  name field stays, so another name can be checked. */
+  let refused = $state(false);
   let dragging = $state(false);
 
   // The origin, in the file's millimeters, as the three fields hold it.
   let originX = $state<number | null>(null);
   let originY = $state<number | null>(null);
   let originZ = $state<number | null>(null);
-  let origin = $derived<Vec3Mm | null>(
+  let origin = $derived<Vec3 | null>(
     originX !== null && originY !== null && originZ !== null
       ? [originX, originY, originZ]
       : null,
@@ -74,15 +77,15 @@
    *  "\u0000focus\u0000name"). Position and rotation start kept; patch and
    *  type are rig facts the venue owns, so they start as the MVR's. */
   let keeping = $state<Record<string, boolean>>({});
-  let report = $state<MvrImportReport | null>(null);
+  let report = $state<MvrImport | null>(null);
   /** After the write: the current venue no longer loads, and why. */
-  let venueError = $state<MvrVenueError | null>(null);
+  let venueError = $state<VenueError | null>(null);
 
   let scene = $derived(inspection?.scene ?? null);
   let suggestion = $derived(scene ? suggestOrigin(scene) : null);
   let box = $derived(scene ? planBox(scene) : null);
 
-  function setOrigin(o: Vec3Mm) {
+  function setOrigin(o: Vec3) {
     [originX, originY, originZ] = o;
   }
 
@@ -105,8 +108,12 @@
       const name = venueName.trim();
       inspection = await inspectMvr(file, name || undefined, dirs);
       inspectedName = name;
+      refused = false;
     } catch (e) {
       inspection = null;
+      // Only a refusal of the venue itself is one another name can
+      // answer; an embedded GDTF's record or an archive's name is not.
+      refused = e instanceof ApiError && e.kind === "venue";
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
@@ -195,7 +202,7 @@
     return { fixtures, focus_points };
   }
 
-  function fieldLabel(e: MvrHandEdit): string {
+  function fieldLabel(e: HandEdit): string {
     return $t(`lighting.mvr.field.${e.field}`);
   }
 
@@ -300,7 +307,7 @@
   let moded = $derived(plan?.fixtures.filter((f) => !f.todo && f.mode) ?? []);
 
   /** The modes the file patches a fixture type in, in words. */
-  function typeModes(ft: MvrPlannedType): string {
+  function typeModes(ft: PlannedFixtureType): string {
     return $t("lighting.mvr.review.typeModes", {
       values: { modes: (ft.modes ?? []).join(", ") },
     });
@@ -401,7 +408,7 @@
         </p>
       {/if}
 
-      {#if inspection}
+      {#if inspection || (refused && !busy)}
         <div class="field">
           <label for="mvr-venue-name">{$t("lighting.mvr.file.name")}</label>
           <input
@@ -412,7 +419,24 @@
           />
           <span class="hint">{$t("lighting.mvr.file.nameHint")}</span>
         </div>
+      {/if}
 
+      {#if refused && !inspection && !busy}
+        <p class="hint" data-testid="mvr-refused-hint">
+          {$t("lighting.mvr.file.refusedHint")}
+        </p>
+        <div class="actions">
+          <button
+            class="btn btn-primary"
+            onclick={runInspect}
+            data-testid="mvr-recheck"
+          >
+            {$t("lighting.mvr.file.recheck")}
+          </button>
+        </div>
+      {/if}
+
+      {#if inspection}
         <h4 class="panel__sub">{$t("lighting.mvr.file.holds")}</h4>
         <dl class="facts" data-testid="mvr-holds">
           <div>
@@ -445,7 +469,7 @@
           <button
             class="btn btn-primary"
             onclick={toOrigin}
-            disabled={busy || !venueName.trim()}
+            disabled={busy}
             data-testid="mvr-continue"
           >
             {$t("lighting.mvr.continue")}

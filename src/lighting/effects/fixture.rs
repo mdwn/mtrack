@@ -17,6 +17,9 @@ use std::collections::HashMap;
 use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
+use crate::lighting::channels::CMY_OF_RGB;
+use crate::lighting::engine::{base_channel, is_position_channel};
+use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// Get the layer suffix for multiplier channel names
 #[inline]
@@ -483,20 +486,28 @@ impl FixtureProfile {
     }
 }
 
-/// Whether a fixture mixes colour subtractively: cyan, magenta and yellow
-/// channels and no red, green and blue of its own.
+/// Whether a fixture mixes colour subtractively
+/// ([`crate::lighting::channels::mixes_subtractively`]).
 pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
-    CMY_OF_RGB
-        .iter()
-        .all(|(_, cmy)| channels.contains_key(*cmy))
-        && !CMY_OF_RGB
-            .iter()
-            .any(|(rgb, _)| channels.contains_key(*rgb))
+    crate::lighting::channels::mixes_subtractively(|c| channels.contains_key(c))
 }
 
-/// Each additive primary and the subtractive channel that removes it.
-pub const CMY_OF_RGB: [(&str, &str); 3] =
-    [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
+/// Whether a channel map has a dimmer of its own: a fixture's, or a
+/// cell's. Without one, the level is carried on the colour channels.
+pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
+    channels.contains_key("dimmer")
+}
+
+/// The name a pixel fixture's cell registers under beside it: the
+/// fixture's, a slash, the cell's.
+pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
+    format!("{fixture}/{cell}")
+}
+
+/// The cell's own name in a name [`cell_fixture_name`] built.
+pub fn cell_name(sub_fixture: &str) -> &str {
+    sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
+}
 
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
@@ -620,17 +631,19 @@ impl FixtureInfo {
         if channels.contains_key("white") {
             capabilities = capabilities.with(FixtureCapabilities::WHITE_COLOR);
         }
-        if channels.contains_key("dimmer") {
+        if has_dimmer_channel(channels) {
             capabilities = capabilities.with(FixtureCapabilities::DIMMING);
         }
         if channels.contains_key("strobe") {
             capabilities = capabilities.with(FixtureCapabilities::STROBING);
         }
-        if channels.contains_key("pan") {
-            capabilities = capabilities.with(FixtureCapabilities::PANNING);
-        }
-        if channels.contains_key("tilt") {
-            capabilities = capabilities.with(FixtureCapabilities::TILTING);
+        // A head moves on any channel that carries where it points: `pan`,
+        // a GDTF profile's `pan:1`, a fine byte.
+        for channel in channels.keys().filter(|c| is_position_channel(c)) {
+            capabilities = capabilities.with(match base_channel(channel) {
+                "pan" => FixtureCapabilities::PANNING,
+                _ => FixtureCapabilities::TILTING,
+            });
         }
         if channels.contains_key("zoom") {
             capabilities = capabilities.with(FixtureCapabilities::ZOOMING);
@@ -665,6 +678,14 @@ impl FixtureInfo {
             || (CMY_OF_RGB.iter().any(|(rgb, _)| *rgb == name) && has_cmy(&self.channels))
     }
 
+    /// The DMX channel (1-based, on the fixture's universe) a channel at
+    /// `offset` (1-based from the fixture's address) is patched to; `None`
+    /// for one no channel number holds (past 65535), which would wrap.
+    #[inline]
+    pub fn dmx_channel(&self, offset: u16) -> Option<u16> {
+        u16::try_from((u32::from(self.address) + u32::from(offset)).checked_sub(1)?).ok()
+    }
+
     /// Get cached capabilities
     #[inline]
     pub fn capabilities(&self) -> FixtureCapabilities {
@@ -677,11 +698,222 @@ impl FixtureInfo {
         self.cached_capabilities.contains(capability)
     }
 
+    /// Whether the fixture has a dimmer channel of its own. Without one,
+    /// its level is carried on its colour channels.
+    #[inline]
+    pub fn has_dimmer(&self) -> bool {
+        self.has_capability(FixtureCapabilities::DIMMING)
+    }
+
     /// Get the cached fixture profile
     #[inline]
     pub fn profile(&self) -> &FixtureProfile {
         &self.cached_profile
     }
+
+    /// How a strobe rate becomes this fixture's strobe byte: the one rule
+    /// the engine writes through ([`StrobeMap::normalized`]) and the state
+    /// stream reads back through ([`FixtureInfo::strobe_hz`]). Which rule
+    /// is the type's stated curve, or the automatic one, over its strobe
+    /// function and range.
+    pub fn strobe_map(&self) -> StrobeMap<'_> {
+        let max = self.max_strobe_frequency.unwrap_or(20.0);
+        let min = self.min_strobe_frequency.unwrap_or(0.0);
+        let dmx_offset = self.strobe_dmx_offset.unwrap_or(0);
+        let offset = f64::from(dmx_offset) / 255.0;
+        let linear = matches!(
+            self.strobe_curve,
+            StrobeCurve::Linear | StrobeCurve::Declared
+        );
+        // Linear and declared follow the strobe function itself when there
+        // is one: its own table (declared), else one step from its
+        // endpoints — in its direction, over its DMX range.
+        let function = linear
+            .then(|| strobe_function(&self.channel_defs))
+            .flatten();
+        let endpoints = function.and_then(|f| {
+            let hz = f.physical.filter(|p| p.unit == PhysicalUnit::Hertz)?;
+            Some(FunctionStep {
+                dmx_from: f.dmx_from,
+                dmx_to: f.dmx_to,
+                from: hz.from,
+                to: hz.to,
+            })
+        });
+        match function {
+            Some(f) if self.strobe_curve == StrobeCurve::Declared && !f.steps.is_empty() => {
+                StrobeMap::Declared(&f.steps)
+            }
+            _ => match endpoints {
+                Some(step) => StrobeMap::Endpoints(step),
+                None if linear && max > min => StrobeMap::LinearHz { min, max, offset },
+                None if max > 0.0 && min > 0.0 && dmx_offset > 0 => {
+                    StrobeMap::Period { min, max, offset }
+                }
+                None => StrobeMap::Ratio { max, offset },
+            },
+        }
+    }
+
+    /// The rate the fixture's strobe channel flashes at with `byte` on it,
+    /// read back through [`Self::strobe_map`]; `None` for a fixture with no
+    /// strobe channel, below the map's first byte (the function's "open"
+    /// range), outside a declared table's steps, or at byte 0 of a channel
+    /// no function declares a rate at (the engine's "strobe off"). A
+    /// function that starts at byte 0 declares it a rate, and it reads
+    /// back as one: the engine writes byte 0 for that rate too.
+    pub fn strobe_hz(&self, byte: u8) -> Option<f64> {
+        if !self.has_capability(FixtureCapabilities::STROBING) {
+            return None;
+        }
+        self.strobe_map().hz(byte).filter(|hz| *hz > 0.0)
+    }
+}
+
+/// A fixture's strobe rule (see [`FixtureInfo::strobe_map`]), with the
+/// forward mapping the engine drives the channel through and its inverse.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StrobeMap<'a> {
+    /// `declared` with a table: the function's own steps.
+    Declared(&'a [FunctionStep]),
+    /// `linear` or `declared` with a strobe function but no table: one
+    /// step from the function's endpoints.
+    Endpoints(FunctionStep),
+    /// `linear` without a function: hertz run linearly over
+    /// `offset..=1` of the channel.
+    LinearHz { min: f64, max: f64, offset: f64 },
+    /// `period`: the strobe period (1/Hz) runs linearly over
+    /// `offset..=1` of the channel, as many fixtures map it.
+    Period { min: f64, max: f64, offset: f64 },
+    /// No range to speak of: the rate as a fraction of the maximum, over
+    /// `offset..=1` of the channel (a period curve with no minimum, #633).
+    Ratio { max: f64, offset: f64 },
+}
+
+impl StrobeMap<'_> {
+    /// The steps of a tabled map; empty otherwise.
+    fn steps(&self) -> &[FunctionStep] {
+        match self {
+            StrobeMap::Declared(steps) => steps,
+            StrobeMap::Endpoints(step) => std::slice::from_ref(step),
+            _ => &[],
+        }
+    }
+
+    /// The normalized (0..1) value the strobe channel is driven to for
+    /// `hz`, which [`dmx_byte`](crate::lighting::channels::dmx_byte) rounds to the byte. A
+    /// tabled map lands on its byte exactly.
+    pub fn normalized(&self, hz: f64) -> f64 {
+        match *self {
+            StrobeMap::Declared(_) | StrobeMap::Endpoints(_) => {
+                // The step the rate falls in, linear inside it, on its byte.
+                let dmx = declared_dmx(self.steps(), hz).round();
+                (dmx / 255.0).clamp(0.0, 1.0)
+            }
+            StrobeMap::LinearHz { min, max, offset } => {
+                // Linear in hertz across the function's DMX range, as a
+                // GDTF declares it:
+                // DMX = start + (hz − min)/(max − min) × (255 − start).
+                let fraction = (hz.clamp(min, max) - min) / (max - min);
+                crate::lighting::channels::lerp(offset, 1.0, fraction).clamp(0.0, 1.0)
+            }
+            StrobeMap::Period { min, max, offset } => {
+                // Interpolate in period-space: many fixtures map DMX
+                // linearly to strobe period (1/freq), not frequency directly.
+                let max_period = 1.0 / min;
+                let min_period = 1.0 / max;
+                let desired_period = 1.0 / hz.clamp(min, max);
+                let period_range = max_period - min_period;
+                let period_fraction = if period_range.abs() < f64::EPSILON {
+                    1.0
+                } else {
+                    (max_period - desired_period) / period_range
+                };
+                crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
+            }
+            StrobeMap::Ratio { max, offset } => {
+                // Not a number is full rate, as the map had it before it
+                // clamped below.
+                let fraction = hz / max;
+                let fraction = if fraction.is_nan() {
+                    1.0
+                } else {
+                    fraction.clamp(0.0, 1.0)
+                };
+                crate::lighting::channels::lerp(offset, 1.0, fraction)
+            }
+        }
+    }
+
+    /// The rate `byte` on the channel means, the inverse of
+    /// [`Self::normalized`]: for a tabled map the step's value at the byte
+    /// itself (`None` outside every step — byte 0 included, unless a step
+    /// starts there); for the others the value at the byte itself, the
+    /// centre of the levels that round to it (`None` below the map's first
+    /// byte, and at byte 0, which no function declares a rate at: it is
+    /// what the engine writes for off).
+    pub fn hz(&self, byte: u8) -> Option<f64> {
+        let byte = f64::from(byte);
+        let from_fraction = |offset: f64| {
+            let fraction = (byte / 255.0 - offset) / (1.0 - offset);
+            (byte > 0.0 && byte >= offset * 255.0).then_some(fraction.clamp(0.0, 1.0))
+        };
+        match *self {
+            StrobeMap::Declared(_) | StrobeMap::Endpoints(_) => {
+                let step = self
+                    .steps()
+                    .iter()
+                    .find(|s| f64::from(s.dmx_from) <= byte && byte <= f64::from(s.dmx_to))?;
+                let (dmx_from, dmx_to) = (f64::from(step.dmx_from), f64::from(step.dmx_to));
+                if (dmx_to - dmx_from).abs() < f64::EPSILON {
+                    return Some(step.from);
+                }
+                let fraction = (byte - dmx_from) / (dmx_to - dmx_from);
+                Some(step.from + fraction * (step.to - step.from))
+            }
+            StrobeMap::LinearHz { min, max, offset } => {
+                Some(min + from_fraction(offset)? * (max - min))
+            }
+            StrobeMap::Period { min, max, offset } => {
+                let max_period = 1.0 / min;
+                let min_period = 1.0 / max;
+                let period = max_period - from_fraction(offset)? * (max_period - min_period);
+                Some(1.0 / period)
+            }
+            StrobeMap::Ratio { max, offset } => Some(from_fraction(offset)? * max),
+        }
+    }
+}
+
+/// The DMX value a function's step table gives `hz`: the first step in
+/// DMX order whose physical range contains it, interpolated inside the
+/// step; else the nearest end of any step (so a rate past the table lands
+/// on its end). `steps` is non-empty.
+pub(crate) fn declared_dmx(steps: &[FunctionStep], hz: f64) -> f64 {
+    let at = |step: &FunctionStep, hz: f64| -> f64 {
+        let (dmx_from, dmx_to) = (f64::from(step.dmx_from), f64::from(step.dmx_to));
+        if (step.to - step.from).abs() < f64::EPSILON {
+            return dmx_from;
+        }
+        let fraction = ((hz - step.from) / (step.to - step.from)).clamp(0.0, 1.0);
+        dmx_from + fraction * (dmx_to - dmx_from)
+    };
+    if let Some(step) = steps
+        .iter()
+        .find(|s| s.from.min(s.to) <= hz && hz <= s.from.max(s.to))
+    {
+        return at(step, hz);
+    }
+    let mut best: Option<(f64, f64)> = None;
+    for step in steps {
+        for end in [step.from, step.to] {
+            let distance = (hz - end).abs();
+            if best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, at(step, end)));
+            }
+        }
+    }
+    best.map_or(0.0, |(_, dmx)| dmx)
 }
 
 #[cfg(test)]
@@ -729,6 +961,16 @@ mod tests {
             ]),
             None,
         )
+    }
+
+    #[test]
+    fn a_channel_past_65535_has_no_dmx_channel() {
+        let mut par = rgb_fixture();
+        par.address = 65534;
+        assert_eq!(par.dmx_channel(1), Some(65534));
+        assert_eq!(par.dmx_channel(2), Some(65535));
+        // It wrapped onto channel 0 before.
+        assert_eq!(par.dmx_channel(3), None);
     }
 
     // ── FixtureCapabilities ──────────────────────────────────────────
@@ -978,6 +1220,19 @@ mod tests {
         assert!((result["white"].value - 200.0 / 255.0).abs() < 0.01);
     }
 
+    #[test]
+    fn strobe_ratio_map_clamps_its_fraction() {
+        let map = StrobeMap::Ratio {
+            max: 20.0,
+            offset: 0.2,
+        };
+        assert_eq!(map.normalized(-5.0), 0.2);
+        assert!((map.normalized(10.0) - 0.6).abs() < 1e-9);
+        assert_eq!(map.normalized(40.0), 1.0);
+        // Not a number is full rate, as before the fraction was clamped below.
+        assert_eq!(map.normalized(f64::NAN), 1.0);
+    }
+
     // ── apply_strobe ─────────────────────────────────────────────────
 
     #[test]
@@ -1094,5 +1349,62 @@ mod tests {
         assert_eq!(f.fixture_type, "generic_spot");
         assert_eq!(f.max_strobe_frequency, Some(25.0));
         assert_eq!(f.channels.len(), 4);
+    }
+
+    /// A head moves on any channel that carries where it points, by the
+    /// one rule the crossfade and `is_dark` go by: a GDTF profile's
+    /// `pan:1`, or a fine byte on its own, counts; `pan_speed` does not.
+    #[test]
+    fn a_head_moves_on_a_pan_section_or_fine_byte() {
+        let sectioned = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan:1", "tilt_fine"]),
+            None,
+        );
+        assert!(sectioned.has_capability(FixtureCapabilities::PANNING));
+        assert!(sectioned.has_capability(FixtureCapabilities::TILTING));
+        let speed_only = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan_speed"]),
+            None,
+        );
+        assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
+        assert!(!speed_only.has_capability(FixtureCapabilities::TILTING));
+    }
+
+    #[test]
+    fn has_dimmer_is_a_dimmer_channel_of_its_own() {
+        let with = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "red"]),
+            None,
+        );
+        let without = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["red", "green", "blue", "dimmer_fine"]),
+            None,
+        );
+        assert!(with.has_dimmer());
+        assert!(!without.has_dimmer());
+    }
+
+    #[test]
+    fn a_cell_name_is_its_fixture_then_the_cell() {
+        let name = cell_fixture_name("bar", "cell3");
+        assert_eq!(name, "bar/cell3");
+        assert_eq!(cell_name(&name), "cell3");
+        assert_eq!(cell_name("bar"), "bar");
     }
 }

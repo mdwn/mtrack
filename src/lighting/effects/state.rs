@@ -85,7 +85,9 @@ impl ChannelState {
     /// Blend this channel state with another
     pub fn blend_with(&self, other: ChannelState) -> ChannelState {
         let blended_value = match other.blend_mode {
-            BlendMode::Replace => self.value + (other.value - self.value) * other.mix,
+            BlendMode::Replace => {
+                crate::lighting::channels::lerp(self.value, other.value, other.mix)
+            }
             BlendMode::Multiply => self.value * other.value,
             BlendMode::Add => (self.value + other.value).min(1.0),
             BlendMode::Overlay => {
@@ -123,6 +125,12 @@ pub struct FixtureState {
     /// What the show asked for in physical units (degrees), resolved into
     /// bytes only when DMX is produced. Never scaled by a layer master.
     pub physical: PhysicalState,
+    /// The rate a software strobe (one on a fixture with no strobe
+    /// channel, flashing its dimmer or colour) is flashing this fixture
+    /// at, so the state stream can say so: the bytes alone only show the
+    /// phase. Later writer wins, as the effect order runs. `None` when no
+    /// software strobe drives it.
+    pub strobe_hz: Option<f64>,
 }
 
 impl Default for FixtureState {
@@ -136,6 +144,7 @@ impl FixtureState {
         Self {
             channels: HashMap::new(),
             physical: PhysicalState::default(),
+            strobe_hz: None,
         }
     }
 
@@ -149,6 +158,7 @@ impl FixtureState {
         Self {
             channels: channels.into_iter().collect(),
             physical: PhysicalState::default(),
+            strobe_hz: None,
         }
     }
 
@@ -160,6 +170,9 @@ impl FixtureState {
     /// Blend this fixture state with another
     pub fn blend_with(&mut self, other: &FixtureState) {
         self.physical.blend_with(&other.physical);
+        if other.strobe_hz.is_some() {
+            self.strobe_hz = other.strobe_hz;
+        }
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
             // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames
@@ -192,6 +205,33 @@ impl FixtureState {
         effective_value(channel_name, state, has_dedicated_dimmer, |k| {
             self.channels.get(k).map(|c| c.value).unwrap_or(1.0)
         })
+    }
+
+    /// The flags a CMY fixture's colour goes out as: on a fixture mixing
+    /// subtractively (`has_cmy` of its `channels`) each primary an effect
+    /// drives, as the flag that removes it at its complement — cyan
+    /// removes red, so full red is cyan at 0 (each 0 to 1). The engine's
+    /// colour is kept in RGB so layers blend alike everywhere; this is the
+    /// one place it turns into the flags the head is sent, and what the
+    /// fixture's snapshot shows in place of its red, green and blue. A
+    /// primary no effect drives yields nothing (its flag is left alone),
+    /// and a fixture that does not mix subtractively nothing at all.
+    pub fn cmy_flags<V>(
+        &self,
+        channels: &HashMap<String, V>,
+        has_dedicated_dimmer: bool,
+    ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
+        let subtractive = super::fixture::has_cmy(channels);
+        crate::lighting::channels::CMY_OF_RGB
+            .map(|(rgb, cmy)| {
+                let state = self.channels.get(rgb).filter(|_| subtractive)?;
+                Some((
+                    cmy,
+                    1.0 - self.effective_channel_value(rgb, state, has_dedicated_dimmer),
+                ))
+            })
+            .into_iter()
+            .flatten()
     }
 }
 
@@ -248,7 +288,7 @@ impl FixtureState {
         cell: &crate::lighting::types::Cell,
         own: Option<&FixtureState>,
     ) -> Vec<(String, f64)> {
-        let cell_has_dimmer = cell.channels.contains_key("dimmer");
+        let cell_has_dimmer = cell.has_dimmer();
         let read = |k: &str| {
             own.and_then(|o| o.channels.get(k))
                 .or_else(|| self.channels.get(k))
@@ -295,7 +335,15 @@ impl FixtureState {
         cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
     ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
-        let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
+        // A byte for the channel at `offset`, where the fixture has one.
+        let command = |(offset, value): (u16, u8)| {
+            Some(DmxCommand {
+                universe: fixture_info.universe,
+                channel: fixture_info.dmx_channel(offset)?,
+                value,
+            })
+        };
+        let has_dedicated_dimmer = fixture_info.has_dimmer();
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
         let cell_owned = |channel: &str| {
@@ -311,13 +359,8 @@ impl FixtureState {
             }
             if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                 let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
-                for (offset, byte) in super::physical::resolve_normalized(def, value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
-                        value: byte,
-                    });
-                }
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         // A CMY fixture has no red, green or blue of its own: the engine's
@@ -326,43 +369,21 @@ impl FixtureState {
         // primary no effect drives is left alone, open, as a colour-less
         // fixture is. Written after the named channels, so an effect's
         // colour wins over a `static` naming the flag directly.
-        if super::fixture::has_cmy(&fixture_info.channel_defs) {
-            for (rgb, cmy) in super::fixture::CMY_OF_RGB {
-                let (Some(state), Some(def)) =
-                    (self.channels.get(rgb), fixture_info.channel_defs.get(cmy))
-                else {
-                    continue;
-                };
-                let value = self.effective_channel_value(rgb, state, has_dedicated_dimmer);
-                for (offset, byte) in super::physical::resolve_normalized(def, 1.0 - value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
-                        value: byte,
-                    });
-                }
+        for (cmy, value) in self.cmy_flags(&fixture_info.channel_defs, has_dedicated_dimmer) {
+            if let Some(def) = fixture_info.channel_defs.get(cmy) {
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         for cell in &fixture_info.cells {
             for (channel_name, value) in self.cell_values(cell, cell_state(&cell.name)) {
                 let def = &cell.channels[&channel_name];
-                for (offset, byte) in super::physical::resolve_normalized(def, value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
-                        value: byte,
-                    });
-                }
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         for (_, resolved) in physical {
-            for (offset, byte) in resolved.bytes {
-                commands.push(DmxCommand {
-                    universe: fixture_info.universe,
-                    channel: fixture_info.address + offset - 1,
-                    value: byte,
-                });
-            }
+            commands.extend(resolved.bytes.into_iter().filter_map(command));
         }
 
         commands
@@ -826,7 +847,7 @@ mod tests {
         let bytes: Vec<(u16, u8)> = cmds.iter().map(|c| (c.channel, c.value)).collect();
         assert_eq!(
             bytes,
-            vec![(10, 0x80), (11, 0x00), (12, 127)],
+            vec![(10, 0x80), (11, 0x00), (12, 128)],
             "0° is mid-travel over coarse+fine at address 10/11; the dimmer byte is untouched"
         );
     }
@@ -894,7 +915,7 @@ mod tests {
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].value, 127); // 0.5 * 255 = 127
+        assert_eq!(cmds[0].value, 128); // 0.5 * 255 = 128.5, rounded
     }
 
     // ── to_dmx_commands_with_cells (design §17.3) ─────────────────────
@@ -953,8 +974,8 @@ mod tests {
         );
         let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
         // Channel 10 = byte 1 (cell "a"), channel 11 = byte 2 (cell "b").
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a == fixture value");
-        assert_eq!(byte_at(&cmds, 11), 127, "cell b == fixture value");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a == fixture value");
+        assert_eq!(byte_at(&cmds, 11), 128, "cell b == fixture value");
     }
 
     #[test]
@@ -981,7 +1002,7 @@ mod tests {
                     }
                 },
             );
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a stays at the fixture value");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a stays at the fixture value");
         assert_eq!(byte_at(&cmds, 11), 255, "cell b takes the cell's value");
     }
 
@@ -1009,9 +1030,9 @@ mod tests {
                     }
                 },
             );
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a untouched");
-        // 0.5 * 0.5 = 0.25 -> resolve_normalized(0.25) = 63
-        assert_eq!(byte_at(&cmds, 11), 63, "cell b is the product");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a untouched");
+        // 0.5 * 0.5 = 0.25 -> resolve_normalized(0.25) = 63.75, rounded to 64
+        assert_eq!(byte_at(&cmds, 11), 64, "cell b is the product");
     }
 
     #[test]

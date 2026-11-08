@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+
 /**
  * Aiming a fixed fixture: the rotation that makes it face a direction or
  * point at a place. Pure math, degrees, rounded to a tenth. The convention is
@@ -19,8 +21,6 @@
  * applied in that order; unrotated, a fixture points straight down (-Z).
  * Stage space is meters, +x stage-left, +y upstage, +z up.
  */
-
-export type Vec3 = [number, number, number];
 
 /** Bearings that face across the deck: the beam's horizontal heading, where
  *  0 is upstage (+y), -90 is stage-left (+x), 90 is stage-right (-x) and 180
@@ -62,28 +62,6 @@ export function aimRotation(position: Vec3, target: Vec3): Vec3 | null {
   const a = (Math.acos(Math.max(-1, Math.min(1, -dz / len))) * 180) / Math.PI;
   const b = (Math.atan2(-dx, dy) * 180) / Math.PI;
   return [round1(a), 0, round1(b)];
-}
-
-/**
- * Where a fixed fixture's rest beam points in stage space: the unit vector
- * `Rz(z) · Ry(y) · Rx(x) · (0, 0, -1)`. The plan draws the beam from it.
- */
-export function restAim(rotation: Vec3): Vec3 {
-  const [rx, ry, rz] = rotation.map((d) => (d * Math.PI) / 180);
-  let [x, y, z] = [0, 0, -1];
-  [y, z] = [
-    Math.cos(rx) * y - Math.sin(rx) * z,
-    Math.sin(rx) * y + Math.cos(rx) * z,
-  ];
-  [x, z] = [
-    Math.cos(ry) * x + Math.sin(ry) * z,
-    -Math.sin(ry) * x + Math.cos(ry) * z,
-  ];
-  [x, y] = [
-    Math.cos(rz) * x - Math.sin(rz) * y,
-    Math.sin(rz) * x + Math.cos(rz) * y,
-  ];
-  return [x, y, z];
 }
 
 /** Where a beam from `position` along `aim` meets the deck, if it points down. */

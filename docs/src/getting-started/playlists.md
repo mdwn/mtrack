@@ -27,7 +27,15 @@ files on disk to prevent broken references.
 
 Playlists are YAML files stored in a `playlists/` directory (configurable via `playlists_dir`
 in `mtrack.yaml`). Each playlist is named after its filename stem — `my_setlist.yaml` becomes
-the playlist "my_setlist".
+the playlist "my_setlist". The extension is `.yaml` or `.yml`, lowercase. A name has one file:
+with both `my_setlist.yaml` and `my_setlist.yml`, mtrack reads `my_setlist.yaml`, logs a warning
+that `my_setlist.yml` is not read, and the web UI and MCP save to `my_setlist.yaml` too. A
+playlist kept only as `my_setlist.yml` is saved into that file. A new playlist whose file would
+differ only in case from one already there (`setlist` beside `Setlist.yaml`) is refused, since a
+case-insensitive filesystem would write into that file. A new playlist's file is created with
+the filesystem refusing one already there, so one made meanwhile, or one differing only by
+Unicode normalization, is never written over. No file holds `all_songs`: an
+`all_songs.yaml` is ignored, and the web UI and MCP refuse to write one.
 
 ```yaml
 kind: playlist
@@ -83,12 +91,11 @@ naming a track the entry's song does not have.
 
 Either can be a length alone or a map:
 
-- **`length`**: `3s`, `500ms`, `6beats` or `1measure`. A `fade_out`'s beats and measures count on
-  the **next** song's grid from its first bar -- any lead-in before it included -- so `1measure`
-  fades out exactly over the next song's count-in, whatever its tempo and meter. A song with no
-  grid of its own (a prelude usually has none) needs the next song to have one; failing both,
-  the song cuts. A `fade_in`'s count on
-  its own song's grid.
+- **`length`**: `3s`, `1.5s`, `500ms`, `2m` (minutes), `6beats` or `1measure`. A `fade_out`'s beats
+  and measures count on the **next** song's grid from its first bar -- any lead-in before it
+  included -- so `1measure` fades out exactly over the next song's count-in, whatever its tempo and
+  meter. A song with no grid of its own (a prelude usually has none) needs the next song to have
+  one; failing both, the song cuts. A `fade_in`'s count on its own song's grid.
 - **`curve`**: `equal_power` (the default) holds the level up and falls away late on a
   fade-out, and comes up quickly on a fade-in; `linear` is a straight ramp.
 - **`exclude`**: tracks that do not fade. On a fade-out they cut at once; on a fade-in they start
@@ -152,8 +159,8 @@ songs:
 - **What reaches it.** The song before it ending by itself, or Next or Previous while stopped.
   Stop never moves the playlist, so it never starts one; nor does switching playlists or
   starting the player.
-- **The gap.** `true` starts the song at once; a length (`2s`, `500ms`, or a bare number of
-  seconds) waits that long first. The song before it holds its lights through the gap, as a
+- **The gap.** `true` starts the song at once; a length (`2s`, `1.5s`, `500ms`, `2m`, or a bare
+  number of seconds) waits that long first. The song before it holds its lights through the gap, as a
   segue -- unless ambient light is Off, which is dark between songs: then they fade to dark over
   its `fade_out`, as at any other end (with no gap, the song crosses in from them over it, as
   after a Stop), and setting Off during a gap takes them dark too. Play,

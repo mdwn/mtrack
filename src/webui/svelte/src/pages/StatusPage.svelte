@@ -15,56 +15,13 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import type {
+    AudioOutputHealth,
+    SubsystemStatus,
+  } from "../gen/rules/mtrack_rules";
+  import { refreshStatus, statusStore } from "../lib/ws/status";
 
-  interface SubsystemStatus {
-    status: string;
-    name: string | null;
-    /** Why init gave up. Present only for `failed`. */
-    error?: string | null;
-  }
-
-  interface ControllerStatus {
-    kind: string;
-    status: string;
-    detail: string | null;
-    error: string | null;
-  }
-
-  /** Runtime state of the audio output callback, as distinct from whether the
-   * device opened. `status` is the verdict; the rest is the evidence. */
-  interface AudioOutputHealth {
-    status: "healthy" | "recovering" | "stalled" | "never_started";
-    callback_alive: boolean;
-    writing_signal: boolean;
-    since_last_callback_ms: number | null;
-    since_last_signal_ms: number | null;
-    callbacks: number;
-    recoveries: number;
-    underruns: number;
-    last_error: string | null;
-  }
-
-  interface StatusResponse {
-    build: {
-      version: string;
-      git_hash: string;
-      build_time: string;
-    };
-    hardware: {
-      init_done: boolean;
-      hostname: string | null;
-      profile: string | null;
-      audio: SubsystemStatus;
-      /** Present once an audio device is open and able to report. */
-      audio_output: AudioOutputHealth | null;
-      midi: SubsystemStatus;
-      dmx: SubsystemStatus;
-      trigger: SubsystemStatus;
-    };
-    controllers: ControllerStatus[];
-  }
-
-  let data = $state<StatusResponse | null>(null);
+  const data = $derived($statusStore);
   let error = $state<string | null>(null);
   let loading = $state(false);
   let lastFetchTime = $state<number>(Date.now());
@@ -74,9 +31,7 @@
     loading = true;
     error = null;
     try {
-      const res = await fetch("/api/status");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      data = await res.json();
+      await refreshStatus();
       lastFetchTime = Date.now();
       secondsAgo = 0;
     } catch (e: unknown) {
@@ -198,7 +153,7 @@
   }
 
   const subsystems: {
-    key: keyof StatusResponse["hardware"];
+    key: "audio" | "midi" | "dmx" | "trigger";
     labelKey: string;
     /** Section slug within the profile editor URL. */
     section: string;
@@ -260,8 +215,10 @@
         {/if}
         <div class="subsystem-list">
           {#each subsystems as sub (sub.key)}
-            {@const s = data.hardware[sub.key] as SubsystemStatus}
-            {@const needsConfig = s.status !== "connected"}
+            {@const s = data.hardware[sub.key]}
+            <!-- A connected row can still carry a startup problem (audio mapped past
+                 the device's channels): the fix is in the profile all the same. -->
+            {@const needsConfig = s.status !== "connected" || !!s.error}
             {@const isAudio = sub.key === "audio"}
             {@const dotColor = isAudio
               ? audioDotColor(s)

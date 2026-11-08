@@ -13,6 +13,8 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 // "Test this fixture" on a fixture's page: does the light answer when
 // mtrack sends to it, and if not, why not. Every test records what the page
@@ -55,24 +57,7 @@ async function options(
 }
 
 async function playback(page: Page, id: string, extra: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: {
-      type: "playback",
-      is_playing: false,
-      elapsed_ms: 0,
-      song_name: "Test Song Alpha",
-      song_duration_ms: 180000,
-      playlist_name: "setlist",
-      playlist_position: 0,
-      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
-      tracks: [],
-      available_playlists: ["all_songs", "setlist"],
-      persisted_playlist_name: "setlist",
-      locked: false,
-      ...extra,
-      _wsId: id,
-    },
-  });
+  await sendWs(page, id, { ...PLAYBACK_STATE, tracks: [], ...extra });
 }
 
 /** Opens a fixture's page and its test section. */
@@ -343,7 +328,7 @@ test.describe("when testing cannot happen, the section says why", () => {
       );
       await expect(
         why.getByRole("link", { name: "Open the profile's DMX settings" }),
-      ).toHaveAttribute("href", "#/config/test-host/lighting");
+      ).toHaveAttribute("href", "#/config/test-host.yaml/lighting");
       await expect(page.getByTestId("ftest-send")).toBeDisabled();
     });
   }

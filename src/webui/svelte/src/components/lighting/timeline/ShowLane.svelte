@@ -16,37 +16,41 @@
   import { t } from "svelte-i18n";
   import type {
     Cue,
-    Layer,
-    TempoSection,
     Timestamp,
     SubLaneType,
   } from "../../../lib/lighting/types";
   import { emptyCue, absoluteTimestamp } from "../../../lib/lighting/types";
+  import type {
+    CueLayout,
+    GridLine,
+    TempoSource,
+  } from "../../../gen/rules/mtrack_rules";
   import {
     msToPixel,
-    timestampToMs,
     msToTimestamp,
     getGridLines,
-    getAdjustedGridLines,
     snapToNearestGrid,
-    computeAdjustedCuePositions,
-    durationStringToMs,
-    getSequenceIterationMs,
-    type OffsetMarker,
+    type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
-  import CueBlock from "./CueBlock.svelte";
+  import CueBlock, { type Block, type BlockEffect } from "./CueBlock.svelte";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     name: string;
     cues: Cue[];
+    /** Where the player fires each of `cues`, from its layout. */
+    laidCues?: CueLayout[];
+    /** The bar and beat lines the lane is drawn under. */
+    grid?: GridLine[];
+    /** The tempo map the lane snaps and places against. */
+    tempoSource: TempoSource | null;
     laneType: "show" | "sequence";
     pixelsPerMs: number;
     scrollLeft: number;
     viewportWidth: number;
-    tempo?: TempoSection;
     selectedCueIndex: number | null;
     snapEnabled: boolean;
-    snapResolution: import("../../../lib/lighting/timeline-state").SnapResolution;
+    snapResolution: SnapResolution;
     onselect: (index: number) => void;
     oncuechange: (index: number, cue: Cue) => void;
     oncuedelete: (index: number) => void;
@@ -58,19 +62,19 @@
     subLaneType?: SubLaneType;
     laneHeight?: number;
     hideLabel?: boolean;
-    offsets?: OffsetMarker[];
     playheadMs?: number | null;
-    sequenceDefs?: import("../../../lib/lighting/types").Sequence[];
   }
 
   let {
     name,
     cues,
+    laidCues = [],
+    grid = [],
+    tempoSource,
     laneType,
     pixelsPerMs,
     scrollLeft,
     viewportWidth,
-    tempo,
     selectedCueIndex,
     snapEnabled,
     snapResolution,
@@ -82,105 +86,118 @@
     subLaneType,
     laneHeight,
     hideLabel = false,
-    offsets = [],
     playheadMs = null,
     oneffectresize,
     onloopchange,
     onsequenceedit,
-    sequenceDefs = [],
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let laneEl: HTMLDivElement | undefined = $state();
 
-  // Compute cue positions with cumulative offset adjustment
-  function getCuePositions() {
+  /** A block shown 500 ms wide when nothing says how long it is. */
+  const DEFAULT_BLOCK_MS = 500;
+
+  /** The layer this lane shows, for an effects lane. */
+  let laneLayer = $derived(
+    subLaneType?.startsWith("effects:") ? subLaneType.split(":")[1] : undefined,
+  );
+
+  /** The blocks the lane draws, from the player's layout of each cue: on
+   *  an effects lane, one for the cue's own effects on the lane's layer
+   *  (as long as the longest runs) and one for each pass of a sequence
+   *  it references or a loop it holds; on the commands and sequences
+   *  lanes, one per cue, a sequence block as long as its passes. */
+  function getBlocks(): Block[] {
     const viewStartMs = scrollLeft / pixelsPerMs;
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
     const margin = 100 / pixelsPerMs;
-
-    // Apply cumulative offsets for shows (sequences don't use offsets)
-    const adjusted =
-      laneType === "show"
-        ? computeAdjustedCuePositions(cues, tempo)
-        : cues.map((cue, index) => ({
-            cue,
-            index,
-            adjustedMs: timestampToMs(cue.timestamp, tempo),
-            rawMs: timestampToMs(cue.timestamp, tempo),
-            cumulativeOffsetMs: 0,
-          }));
-
-    return adjusted
-      .map((ap) => {
-        const ms = ap.adjustedMs;
-        const px = msToPixel(ms, pixelsPerMs) - scrollLeft;
-        // Estimate block end from the longest matching effect's duration
-        let blockEndMs = ms + 500;
-        const layerFilter = subLaneType?.startsWith("effects:")
-          ? subLaneType.split(":")[1]
-          : undefined;
-        let maxDurMs = 0;
-        for (const eff of ap.cue.effects) {
-          if (layerFilter && (eff.effect.layer ?? "background") !== layerFilter)
-            continue;
-          const durStr = eff.effect.duration ?? eff.effect.extra?.hold_time;
-          // Durations are timed from the cue's own place in the tempo
-          // map, before offsets, as the player times them.
-          const durMs = durationStringToMs(durStr, tempo, ap.rawMs);
-          if (durMs > maxDurMs) maxDurMs = durMs;
-        }
-        if (maxDurMs > 0) blockEndMs = ms + maxDurMs;
-        // For sequence refs, compute total expanded duration
-        if (subLaneType === "sequences") {
-          for (const ref of ap.cue.sequences) {
-            if (ref.stop) continue;
-            const def = sequenceDefs.find((s) => s.name === ref.name);
-            if (!def) continue;
-            const iterMs = getSequenceIterationMs(def, ms, tempo);
-            const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-            const totalMs = iterMs * loopCount;
-            if (ms + totalMs > blockEndMs) blockEndMs = ms + totalMs;
-          }
-        }
-        // Visible if any part of the block overlaps the viewport
-        const visible =
-          blockEndMs >= viewStartMs - margin && ms <= viewEndMs + margin;
-        return {
-          cue: ap.cue,
-          index: ap.index,
-          ms,
-          px,
-          visible,
-          cumulativeOffsetMs: ap.cumulativeOffsetMs,
-          scoreMs: ap.rawMs,
-        };
-      })
-      .filter(({ cue: c }) => {
-        if (!subLaneType) return true;
-        if (subLaneType === "effects") return c.effects.length > 0;
-        if (subLaneType === "commands") return c.commands.length > 0;
-        if (subLaneType === "sequences") return c.sequences.length > 0;
-        if (subLaneType.startsWith("effects:")) {
-          const layer = subLaneType.split(":")[1]; // "background", "midground", "foreground"
-          return c.effects.some(
-            (e) => (e.effect.layer ?? "background") === layer,
-          );
-        }
-        return true;
+    const blocks: Block[] = [];
+    const push = (block: Omit<Block, "px" | "visible">) => {
+      blocks.push({
+        ...block,
+        px: msToPixel(block.ms, pixelsPerMs) - scrollLeft,
+        visible:
+          block.endMs >= viewStartMs - margin && block.ms <= viewEndMs + margin,
       });
+    };
+    cues.forEach((cue, index) => {
+      // A cue the layout has not placed (the file does not lay out, and
+      // the last layout that did had no such cue) is not drawn.
+      const laid = laidCues[index];
+      if (!laid) return;
+      const ms = laid.ms;
+      const scoreMs = laid.score_ms;
+      if (subLaneType === "commands") {
+        if (cue.commands.length === 0) return;
+        push({ index, ms, endMs: ms + DEFAULT_BLOCK_MS, scoreMs, effects: [] });
+        return;
+      }
+      if (subLaneType === "sequences") {
+        if (cue.sequences.length === 0) return;
+        const endMs = Math.max(
+          ms + DEFAULT_BLOCK_MS,
+          ...laid.passes.map((p) => p.end_ms),
+        );
+        push({ index, ms, endMs, scoreMs, effects: [] });
+        return;
+      }
+      // An effects lane (one layer, or every layer in the sequence editor):
+      // the cue's own effects as the layout places them (their layer by the
+      // player's default), shown with the document's colours.
+      const ownLaid = laid.effects.filter((e) => e.own);
+      const own: BlockEffect[] = [];
+      let ownEnd = ms + DEFAULT_BLOCK_MS;
+      ownLaid.forEach((e, i) => {
+        if (laneLayer && e.layer !== laneLayer) return;
+        const written = cue.effects[i];
+        own.push({
+          type: e.kind,
+          groups: e.groups,
+          colors: written
+            ? (rules.effect_view(written.effect)?.colors ?? [])
+            : [],
+        });
+        ownEnd = Math.max(ownEnd, e.end_ms);
+      });
+      if (own.length > 0 || (!laneLayer && cue.commands.length > 0)) {
+        push({ index, ms, endMs: ownEnd, scoreMs, effects: own });
+      }
+      // What the cue's references and loops put on the timeline, a block
+      // per pass.
+      const generated: Record<string, Block> = {};
+      for (const e of laid.effects) {
+        if (e.own) continue;
+        if (laneLayer && e.layer !== laneLayer) continue;
+        const key = `${e.sequence ?? ""}@${e.start_ms}`;
+        const block = generated[key];
+        if (block) {
+          block.endMs = Math.max(block.endMs, e.end_ms);
+          block.effects.push({ type: e.kind, groups: e.groups, colors: [] });
+        } else {
+          generated[key] = {
+            index,
+            ms: e.start_ms,
+            endMs: e.end_ms,
+            scoreMs,
+            effects: [{ type: e.kind, groups: e.groups, colors: [] }],
+            fromSequence: e.sequence ?? "",
+            px: 0,
+            visible: false,
+          };
+        }
+      }
+      for (const block of Object.values(generated)) push(block);
+    });
+    return blocks;
   }
 
-  // Find the cumulative offset in ms at an adjusted-ms position
+  // The offset in force at a drawn position: that of the last cue drawn
+  // at or before it, its own offset (or reset) included.
   function getCumulativeOffsetAtMs(adjustedMs: number): number {
     if (laneType !== "show") return 0;
-    const adjusted = computeAdjustedCuePositions(cues, tempo);
-    // Walk backwards to find the last cue at or before this position
-    for (let i = adjusted.length - 1; i >= 0; i--) {
-      if (adjusted[i].adjustedMs <= adjustedMs) {
-        // The offset after it, its own offset (or reset) included.
-        return adjusted[i].nextOffsetMs;
-      }
+    for (let i = laidCues.length - 1; i >= 0; i--) {
+      if (laidCues[i].ms <= adjustedMs) return laidCues[i].next_offset_ms;
     }
     return 0;
   }
@@ -192,69 +209,51 @@
     let adjustedMs = x / pixelsPerMs;
     adjustedMs = Math.max(0, adjustedMs);
 
-    // Subtract cumulative offset to get the raw timestamp ms
-    // The score time under the offset there, placed through the tempo map
-    // the player uses for a cue under that offset, so the new cue lands
-    // where it was clicked.
+    // Subtract cumulative offset to get the raw timestamp ms: the score
+    // time, on the tempo map the offset moves as a whole, so the new cue
+    // lands where it was clicked.
     const offsetMs = getCumulativeOffsetAtMs(adjustedMs);
     let rawMs = adjustedMs - offsetMs;
     rawMs = Math.max(0, rawMs);
 
-    if (snapEnabled && tempo) {
-      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution, offsetMs);
+    if (snapEnabled && tempoSource) {
+      rawMs = snapToNearestGrid(rawMs, tempoSource, snapResolution);
     }
 
-    const ts: Timestamp = tempo
-      ? msToTimestamp(rawMs, "measure_beat", tempo, offsetMs)
+    const ts: Timestamp = tempoSource
+      ? msToTimestamp(rawMs, tempoSource)
       : absoluteTimestamp(rawMs);
 
     const newCue = emptyCue(ts);
     if (subLaneType === "effects" || subLaneType?.startsWith("effects:")) {
       const layer = subLaneType?.startsWith("effects:")
-        ? (subLaneType.split(":")[1] as Layer)
+        ? subLaneType.split(":")[1]
         : undefined;
-      const defaultDuration = tempo ? "1measure" : "5s";
-      newCue.effects = [
-        {
-          groups: ["all"],
-          effect: {
-            type: "static",
-            colors: [],
-            duration: defaultDuration,
-            layer,
-            extra: {},
-          },
-        },
-      ];
+      newCue.effects = [rules.effect_new(layer, !!tempoSource)];
     } else if (subLaneType === "commands") {
       newCue.commands = [{ command: "clear" }];
     } else if (subLaneType === "sequences") {
-      const firstName = sequenceDefs.length > 0 ? sequenceDefs[0].name : "";
-      newCue.sequences = [{ name: firstName }];
+      newCue.sequences = [{ name: "" }];
     }
     oncueadd(newCue);
   }
 
   function handleCueMove(index: number, deltaMs: number) {
     const cue = cues[index];
-    // Move operates on score times under the offset the cue sits under
-    // (offset is structural, not per-cue position), through the tempo map
-    // the player uses for it, so the cue moves by what was dragged.
-    const offsetMs =
-      laneType === "show"
-        ? (computeAdjustedCuePositions(cues, tempo)[index]
-            ?.cumulativeOffsetMs ?? 0)
-        : 0;
-    const currentMs = timestampToMs(cue.timestamp, tempo, offsetMs);
+    // Move operates on score times (offset is structural, not per-cue
+    // position; the tempo map moves with it as a whole), so the cue moves
+    // by what was dragged.
+    const currentMs = laidCues[index]?.score_ms;
+    if (currentMs === undefined) return;
     let newMs = Math.max(0, currentMs + deltaMs);
 
-    if (snapEnabled && tempo) {
-      newMs = snapToNearestGrid(newMs, tempo, snapResolution, offsetMs);
+    if (snapEnabled && tempoSource) {
+      newMs = snapToNearestGrid(newMs, tempoSource, snapResolution);
     }
 
     const newTs: Timestamp =
-      cue.timestamp.type === "measure_beat" && tempo
-        ? msToTimestamp(newMs, "measure_beat", tempo, offsetMs)
+      cue.timestamp.type === "measure_beat" && tempoSource
+        ? msToTimestamp(newMs, tempoSource)
         : absoluteTimestamp(newMs);
 
     oncuechange(index, { ...cue, timestamp: newTs });
@@ -274,21 +273,9 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    if (!tempo) return;
-
     const viewStartMs = scrollLeft / pixelsPerMs;
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
-    const gridLines =
-      offsets.length > 0
-        ? getAdjustedGridLines(
-            tempo,
-            viewStartMs,
-            viewEndMs,
-            offsets,
-            pixelsPerMs,
-          )
-        : getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
-
+    const gridLines = getGridLines(grid, viewStartMs, viewEndMs, pixelsPerMs);
     for (const line of gridLines) {
       const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
       ctx.strokeStyle =
@@ -320,8 +307,7 @@
     void pixelsPerMs;
     void scrollLeft;
     void viewportWidth;
-    void tempo;
-    void offsets;
+    void grid;
     void playheadMs;
     drawGrid();
   });
@@ -349,31 +335,30 @@
   {/if}
   <div class="lane-content" bind:this={laneEl} ondblclick={handleDblClick}>
     <canvas bind:this={canvasEl} class="lane-grid-canvas"></canvas>
-    {#each getCuePositions() as cp (cp.index)}
-      {#if cp.visible}
+    {#each getBlocks() as block, bi (`${block.index}:${block.fromSequence ?? ""}:${block.ms}:${bi}`)}
+      {#if block.visible}
         <CueBlock
-          cue={cp.cue}
-          positionPx={cp.px}
-          selected={selectedCueIndex === cp.index}
+          cue={cues[block.index]}
+          {block}
+          passes={laidCues[block.index]?.passes ?? []}
+          selected={selectedCueIndex === block.index}
           {pixelsPerMs}
           {subLaneType}
-          {tempo}
-          cueMs={cp.scoreMs}
-          onselect={() => onselect(cp.index)}
-          onmove={(deltaMs) => handleCueMove(cp.index, deltaMs)}
-          ondelete={() => oncuedelete(cp.index)}
-          onresize={oneffectresize
-            ? (dur) => oneffectresize(cp.index, dur)
+          {tempoSource}
+          onselect={() => onselect(block.index)}
+          onmove={(deltaMs) => handleCueMove(block.index, deltaMs)}
+          ondelete={() => oncuedelete(block.index)}
+          onresize={oneffectresize && !block.fromSequence
+            ? (dur) => oneffectresize(block.index, dur)
             : undefined}
           onloopchange={onloopchange
-            ? (count) => onloopchange(cp.index, count)
+            ? (count) => onloopchange(block.index, count)
             : undefined}
-          {sequenceDefs}
           {snapEnabled}
           {snapResolution}
           onedit={onsequenceedit && subLaneType === "sequences"
             ? () => {
-                const ref = cp.cue.sequences.find((s) => !s.stop);
+                const ref = cues[block.index].sequences.find((s) => !s.stop);
                 if (ref) onsequenceedit(ref.name);
               }
             : undefined}

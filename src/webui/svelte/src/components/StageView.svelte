@@ -13,6 +13,16 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    FixtureMetadata,
+    FixtureTypeEntry,
+    PoseSnapshot,
+    StageValues,
+    Vec3,
+    Venue,
+    VenueError,
+    VenueMetadata,
+  } from "../gen/rules/mtrack_rules";
   import {
     concerns,
     fixtureTypeChanges,
@@ -23,35 +33,29 @@
     fixtureStore,
     cellStore,
     reloadStore,
+    strobeRateStore,
     venueStore,
     poseStore,
     underTestStore,
-  } from "../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
   } from "../lib/ws/stores";
   import {
     ConflictError,
     fetchFixtureTypes,
     fetchVenue,
     saveVenue,
-    type FixtureTypeEntry,
-    type VenueData,
-    type VenueError,
   } from "../lib/api/config";
-  import type { FixturePose } from "../lib/ws/stores";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
-  import { deckFootprint, restAim } from "../lib/stage/aim";
+  import { deckFootprint } from "../lib/stage/aim";
+  import { rules } from "../lib/rules";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
+  import { beamCss, beamLook } from "../lib/stage/rig";
   import {
     beamEnd,
     cellBar,
     drawBeam,
+    drawFixture,
     fitFrame,
     hasGeometry,
     nextFocusName,
@@ -68,7 +72,6 @@
   // Types only: the 3D view and the preview panel load the first time 3D
   // is pressed, and three.js with them.
   import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
-  import type { PreviewFrame } from "../lib/lighting/preview";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
@@ -170,8 +173,13 @@
       (!!info3d.stats?.generic || !!info3d.scenery || !!info3d.sceneryError),
   );
   /** The previewed moment; null until the first evaluation. */
-  let feed = $state<PreviewFrame | null>(null);
-  const EMPTY_FRAME: PreviewFrame = { fixtures: {}, poses: {}, cells: {} };
+  let feed = $state<StageValues | null>(null);
+  const EMPTY_FRAME: StageValues = {
+    fixtures: {},
+    poses: {},
+    cells: {},
+    strobe_rates: {},
+  };
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -264,7 +272,7 @@
   let underTest = $derived(viewingFile ? [] : $underTestStore);
   let fileView = $state<{
     name: string;
-    venue: VenueData;
+    venue: Venue;
     version: string | null;
   } | null>(null);
   let fileError = $state("");
@@ -322,7 +330,7 @@
     if (!viewingFile) return;
     void $fixtureTypeChanges;
     fetchFixtureTypes(fixtureTypesDir || undefined)
-      .then((r) => (fileTypes = r.fixtureTypes))
+      .then((r) => (fileTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });
@@ -344,18 +352,20 @@
           position: f.position ?? null,
           rotation: f.rotation ?? null,
           beam_angle: f.beam_angle ?? null,
+          rig: null,
           capabilities: isMoverType(f.fixture_type) ? ["pan_tilt"] : [],
+          cells: [],
         } satisfies FixtureMetadata,
       ]),
     );
   });
   /** A fixed fixture's beam, from its mounting alone. */
-  let filePoses = $derived.by<Record<string, FixturePose>>(() => {
-    const out: Record<string, FixturePose> = {};
+  let filePoses = $derived.by<Record<string, PoseSnapshot>>(() => {
+    const out: Record<string, PoseSnapshot> = {};
     for (const [name, f] of Object.entries(fileFixtures)) {
-      if (!f.position || !f.rotation) continue;
+      const aim = f.rotation && rules.rest_beam(f.rotation);
+      if (!f.position || !aim) continue;
       if (f.capabilities?.includes("pan_tilt")) continue;
-      const aim = restAim(f.rotation);
       out[name] = {
         pan: 0,
         tilt: 0,
@@ -375,6 +385,8 @@
             name: fileView.name,
             dir: venuesDir || null,
             focus_points: fileView.venue.focus_points ?? {},
+            scenery: null,
+            scenery_error: null,
           }
         : null
       : $venueStore,
@@ -385,7 +397,7 @@
   let previewing = $derived(
     is3d && editable && !viewingFile && previewMode === "preview",
   );
-  let shownPoses = $derived<Record<string, FixturePose>>(
+  let shownPoses = $derived<Record<string, PoseSnapshot>>(
     viewingFile ? filePoses : $poseStore,
   );
 
@@ -566,10 +578,11 @@
     }
   }
 
-  function draw(fixtureStates: Record<string, FixtureChannels>) {
-    // Per-cell values ride the same state message as the channels; read
-    // here so a redraw for either shows both.
+  function draw(fixtureStates: StageValues["fixtures"]) {
+    // Per-cell values and strobe rates ride the same state message as
+    // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);
+    const strobeRates = get(strobeRateStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -617,125 +630,96 @@
       });
     }
 
+    // One instant for the frame, so every fixture's strobe reads the same
+    // clock.
+    const now = Date.now();
     for (const name of Object.keys(shownFixtures)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
       const meta = shownFixtures[name];
       const isUnplaced = frame !== null && meta.position == null;
 
-      const state = fixtureStates[name] || {};
-      const r = state.red || 0;
-      const g = state.green || 0;
-      const b = state.blue || 0;
-      const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-      const strobe = state.strobe || 0;
-
-      const brightness = dimmer / 255;
-      const fr = Math.round(r * brightness);
-      const fg = Math.round(g * brightness);
-      const fb = Math.round(b * brightness);
-
-      let strobeVisible = true;
-      if (strobe > 10) {
-        const freq = 2 + (strobe / 255) * 18;
-        const phase = (Date.now() / 1000) * freq;
-        strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
-      }
-
-      const intensity = (fr + fg + fb) / (3 * 255);
-      const finalR = strobeVisible ? fr : 0;
-      const finalG = strobeVisible ? fg : 0;
-      const finalB = strobeVisible ? fb : 0;
-
-      // Glow
-      if (intensity > 0.02 && strobeVisible) {
-        const gradient = ctx.createRadialGradient(
-          pos.x,
-          pos.y,
-          radius,
-          pos.x,
-          pos.y,
-          glow,
-        );
-        gradient.addColorStop(
-          0,
-          `rgba(${finalR},${finalG},${finalB},${intensity * 0.5})`,
-        );
-        gradient.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, glow, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Fixture body — dashed when the venue has not placed it yet. A
-      // pixel fixture is a disc of wedges, one per cell in the
-      // manufacturer's order, each in its own colour when a per-cell
-      // effect drives it (design §17.4), else the fixture's.
-      ctx.strokeStyle = fixtureStroke;
-      ctx.lineWidth = 1.5;
-      if (isUnplaced) ctx.setLineDash([4, 3]);
+      const state = fixtureStates[name];
+      const strobeHz = strobeRates[name];
+      const look = beamLook(state, strobeHz, now);
+      // A pixel fixture's body is its cells, each in its own colour when
+      // a per-cell effect drives it (design §17.4), else the fixture's.
       const cells = meta.cells ?? [];
       const cellState = cellStates[name];
-      const cellColor = (cell: { name: string }) => {
+      const cellColor = (cell: { name: string }, color: string) => {
         const own = cellState?.[cell.name];
-        if (!own) return `rgb(${finalR},${finalG},${finalB})`;
-        const k = (own.dimmer ?? dimmer) / 255;
-        const cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
-        const cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
-        const cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
-        return `rgb(${cr},${cg},${cb})`;
+        if (!own) return color;
+        // A cell without a dimmer of its own takes the fixture's, and
+        // every cell flashes with the fixture.
+        return beamCss(
+          beamLook({ dimmer: state?.dimmer, ...own }, strobeHz, now),
+        );
       };
       const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;
-      if (bar) {
-        // Cells along a line: a bar of segments in that direction on the
-        // plot, seen from the audience.
-        const len = radius * 2.6;
-        const thick = radius * 0.9;
-        const seg = len / cells.length;
-        ctx.save();
-        ctx.translate(pos.x, pos.y);
-        ctx.rotate(bar.angle);
-        for (const [i, cell] of bar.ordered.entries()) {
-          ctx.fillStyle = cellColor(cell);
-          ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
-        }
-        ctx.strokeRect(-len / 2, -thick / 2, len, thick);
-        ctx.restore();
-      } else if (cells.length > 1) {
-        // Cells that do not line up: a disc of wedges, one per cell in
-        // the manufacturer's order.
-        const step = (Math.PI * 2) / cells.length;
-        for (const [i, cell] of cells.entries()) {
-          ctx.fillStyle = cellColor(cell);
+      const cellBody = (ctx: CanvasRenderingContext2D, color: string) => {
+        if (bar) {
+          // Cells along a line: a bar of segments in that direction on the
+          // plot, seen from the audience.
+          const len = radius * 2.6;
+          const thick = radius * 0.9;
+          const seg = len / cells.length;
+          ctx.save();
+          ctx.translate(pos.x, pos.y);
+          ctx.rotate(bar.angle);
+          for (const [i, cell] of bar.ordered.entries()) {
+            ctx.fillStyle = cellColor(cell, color);
+            ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
+          }
+          ctx.strokeRect(-len / 2, -thick / 2, len, thick);
+          ctx.restore();
+        } else if (cells.length > 1) {
+          // Cells that do not line up: a disc of wedges, one per cell in
+          // the manufacturer's order.
+          const step = (Math.PI * 2) / cells.length;
+          for (const [i, cell] of cells.entries()) {
+            ctx.fillStyle = cellColor(cell, color);
+            ctx.beginPath();
+            ctx.moveTo(pos.x, pos.y);
+            ctx.arc(
+              pos.x,
+              pos.y,
+              radius,
+              -Math.PI / 2 + i * step,
+              -Math.PI / 2 + (i + 1) * step,
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
           ctx.beginPath();
-          ctx.moveTo(pos.x, pos.y);
-          ctx.arc(
-            pos.x,
-            pos.y,
-            radius,
-            -Math.PI / 2 + i * step,
-            -Math.PI / 2 + (i + 1) * step,
-          );
-          ctx.closePath();
+          ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          // One cell: the disc shows its colour when a per-cell effect
+          // drives it, else the fixture's.
+          ctx.fillStyle = cellColor(cells[0], color);
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
           ctx.fill();
+          ctx.stroke();
         }
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      } else {
-        // One cell (or none): the disc shows that cell's colour when a
-        // per-cell effect drives it, else the fixture's.
-        ctx.fillStyle =
-          cells.length === 1
-            ? cellColor(cells[0])
-            : `rgb(${finalR},${finalG},${finalB})`;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
+      };
+      drawFixture(
+        ctx,
+        pos,
+        name,
+        look,
+        {
+          radius,
+          glow,
+          lineWidth: 1.5,
+          unplacedDash: [4, 3],
+          stroke: fixtureStroke,
+          font: "11px monospace",
+          labelFill: fixtureLabel,
+          labelGap: 14,
+        },
+        { unplaced: isUnplaced, body: cells.length > 0 ? cellBody : undefined },
+      );
 
       // Rings for the Fit shows page: solid for a group's members, dashed
       // and wider for the pending selection. (The page also lists both as
@@ -756,12 +740,6 @@
         ctx.stroke();
         ctx.setLineDash([]);
       }
-
-      // Label
-      ctx.fillStyle = fixtureLabel;
-      ctx.font = "11px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + radius + 14);
 
       // A fixture test drives it: an amber ring and a "test" badge, so
       // the plot says why it shows what the show does not.
@@ -798,7 +776,7 @@
           ctx,
           from,
           end,
-          fixtureStates[name] || {},
+          beamLook(fixtureStates[name], strobeRates[name], now),
           pose.floor !== null,
           {
             dark: isDark,
@@ -1012,7 +990,7 @@
   // reloads for the user to reapply. The live plot re-reads just before it
   // writes, so it only guards the gap between that read and the write, and
   // retries once.
-  async function persist(update: (venue: VenueData) => void): Promise<boolean> {
+  async function persist(update: (venue: Venue) => void): Promise<boolean> {
     const meta = shownVenue;
     if (!meta) return false;
     if (saving) {

@@ -27,29 +27,12 @@
 //! half-import. Warnings are printed for eyeballing, not asserted — they
 //! are manufacturer-file facts, not code facts.
 
+mod common;
+
 use mtrack::lighting::gdtf;
 
 fn corpus_files() -> Vec<std::path::PathBuf> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gdtf-corpus");
-    assert!(
-        dir.is_dir(),
-        "no corpus at {}: create it and drop .gdtf files in (see module docs)",
-        dir.display()
-    );
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("readable corpus dir")
-        .filter_map(|entry| {
-            let path = entry.expect("dir entry").path();
-            (path.extension().is_some_and(|e| e == "gdtf")).then_some(path)
-        })
-        .collect();
-    files.sort();
-    assert!(
-        !files.is_empty(),
-        "corpus dir {} holds no .gdtf files",
-        dir.display()
-    );
-    files
+    common::corpus_files("gdtf-corpus", "gdtf", common::Listing::NonEmpty)
 }
 
 /// The PixelBrick proof, against the real manufacturer file: distilling

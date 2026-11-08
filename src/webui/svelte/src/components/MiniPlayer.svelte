@@ -17,11 +17,10 @@
   import { playbackStore } from "../lib/ws/stores";
   import { setLocked } from "../lib/api/config";
   import { playerClient } from "../lib/grpc/client";
-  import { formatMs } from "../lib/util/format";
-  import { playlistEnds } from "../lib/nextUp";
   import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { rules } from "../lib/rules";
 
   let busy = $state(false);
   let toggling = $state(false);
@@ -91,7 +90,11 @@
     }
   }
 
-  let ends = $derived(playlistEnds($playbackStore));
+  // Whether Previous and Next have an entry to move to, as the player says.
+  let ends = $derived({
+    atFirst: $playbackStore.playlist_at_first,
+    atLast: $playbackStore.playlist_at_last,
+  });
   let canPrev = $derived(
     $playbackStore.playlist_songs.length > 0 && !ends.atFirst,
   );
@@ -101,8 +104,8 @@
 
   let displayName = $derived($playbackStore.song_name || $t("playback.noSong"));
 
-  let elapsed = $derived(formatMs($playbackStore.elapsed_ms));
-  let total = $derived(formatMs($playbackStore.song_duration_ms));
+  let elapsed = $derived(rules.clock($playbackStore.elapsed_ms / 1000, 0));
+  let total = $derived(rules.clock($playbackStore.song_duration_ms / 1000, 0));
 </script>
 
 <div class="miniplayer" role="region" aria-label={$t("playback.title")}>

@@ -22,7 +22,9 @@
 //! - **Lockout:** Waits `retrigger_time` samples, then returns to Idle.
 
 use super::filter::BiquadHighPass;
-use crate::config::trigger::{AudioTriggerInput, TriggerInputAction, VelocityCurve};
+use crate::config::trigger::{
+    AudioTriggerInput, TriggerInputAction, VelocityCurve, TRIGGER_VELOCITY,
+};
 use crate::samples::{TriggerAction, TriggerEvent};
 
 /// Internal state of the detector.
@@ -246,30 +248,31 @@ impl TriggerDetector {
         }
     }
 
-    /// Converts a peak amplitude to a velocity value.
+    /// Converts a peak amplitude to a MIDI velocity, 1–127 whatever the
+    /// curve: a hit is a note on, which a velocity of 0 is not, so it would
+    /// play nothing.
     fn amplitude_to_velocity(&self, peak: f32) -> u8 {
-        match self.velocity_curve {
-            VelocityCurve::Linear => {
-                let clamped = peak.min(1.0);
-                (clamped * 127.0) as u8
-            }
+        let velocity = match self.velocity_curve {
+            VelocityCurve::Linear => peak.min(1.0) * 127.0,
             VelocityCurve::Logarithmic => {
-                if peak <= self.threshold {
-                    return 1;
-                }
-                let clamped = peak.min(1.0);
                 let range = 1.0 - self.threshold;
-                if range < f32::EPSILON {
-                    return 127;
+                if peak <= self.threshold {
+                    1.0
+                } else if range < f32::EPSILON {
+                    127.0
+                } else {
+                    // Map threshold→1.0 logarithmically to 1→127
+                    let normalized = (peak.min(1.0) - self.threshold) / range;
+                    let log_val = (normalized + 1.0).ln() / 2.0_f32.ln();
+                    1.0 + log_val * 126.0
                 }
-                // Map threshold→1.0 logarithmically to 1→127
-                let normalized = (clamped - self.threshold) / range;
-                let log_val = (normalized + 1.0).ln() / 2.0_f32.ln();
-                let velocity = 1.0 + log_val * 126.0;
-                (velocity.clamp(1.0, 127.0)) as u8
             }
-            VelocityCurve::Fixed => self.fixed_velocity,
-        }
+            VelocityCurve::Fixed => f32::from(self.fixed_velocity),
+        };
+        velocity.clamp(
+            f32::from(*TRIGGER_VELOCITY.start()),
+            f32::from(*TRIGGER_VELOCITY.end()),
+        ) as u8
     }
 
     /// Creates a TriggerAction from the detected peak amplitude.
@@ -411,6 +414,38 @@ mod tests {
         assert_eq!(expect_trigger(det.process_sample(1.0)).velocity, 127);
         // Reset by going through idle
         assert_eq!(expect_trigger(det.process_sample(0.5)).velocity, 63);
+    }
+
+    /// A hit just over a low threshold is a quiet note, not a velocity of 0
+    /// that plays nothing.
+    #[test]
+    fn test_linear_velocity_is_at_least_one() {
+        let mut det = make_trigger_detector(0.005, 0, 0);
+        assert_eq!(expect_trigger(det.process_sample(0.006)).velocity, 1);
+    }
+
+    /// A fixed velocity is held to 1–127 as the curves are.
+    #[test]
+    fn test_fixed_velocity_is_clamped() {
+        for (fixed, expected) in [(0, 1), (200, 127)] {
+            let mut det = TriggerDetector::new(
+                44100,
+                0.1,
+                0,
+                0,
+                1.0,
+                VelocityCurve::Fixed,
+                fixed,
+                Some("kick".to_string()),
+                None,
+                TriggerInputAction::Trigger,
+                None,
+                None,
+                None,
+                200,
+            );
+            assert_eq!(expect_trigger(det.process_sample(0.5)).velocity, expected);
+        }
     }
 
     #[test]

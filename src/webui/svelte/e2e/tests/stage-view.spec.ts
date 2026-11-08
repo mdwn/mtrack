@@ -13,12 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-
-async function sendWs(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
+import { sendWs } from "../support/ws";
 
 /** Lets the page paint `n` frames: anything the browser has queued for
  *  after the next frame (a ResizeObserver callback) runs by the second. */

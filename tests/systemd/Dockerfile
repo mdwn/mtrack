@@ -38,9 +38,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install buf for protobuf code generation.
-RUN curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64 -o /usr/local/bin/buf \
-    && chmod +x /usr/local/bin/buf
+# The web UI compiles the player's rules to WebAssembly (make gen-wasm), with
+# the same pinned tools as CI and setup.sh: wasm-pack, the wasm-bindgen CLI at
+# the rules crate's pinned version, and binaryen's wasm-opt.
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install --locked wasm-pack --version 0.15.1 \
+    && cargo install --locked wasm-bindgen-cli --version 0.2.122
+COPY scripts/install-binaryen.sh /tmp/install-binaryen.sh
+RUN /tmp/install-binaryen.sh && rm /tmp/install-binaryen.sh
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -53,9 +58,14 @@ COPY benches/ benches/
 # the harness is a hardware-verification tool with no place in this image, and
 # the build below is scoped to mtrack so its sources are never needed.
 COPY harness/Cargo.toml harness/Cargo.toml
+# The rules crate is a workspace member too, and the web UI build compiles it
+# to WebAssembly, so it is copied whole.
+COPY crates/ crates/
+COPY Makefile ./
 
-# Build the Svelte frontend (embedded into the Rust binary).
-RUN cd src/webui/svelte && npm ci && buf generate && npm run build
+# Build the Svelte frontend (embedded into the Rust binary) the way CI does:
+# npm ci, the protobuf bindings, the WASM rules module, then the Vite build.
+RUN make build-ui
 
 RUN cargo build --release -p mtrack --bin mtrack
 

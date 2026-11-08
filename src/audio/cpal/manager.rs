@@ -35,9 +35,11 @@ const FLAP_WARN_INTERVAL: Duration = Duration::from_secs(10);
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer, PreparedSource};
 
-use crate::audio::health::{OutputHealth, OutputHealthSnapshot};
+use crate::audio::health::{
+    callback_period_ms, OutputHealth, OutputHealthSnapshot, SustainedUnderruns, UnderrunWatch,
+};
 
-use super::stream::OutputStreamFactory;
+use super::stream::{OutputDescription, OutputStreamFactory};
 use super::CondvarNotify;
 
 /// Manages the continuous output stream and mixing of multiple audio sources.
@@ -167,19 +169,26 @@ impl OutputManager {
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
         let health = self.health.clone();
+        let description = factory.describe();
 
         // Carries the first build's outcome back to the caller. A channel rather than
         // a barrier, so "the thread got as far as returning to us" and "the thread has
         // a live stream" can no longer be confused for each other.
         let (first_result_tx, first_result_rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
 
+        // Streams are timed on the spawning thread's wall clock: a test's,
+        // when it runs on one.
+        let clock = crate::clock::WallClock::current();
         let output_thread = thread::spawn(move || {
+            clock.install();
             let mut first_run = true;
             let mut backoff = REBUILD_BACKOFF_START;
             // Flap accounting. Diagnosis only — see the warning below for why
             // this does not also slow the rebuild down.
             let mut flaps: u64 = 0;
             let mut last_flap_warn: Option<std::time::Instant> = None;
+            // Outlives each stream, as the underrun count it reads does.
+            let mut underruns = UnderrunWatch::new();
 
             loop {
                 if *shutdown.0.lock() {
@@ -215,7 +224,10 @@ impl OutputManager {
                 match stream_result {
                     Ok(stream) => {
                         backoff = REBUILD_BACKOFF_START;
-                        let built_at = std::time::Instant::now();
+                        // A new stream's window starts with it, so a rebuild's
+                        // outage cannot stretch one into a warning.
+                        underruns.restart_window();
+                        let built_at = crate::clock::wall_now();
                         if first_run {
                             info!(
                                 "Audio output stream started successfully (direct callback mode)"
@@ -248,10 +260,19 @@ impl OutputManager {
                             // Wait on error condvar with a timeout so we can
                             // periodically re-check the shutdown flag.
                             err_condvar.wait_for(&mut err_guard, Duration::from_millis(100));
+                            drop(err_guard);
+
+                            // The callback only counts underruns; this thread,
+                            // which is not realtime, is where they are told.
+                            if let Some(sustained) =
+                                underruns.observe(crate::clock::wall_now(), health.underruns())
+                            {
+                                warn_sustained_underruns(&description, &sustained);
+                            }
                         }
 
                         // Drop the stream so we can create a new one.
-                        let lifetime = built_at.elapsed();
+                        let lifetime = crate::clock::wall_now().saturating_duration_since(built_at);
                         drop(stream);
 
                         // A stream that dies as fast as it starts says the buffer
@@ -269,8 +290,10 @@ impl OutputManager {
                         // silence. The storm is ugly, and it is also the recovery.
                         if lifetime < STREAM_FLAPPING_UNDER {
                             flaps += 1;
-                            let due =
-                                last_flap_warn.is_none_or(|at| at.elapsed() >= FLAP_WARN_INTERVAL);
+                            let now = crate::clock::wall_now();
+                            let due = last_flap_warn.is_none_or(|at| {
+                                now.saturating_duration_since(at) >= FLAP_WARN_INTERVAL
+                            });
                             if due {
                                 warn!(
                                     lifetime_ms = lifetime.as_millis() as u64,
@@ -279,7 +302,7 @@ impl OutputManager {
                                      the buffer is likely too small for this machine to \
                                      service reliably"
                                 );
-                                last_flap_warn = Some(std::time::Instant::now());
+                                last_flap_warn = Some(now);
                             }
                         }
                     }
@@ -347,9 +370,31 @@ impl OutputManager {
         if *guard {
             return true;
         }
-        condvar.wait_for(&mut guard, duration);
+        crate::clock::pause(condvar, &mut guard, duration);
         *guard
     }
+}
+
+/// The warning for [`UnderrunWatch`]'s verdict.
+///
+/// The clock follows delivered audio, so a device underrunning this often also
+/// runs songs slow; the period is the thing to change.
+fn warn_sustained_underruns(output: &OutputDescription, sustained: &SustainedUnderruns) {
+    let period_ms = callback_period_ms(output.period_frames, output.sample_rate);
+    warn!(
+        device = %output.device,
+        underruns = sustained.in_window,
+        window_secs = sustained.window.as_secs(),
+        per_second = format!("{:.1}", sustained.per_second()),
+        total = sustained.total,
+        period_frames = output
+            .period_frames
+            .map_or("backend default".to_string(), |frames| frames.to_string()),
+        period_ms = period_ms.map_or("unknown".to_string(), |ms| format!("{ms:.1}")),
+        advice = output.period_setting.advice(),
+        "Audio output is underrunning: the device is being starved, which glitches \
+         the audio and slows playback"
+    );
 }
 
 #[cfg(test)]
@@ -358,52 +403,22 @@ mod test {
         ErrorCapturingFactory, FailingOutputStreamFactory, MockOutputStreamFactory,
     };
     use super::*;
-    use crate::audio::mixer::ActiveSource as MixerActiveSource;
+
     use crate::playsync::CancelHandle;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
 
     use super::super::stream::drain_pending_sources;
 
-    fn make_test_source(
-        samples: Vec<f32>,
-        channels: u16,
-        labels: Vec<Vec<String>>,
-    ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
-        let memory_source =
-            crate::audio::sample_source::MemorySampleSource::new(samples, channels, 44100);
-        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
-            Box::new(memory_source),
-            labels,
-            channels,
-        ))
-    }
+    use crate::testutil::mixer::{
+        active_source as make_active_source, memory_source as make_test_source,
+    };
 
     fn make_silent_source(
         channels: u16,
     ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
         let labels = (0..channels).map(|i| vec![format!("ch{}", i)]).collect();
         make_test_source(vec![0.0; 64], channels, labels)
-    }
-
-    fn make_active_source(
-        source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
-        track_mappings: HashMap<String, Vec<u16>>,
-    ) -> MixerActiveSource {
-        MixerActiveSource {
-            id: crate::audio::next_source_id(),
-            cached_source_channel_count: source.source_channel_count(),
-            source,
-            track_mappings,
-            channel_mappings: Vec::new(),
-            cancel_handle: CancelHandle::new(),
-            is_finished: Arc::new(AtomicBool::new(false)),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-            break_envelope: None,
-        }
     }
 
     /// A loop's next pass or time round, added under the playback's jump
@@ -500,14 +515,8 @@ mod test {
 
             // Wait on the build count, not on is_alive — the original stream is still
             // alive at this point, so an is_alive check would pass before the thread
-            // has even woken up.
-            //
-            // Backoff is 250ms then 500ms, so allow room for both failed retries plus
-            // the successful third build.
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while std::time::Instant::now() < deadline && handle.build_count() < 4 {
-                thread::sleep(Duration::from_millis(25));
-            }
+            // has even woken up. Backoff is 250ms then 500ms before the third.
+            handle.wait_for_builds(4);
 
             assert!(
                 handle.is_alive(),
@@ -529,8 +538,13 @@ mod test {
         /// POLLERR, so audio delivered is a duty cycle of stream lifetime over
         /// rebuild interval. Throttling was tried and measured — it turned 77%
         /// choppy audio into 2% silence.
+        ///
+        /// On a clock standing still every stream dies as fast as it started,
+        /// so each one flaps, however slowly the runner gets round to it, and
+        /// each fault is triggered once the stream before has been replaced.
         #[test]
         fn a_flapping_stream_is_still_rebuilt_promptly() {
+            let clock = crate::clock::TestClock::start();
             let (factory, handle) = ErrorCapturingFactory::new();
             let mut manager = OutputManager::new(2, 44100).unwrap();
             manager
@@ -538,21 +552,41 @@ mod test {
                 .expect("should start");
             assert_eq!(handle.build_count(), 1);
 
-            for _ in 0..5 {
+            for fault in 1..=5 {
                 handle.trigger_error();
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
-                let want = handle.build_count() + 1;
-                while std::time::Instant::now() < deadline && handle.build_count() < want {
-                    thread::sleep(Duration::from_millis(5));
-                }
+                handle.wait_for_builds(1 + fault);
             }
 
-            assert!(
-                handle.build_count() >= 6,
-                "each fault should still produce a rebuild, got {}",
-                handle.build_count()
+            // One rebuild per fault, none failed and retried after a wait,
+            // and none held back: the output thread asked for no pause.
+            assert_eq!(handle.build_count(), 6);
+            assert_eq!(
+                clock.pauses(),
+                Vec::<Duration>::new(),
+                "the rebuild after a flap waited"
             );
+            drop(manager);
+        }
 
+        /// The control for the test above: a rebuild that fails is retried
+        /// after the backoff, and the output thread's pause is seen on the
+        /// test's clock. Without it, "no pauses" could hold because none
+        /// were ever noted.
+        #[test]
+        fn a_failed_rebuild_pauses_for_the_backoff() {
+            let clock = crate::clock::TestClock::start();
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+
+            handle.fail_next_builds(1);
+            handle.trigger_error();
+            // The failed rebuild, then the retry after the backoff.
+            handle.wait_for_builds(3);
+
+            assert_eq!(clock.pauses(), [REBUILD_BACKOFF_START]);
             drop(manager);
         }
 
@@ -598,8 +632,7 @@ mod test {
             // Simulate a backend error — the output thread should recreate the stream.
             handle.trigger_error();
 
-            // Give the thread time to drop old stream and build a new one.
-            thread::sleep(Duration::from_millis(250));
+            handle.wait_for_builds(2);
             assert_eq!(
                 handle.build_count(),
                 2,

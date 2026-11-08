@@ -40,6 +40,7 @@ use tracing::warn;
 
 use super::gdtf::{self, Description, RigModel, RIG_VERSION};
 use super::mvr::{self, Matrix, Scene};
+pub use super::stage_model::{SceneryMesh, SceneryModel, SceneryObject};
 use super::types::{Cell, ChannelDef, FixtureType, GdtfSource, MovementLimits};
 
 /// The asset store's directory under the cache.
@@ -50,45 +51,6 @@ pub const SCENERY_VERSION: u32 = 1;
 
 /// The most bytes of meshes copied out of one MVR.
 const MAX_SCENERY_BYTES_TOTAL: u64 = 256 * 1024 * 1024;
-
-/// A venue's scenery as the store writes it (design §16.3): every scene
-/// object with its transform in stage space and the meshes it draws.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryModel {
-    pub version: u32,
-    /// The objects, in document order.
-    pub objects: Vec<SceneryObject>,
-    /// Mesh files by extension: how much of the scenery each format holds,
-    /// drawn or not.
-    pub formats: BTreeMap<String, usize>,
-    /// What was skipped and why.
-    #[serde(default)]
-    pub warnings: Vec<String>,
-}
-
-/// One piece of scenery.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryObject {
-    pub name: String,
-    /// `SceneObject`, `Truss`, `Support`, ...
-    pub kind: String,
-    pub layer: String,
-    /// Row-major 4×4 in stage space: the MVR basis (scale and all) with
-    /// the translation in meters, re-origined like the fixtures.
-    pub transform: [[f64; 4]; 4],
-    /// Meshes the store holds, by path relative to the scenery file.
-    pub meshes: Vec<SceneryMesh>,
-    /// Mesh files the 3D view cannot draw (`.3ds` and the like), by name.
-    pub skipped: Vec<String>,
-}
-
-/// A drawable mesh of an object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryMesh {
-    pub file: String,
-    /// Row-major 4×4 relative to the object, translation in meters.
-    pub transform: [[f64; 4]; 4],
-}
 
 /// A name reduced to its lowercase ASCII letters and digits — what two
 /// spellings of one non-ASCII name agree on.
@@ -102,25 +64,11 @@ fn ascii_skeleton(name: &str) -> String {
 /// An MVR transform as a row-major 4×4 with the translation converted from
 /// millimeters, re-origined by `origin_mm`.
 fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
+    let o = super::import::to_stage(&matrix.o, origin_mm);
     [
-        [
-            matrix.u[0],
-            matrix.v[0],
-            matrix.w[0],
-            (matrix.o[0] - origin_mm[0]) / 1000.0,
-        ],
-        [
-            matrix.u[1],
-            matrix.v[1],
-            matrix.w[1],
-            (matrix.o[1] - origin_mm[1]) / 1000.0,
-        ],
-        [
-            matrix.u[2],
-            matrix.v[2],
-            matrix.w[2],
-            (matrix.o[2] - origin_mm[2]) / 1000.0,
-        ],
+        [matrix.u[0], matrix.v[0], matrix.w[0], o[0]],
+        [matrix.u[1], matrix.v[1], matrix.w[1], o[1]],
+        [matrix.u[2], matrix.v[2], matrix.w[2], o[2]],
         [0.0, 0.0, 0.0, 1.0],
     ]
 }
@@ -128,7 +76,7 @@ fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
 /// A mesh entry name as a file name in the store: the archive's own name
 /// reduced to safe characters, made unique by a hash when two reduce alike.
 fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) -> String {
-    let base = entry.rsplit('/').next().unwrap_or(entry);
+    let base = super::mvr::entry_basename(entry);
     let (stem, ext) = match base.rsplit_once('.') {
         Some((s, e)) => (s, e.to_ascii_lowercase()),
         None => (base, String::new()),
@@ -159,7 +107,7 @@ fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) ->
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
-pub const DISTILLER_VERSION: u32 = 8;
+pub const DISTILLER_VERSION: u32 = 9;
 
 /// The cache's on-disk representation of a distilled fixture type.
 ///
@@ -885,10 +833,7 @@ mod tests {
     fn a_rig_that_cannot_distill_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DistillCache::new(dir.path().join(".cache"));
-        let archive = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let archive = crate::testutil::lighting::synthetic_gdtf();
         let description = crate::lighting::gdtf::parse_archive(&archive).unwrap();
         let err = cache
             .ensure_rig(&archive, "No Such Mode", || Ok(&description))

@@ -12,13 +12,23 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod hardware;
+mod hardware_status;
+pub mod lock_policy;
 mod navigation;
+mod play_declined;
 mod playback;
 mod seek;
 mod status;
 
 pub use hardware::{process_id, ConfigApply, ConfigChange, DeferredReloads, HardwareReload};
-pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
+pub use hardware_status::{
+    AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
+    SubsystemStatus, TestOutputStatus,
+};
+pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
+pub use status::{
+    AmbientStatus, DmxRead, LightingStatus, PlayerStatus, AMBIENT_UNREAD, STATUS_DMX_READ_TIMEOUT,
+};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -49,6 +59,10 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
+
+/// What every surface says for the lighting effects when there is no
+/// effect engine (no DMX engine configured).
+pub const NO_EFFECT_ENGINE: &str = "no effect engine configured";
 
 /// Direction for playlist navigation.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +140,9 @@ struct HardwareState {
     song_change_notifiers: Vec<Arc<dyn SongChangeNotifier>>,
     /// The hostname of the active hardware profile (None if no profile matched).
     profile_name: Option<String>,
+    /// The file the active profile was loaded from (`stage.yml`); None for
+    /// an inline profile, or none matched.
+    profile_file: Option<String>,
     /// The resolved machine hostname used for profile matching.
     hostname: Option<String>,
     /// Subsystems whose init gave up, keyed by name, with the reason.
@@ -134,6 +151,10 @@ struct HardwareState {
     /// not a failure, it is a wait. Cleared by a reload, so fixing the config
     /// and reloading clears the report along with the cause.
     init_errors: HashMap<String, String>,
+    /// Problems found at startup in a subsystem that did come up, keyed by
+    /// name: reported beside `connected` rather than as a failure. Cleared by
+    /// a reload, as `init_errors` is.
+    init_warnings: HashMap<String, String>,
 }
 
 /// Alias for the shared state sampler sender stored on Player.
@@ -186,10 +207,18 @@ impl From<&ReactiveLoopState> for ReactiveLoopStateKind {
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
-    /// Where in the song the playback started: where it still is until
-    /// `play_files` stamps `play_start_time`, which a pause in that window
-    /// reads instead of the clock.
-    start_time: Duration,
+}
+
+/// Where a playing song's position comes from.
+#[derive(Clone, Copy, Debug)]
+enum PlayPosition {
+    /// The playback started at this position and waits on its subsystems,
+    /// its clock not yet running: it is still there (#634). Without it the
+    /// position read as none, 0:00, for most of a second after a play from
+    /// part way in, while the lights already showed the start position.
+    Starting(Duration),
+    /// The clock runs: when the song's start would have been, on the wall.
+    Running(SystemTime),
 }
 
 /// Groups the parameters needed for `play_files` to avoid excessive argument counts.
@@ -203,7 +232,7 @@ struct PlaybackContext {
     cancel_handle: CancelHandle,
     play_tx: oneshot::Sender<Result<(), String>>,
     start_time: Duration,
-    play_start_time: Arc<Mutex<Option<SystemTime>>>,
+    play_start_time: Arc<Mutex<Option<PlayPosition>>>,
     /// Loop control state shared with audio/MIDI/DMX subsystems.
     loop_control: crate::playsync::LoopControl,
 }
@@ -216,101 +245,6 @@ pub struct PlayerDevices {
     pub dmx_engine: Option<Arc<dmx::engine::Engine>>,
     pub sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     pub trigger_engine: Option<Arc<TriggerEngine>>,
-}
-
-/// Status of a single hardware subsystem.
-#[derive(Clone, serde::Serialize)]
-pub struct SubsystemStatus {
-    /// `connected`, `initializing`, `failed`, or `not_connected`.
-    pub status: String,
-    pub name: Option<String>,
-    /// Why init gave up, present only for `failed`.
-    ///
-    /// `failed` without a reason would be no better than the perpetual retry it
-    /// replaced: the operator still would not know what to change.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// What the audio output callback is actually doing, as distinct from whether the
-/// device opened.
-///
-/// `connected` on the audio subsystem only ever meant "we constructed a device
-/// object at startup". These are the runtime facts on top of that.
-///
-/// Note what this cannot tell you: a device can accept every buffer and produce no
-/// sound, and nothing here will notice. `writing_signal` true with a silent room
-/// means the fault is downstream of mtrack — which is the question worth answering
-/// quickly when a rig goes quiet.
-///
-/// Not a meter. There is no level here on purpose: a level sampled by a status
-/// poller sees one callback in several hundred, which makes a poor meter and adds
-/// nothing to the health question that the two booleans don't already answer.
-#[derive(Clone, serde::Serialize)]
-pub struct AudioOutputHealth {
-    /// One-word verdict: `healthy`, `recovering`, `stalled`, or `never_started`.
-    ///
-    /// The fields below are the evidence behind it. This exists because "is the
-    /// audio all right?" is the question being asked, and making a reader derive
-    /// it from four fields is how an operator ends up trusting `connected`.
-    pub status: crate::audio::health::OutputStatus,
-    /// The callback has run recently. False means the stream is open but stalled.
-    pub callback_alive: bool,
-    /// Non-silent audio was handed to the device recently. False is normal and
-    /// expected whenever nothing is playing, and can also go false during a
-    /// genuinely quiet passage or with output gains at zero.
-    pub writing_signal: bool,
-    /// Milliseconds since the callback last ran, absent if it never has.
-    pub since_last_callback_ms: Option<u64>,
-    /// Milliseconds since non-silent audio was last written, absent if it never was.
-    pub since_last_signal_ms: Option<u64>,
-    /// Total callbacks served since the device was opened.
-    pub callbacks: u64,
-    /// Streams rebuilt after a backend error since the device was opened. A rig
-    /// recovering from a flaky cable several times a set looks fine at any single
-    /// instant; this is the only thing that would show it.
-    pub recoveries: u64,
-    /// Buffer underruns since the device was opened. Counted apart from errors
-    /// because they are routine and self-healing — a rising count means the
-    /// buffer is too small for the machine, not that anything has failed.
-    pub underruns: u64,
-    /// The most recent backend error, if there has been one. Retained after
-    /// recovery on purpose — it is the thing worth reading afterwards.
-    pub last_error: Option<String>,
-}
-
-/// Snapshot of all hardware subsystem statuses.
-#[derive(Clone, serde::Serialize)]
-pub struct HardwareStatusSnapshot {
-    pub init_done: bool,
-    pub hostname: Option<String>,
-    pub profile: Option<String>,
-    pub audio: SubsystemStatus,
-    /// Runtime output health, when the audio device can report it.
-    pub audio_output: Option<AudioOutputHealth>,
-    pub midi: SubsystemStatus,
-    pub dmx: SubsystemStatus,
-    pub trigger: SubsystemStatus,
-    /// Whether the current lighting venue's fixtures are registered. DMX can
-    /// be `connected` while the venue failed — then nothing lights — so it
-    /// is its own entry.
-    pub lighting_venue: LightingVenueStatus,
-    /// A fixture test's output, while one is live: which universe and
-    /// addresses it holds, and for how much longer without an update.
-    pub test_output: Option<crate::dmx::engine::TestOutputStatus>,
-}
-
-/// The current lighting venue's registration, for status surfaces.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LightingVenueStatus {
-    /// The venue; `None` when there is none.
-    pub name: Option<String>,
-    /// `ok`, `failed`, or `none` (no DMX engine, no lighting system, or no
-    /// current venue).
-    pub status: String,
-    /// Why it failed: the fixture and the reason. Present only for `failed`
-    /// (serialized as null otherwise).
-    pub error: Option<String>,
 }
 
 impl LightingVenueStatus {
@@ -351,8 +285,8 @@ pub struct Player {
     /// The persisted active playlist name (last non-all_songs choice). Used by
     /// MIDI/OSC `Playlist` action to return to the user's "real" playlist.
     persisted_playlist: Arc<parking_lot::RwLock<String>>,
-    /// The time that the last play action occurred.
-    play_start_time: Arc<Mutex<Option<SystemTime>>>,
+    /// Where the playing song's position comes from: none while stopped.
+    play_start_time: Arc<Mutex<Option<PlayPosition>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
     join: Arc<Mutex<Option<PlayHandles>>>,
     /// Whether a song is playing: set as `join` becomes `Some`, and cleared
@@ -488,6 +422,20 @@ pub enum TrackGainError {
     UnknownTrack(#[from] crate::audio::track_gains::UnknownTrackError),
 }
 
+impl TrackGainError {
+    /// What kind of fault this is, for a transport's code: no audio
+    /// profile is a precondition; a gain or track the caller named wrong is
+    /// invalid.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            TrackGainError::NoAudioProfile => crate::util::FaultKind::Precondition,
+            TrackGainError::NonFinite(_) | TrackGainError::UnknownTrack(_) => {
+                crate::util::FaultKind::Invalid
+            }
+        }
+    }
+}
+
 /// A section loop's state: the section armed, a break asked of it, when it
 /// was armed, and the reactive loop's state. It belongs to one playback, or
 /// a paused song's, and [`SectionLoop::reset`] forgets it as each starts
@@ -566,6 +514,22 @@ pub struct SectionBounds {
     pub name: String,
     pub start_time: Duration,
     pub end_time: Duration,
+}
+
+impl SectionBounds {
+    /// The section of `song` the playhead at `at` sits inside, if any,
+    /// resolved to absolute time bounds via the song's beat grid: the first
+    /// in the song's order whose bounds hold `at`.
+    pub fn at(song: &Song, at: Duration) -> Option<SectionBounds> {
+        song.sections().iter().find_map(|s| {
+            let (start_time, end_time) = song.resolve_section(&s.name)?;
+            (at >= start_time && at < end_time).then(|| SectionBounds {
+                name: s.name.clone(),
+                start_time,
+                end_time,
+            })
+        })
+    }
 }
 
 /// State machine for reactive section looping.
@@ -704,8 +668,10 @@ impl Player {
             clock_source,
             song_change_notifiers: Vec::new(),
             profile_name: None,
+            profile_file: None,
             hostname: None,
             init_errors: HashMap::new(),
+            init_warnings: HashMap::new(),
         };
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);
@@ -714,7 +680,7 @@ impl Player {
         let resolved_active = if playlists.contains_key(&active_playlist) {
             active_playlist
         } else {
-            "all_songs".to_string()
+            playlist::ALL_SONGS.to_string()
         };
 
         Ok(Player {
@@ -724,7 +690,7 @@ impl Player {
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
             playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
-                if resolved_active == "all_songs" {
+                if resolved_active == playlist::ALL_SONGS {
                     "playlist".to_string()
                 } else {
                     resolved_active
@@ -1185,6 +1151,13 @@ impl Player {
             .map(|engine| engine.format_active_effects())
     }
 
+    /// The active lighting effects as text for a surface to show:
+    /// [`Player::format_active_effects`], or [`NO_EFFECT_ENGINE`] without one.
+    pub fn active_effects_summary(&self) -> String {
+        self.format_active_effects()
+            .unwrap_or_else(|| NO_EFFECT_ENGINE.to_string())
+    }
+
     /// Emits the per-song MIDI event and notifies all song-change notifiers.
     fn emit_song_change(&self, song: &Song) {
         let hw = self.hardware.read();
@@ -1498,13 +1471,7 @@ impl SongSources {
         let legacy_playlist = cli_playlist
             .map(Path::to_path_buf)
             .or_else(|| config.playlist())
-            .map(|path| {
-                if path.is_absolute() {
-                    path
-                } else {
-                    project_dir.join(path)
-                }
-            });
+            .map(|path| project_dir.join(path));
         SongSources {
             songs: crate::util::resolved_dir(&config.songs(config_path)),
             playlists_dir: Some(playlists_dir),
@@ -1523,6 +1490,16 @@ pub enum SwitchPlaylistError {
     NotFound(String),
 }
 
+impl SwitchPlaylistError {
+    /// What kind of fault this is, for a transport's code.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SwitchPlaylistError::Playing => crate::util::FaultKind::Precondition,
+            SwitchPlaylistError::NotFound(_) => crate::util::FaultKind::NotFound,
+        }
+    }
+}
+
 /// Why [`Player::reload_songs`] left the songs as they were.
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadSongsError {
@@ -1539,7 +1516,7 @@ pub enum ReloadSongsError {
 }
 
 /// Loads all playlists from a directory and/or legacy playlist path.
-/// Always includes the computed "all_songs" playlist.
+/// Always includes the computed [`playlist::ALL_SONGS`] playlist.
 pub fn load_playlists(
     playlists_dir: Option<&Path>,
     legacy_playlist_path: Option<&Path>,
@@ -1549,33 +1526,23 @@ pub fn load_playlists(
 
     // Always create all_songs.
     playlists.insert(
-        "all_songs".to_string(),
+        playlist::ALL_SONGS.to_string(),
         playlist::from_songs(songs.clone())?,
     );
 
     // Load playlists from directory.
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().is_file()
-                        && e.path()
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in entries {
-                let path = entry.path();
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                if name.is_empty() || name == "all_songs" {
-                    continue;
+            // Each name's file (`playlist::playlist_files`): with both
+            // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
+            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
+                if let Some(unread) = unread {
+                    warn!(
+                        name = %name,
+                        "Playlist has two files: {} is read, {} is not",
+                        path.display(),
+                        unread.display()
+                    );
                 }
                 match config::Playlist::deserialize(&path) {
                     Ok(playlist_config) => {
@@ -1630,7 +1597,10 @@ mod test {
         config,
         playlist::Playlist,
         songs,
-        testutil::{eventually, eventually_async},
+        testutil::{
+            eventually, eventually_async,
+            player::{assets_player, assets_player_with_devices, no_devices},
+        },
     };
 
     use super::*;
@@ -1651,25 +1621,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -1866,37 +1818,13 @@ mod test {
         Ok(())
     }
 
-    /// Flexible helper to create a player with the standard test assets and
-    /// optional subsystem configs. Waits for hardware init to complete.
-    async fn make_test_player_with_config(
-        audio: Option<config::Audio>,
-        midi: Option<config::Midi>,
-        dmx: Option<config::Dmx>,
-    ) -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
-            None,
-        )?;
-        player.await_hardware_ready().await;
-        Ok(player)
-    }
-
     /// Waits until the player reports an elapsed position, and returns it.
     ///
-    /// `play_start_time` is set inside `play_files` just after `clock.start()`,
-    /// while the mock device raises `is_playing` before it signals readiness — so
-    /// `elapsed()` can still be `None` for a moment after `is_playing` turns true.
-    /// Waiting for the mock device is not enough on a loaded machine.
+    /// A start stamps `play_start_time` as it goes in, and `play_files` again
+    /// as the clock starts; one started some other way (an auto play) may
+    /// not have gone in yet when `is_playing` turns true.
     async fn elapsed_eventually(player: &Arc<Player>) -> Result<Duration, Box<dyn Error>> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         loop {
             if let Some(elapsed) = player.elapsed().await? {
                 return Ok(elapsed);
@@ -1911,12 +1839,7 @@ mod test {
 
     /// Helper to create a player with the standard test assets (audio + MIDI).
     async fn make_test_player() -> Result<Arc<Player>, Box<dyn Error>> {
-        make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await
+        assets_player().midi("mock-midi-device").ready().await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2055,7 +1978,7 @@ mod test {
         // A real transport transition must wake the receiver.
         player.switch_to_playlist("all_songs").await.unwrap();
         player.refresh_transport_state().await;
-        let result = tokio::time::timeout(Duration::from_secs(2), rx.changed()).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(result.is_ok(), "transport channel did not emit on switch");
         assert_eq!(rx.borrow().playlist_name, "all_songs");
         Ok(())
@@ -2273,6 +2196,25 @@ mod test {
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    /// #634: from the moment a play from part way in returns, the position
+    /// is the start position, not none (0:00) until the subsystems are
+    /// ready and the clock starts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_play_from_reads_its_start_position_before_the_clock_starts(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let start = Duration::from_millis(300);
+        assert!(player.play_from(start).await?.is_some());
+        let elapsed = player.elapsed().await?;
+        assert!(
+            elapsed.is_some_and(|e| e >= start && e < start + Duration::from_secs(2)),
+            "{elapsed:?}"
+        );
+        player.stop().await;
+        assert_eq!(player.elapsed().await?, None);
         Ok(())
     }
 
@@ -2497,9 +2439,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_audio_only_no_midi() -> Result<(), Box<dyn Error>> {
-        let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
-                .await?;
+        let player = assets_player().ready().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -2531,12 +2471,11 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_midi_only_no_audio() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(
-            None,
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player()
+            .audio(None)
+            .midi("mock-midi-device")
+            .ready()
+            .await?;
 
         assert!(
             player.audio_device().is_none(),
@@ -2562,26 +2501,7 @@ mod test {
     async fn test_no_subsystems_completes_immediately() -> Result<(), Box<dyn Error>> {
         // Build a Player directly with no subsystems to exercise the
         // num_barriers == 0 early-return in play_files().
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+        let player = assets_player_with_devices(no_devices())?;
 
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
@@ -2631,12 +2551,7 @@ mod test {
             vec![config::Universe::new(1, "test".to_string())],
             None,
         );
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            None,
-            Some(dmx_config),
-        )
-        .await?;
+        let player = assets_player().dmx(Some(dmx_config)).ready().await?;
 
         assert!(
             player.dmx_engine().is_some(),
@@ -3141,27 +3056,7 @@ mod test {
 
     /// A test player on the assets' songs, with the playlist `yaml`.
     async fn make_test_player_with_playlist(yaml: &str) -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let config: config::Playlist = ::config::Config::builder()
-            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
-            .build()?
-            .try_deserialize()?;
-        let playlist = Playlist::new("playlist", &config, songs.clone())?;
-        let player = Player::new(
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
-        Ok(player)
+        assets_player().playlist_yaml(yaml).ready().await
     }
 
     async fn current_name(player: &Player) -> String {
@@ -3355,12 +3250,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn status_reporting_ends_with_its_init_round() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player().midi("mock-midi").ready().await?;
         let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
         let config: config::StatusEvents = ::config::Config::builder()
             .add_source(::config::File::from_str(
@@ -3382,7 +3272,7 @@ mod test {
         // A hardware reload cancels the round: its reporting stops, rather
         // than going on beside the next round's.
         round.cancel();
-        tokio::time::timeout(Duration::from_secs(2), reporting)
+        tokio::time::timeout(crate::testutil::PATIENCE, reporting)
             .await
             .expect("the status loop outlived its init round")?;
         Ok(())
@@ -3391,12 +3281,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn status_reporting_cancelled_while_waiting_emits_nothing() -> Result<(), Box<dyn Error>>
     {
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player().midi("mock-midi").ready().await?;
         let midi = player.midi_device().expect("MIDI device").to_mock()?;
         let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
         let config: config::StatusEvents = ::config::Config::builder()
@@ -3418,7 +3303,7 @@ mod test {
         tokio::time::sleep(Duration::from_millis(100)).await;
         round.cancel();
         drop(join);
-        tokio::time::timeout(Duration::from_secs(2), reporting)
+        tokio::time::timeout(crate::testutil::PATIENCE, reporting)
             .await
             .expect("the status loop outlived its init round")?;
         assert_eq!(midi.get_emitted_event(), None, "emitted for a round gone");
@@ -3557,12 +3442,7 @@ mod test {
             vec![config::Universe::new(1, "test".to_string())],
             None,
         );
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            None,
-            Some(dmx_config),
-        )
-        .await?;
+        let player = assets_player().dmx(Some(dmx_config)).ready().await?;
 
         // get_cues() with DMX engine present (no timeline loaded → empty)
         let cues = player.get_cues();
@@ -3603,12 +3483,11 @@ mod test {
         );
 
         // Player without audio → track_mappings is None
-        let player = make_test_player_with_config(
-            None,
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player()
+            .audio(None)
+            .midi("mock-midi-device")
+            .ready()
+            .await?;
         assert!(
             player.track_mappings().is_none(),
             "track_mappings should be None without audio"
@@ -3662,40 +3541,16 @@ mod test {
         assert!(result.is_none());
     }
 
-    /// Helper to create a player with no subsystems via new_with_devices.
-    fn make_bare_player() -> Result<Player, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_process_sample_trigger_no_engine() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         player.process_sample_trigger(&[0x90, 60, 127]);
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stop_samples_no_engine() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         player.stop_samples();
         Ok(())
     }
@@ -3724,7 +3579,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn emit_song_change_no_device() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let song = Song::new_for_test("test", &[]);
         // Should not panic when no MIDI device is configured.
         player.emit_song_change(&song);
@@ -3763,7 +3618,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_navigate_no_midi() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
 
         player.next().await;
         let song = player.prev().await.unwrap();
@@ -3779,14 +3634,7 @@ mod test {
             &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
         )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
+        let devices = no_devices();
         let player = Player::new_with_devices(
             devices,
             test_playlists(playlist, songs),
@@ -3830,26 +3678,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_no_subsystem_player_play_and_navigate() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+        let player = assets_player_with_devices(no_devices())?;
 
         player.process_sample_trigger(&[0x90, 60, 127]);
         player.stop_samples();
@@ -3875,9 +3704,7 @@ mod test {
         let player = make_test_player().await?;
         assert!(player.midi_device().is_some());
 
-        let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
-                .await?;
+        let player = assets_player().ready().await?;
         assert!(player.midi_device().is_none());
         Ok(())
     }
@@ -4199,7 +4026,7 @@ mod test {
         }
         let path = dir.path().join("mtrack.yaml");
         fs::write(&path, "songs: songs_a\n")?;
-        let player = Arc::new(make_bare_player()?);
+        let player = Arc::new(assets_player_with_devices(no_devices())?);
         player.set_config_store(Arc::new(config::ConfigStore::new(
             config::Player::deserialize(&path)?,
             path.clone(),
@@ -4293,7 +4120,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_hardware_status_no_devices() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let status = player.hardware_status();
 
         assert!(status.init_done);
@@ -4366,7 +4193,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_reload_songs() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         let initial_count = player.songs().len();
 
         // Create a temp directory that mirrors assets/ layout with an extra song.
@@ -4418,7 +4245,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reload_that_cannot_rescan_says_so_and_keeps_the_songs() -> Result<(), Box<dyn Error>>
     {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         let before = player.songs().len();
         assert!(before > 0);
         let dir = tempfile::tempdir()?;
@@ -4440,7 +4267,7 @@ mod test {
     /// reload from, and says so.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reload_with_no_sources_says_so() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         assert!(matches!(
             player.reload_songs().await,
             Err(ReloadSongsError::NoSources)
@@ -4495,27 +4322,73 @@ mod test {
         Ok(())
     }
 
+    /// The running profile's file (`hardware.profile_file`, which the web UI
+    /// links it by) is the one it was loaded from, and stays so after the
+    /// profile is updated by index, as MCP, the web UI and gRPC do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_running_profiles_file_survives_a_profile_update() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("profiles"))?;
+        std::fs::create_dir(dir.path().join("songs"))?;
+        std::fs::write(
+            dir.path().join("profiles/rig.yml"),
+            "kind: hardware_profile\n",
+        )?;
+        let path = dir.path().join("mtrack.yaml");
+        std::fs::write(&path, "songs: songs\nprofiles_dir: profiles\n")?;
+        let config = config::Player::deserialize(&path)?;
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        let playlists = super::load_playlists(None, None, songs)?;
+        let player = Player::new(playlists, "playlist".to_string(), &config, Some(dir.path()))?;
+        let store = Arc::new(config::store::ConfigStore::new(config, path.clone()));
+        player.set_config_store(store.clone());
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
+
+        let snap = store.read().await?;
+        let updated = config::Profile::new(None, None, None, None);
+        let snap = store.update_profile(0, updated, &snap.checksum).await?;
+        assert_eq!(snap.config.all_profiles()[0].source_file(), Some("rig.yml"));
+        let _ = player.apply_config_change().await;
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
+        Ok(())
+    }
+
+    /// With both `set.yaml` and `set.yml`, the loader takes `set.yaml` (it
+    /// took `set.yml`, the later file name, before); `all_songs.yaml` and
+    /// `loud.YAML` are not playlists.
+    #[test]
+    fn load_playlists_takes_a_names_yaml_over_its_yml() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let temp_dir = tempfile::tempdir()?;
+        let pl_dir = temp_dir.path();
+        fs::write(pl_dir.join("set.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("set.yml"), "songs:\n- Song 1\n- Song 3\n")?;
+        fs::write(pl_dir.join("old.yml"), "songs:\n- Song 3\n")?;
+        fs::write(pl_dir.join("all_songs.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("loud.YAML"), "songs:\n- Song 1\n")?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs.clone())?;
+        assert_eq!(playlists["set"].songs(), &vec!["Song 1".to_string()]);
+        assert_eq!(playlists["old"].songs(), &vec!["Song 3".to_string()]);
+        assert_eq!(
+            playlists[playlist::ALL_SONGS].songs().len(),
+            songs.sorted_list().len()
+        );
+        assert!(!playlists.contains_key("loud"));
+        assert_eq!(playlists.len(), 3);
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_valid() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -4537,25 +4410,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_keeps_active_playlist() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -4608,25 +4463,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_not_found() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
 
         let result = player
@@ -4634,31 +4471,13 @@ mod test {
             .await;
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("not found"));
+        assert_eq!(err.to_string(), "unable to find song Nonexistent Song");
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_while_playing() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -4766,7 +4585,7 @@ mod test {
         // Just past the jump: back in the section, not 96s past its end.
         let (log, start) = at(Duration::from_millis(100_003));
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(start);
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(start));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(4) && position < Duration::from_secs(50),
@@ -4775,7 +4594,7 @@ mod test {
         // Well before it falls due, the song is where the clock says.
         let (log, start) = at(Duration::from_secs(50));
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(start);
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(start));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(50) && position < Duration::from_secs(100),
@@ -4808,8 +4627,9 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_millis(99_995));
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(
+            std::time::SystemTime::now() - Duration::from_millis(99_995),
+        ));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(4),
@@ -4844,8 +4664,9 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_secs(200));
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(
+            std::time::SystemTime::now() - Duration::from_secs(200),
+        ));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(8) && position < Duration::from_secs(96),
@@ -5203,7 +5024,8 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(std::time::SystemTime::now() - raw);
+        *player.play_start_time.lock().await =
+            Some(PlayPosition::Running(std::time::SystemTime::now() - raw));
         let b = SectionBounds {
             name: "b".to_string(),
             start_time: b_start,
@@ -5279,7 +5101,7 @@ mod test {
 
     /// Waits until the playlist sits on `name` with a song playing.
     async fn playing_eventually(player: &Arc<Player>, name: &str) -> Result<(), Box<dyn Error>> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         loop {
             let current = player
                 .get_playlist()
@@ -5885,30 +5707,14 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_track_gain_set_and_get() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
         let mappings: HashMap<String, Vec<u16>> = HashMap::from([
             ("click".to_string(), vec![1]),
             ("keys".to_string(), vec![2]),
         ]);
-        let devices = PlayerDevices {
-            audio: None,
+        let player = assets_player_with_devices(PlayerDevices {
             mappings: Some(Arc::new(mappings)),
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+            ..no_devices()
+        })?;
 
         // All tracks start at unity.
         let gains = player.get_track_gains().unwrap();
@@ -6084,12 +5890,12 @@ mod test {
         // end then moved it on again.
         let mut doubled = 0;
         for _ in 0..200 {
-            let player = make_test_player_with_config(None, None, None).await?;
+            let player = assets_player().audio(None).ready().await?;
             let first = player.get_playlist().entry().unwrap();
             player.play().await?;
             let _ = player.seek_to(Duration::ZERO).await;
             // Let every cleanup run.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
             while player.join.lock().await.is_some() && std::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -6134,7 +5940,7 @@ mod test {
     ) -> Result<(), Box<dyn Error>> {
         // The end's cleanup, behind the pause, moved the playlist on: the
         // next song inherited the paused position.
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let first = player.get_playlist().entry();
         let paused_at = Duration::from_millis(100);
         {
@@ -6161,7 +5967,7 @@ mod test {
     ) -> Result<(), Box<dyn Error>> {
         // The end's cleanup, behind the stop, moved the playlist on past the
         // song the stop stopped on.
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let first = player.get_playlist().entry();
         {
             // As stop() does it, under the lock.
@@ -6291,7 +6097,7 @@ mod test {
         elapsed_eventually(&player).await?;
         let b = player.join.lock().await.as_ref().unwrap().cancel.clone();
         player.next().await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         let mut stopped = false;
         while std::time::Instant::now() < deadline {
             let mut join = player.join.lock().await;
@@ -6368,15 +6174,17 @@ mod test {
             "stopped",
         );
         // Resume at 5 s (as after a pause), then pause again before
-        // play_files has stamped play_start_time. Simulated by clearing
-        // the stamp under the join lock once the start has gone in.
+        // play_files has stamped play_start_time with the running clock.
+        // Simulated by putting it back to starting under the join lock once
+        // the start has gone in.
         {
             let mut join = player.join.lock().await;
             player
                 .play_from_locked(Duration::from_secs(5), &mut join)
                 .await?;
             tokio::time::sleep(Duration::from_millis(300)).await;
-            *player.play_start_time.lock().await = None;
+            *player.play_start_time.lock().await =
+                Some(PlayPosition::Starting(Duration::from_secs(5)));
         }
         let paused = player.pause().await?;
         assert_eq!(
@@ -6693,7 +6501,7 @@ mod test {
         // As long as `eventually` below allows: a restarted controller can
         // take a while to start watching on a loaded runner.
         assert!(
-            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            rx.recv_timeout(crate::testutil::PATIENCE).is_ok(),
             "nothing watches the player's MIDI device"
         );
         eventually(

@@ -54,6 +54,7 @@ interface PlaylistSummary {
   name: string;
   is_active?: boolean;
   song_count?: number;
+  reserved?: boolean;
 }
 
 async function fetchJson<T>(page: Page, urlPath: string): Promise<T> {
@@ -78,9 +79,9 @@ async function pickSong(
 
 async function pickPlaylist(page: Page): Promise<string> {
   const playlists = await fetchJson<PlaylistSummary[]>(page, "/api/playlists");
-  // Prefer the active playlist with the most songs, ignoring "all_songs"
-  // (which renders differently and isn't representative).
-  const candidates = playlists.filter((p) => p.name !== "all_songs");
+  // Prefer the active playlist with the most songs, ignoring the player's
+  // own (`reserved`), which renders differently and isn't representative.
+  const candidates = playlists.filter((p) => !p.reserved);
   const sorted = [...candidates].sort(
     (a, b) => (b.song_count ?? 0) - (a.song_count ?? 0),
   );

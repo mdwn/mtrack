@@ -40,6 +40,7 @@ use tracing::{info, span, warn, Level};
 
 use crate::{config, player::Player};
 
+mod dsl_reference;
 mod service;
 
 #[cfg(test)]
@@ -58,6 +59,8 @@ pub struct Driver {
     idle_timeout: Option<Duration>,
     /// `Host` values the HTTP layer accepts; empty accepts all.
     allowed_hosts: Vec<String>,
+    /// Where the server is listening, once it is.
+    bound: super::BoundAddr,
 }
 
 impl Driver {
@@ -93,19 +96,29 @@ impl Driver {
             bearer_token: config.bearer_token().map(str::to_owned),
             idle_timeout: config.idle_session_timeout(),
             allowed_hosts,
+            bound: super::BoundAddr::new(),
         }))
     }
 }
 
 impl super::Driver for Driver {
+    fn bound_addr(&self) -> Option<super::BoundAddr> {
+        Some(self.bound.clone())
+    }
+
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
         let addr = self.addr;
         let player = self.player.clone();
         let bearer_token = self.bearer_token.clone();
         let idle_timeout = self.idle_timeout;
         let allowed_hosts = self.allowed_hosts.clone();
+        let bound = self.bound.clone();
 
         tokio::spawn(async move {
+            // Bound first, so the address logged is the one listened on: the
+            // port the OS picked, for a port of 0.
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let addr = listener.local_addr()?;
             {
                 let _enter = span!(Level::INFO, "MCP Server").entered();
                 let auth = if bearer_token.is_some() {
@@ -188,7 +201,7 @@ impl super::Driver for Driver {
                 });
             }
 
-            let listener = tokio::net::TcpListener::bind(addr).await?;
+            bound.set(addr);
             axum::serve(listener, app)
                 .with_graceful_shutdown(async move { cancel.cancelled().await })
                 .await

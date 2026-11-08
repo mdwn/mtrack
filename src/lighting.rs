@@ -13,6 +13,7 @@
 //
 
 pub mod analyze;
+pub mod channels;
 #[cfg(test)]
 mod consistency_tests;
 pub mod diff;
@@ -21,10 +22,14 @@ pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod export;
+pub mod files;
+pub mod findings;
 pub mod fit;
+pub mod fixture_data;
 pub mod fixture_patch;
 pub mod fixture_test;
 pub mod gdtf;
+pub mod geometry;
 #[cfg(test)]
 mod golden_tests;
 pub mod import;
@@ -33,10 +38,12 @@ mod layering_tests;
 pub mod library;
 pub mod lint;
 pub mod mvr;
+pub mod mvr_types;
 pub mod parser;
 pub mod patch;
 pub mod project_files;
 pub mod readiness;
+pub mod stage_model;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);
 // re-exported here so existing `lighting::tempo::…` paths keep working.
@@ -45,8 +52,10 @@ pub mod timeline;
 pub mod types;
 pub mod validation;
 pub mod venue_patch;
+pub mod venue_rows;
 #[cfg(test)]
 mod visual_consistency_tests;
+pub mod writes;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module

@@ -384,7 +384,7 @@ show "Test" {
 }
 
 // ===================================================================
-// 7. expand_unexpanded_sequence_cue(): Edge cases - stop_sequences
+// 7. place_sequence(): Edge cases - stop_sequences
 //    in loops, empty expanded_cues with effects
 // ===================================================================
 
@@ -1986,17 +1986,18 @@ show "Empty" {
     assert!(show.cues.is_empty());
 }
 
-/// Under an offset, a tempo change positioned in time moves with it while
-/// one positioned by bar stays on its bar: a bar-positioned cue after an
-/// offset is placed through the shifted timed change. The web UI timeline
-/// (timeline-tempo-math.spec.ts) places it the same way.
+/// Under an offset the whole tempo map moves with it, a tempo change
+/// positioned in time along with one positioned by bar: a bar-positioned
+/// cue after an offset is at its score time plus the offset, where
+/// `bpm_at_time` under that offset has the change too. (The web UI
+/// timeline, timeline-tempo-math.spec.ts, still takes a timed change the
+/// offset's worth of beats later on the unshifted map, as the player did.)
 #[test]
 fn test_offset_shifts_time_positioned_tempo_changes() {
-    // Snap: the change at 6s is taken at 8s, beat 14 of the unshifted map,
-    // so bar 5 (beat 16) is 7s + 2s, plus the 2s offset. Ramp: the change
-    // is taken at beat 15.25, so the 4-beat ramp from 120 has 0.75 beats to
-    // run before bar 5.
-    for (transition, want_secs) in [("", 11.0), (", transition: 4", 10.014_201_009)] {
+    // Snap: the change at 6s is beat 12, so bar 5 (beat 16) is 6s + 4s,
+    // plus the 2s offset. Ramp: the 4-beat ramp from 120 to 60 averages
+    // 90, so bar 5 is 6s + 8/3s, plus the offset.
+    for (transition, want_secs) in [("", 12.0), (", transition: 4", 10.0 + 2.0 / 3.0)] {
         let content = format!(
             r#"tempo {{
     start: 0.0s
@@ -2021,5 +2022,37 @@ show "S" {{
         let show = shows.get("S").unwrap();
         let at = show.cues[1].time.as_secs_f64();
         assert!((at - want_secs).abs() < 1e-6, "{transition}: {at}");
+    }
+}
+
+// ===================================================================
+// A `#` or `//` inside a quoted show or sequence name is part of the name
+// (#656), as it is inside any other quoted string.
+// ===================================================================
+
+#[test]
+fn a_comment_marker_inside_a_quoted_show_or_sequence_name_is_part_of_it() {
+    for name in ["Truss #3", "A // B"] {
+        let content = format!(
+            "sequence \"{name}\" {{\n    @0.000\n    front_wash: static, color: \"red\", \
+             duration: 1s\n}}\n\nshow \"{name}\" {{\n    @0.000\n    sequence \"{name}\"\n    \
+             @2.000\n    front_wash: static, color: \"blue\", duration: 1s # a comment\n}}\n"
+        );
+        let shows = parse_light_shows(&content).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let show = shows
+            .get(name)
+            .unwrap_or_else(|| panic!("{name}: {shows:?}"));
+        assert_eq!(show.cues.len(), 2, "{name}");
+
+        // The editor's document model reads the same names, and no comment
+        // but the one after the last cue.
+        let document = crate::lighting::parser::document::document(&content, None)
+            .document
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(document.shows[0].name, name, "{name}");
+        assert_eq!(document.sequences[0].name, name, "{name}");
+        let json = serde_json::to_string(&document).unwrap();
+        assert_eq!(json.matches("# a comment").count(), 1, "{name}: {json}");
+        assert!(!json.contains("\"#3"), "{name}: {json}");
     }
 }

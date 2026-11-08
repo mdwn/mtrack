@@ -13,6 +13,9 @@
 //
 
 import { waitLocale } from "./lib/i18n";
+// The player's rules module: loaded before anything can ask it a question.
+import initRules from "./gen/rules/mtrack_rules";
+import rulesUrl from "./gen/rules/mtrack_rules_bg.wasm?url";
 // Importing the theme module subscribes the document to the user's
 // stored / system theme preference and applies `.nc--dark` to <html>
 // before the app mounts, so we never flash light-on-dark.
@@ -22,8 +25,18 @@ import App from "./App.svelte";
 import { mount } from "svelte";
 
 async function start() {
-  await waitLocale();
-  mount(App, { target: document.getElementById("app")! });
+  const target = document.getElementById("app")!;
+  try {
+    await Promise.all([waitLocale(), initRules({ module_or_path: rulesUrl })]);
+  } catch (error) {
+    // Without the rules module every position and meter on every page
+    // would be a question with no answer: say so instead of a blank page.
+    console.error("could not load the player's rules module", error);
+    target.textContent =
+      "Could not load the player's rules module. Reload the page; if this keeps happening, the UI build is incomplete.";
+    return;
+  }
+  mount(App, { target });
 }
 
 start();

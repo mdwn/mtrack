@@ -35,15 +35,37 @@ use tracing::{debug, warn};
 /// remote, this never is.
 const OLAD_HOST: &str = "127.0.0.1";
 
-/// Long enough for a loopback connect, short enough that an olad wedged on
-/// startup cannot hold the probe thread.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a probe may take: each connect, and the whole probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeLimits {
+    /// Long enough for a loopback connect, short enough that an olad wedged
+    /// on startup cannot hold the probe thread.
+    pub connect: Duration,
+    /// The whole probe — every universe, asked concurrently — is bounded by
+    /// wall clock: per-read timeouts alone let a server that dribbles a byte
+    /// at a time keep the socket open forever, and a wedged olad costs this
+    /// once, not once per universe.
+    pub deadline: Duration,
+}
 
-/// The whole probe — every universe, asked concurrently — is bounded by wall
-/// clock: per-read timeouts alone let a server that dribbles a byte at a time
-/// keep the socket open forever, and a wedged olad costs this once, not once
-/// per universe.
-const PROBE_DEADLINE: Duration = Duration::from_secs(2);
+impl ProbeLimits {
+    /// Limits no loaded runner comes near, for a test about what olad
+    /// answers rather than how fast.
+    #[cfg(test)]
+    pub(crate) const PATIENT: ProbeLimits = ProbeLimits {
+        connect: crate::testutil::PATIENCE,
+        deadline: crate::testutil::PATIENCE,
+    };
+}
+
+impl Default for ProbeLimits {
+    fn default() -> ProbeLimits {
+        ProbeLimits {
+            connect: Duration::from_secs(1),
+            deadline: Duration::from_secs(2),
+        }
+    }
+}
 
 /// How long a report answers later probes. The hub and the fit view ask on
 /// every load; olad's patch state changes when an operator runs `ola_patch`,
@@ -83,45 +105,67 @@ pub struct PatchReport {
     pub unreadable: Vec<(u16, String)>,
 }
 
-/// Asks olad's web server about each universe, once, in a settled order.
-///
-/// Blocking, and bounded: the universes are asked concurrently under one
-/// [`PROBE_DEADLINE`], so N universes cost at most that, not N times it. An
-/// unreachable server ends the report at the first universe (in order) that
-/// saw it. Callers on an async runtime belong on the blocking pool.
-///
-/// The report is cached for [`CACHE_TTL`] per (port, universe set), so a
-/// burst of readiness or fit requests makes one probe; concurrent callers
-/// wait for the probe in flight rather than starting their own.
-pub fn probe_universes(http_port: u16, universes: &[u16]) -> PatchReport {
-    probe_cached(&CACHE, OLAD_HOST, http_port, universes, CACHE_TTL)
+type Cache = Mutex<HashMap<Vec<u16>, (Instant, PatchReport)>>;
+
+/// Asks olad's web server, on one port, about its universes: the DMX
+/// engine's, made from its config. A test gives it its own limits.
+#[derive(Clone, Debug)]
+pub struct OladProbe {
+    http_port: u16,
+    limits: ProbeLimits,
+    /// Reports by universe set. Its own, not shared with any other probe: a
+    /// report for a port is only ever about the olad this probe asks.
+    cache: std::sync::Arc<Cache>,
 }
 
-type Cache = Mutex<HashMap<(String, u16, Vec<u16>), (Instant, PatchReport)>>;
-
-static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn probe_cached(
-    cache: &Cache,
-    host: &str,
-    http_port: u16,
-    universes: &[u16],
-    ttl: Duration,
-) -> PatchReport {
-    let universes = settled(universes);
-    let key = (host.to_string(), http_port, universes.clone());
-    // Held across the probe on purpose: a second caller for the same rig
-    // should wait for this answer, not send its own.
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, report)) = cache.get(&key) {
-        if at.elapsed() < ttl {
-            return report.clone();
+impl OladProbe {
+    pub fn new(http_port: u16) -> OladProbe {
+        OladProbe {
+            http_port,
+            limits: ProbeLimits::default(),
+            cache: Default::default(),
         }
     }
-    let report = probe_universes_at(host, http_port, &universes);
-    cache.retain(|_, (at, _)| at.elapsed() < ttl);
-    cache.insert(key, (Instant::now(), report.clone()));
-    report
+
+    /// The same probe, held to `limits`.
+    pub fn with_limits(self, limits: ProbeLimits) -> OladProbe {
+        OladProbe { limits, ..self }
+    }
+
+    /// The port olad's web server is asked on.
+    pub fn http_port(&self) -> u16 {
+        self.http_port
+    }
+
+    /// Asks olad's web server about each universe, once, in a settled order.
+    ///
+    /// Blocking, and bounded: the universes are asked concurrently under one
+    /// deadline, so N universes cost at most that, not N times it. An
+    /// unreachable server ends the report at the first universe (in order)
+    /// that saw it. Callers on an async runtime belong on the blocking pool.
+    ///
+    /// The report is cached for [`CACHE_TTL`] per universe set, so a burst
+    /// of readiness or fit requests makes one probe; concurrent callers wait
+    /// for the probe in flight rather than starting their own.
+    pub fn probe(&self, universes: &[u16]) -> PatchReport {
+        self.probe_cached(universes, CACHE_TTL)
+    }
+
+    fn probe_cached(&self, universes: &[u16], ttl: Duration) -> PatchReport {
+        let universes = settled(universes);
+        // Held across the probe on purpose: a second caller for the same rig
+        // should wait for this answer, not send its own.
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, report)) = cache.get(&universes) {
+            if at.elapsed() < ttl {
+                return report.clone();
+            }
+        }
+        let report = probe_universes_at(OLAD_HOST, self.http_port, &universes, self.limits);
+        cache.retain(|_, (at, _)| at.elapsed() < ttl);
+        cache.insert(universes, (Instant::now(), report.clone()));
+        report
+    }
 }
 
 /// The same universe can appear under several devices; ask about each one
@@ -133,16 +177,23 @@ fn settled(universes: &[u16]) -> Vec<u16> {
     universes
 }
 
-fn probe_universes_at(host: &str, http_port: u16, universes: &[u16]) -> PatchReport {
+fn probe_universes_at(
+    host: &str,
+    http_port: u16,
+    universes: &[u16],
+    limits: ProbeLimits,
+) -> PatchReport {
     let universes = settled(universes);
-    let deadline = Instant::now() + PROBE_DEADLINE;
+    let deadline = Deadline::after(limits.deadline);
 
     // One thread per universe, all under the same deadline.
     let answers: Vec<Result<bool, ProbeError>> = thread::scope(|scope| {
         let handles: Vec<_> = universes
             .iter()
             .map(|universe| {
-                scope.spawn(move || probe_universe(host, http_port, *universe, deadline))
+                scope.spawn(move || {
+                    probe_universe(host, http_port, *universe, limits.connect, deadline)
+                })
             })
             .collect();
         handles
@@ -184,7 +235,7 @@ fn probe_universes_at(host: &str, http_port: u16, universes: &[u16]) -> PatchRep
 /// The thread is deliberately never joined — it holds no reference to the
 /// engine, ends on its own within seconds, and the only thing a shutdown could
 /// gain by waiting for it is a warning nobody is left to read.
-pub fn warn_unpatched_universes(http_port: u16, universes: Vec<u16>) {
+pub fn warn_unpatched_universes(olad: OladProbe, universes: Vec<u16>) {
     if universes.is_empty() {
         return;
     }
@@ -192,7 +243,8 @@ pub fn warn_unpatched_universes(http_port: u16, universes: Vec<u16>) {
     let spawned = thread::Builder::new()
         .name("olad-patch-check".to_string())
         .spawn(move || {
-            let report = probe_universes(http_port, &universes);
+            let http_port = olad.http_port();
+            let report = olad.probe(&universes);
             for universe in &report.unpatched {
                 warn!(
                     universe,
@@ -223,6 +275,37 @@ pub fn warn_unpatched_universes(http_port: u16, universes: Vec<u16>) {
     }
 }
 
+/// When a probe must be done by, and how long it was given.
+#[derive(Clone, Copy, Debug)]
+struct Deadline {
+    at: Instant,
+    given: Duration,
+}
+
+impl Deadline {
+    fn after(given: Duration) -> Deadline {
+        Deadline {
+            at: Instant::now() + given,
+            given,
+        }
+    }
+
+    /// The time left, or an error once it has passed.
+    ///
+    /// A zero timeout means "block forever" to the socket options, so an
+    /// expired deadline has to be refused rather than passed along.
+    fn remaining(&self) -> Result<Duration, ProbeError> {
+        let left = self.at.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ProbeError::Unreadable(format!(
+                "olad did not finish answering within {:?}",
+                self.given
+            )));
+        }
+        Ok(left)
+    }
+}
+
 /// Asks olad whether a universe has an output port patched to it.
 ///
 /// A hand-rolled HTTP/1.0 GET: the main crate carries no runtime HTTP client,
@@ -233,7 +316,8 @@ fn probe_universe(
     host: &str,
     http_port: u16,
     universe: u16,
-    deadline: Instant,
+    connect_timeout: Duration,
+    deadline: Deadline,
 ) -> Result<bool, ProbeError> {
     let address = (host, http_port)
         .to_socket_addrs()
@@ -244,7 +328,7 @@ fn probe_universe(
         })?;
 
     let mut stream =
-        TcpStream::connect_timeout(&address, CONNECT_TIMEOUT.min(remaining(deadline)?))
+        TcpStream::connect_timeout(&address, connect_timeout.min(deadline.remaining()?))
             .map_err(|e| ProbeError::Unreachable(format!("connect: {e}")))?;
 
     let request = format!(
@@ -253,7 +337,7 @@ fn probe_universe(
          Connection: close\r\n\r\n"
     );
     stream
-        .set_write_timeout(Some(remaining(deadline)?))
+        .set_write_timeout(Some(deadline.remaining()?))
         .map_err(|e| ProbeError::Unreadable(format!("write timeout: {e}")))?;
     stream
         .write_all(request.as_bytes())
@@ -263,7 +347,7 @@ fn probe_universe(
     let mut chunk = [0u8; 4096];
     loop {
         stream
-            .set_read_timeout(Some(remaining(deadline)?))
+            .set_read_timeout(Some(deadline.remaining()?))
             .map_err(|e| ProbeError::Unreadable(format!("read timeout: {e}")))?;
         match stream.read(&mut chunk) {
             Ok(0) => break,
@@ -281,20 +365,6 @@ fn probe_universe(
     let (status, body) =
         parse_http_response(&String::from_utf8_lossy(&raw)).map_err(ProbeError::Unreadable)?;
     unpatched_from_response(status, &body).map_err(ProbeError::Unreadable)
-}
-
-/// The time left before `deadline`, or an error once it has passed.
-///
-/// A zero timeout means "block forever" to the socket options, so an expired
-/// deadline has to be refused rather than passed along.
-fn remaining(deadline: Instant) -> Result<Duration, ProbeError> {
-    let left = deadline.saturating_duration_since(Instant::now());
-    if left.is_zero() {
-        return Err(ProbeError::Unreadable(format!(
-            "olad did not finish answering within {PROBE_DEADLINE:?}"
-        )));
-    }
-    Ok(left)
 }
 
 /// Splits a raw HTTP response into its status code and body.
@@ -398,6 +468,19 @@ mod test {
         port
     }
 
+    const PATIENT: ProbeLimits = ProbeLimits::PATIENT;
+
+    /// Asks the server on `port` about `universe`, patiently.
+    fn ask(port: u16, universe: u16) -> Result<bool, ProbeError> {
+        probe_universe(
+            "127.0.0.1",
+            port,
+            universe,
+            PATIENT.connect,
+            Deadline::after(PATIENT.deadline),
+        )
+    }
+
     fn http(status_line: &str, body: &str) -> String {
         format!(
             "{status_line}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
@@ -436,49 +519,41 @@ mod test {
     #[test]
     fn probes_a_patched_universe() {
         let port = serve_once(http("HTTP/1.1 200 OK", PATCHED_BODY));
-        assert!(!probe_universe("127.0.0.1", port, 1, Instant::now() + PROBE_DEADLINE).unwrap());
+        assert!(!ask(port, 1).unwrap());
     }
 
     #[test]
     fn probes_an_unpatched_universe() {
         let port = serve_once(http("HTTP/1.1 200 OK", UNPATCHED_BODY));
-        assert!(probe_universe("127.0.0.1", port, 3, Instant::now() + PROBE_DEADLINE).unwrap());
+        assert!(ask(port, 3).unwrap());
     }
 
     #[test]
     fn probes_a_universe_olad_has_never_heard_of() {
         // olad's real answer for an unknown universe: a 500, in HTML.
         let port = serve_once(http("HTTP/1.1 500 Server Error", OLAD_MISSING_UNIVERSE));
-        assert!(probe_universe("127.0.0.1", port, 7, Instant::now() + PROBE_DEADLINE).unwrap());
+        assert!(ask(port, 7).unwrap());
     }
 
     #[test]
     fn probes_something_that_is_not_olad() {
         let port = serve_once("not an http response at all".to_string());
-        assert!(matches!(
-            probe_universe("127.0.0.1", port, 1, Instant::now() + PROBE_DEADLINE),
-            Err(ProbeError::Unreadable(_))
-        ));
+        assert!(matches!(ask(port, 1), Err(ProbeError::Unreadable(_))));
     }
 
     #[test]
     fn probes_an_error_status_that_is_not_a_missing_universe() {
         let port = serve_once(http("HTTP/1.1 503 Service Unavailable", "busy"));
-        assert!(matches!(
-            probe_universe("127.0.0.1", port, 1, Instant::now() + PROBE_DEADLINE),
-            Err(ProbeError::Unreadable(_))
-        ));
+        assert!(matches!(ask(port, 1), Err(ProbeError::Unreadable(_))));
     }
 
     #[test]
     fn a_web_server_that_is_not_there_is_unreachable() {
-        // Bind and drop: nothing is listening on the port by the time we ask,
-        // which is what an olad without its web server looks like.
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
+        // Nothing listens on the port, which is what an olad without its web
+        // server looks like.
+        let closed = crate::testutil::net::ClosedPort::bind();
         assert!(matches!(
-            probe_universe("127.0.0.1", port, 1, Instant::now() + PROBE_DEADLINE),
+            ask(closed.port(), 1),
             Err(ProbeError::Unreachable(_))
         ));
     }
@@ -525,7 +600,7 @@ mod test {
             (3, "not an http response at all".to_string()),
         ]));
         // Out of order and duplicated: asked once each, in a settled order.
-        let report = probe_universes_at("127.0.0.1", port, &[3, 1, 2, 1]);
+        let report = probe_universes_at("127.0.0.1", port, &[3, 1, 2, 1], PATIENT);
         assert!(report.reachable);
         assert_eq!(report.unpatched, vec![2]);
         assert_eq!(report.unreadable.len(), 1);
@@ -555,7 +630,7 @@ mod test {
     fn a_hung_server_costs_one_deadline_not_one_per_universe() {
         let (port, handle, stop) = hung_server();
         let started = Instant::now();
-        let report = probe_universes_at("127.0.0.1", port, &[1, 2, 3, 4]);
+        let report = probe_universes_at("127.0.0.1", port, &[1, 2, 3, 4], ProbeLimits::default());
         let took = started.elapsed();
         stop.send(()).unwrap();
         handle.join().unwrap();
@@ -574,10 +649,10 @@ mod test {
             (1, http("HTTP/1.1 200 OK", PATCHED_BODY)),
             (2, http("HTTP/1.1 200 OK", UNPATCHED_BODY)),
         ]));
-        let cache: Cache = Mutex::new(HashMap::new());
+        let olad = OladProbe::new(port).with_limits(PATIENT);
         let ttl = Duration::from_secs(10);
-        let first = probe_cached(&cache, "127.0.0.1", port, &[2, 1], ttl);
-        let second = probe_cached(&cache, "127.0.0.1", port, &[1, 2, 2], ttl);
+        let first = olad.probe_cached(&[2, 1], ttl);
+        let second = olad.probe_cached(&[1, 2, 2], ttl);
         assert_eq!(first, second);
         assert_eq!(first.unpatched, vec![2]);
         assert_eq!(
@@ -587,18 +662,16 @@ mod test {
         );
 
         // A different universe set is its own entry; an expired one is asked again.
-        probe_cached(&cache, "127.0.0.1", port, &[1], ttl);
+        olad.probe_cached(&[1], ttl);
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
-        probe_cached(&cache, "127.0.0.1", port, &[1], Duration::ZERO);
+        olad.probe_cached(&[1], Duration::ZERO);
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[test]
     fn a_report_from_a_dead_web_server_is_unreachable_and_stops_early() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-        let report = probe_universes_at("127.0.0.1", port, &[1, 2, 3]);
+        let closed = crate::testutil::net::ClosedPort::bind();
+        let report = probe_universes_at("127.0.0.1", closed.port(), &[1, 2, 3], PATIENT);
         assert!(!report.reachable);
         assert!(report.unreachable_reason.is_some());
         assert!(report.unpatched.is_empty() && report.unreadable.is_empty());

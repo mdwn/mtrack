@@ -12,32 +12,40 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { ClickSoundConfig } from "./api/songs";
+import type { MetronomeSounds } from "../gen/rules/mtrack_rules";
+import { rules } from "./rules";
 
-export interface MetronomeSoundSet {
-  accent?: ClickSoundConfig;
-  half?: ClickSoundConfig;
-  normal?: ClickSoundConfig;
-  sub?: ClickSoundConfig;
+/** The click sound roles, in the order the editors list them. */
+export const SOUND_ROLES = ["accent", "half", "normal", "sub"] as const;
+export type SoundRole = (typeof SOUND_ROLES)[number];
+
+/** The player's built-in synthesized click of each role
+ *  (`rules.metronome_sounds`), which seeds a fresh sound override. */
+export function builtinSounds(): Record<
+  SoundRole,
+  { freq: number; volume: number }
+> {
+  const sounds = rules.metronome_sounds();
+  return Object.fromEntries(
+    SOUND_ROLES.map((role) => [
+      role,
+      { freq: sounds[role]?.freq ?? 0, volume: sounds[role]?.volume ?? 0 },
+    ]),
+  ) as Record<SoundRole, { freq: number; volume: number }>;
 }
 
-/** Built-in synthesized defaults, used to seed a fresh sound override. */
-export const SOUND_DEFAULTS: Record<
-  "accent" | "half" | "normal" | "sub",
-  { freq: number; volume: number }
-> = {
-  accent: { freq: 1600, volume: 1.0 },
-  half: { freq: 1400, volume: 0.9 },
-  normal: { freq: 1200, volume: 0.8 },
-  sub: { freq: 1000, volume: 0.45 },
-};
-
 /** Typical click sound schemes; applying one overwrites all four sounds.
- * Shared by the song metronome panel and the config-page defaults. */
-export const METRONOME_PRESETS: {
-  key: string;
-  sounds: MetronomeSoundSet;
-}[] = [
+ * Shared by the song metronome panel and the config-page defaults. The
+ * player's built-in clicks are the "hilo" scheme. */
+export function metronomePresets(): { key: string; sounds: MetronomeSounds }[] {
+  return [
+    PRESETS[0],
+    { key: "hilo", sounds: rules.metronome_sounds() },
+    ...PRESETS.slice(1),
+  ];
+}
+
+const PRESETS: { key: string; sounds: MetronomeSounds }[] = [
   {
     key: "classic",
     sounds: {
@@ -45,15 +53,6 @@ export const METRONOME_PRESETS: {
       half: { freq: 1125, volume: 1.0 },
       normal: { freq: 1125, volume: 1.0 },
       sub: { freq: 1125, volume: 0.5 },
-    },
-  },
-  {
-    key: "hilo",
-    sounds: {
-      accent: { freq: 1600, volume: 1.0 },
-      half: { freq: 1400, volume: 0.9 },
-      normal: { freq: 1200, volume: 0.8 },
-      sub: { freq: 1000, volume: 0.45 },
     },
   },
   {

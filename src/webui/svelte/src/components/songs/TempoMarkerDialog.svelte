@@ -15,19 +15,15 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type {
+    BeatGrid,
     TempoConfig,
     TempoChangeConfig,
     MetronomeConfig,
     MetronomeChangeConfig,
     SubdivisionValue,
   } from "../../lib/api/songs";
-  import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
-  import {
-    beatsInMeasure,
-    positionTaken,
-    sigAtMeasure,
-    sortTempoChanges,
-  } from "../../lib/util/tempo";
+  import { fetchTempoGuess } from "../../lib/api/songs";
+  import { rules } from "../../lib/rules";
   import { subdivisionIcon } from "../../lib/meter";
   import { sectionToConfigSnapped } from "../../lib/tempoConvert";
   import type { TempoSection } from "../../lib/lighting/types";
@@ -37,7 +33,6 @@
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker from "./PositionPicker.svelte";
   import PlayheadCapture from "./PlayheadCapture.svelte";
-  import { positionAtTime } from "../../lib/util/beatGrid";
 
   /** A change marker position: measure/beat on the tempo map. */
   export interface MarkerPosition {
@@ -62,7 +57,7 @@
     /** The preview playhead in seconds, when this song is in the player. */
     playheadTime?: number | null;
     /** The song's beat grid, for snapping time-anchored imports. */
-    beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    beatGrid?: BeatGrid | null;
     /** Light shows with their own tempo maps (import sources). */
     lightShowTempos?: { file: string; tempo: TempoSection }[];
     ontempochange: (tempo: TempoConfig | null) => void;
@@ -90,14 +85,12 @@
     onclose,
   }: Props = $props();
 
-  const SIG_DENOMS = [1, 2, 4, 8, 16, 32];
+  const limits = rules.limits();
   const SUBDIVISIONS: SubdivisionValue[] = [1, 2, 3, 4, 6, "son", "rumba"];
 
-  function parseSig(raw: string | undefined): [number, number] {
-    const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-    if (!match) return [4, 4];
-    return [parseInt(match[1]), parseInt(match[2])];
-  }
+  /** Shown for a signature the player's parser refuses: the steppers need
+   * a value to start from. The player's default metre. */
+  const COMMON_TIME = rules.tempo_defaults().time_signature;
 
   // --- Entry lookup ---
 
@@ -125,65 +118,34 @@
 
   // --- What's in effect at this marker ---
 
-  let baseSig = $derived(parseSig(tempo.time_signature));
+  let baseSig = $derived(
+    rules.signature_parse(tempo.time_signature ?? "") ?? COMMON_TIME,
+  );
 
-  /** Signature in effect at the target (including its own sig change). */
-  let effectiveSig = $derived.by(() => {
+  /** The signature the changes up to and including this marker set
+   * (`sig_set`): the metre the marker's own accent pads are for, so a marker
+   * that changes to 7/8 on beat 3 shows seven pads — the bar it sits in is
+   * still counted in the old metre (`sig`), which the bar readouts keep.
+   * The base signature while the tempo block makes no map. */
+  let effectiveSig = $derived.by((): [number, number] => {
     if (target === "start") return baseSig;
-    let sig = baseSig;
-    const sorted = [...(tempo.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
+    return (
+      rules.tempo_query(
+        { config: tempo },
+        { measure: target.measure, beat: target.beat },
+      )?.sig_set ?? baseSig
     );
-    for (const c of sorted) {
-      const atOrBefore =
-        c.measure < target.measure ||
-        (c.measure === target.measure && (c.beat ?? 1) <= target.beat);
-      if (!atOrBefore) break;
-      if (c.time_signature) sig = parseSig(c.time_signature);
-    }
-    return sig;
   });
+
+  /** Why this tempo map cannot be saved, as the player says it; nothing
+   * while it can. */
+  let verdict = $derived(rules.tempo_validate(tempo));
   let numerator = $derived(effectiveSig[0]);
 
-  function defaultPattern(count: number): number[] {
-    const groupStarts = [0];
-    let acc = 0;
-    for (const group of metronome?.accent ?? []) {
-      acc += group;
-      groupStarts.push(acc);
-    }
-    return Array.from({ length: count }, (_, i) =>
-      groupStarts.includes(i) ? 3 : 1,
-    );
-  }
-
-  function resizePattern(pattern: number[], count: number): number[] {
-    return Array.from({ length: count }, (_, i) => pattern[i] ?? 1);
-  }
-
-  /** The accent pattern in effect just before/at a measure. */
-  function patternAt(measure: number, count: number): number[] {
-    let pattern = metronome?.accents;
-    const sorted = [...(metronome?.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure,
-    );
-    for (const c of sorted) {
-      if (c.measure <= measure && c.accents) pattern = c.accents;
-    }
-    return resizePattern(pattern ?? defaultPattern(count), count);
-  }
-
-  /** The subdivision in effect just before a measure. */
-  function subdivisionAt(measure: number): SubdivisionValue {
-    let sub: SubdivisionValue = metronome?.subdivision ?? 1;
-    const sorted = [...(metronome?.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure,
-    );
-    for (const c of sorted) {
-      if (c.measure < measure && c.subdivision !== undefined)
-        sub = c.subdivision;
-    }
-    return sub;
+  /** The player's tempo map answers for the measure the picker asks about;
+   * 4/4 while the tempo block makes no map. */
+  function meterAt(measure: number): [number, number] | undefined {
+    return rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.sig;
   }
 
   // --- Tempo config writes ---
@@ -206,15 +168,14 @@
       if (!normalized.transition) delete normalized.transition;
       if (tChangeIndex >= 0) changes[tChangeIndex] = normalized;
       else changes.push(normalized);
-      // The backend rejects a map that is not in ascending (measure, beat)
-      // order, so a change added or moved out of turn is re-sorted here.
-      changes = sortTempoChanges(changes);
     } else if (tChangeIndex >= 0) {
       changes.splice(tChangeIndex, 1);
     }
-    const updated: TempoConfig = { ...tempo, changes };
-    if (changes.length === 0) delete updated.changes;
-    ontempochange(updated);
+    // The backend rejects a map that is not in ascending (measure, beat)
+    // order, so a change added or moved out of turn is put in its place by
+    // the player's own ordering (which also drops an empty `changes`).
+    const updated = { ...tempo, changes };
+    ontempochange(rules.tempo_normalize(updated)?.config ?? updated);
   }
 
   function patchTempoChange(patch: Partial<TempoChangeConfig>) {
@@ -282,60 +243,77 @@
     });
   }
 
+  /** On: the pattern in effect at this measure, as the renderer resolves
+   * it, so the pads start from what already plays here. */
   function toggleAccents(on: boolean) {
-    if (target === "start") return;
+    if (target === "start" || !metronome) return;
     patchMetroChange({
-      accents: on ? patternAt(target.measure, numerator) : undefined,
+      accents: on
+        ? rules.accent_pattern(metronome, target.measure, numerator)
+        : undefined,
     });
   }
 
+  /** On: the subdivision in effect at this measure, as the renderer
+   * resolves it, so the change starts from what already plays here. */
   function toggleSubdivision(on: boolean) {
-    if (target === "start") return;
+    if (target === "start" || !metronome) return;
     patchMetroChange({
-      subdivision: on ? subdivisionAt(target.measure) : undefined,
+      subdivision: on
+        ? (rules.subdivision_at(metronome, target.measure) ?? 1)
+        : undefined,
     });
   }
 
-  /** The BPM in effect at a measure (base tempo + preceding changes). */
+  /** The BPM in force at a measure's downbeat, as the player plays it
+   * (inside a ramp, the ramp's value there), to the hundredth a `tempo:`
+   * block is written to — a formatting choice for the new value, not a
+   * rule; the base tempo while the tempo block makes no map. */
   function effectiveBpm(measure: number): number {
-    let bpm = tempo.bpm;
-    const sorted = [...(tempo.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure,
-    );
-    for (const c of sorted) {
-      if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
-    }
-    return bpm;
+    const bpm = rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.bpm;
+    return bpm === undefined ? tempo.bpm : Math.round(bpm * 100) / 100;
   }
 
   // --- Position / meter edits ---
 
-  /** The playhead's beat — a tempo change can only sit on one. */
-  let playheadBeat = $derived(
-    playheadTime === null ? null : positionAtTime(beatGrid, playheadTime),
-  );
+  /** The playhead's beat — a tempo change can only sit on one — as the
+   * player snaps a time to its nearest beat. */
   let playheadTarget = $derived(
-    playheadBeat === null
+    playheadTime === null || !beatGrid
       ? null
-      : { measure: playheadBeat.measure, beat: Math.round(playheadBeat.beat) },
+      : (rules.grid_query(beatGrid, {
+          secs: playheadTime,
+          snap: { step: 1 },
+        }) ?? null),
   );
+
+  /** Whether another change already holds a position: the player's own
+   * ordering, asked whether placing this marker's change there would cost
+   * one change more than the others already cost among themselves (so a
+   * repeat elsewhere in a hand-written config does not block every move).
+   * `to_tempo_map` rejects a repeated position as firmly as a reversed one,
+   * so an occupied position is refused rather than written. */
+  function positionHeld(measure: number, beat: number): boolean {
+    const others = (tempo.changes ?? []).filter((_, i) => i !== tChangeIndex);
+    const moved = { ...(tChange ?? { measure }), measure, beat };
+    const before = rules.tempo_normalize({ ...tempo, changes: others });
+    const after = rules.tempo_normalize({
+      ...tempo,
+      changes: [...others, moved],
+    });
+    return (after?.duplicates ?? 0) > (before?.duplicates ?? 0);
+  }
+
   /** Refused for the same reason a manual move would be: something is there. */
   let canCapture = $derived(
     playheadTarget !== null &&
       target !== "start" &&
-      !positionTaken(
-        tempo.changes ?? [],
-        playheadTarget.measure,
-        playheadTarget.beat,
-        tChangeIndex,
-      ),
+      !positionHeld(playheadTarget.measure, playheadTarget.beat),
   );
 
   function moveTo(measure: number, beat: number) {
     if (target === "start") return;
-    // A repeated position is rejected by the same validator as a reversed
-    // one, so landing on an occupied marker is refused rather than written.
-    if (positionTaken(tempo.changes ?? [], measure, beat, tChangeIndex)) return;
+    if (positionHeld(measure, beat)) return;
     if (
       mChange &&
       measure !== target.measure &&
@@ -360,13 +338,15 @@
       if (metronome?.accents && onmetronomechange) {
         onmetronomechange({
           ...metronome,
-          accents: resizePattern(metronome.accents, n),
+          accents: rules.accent_pattern({ ...metronome, changes: [] }, 1, n),
         });
       }
     } else {
       patchTempoChange({ time_signature: `${n}/${d}` });
-      if (mChange?.accents) {
-        patchMetroChange({ accents: resizePattern(mChange.accents, n) });
+      if (mChange?.accents && metronome) {
+        patchMetroChange({
+          accents: rules.accent_pattern(metronome, target.measure, n),
+        });
       }
     }
   }
@@ -387,7 +367,14 @@
   function toggleBaseAccents(on: boolean) {
     if (!metronome || !onmetronomechange) return;
     const updated: MetronomeConfig = { ...metronome };
-    if (on) updated.accents = defaultPattern(numerator);
+    // The pattern the grouping (or the plain downbeat) gives, as the
+    // renderer plays it with no explicit pattern.
+    if (on)
+      updated.accents = rules.accent_pattern(
+        { ...metronome, accents: [], changes: [] },
+        1,
+        numerator,
+      );
     else delete updated.accents;
     onmetronomechange(updated);
   }
@@ -465,24 +452,6 @@
 
   let guessing = $state(false);
 
-  function guessToConfig(guessed: GuessedTempo): TempoConfig {
-    const config: TempoConfig = {
-      bpm: guessed.bpm,
-      time_signature: `${guessed.time_signature[0]}/${guessed.time_signature[1]}`,
-    };
-    if (guessed.start_seconds > 0) config.start = guessed.start_seconds;
-    const changes = guessed.changes.map((c) => {
-      const entry: TempoChangeConfig = { measure: c.measure };
-      if (c.beat > 1) entry.beat = c.beat;
-      entry.bpm = c.bpm;
-      entry.time_signature = `${c.time_signature[0]}/${c.time_signature[1]}`;
-      if (c.transition_beats) entry.transition = { beats: c.transition_beats };
-      return entry;
-    });
-    if (changes.length > 0) config.changes = sortTempoChanges(changes);
-    return config;
-  }
-
   let importNote = $state("");
 
   /** Imports a light show's tempo map as the song tempo. Time-anchored
@@ -518,7 +487,7 @@
     guessing = true;
     try {
       const result = await fetchTempoGuess(songName);
-      if (result) ontempochange(guessToConfig(result.tempo));
+      if (result) ontempochange(result.config);
     } finally {
       guessing = false;
     }
@@ -530,14 +499,14 @@
     <NumberStepper
       value={sig[0]}
       min={1}
-      max={32}
+      max={limits.signature_numerator_max}
       ariaLabel="numerator"
       onchange={(v) => setSig(v, sig[1])}
     />
     <span class="sig-sep">/</span>
     <NumberStepper
       value={sig[1]}
-      values={SIG_DENOMS}
+      values={limits.signature_denominators}
       ariaLabel="denominator"
       onchange={(v) => setSig(sig[0], v)}
     />
@@ -581,6 +550,9 @@
     : $t("tempo.marker.changeTitle")}
   {onclose}
 >
+  {#if verdict}
+    <p class="verdict" role="alert" data-testid="tempo-verdict">{verdict}</p>
+  {/if}
   {#if target === "start"}
     <div class="dialog-section">
       <span class="section-label">{$t("tempo.bpm")}</span>
@@ -618,7 +590,11 @@
         </label>
         {#if baseAccentsOn && metronome.accents}
           <AccentPads
-            levels={resizePattern(metronome.accents, numerator)}
+            levels={rules.accent_pattern(
+              { ...metronome, changes: [] },
+              1,
+              numerator,
+            ) ?? []}
             onchange={setBaseAccents}
           />
         {/if}
@@ -704,8 +680,8 @@
         stores="beat"
         {maxMeasure}
         {beatGrid}
-        beatsIn={(m) => beatsInMeasure(tempo, m)}
-        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        beatsIn={(m) => meterAt(m)?.[0] ?? COMMON_TIME[0]}
+        sigOf={(m) => meterAt(m)?.join("/")}
         ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && moveTo(v.measure, v.beat)}
       />
@@ -802,7 +778,9 @@
         <span class="section-label">{$t("tempo.timeSignature")}</span>
       </label>
       {#if sigOn && tChange?.time_signature}
-        {@render sigSteppers(parseSig(tChange.time_signature))}
+        {@render sigSteppers(
+          rules.signature_parse(tChange.time_signature) ?? COMMON_TIME,
+        )}
       {/if}
     </div>
 
@@ -819,7 +797,11 @@
         </label>
         {#if accentsOn && mChange?.accents}
           <AccentPads
-            levels={resizePattern(mChange.accents, numerator)}
+            levels={rules.accent_pattern(
+              metronome,
+              target.measure,
+              numerator,
+            ) ?? []}
             onchange={(levels) => patchMetroChange({ accents: levels })}
           />
         {/if}
@@ -1008,5 +990,10 @@
     color: var(--text-dim);
     font-style: italic;
     margin: 0;
+  }
+  .verdict {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--text-danger, #c33);
   }
 </style>

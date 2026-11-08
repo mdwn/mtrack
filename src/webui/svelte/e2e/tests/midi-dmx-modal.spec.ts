@@ -50,6 +50,13 @@ test.describe("MIDI DMX Modal", () => {
     await expect(page.locator(".modal-overlay")).not.toBeVisible();
   });
 
+  test("upload accepts the player's MIDI extensions only", async ({ page }) => {
+    await page.getByRole("button", { name: /midi dmx/i }).click();
+    const fileInput = page.locator('.modal .drop-zone input[type="file"]');
+    // `.midi` was offered, which the upload refuses.
+    await expect(fileInput).toHaveAttribute("accept", ".mid");
+  });
+
   test("Close button closes modal", async ({ page }) => {
     await page.getByRole("button", { name: /midi dmx/i }).click();
     await page.locator(".modal").getByRole("button", { name: "Close" }).click();

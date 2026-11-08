@@ -21,10 +21,16 @@
    * a show would be, held a few seconds and kept alive from here, and
    * released when Send goes off, the place changes, or the page goes.
    */
+  import type {
+    TestAnswer,
+    TestOptions,
+    TestUnavailable,
+  } from "../../gen/rules/mtrack_rules";
   import { onDestroy, onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { playbackStore } from "../../lib/ws/stores";
+  import { rules } from "../../lib/rules";
   import { statusStore } from "../../lib/ws/status";
   import { setLocked } from "../../lib/api/config";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -38,10 +44,7 @@
     testBody,
     TestRefused,
     Throttle,
-    type TestAnswer,
     type TestControls,
-    type TestOptions,
-    type TestUnavailable,
   } from "../../lib/lighting/fixtureTest";
 
   interface Props {
@@ -133,7 +136,13 @@
       (w) => w.kind !== "olad_unreachable" && w.kind !== "universe_unpatched",
     ),
   );
-  const profileName = $derived($statusStore?.hardware.profile ?? null);
+  // The running profile's address in the config editor: its file
+  // (`stage.yml`), or, for an inline profile, its hostname as before.
+  const profileName = $derived(
+    $statusStore?.hardware.profile_file ??
+      $statusStore?.hardware.profile ??
+      null,
+  );
 
   // --- Loading the options when the section opens, or the type changes.
   let loadedFor = "";
@@ -293,7 +302,7 @@
     onframe?.({
       channels: frameChannels(frame),
       pose:
-        m?.controls.pan || m?.controls.tilt
+        m?.controls?.pan || m?.controls?.tilt
           ? { pan: c.pan, tilt: c.tilt }
           : null,
     });
@@ -456,7 +465,7 @@
             class="input ftest__address"
             type="number"
             min="1"
-            max="512"
+            max={rules.limits().universe_size}
             value={address}
             data-testid="ftest-address"
             onchange={(e) => {
@@ -509,7 +518,7 @@
         </p>
       {/if}
 
-      {#if mode}
+      {#if mode?.controls}
         <!-- 3. Is it alive: swatches, then sliders. -->
         <div class="ftest__controls" data-testid="ftest-controls">
           <div
@@ -529,7 +538,7 @@
                 onclick={() => {
                   if (key === "off") blackout();
                   else {
-                    if (!mode?.controls.color) setValue("dimmer", 1);
+                    if (!mode?.controls?.color) setValue("dimmer", 1);
                     else setColor(hex);
                   }
                 }}>{$t(`lighting.test.swatch.${key}`)}</button
@@ -699,7 +708,7 @@
                 },
               })}
             </p>
-            {#each otherWarnings as w (w.kind + (w.control ?? ""))}
+            {#each otherWarnings as w (w.kind + ("control" in w ? w.control : ""))}
               <p class="ftest__note" data-testid="ftest-warning-{w.kind}">
                 {w.message}
               </p>

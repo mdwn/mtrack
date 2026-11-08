@@ -469,7 +469,7 @@ fn a_seek_past_finished_moves_commits_each_destination_in_turn() {
     ];
     let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[("b", b)]);
     engine
-        .start_effect_with_elapsed(
+        .start_effect_part_way(
             move_to(
                 "first",
                 MoveTarget::Angles {
@@ -483,7 +483,7 @@ fn a_seek_past_finished_moves_commits_each_destination_in_turn() {
         )
         .unwrap();
     engine
-        .start_effect_with_elapsed(
+        .start_effect_part_way(
             move_to("second", MoveTarget::Focus("b".to_string()), None, 1.0),
             Duration::from_secs(3),
         )
@@ -644,7 +644,7 @@ fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
     );
     effect.layer = EffectLayer::Background;
     engine
-        .start_effect_with_elapsed(effect, Duration::from_secs(2))
+        .start_effect_part_way(effect, Duration::from_secs(2))
         .unwrap();
     assert!(
         !engine.get_active_effects().is_empty(),
@@ -657,7 +657,7 @@ fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
 /// the head is at its destination either way.
 #[test]
 fn a_seek_onto_a_slow_down_at_a_moves_last_instant_plays_as_through() {
-    use crate::lighting::evaluate::apply_timeline_update;
+    use crate::lighting::evaluate::{apply_timeline_update, start_from};
     use crate::lighting::timeline::LightingTimeline;
     let shows = || {
         crate::lighting::parser::parse_light_shows(
@@ -674,8 +674,7 @@ fn a_seek_onto_a_slow_down_at_a_moves_last_instant_plays_as_through() {
         let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
         let mut timeline = LightingTimeline::new(shows());
         let start = Duration::from_secs_f64(from);
-        engine.set_song_time(start);
-        apply_timeline_update(&mut engine, timeline.start_at(start), &mut |e| e);
+        start_from(&mut engine, timeline.start_at(start), &mut |e| e);
         let mut at = from;
         let mut pan = 0.0;
         while at <= 6.5 + 1e-9 {

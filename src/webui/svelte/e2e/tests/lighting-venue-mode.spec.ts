@@ -13,6 +13,8 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
+import { sendWs } from "../support/ws";
 
 // The venue inspector's mode select and patch strip (venue-exchange design
 // §21). Every test routes its own venue file, fixture types, archive and
@@ -37,27 +39,32 @@ interface VenueBody {
 
 /** The PB15's modes, as the archive gives them. */
 const MODES = [
-  { name: "1: RGB", channel_count: 4, footprint: 3, capabilities: ["color"] },
+  {
+    name: "1: RGB",
+    footprint: 3,
+    capabilities: ["color", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
+  },
   {
     name: "8: RGBS",
-    channel_count: 5,
     footprint: 4,
     capabilities: ["color", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
   },
   {
     name: "9: RGBWS",
-    channel_count: 6,
     footprint: 5,
-    capabilities: ["color", "strobe"],
+    capabilities: ["color", "strobe", "white"],
+    wants: ["color", "dimmer", "strobe"],
   },
   {
     name: "13: DIM RGBAWS",
-    channel_count: 7,
     footprint: 7,
-    capabilities: ["color", "dimmer", "strobe"],
+    capabilities: ["color", "strobe", "dimmer", "white"],
+    wants: ["color", "dimmer", "strobe"],
   },
-  { name: "99: Broken", channel_count: 1, footprint: 1, refused: "no" },
-];
+  { name: "99: Broken", footprint: 1, refused: "no" },
+] satisfies GdtfMode[];
 const FOOTPRINT: Record<string, number> = Object.fromEntries(
   MODES.map((m) => [m.name, m.footprint]),
 );
@@ -82,12 +89,6 @@ function rig(): VenueBody {
 }
 
 let counter = 0;
-
-async function sendWs(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Serves one venue and everything the inspector asks about it; collects
  *  the PUTs. */

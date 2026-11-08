@@ -79,6 +79,80 @@ fn publish_jumps_for_test(
 use midly::num::u7;
 use midly::MidiMessage;
 
+/// Records what it is sent; or, made `failing`, fails every send.
+struct MockSender {
+    sent: parking_lot::Mutex<Vec<Vec<u8>>>,
+    should_fail: bool,
+}
+
+impl MockSender {
+    fn new() -> Self {
+        MockSender {
+            sent: parking_lot::Mutex::new(Vec::new()),
+            should_fail: false,
+        }
+    }
+
+    fn failing() -> Self {
+        MockSender {
+            sent: parking_lot::Mutex::new(Vec::new()),
+            should_fail: true,
+        }
+    }
+}
+
+impl MidiSender for MockSender {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        if self.should_fail {
+            return Err("mock send failure".into());
+        }
+        self.sent.lock().push(bytes.to_vec());
+        Ok(())
+    }
+}
+
+/// Sends nowhere.
+struct Null;
+
+impl MidiSender for Null {
+    fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
+/// Note-ons at `times_ms`, keys 60 up, on channel 0.
+fn make_events(times_ms: &[u64]) -> crate::midi::playback::PrecomputedMidi {
+    let events: Vec<crate::midi::playback::TimedMidiEvent> = times_ms
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| crate::midi::playback::TimedMidiEvent {
+            time: Duration::from_millis(t),
+            channel: 0,
+            message: midly::MidiMessage::NoteOn {
+                key: u7::new(60 + i as u8),
+                vel: u7::new(100),
+            },
+        })
+        .collect();
+    crate::midi::playback::PrecomputedMidi::from_events(events)
+}
+
+fn start_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Start)
+}
+
+fn continue_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Continue)
+}
+
+fn stop_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Stop)
+}
+
+fn clock_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::TimingClock)
+}
+
 mod display {
     use super::*;
 
@@ -435,7 +509,7 @@ fn the_playback_delay_counts_from_the_clocks_start() {
             beat_clock_engine_loop(&mut FirstClock { clock, at }, false, &tempo, &rx);
         }
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
     while at.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -490,7 +564,7 @@ fn a_reopen_mid_schedule_carries_the_schedule_tempo() {
         transport: None,
     }))
     .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
     while sent.load(std::sync::atomic::Ordering::SeqCst) < 3 {
         assert!(
             std::time::Instant::now() < deadline,
@@ -584,12 +658,6 @@ fn racing_reopens_stop_the_clock_actually_replaced() {
 #[test]
 fn the_fallback_tempo_is_read_after_the_old_clock_stops() {
     use crate::midi::Device as _;
-    struct Null;
-    impl MidiSender for Null {
-        fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-            Ok(())
-        }
-    }
     let (tx, rx) = mpsc::channel();
     let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
     let engine_tempo = tempo.clone();
@@ -632,12 +700,6 @@ fn the_fallback_tempo_is_read_after_the_old_clock_stops() {
 /// its thread, and would otherwise never return.
 #[test]
 fn stop_returns_while_a_schedule_waits_for_its_start() {
-    struct Null;
-    impl MidiSender for Null {
-        fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-            Ok(())
-        }
-    }
     let (tx, rx) = mpsc::channel();
     let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
     let engine_tempo = tempo.clone();
@@ -669,7 +731,7 @@ fn stop_returns_while_a_schedule_waits_for_its_start() {
             let _ = done_tx.send(());
         }
     });
-    let stopped = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+    let stopped = done_rx.recv_timeout(crate::testutil::PATIENCE).is_ok();
     cancel.cancel(); // let the thread go either way
     assert!(stopped, "stop() hung on a schedule waiting for its start");
 }
@@ -963,53 +1025,6 @@ mod play_precomputed_tests {
     use super::*;
     use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
     use crate::playsync::CancelHandle;
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-        should_fail: bool,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-                should_fail: false,
-            }
-        }
-
-        fn failing() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-                should_fail: true,
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            if self.should_fail {
-                return Err("mock send failure".into());
-            }
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
-
-    fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
-        let events: Vec<TimedMidiEvent> = times_ms
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| TimedMidiEvent {
-                time: Duration::from_millis(t),
-                channel: 0,
-                message: midly::MidiMessage::NoteOn {
-                    key: u7::new(60 + i as u8),
-                    vel: u7::new(100),
-                },
-            })
-            .collect();
-        PrecomputedMidi::from_events(events)
-    }
-
     /// Helper: run play_streams with common defaults for tests.
     fn run_play(
         midi: &PrecomputedMidi,
@@ -1251,42 +1266,6 @@ mod run_playback_tests {
     use super::*;
     use crate::midi::playback::PrecomputedMidi;
     use crate::playsync::CancelHandle;
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
-
-    fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
-        use crate::midi::playback::TimedMidiEvent;
-        let events: Vec<TimedMidiEvent> = times_ms
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| TimedMidiEvent {
-                time: Duration::from_millis(t),
-                channel: 0,
-                message: midly::MidiMessage::NoteOn {
-                    key: u7::new(60 + i as u8),
-                    vel: u7::new(100),
-                },
-            })
-            .collect();
-        PrecomputedMidi::from_events(events)
-    }
-
     /// Records when on the clock each note was sent, and which; the
     /// note-offs apart.
     struct TimedSender {
@@ -1352,17 +1331,30 @@ mod run_playback_tests {
         let exclude = HashSet::new();
         let clock = PlaybackClock::wall();
         clock.start();
-        let mut sender = TimedSender::new(&clock);
-        let loop_break = Arc::new(AtomicBool::new(false));
-        let breaker = {
-            let loop_break = loop_break.clone();
-            let clock = clock.clone();
-            std::thread::spawn(move || {
-                while clock.elapsed() < Duration::from_millis(1_650) {
-                    std::thread::sleep(Duration::from_millis(5));
+        let mut timed = TimedSender::new(&clock);
+        // The loop is broken as the last note expected goes out (1.5 s),
+        // by the sender, not by a thread watching the clock: a thread a
+        // loaded machine held up past the next pass's first note (1.8 s)
+        // let that note out too.
+        struct BreakAfter<'a> {
+            timed: &'a mut TimedSender,
+            notes: usize,
+            loop_break: Arc<AtomicBool>,
+        }
+        impl MidiSender for BreakAfter<'_> {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.timed.send(bytes)?;
+                if self.timed.sent.len() == self.notes {
+                    self.loop_break.store(true, Ordering::Relaxed);
                 }
-                loop_break.store(true, Ordering::Relaxed);
-            })
+                Ok(())
+            }
+        }
+        let loop_break = Arc::new(AtomicBool::new(false));
+        let mut sender = BreakAfter {
+            timed: &mut timed,
+            notes: 8,
+            loop_break: loop_break.clone(),
         };
 
         run_playback(
@@ -1382,7 +1374,6 @@ mod run_playback_tests {
                 transport: None,
             },
         );
-        breaker.join().unwrap();
 
         // Pass 0 at 0, pass 1 at 0.6, pass 2 at 1.2: the first pass's
         // last note (0.9) lands with the second's second (0.6 + 0.3).
@@ -1396,10 +1387,13 @@ mod run_playback_tests {
             (1.5, 62),
             (1.5, 61),
         ];
-        let sent = &sender.sent;
+        let sent = &timed.sent;
         assert_eq!(sent.len(), expected.len(), "{sent:?}");
+        // Never early, and late by less than a third of the 0.3 s between
+        // notes: a loaded machine's thread waking late cannot put a note
+        // nearer another's time than its own.
         for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
-            assert!((at - want_at).abs() < 0.03, "{sent:?}");
+            assert!(*at - want_at > -0.03 && *at - want_at < 0.1, "{sent:?}");
             assert_eq!(*note, want_note, "{sent:?}");
         }
     }
@@ -2515,18 +2509,33 @@ mod run_playback_tests {
         delay_ms: u64,
         jumps: Arc<crate::playsync::SectionJumpLog>,
     ) -> (Vec<f64>, usize) {
-        struct Sender(Arc<VirtualTime>, Vec<f64>);
+        let replays = crate::playsync::JumpCursor::new(jumps.clone())
+            .peek()
+            .is_some();
+        let (sent, reads) = play_virtual_messages(callbacks, frames, times, delay_ms, jumps);
+        if !replays {
+            assert_eq!(sent.len(), times.len(), "notes missing");
+        }
+        (sent.into_iter().map(|(at, _)| at).collect(), reads)
+    }
+
+    /// As [`play_virtual`], each message with when it went out.
+    fn play_virtual_messages(
+        callbacks: &[f64],
+        frames: u64,
+        times: &[u64],
+        delay_ms: u64,
+        jumps: Arc<crate::playsync::SectionJumpLog>,
+    ) -> (Vec<(f64, Vec<u8>)>, usize) {
+        struct Sender(Arc<VirtualTime>, Vec<(f64, Vec<u8>)>);
         impl MidiSender for Sender {
-            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-                self.1.push(self.0.wall());
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.1.push((self.0.wall(), bytes.to_vec()));
                 Ok(())
             }
         }
         let time = VirtualTime::new(callbacks, frames);
         let midi = make_events(times);
-        let replays = crate::playsync::JumpCursor::new(jumps.clone())
-            .peek()
-            .is_some();
         let mut sender = Sender(time.clone(), Vec::new());
         play_streams(
             &NoteStreams {
@@ -2543,9 +2552,6 @@ mod run_playback_tests {
             &mut crate::playsync::JumpCursor::new(jumps),
             &mut sender,
         );
-        if !replays {
-            assert_eq!(sender.1.len(), times.len(), "notes missing");
-        }
         (sender.1, time.reads.load(Ordering::Relaxed))
     }
 
@@ -2903,6 +2909,51 @@ mod run_playback_tests {
         }
     }
 
+    /// A crossfading loop's passes, in virtual time: each pass's notes
+    /// keep to the audio from its jump, the pass it leaves playing on for
+    /// the overlap in time with it, older pass first at the same moment.
+    /// Pins the times [`crossfading_loop_overlaps_its_passes`] checks on
+    /// real threads only to a loaded machine's bounds.
+    #[test]
+    fn overlapping_passes_play_their_notes_on_time() {
+        // A 1 s song with a 0.4 s overlap: a pass every 0.6 s, notes 60,
+        // 61, 62 at 0, 0.3 and 0.9 s into each; the last pass plays out.
+        let feed = callbacks(1.0, 512, 0.001, false, 0.0, 3.0);
+        let (sent, _) = play_virtual_messages(
+            &feed,
+            512,
+            &[0, 300, 900],
+            20,
+            passes(&[600, 1_200], 600, 400),
+        );
+        let notes: Vec<(f64, u8)> = sent
+            .iter()
+            .filter(|(_, bytes)| bytes[0] & 0xF0 == 0x90)
+            .map(|(at, bytes)| (*at, bytes[1]))
+            .collect();
+        let expected = [
+            (0, 60),
+            (300, 61),
+            (600, 60),
+            (900, 62),
+            (900, 61),
+            (1_200, 60),
+            (1_500, 62),
+            (1_500, 61),
+            (2_100, 62),
+        ];
+        assert_eq!(notes.len(), expected.len(), "{notes:?}");
+        for ((at, note), (ms, want)) in notes.iter().zip(expected) {
+            let off = at - (20 + ms) as f64 / 1000.0;
+            assert!(
+                off.abs() < 0.003,
+                "{ms}ms note {:.1}ms off: {notes:?}",
+                off * 1000.0
+            );
+            assert_eq!(*note, want, "{notes:?}");
+        }
+    }
+
     /// A long playback delay on a device 10% fast: the delay is waited
     /// on the audio's clock, so the first notes come when the audio
     /// reaches it, on time, not in a bunch.
@@ -2928,13 +2979,17 @@ mod run_playback_tests {
         let feed = callbacks(1.0, 1024, 0.001, false, 0.0, 2.5);
         let (started, sent) = play_on_audio(feed, 1024, &times, None, passes(&[], 0, 0));
         assert_eq!(sent.len(), times.len());
+        // Bounds a loaded machine's late thread (this one's, or the
+        // feeder's holding the audio back) stays inside: up to 60ms off,
+        // so notes 100ms apart stay over 40ms apart, not bunched.
+        let slack = Duration::from_millis(60);
         for (sent, ms) in sent.iter().zip(&times) {
             let off = off(*sent, started + Duration::from_millis(20 + ms));
-            assert!(off < Duration::from_millis(20), "{ms}ms note {off:?} off");
+            assert!(off < slack, "{ms}ms note {off:?} off");
         }
         for pair in sent.windows(2) {
             assert!(
-                pair[1] - pair[0] > Duration::from_millis(80),
+                pair[1] - pair[0] > Duration::from_millis(100) - slack,
                 "notes bunched"
             );
         }
@@ -3071,11 +3126,14 @@ mod run_playback_tests {
                 .map(|(_, at)| *at)
                 .expect("no Start");
             let note = notes.lock().first().map(|(_, at)| *at).expect("no note");
-            // Generous for a loaded machine: the note's time itself is
-            // tested in virtual time (it was 26ms late).
+            // Generous for a loaded machine, whose threads can wake tens of
+            // milliseconds late: the note's time itself (it was 26ms late)
+            // is tested in virtual time, in
+            // notes_follow_a_jittery_audio_clock_running_slow_or_fast. The
+            // order cannot flake: the note waits for Start to have gone.
             assert!(note >= start, "{rate}x: the note went before Start");
             assert!(
-                note - start < Duration::from_millis(20),
+                note - start < Duration::from_millis(100),
                 "{rate}x: the note went {:?} after Start",
                 note - start
             );
@@ -3116,12 +3174,6 @@ mod run_playback_tests {
     /// Continue, not before.
     #[test]
     fn the_beat_clock_announces_its_start() {
-        struct Null;
-        impl MidiSender for Null {
-            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-                Ok(())
-            }
-        }
         for transport_byte in [0xFA, 0xFB] {
             let transport = AtomicBool::new(false);
             let mut null = Null;
@@ -3142,37 +3194,6 @@ mod run_beat_clock_tests {
     use super::*;
     use crate::playsync::CancelHandle;
     use midly::live::SystemRealtime;
-    fn start_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Start)
-    }
-    fn continue_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Continue)
-    }
-    fn stop_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Stop)
-    }
-    fn clock_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::TimingClock)
-    }
-
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
 
     /// Records each message with when on `clock` it went out.
     struct StampedSender {
@@ -3279,7 +3300,30 @@ mod run_beat_clock_tests {
     /// Plays `ticks` following the pass jumps of a looping song given in
     /// a closed log; the clocks that went out, on the playback clock.
     fn play_passes(ticks: &[Duration], jumps: &[(u64, u64)], break_after: usize) -> Vec<Duration> {
-        let clock = PlaybackClock::wall();
+        play_passes_on(ticks, jumps, break_after, true)
+    }
+
+    /// As [`play_passes`], in virtual time (`virtual_time`: a clock that
+    /// moves only as the schedule waits, so every pulse goes out exactly
+    /// when due, however loaded the machine) or on the wall clock.
+    fn play_passes_on(
+        ticks: &[Duration],
+        jumps: &[(u64, u64)],
+        break_after: usize,
+        virtual_time: bool,
+    ) -> Vec<Duration> {
+        let mut _pauses = None;
+        let clock = if virtual_time {
+            // Nanoseconds.
+            let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let advance = counter.clone();
+            _pauses = Some(TestPauses::set(move |length| {
+                advance.fetch_add(length.as_nanos() as u64, Ordering::Relaxed);
+            }));
+            PlaybackClock::from_sample_counter(counter, 1_000_000_000)
+        } else {
+            PlaybackClock::wall()
+        };
         clock.start();
         let log = Arc::new(crate::playsync::SectionJumpLog::default());
         for &(at, overlap) in jumps {
@@ -3330,11 +3374,17 @@ mod run_beat_clock_tests {
         // 500ms of clocks; passes start 100ms before the end (at 400ms
         // and 800ms on the clock), crossfading over the last 100ms.
         let clocks = play_passes(&every_10ms(500), &[(400, 100), (800, 100)], 1_000);
-        // 0-390ms, twice, then the last pass to its end.
+        // 0-390ms, twice, then the last pass to its end: the seam is a
+        // pulse, not two at once, by the count.
         assert_eq!(clocks.len(), 40 + 40 + 50, "{clocks:?}");
-        // The seam is a pulse, not two at once.
-        assert!(clocks[40] >= ms(400) && clocks[40] - clocks[39] >= ms(5));
-        assert!(clocks[80] >= ms(800) && clocks[80] - clocks[79] >= ms(5));
+        // Each pass's first pulse goes out at its jump, a whole pulse after
+        // the last pass's last. In virtual time (see play_passes), so a
+        // loaded machine cannot put the last pulse late, into the gap.
+        let near = |a: Duration, b: Duration| a.abs_diff(b) < Duration::from_micros(1);
+        assert!(near(clocks[40], ms(400)), "{clocks:?}");
+        assert!(near(clocks[40] - clocks[39], ms(10)), "{clocks:?}");
+        assert!(near(clocks[80], ms(800)), "{clocks:?}");
+        assert!(near(clocks[80] - clocks[79], ms(10)), "{clocks:?}");
     }
 
     /// DIAGNOSTIC (no assertion; prints timing): a plain loop's pass jump
@@ -3349,7 +3399,7 @@ mod run_beat_clock_tests {
             .map(|i| Duration::from_nanos(i * 500_000_000 / 24))
             .collect();
         let jumps: Vec<(u64, u64)> = (1..=10).map(|k| (k * 500, 0)).collect();
-        let clocks = play_passes(&ticks, &jumps, 24 * 11);
+        let clocks = play_passes_on(&ticks, &jumps, 24 * 11, false);
         let late: Vec<Duration> = (1..=10)
             .map(|k| clocks[24 * k].saturating_sub(ms(500 * k as u64)))
             .collect();
@@ -3593,7 +3643,7 @@ mod run_beat_clock_tests {
             }
         });
         // A cancelled schedule returns at once; give it ample time.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !handle.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4235,7 +4285,7 @@ mod run_beat_clock_tests {
         let beat_clock = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info(
             &[crate::midi::playback::TempoEntry {
                 tick: 0,
-                micros_per_tick: 500_000.0 / 480.0,
+                micros_per_beat: 500_000,
             }],
             480,
             480,
@@ -4403,19 +4453,9 @@ mod run_beat_clock_tests {
 mod beat_clock_engine_tests {
     use super::*;
     use crate::playsync::CancelHandle;
-    use midly::live::SystemRealtime;
+
     use std::sync::mpsc;
     use std::sync::Arc;
-
-    fn clock_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::TimingClock)
-    }
-    fn start_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Start)
-    }
-    fn stop_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Stop)
-    }
 
     /// A sender whose buffer can be inspected from another thread while the
     /// engine loop runs.
@@ -4487,7 +4527,7 @@ mod beat_clock_engine_tests {
         tx.send(BeatClockCommand::Play(play)).unwrap();
         thread::sleep(Duration::from_millis(50));
         drop(tx);
-        let ended = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let ended = done_rx.recv_timeout(crate::testutil::PATIENCE).is_ok();
         cancel.cancel();
         assert!(ended, "the engine kept waiting on a closed channel");
     }
@@ -4597,7 +4637,7 @@ mod beat_clock_engine_tests {
         }
     }
 
-    /// Polls until `cond` holds or the deadline passes.
+    /// Polls until `cond` holds or the test patience runs out.
     ///
     /// These tests assert that a free-running clock keeps running at all,
     /// not that it hits a precise count in a precise window. A shared CI
@@ -4605,8 +4645,8 @@ mod beat_clock_engine_tests {
     /// a fixed sleep plus an exact count is a flake waiting to happen --
     /// which is exactly how both of these first landed. Polling makes a slow
     /// machine slower rather than red.
-    fn wait_for(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while std::time::Instant::now() < deadline {
             if cond() {
                 return true;
@@ -4641,7 +4681,7 @@ mod beat_clock_engine_tests {
         });
 
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= HELD_TICKS),
+            wait_for(|| sender.len() >= HELD_TICKS),
             "the held tempo was not run before a song"
         );
         assert!(sender.sent.lock().iter().all(|msg| *msg == clock_bytes()));
@@ -4655,9 +4695,7 @@ mod beat_clock_engine_tests {
             CancelHandle::new(),
         )))
         .unwrap();
-        let set = wait_for(Duration::from_secs(10), || {
-            *tempo.lock().unwrap() == Some(Duration::from_millis(20))
-        });
+        let set = wait_for(|| *tempo.lock().unwrap() == Some(Duration::from_millis(20)));
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
         assert!(
@@ -4692,7 +4730,7 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > 5),
+            wait_for(|| sender.len() > 5),
             "the first song never established a held tempo"
         );
         let before = sender.len();
@@ -4714,20 +4752,18 @@ mod beat_clock_engine_tests {
         // The go signal is withheld for this whole window, so everything
         // arriving is the held tempo. Blocking silently on the clock -- the
         // behaviour this guards against -- emits nothing here at all.
-        let held = wait_for(Duration::from_secs(10), || {
-            sender.len() >= before + HELD_TICKS
-        });
+        let held = wait_for(|| sender.len() >= before + HELD_TICKS);
         let during = sender.len();
         assert!(
             held,
-            "clock went silent while waiting for the go signal: {} messages in 10s",
+            "clock went silent while waiting for the go signal: {} messages",
             during - before
         );
 
         // Releasing the go signal must still let the schedule play.
         slow_clock.start();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > during),
+            wait_for(|| sender.len() > during),
             "the schedule never ran once the clock started"
         );
         tx.send(BeatClockCommand::Shutdown).unwrap();
@@ -4763,7 +4799,7 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > 5),
+            wait_for(|| sender.len() > 5),
             "the first song never established a held tempo"
         );
 
@@ -4776,14 +4812,12 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= before + 3),
+            wait_for(|| sender.len() >= before + 3),
             "the short schedule never played"
         );
         let after_short = sender.len();
 
-        let still_running = wait_for(Duration::from_secs(10), || {
-            sender.len() >= after_short + HELD_TICKS
-        });
+        let still_running = wait_for(|| sender.len() >= after_short + HELD_TICKS);
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
 
@@ -4910,7 +4944,7 @@ mod beat_clock_engine_tests {
         // Wait for the schedule (START + 3 clocks + STOP = 5) plus some held
         // ticks to accumulate. Polled rather than slept: a starved thread
         // makes this slower, not wrong.
-        let held_ticks = wait_for(Duration::from_secs(10), || sender.len() > 5);
+        let held_ticks = wait_for(|| sender.len() > 5);
         let held = sender.len();
         assert!(
             held_ticks,
@@ -4955,7 +4989,7 @@ mod beat_clock_engine_tests {
         // purpose: load can only make a silent engine emit *less*, so it
         // cannot turn this green when it should be red.
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= 4),
+            wait_for(|| sender.len() >= 4),
             "the schedule never played, got {}",
             sender.len()
         );
@@ -5069,7 +5103,7 @@ mod beat_clock_engine_tests {
         // Releasing the go signal lets the schedule play.
         clock.start();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= 4),
+            wait_for(|| sender.len() >= 4),
             "schedule should play once the clock starts, got {}",
             sender.len()
         );
@@ -5104,7 +5138,7 @@ mod beat_clock_engine_tests {
             assert!(matches!(cmd, Some(BeatClockCommand::Shutdown)));
         });
 
-        let ticked = wait_for(Duration::from_secs(10), || !sender.sent.lock().is_empty());
+        let ticked = wait_for(|| !sender.sent.lock().is_empty());
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
 

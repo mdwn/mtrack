@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use super::types::EffectLayer;
+use crate::lighting::channels::{dmx_byte, dmx_word};
 use crate::lighting::types::{ChannelDef, PhysicalUnit};
 
 /// The full 16-bit DMX scale a resolved value is expressed on.
@@ -122,38 +123,54 @@ pub struct Resolved {
     pub clamped: bool,
 }
 
+/// The bytes a channel's coarse `high` byte -- and its fine `low` byte,
+/// when there is one to write -- go out on: the channel's own offsets,
+/// then each mirror's. Nothing is allocated: the frame path walks this.
+fn spread(def: &ChannelDef, high: u8, low: Option<u8>) -> impl Iterator<Item = (u16, u8)> + '_ {
+    std::iter::once((def.offset, def.fine))
+        .chain(def.mirrors.iter().copied())
+        .flat_map(move |(coarse, fine)| {
+            std::iter::once((coarse, high)).chain(low.and_then(|low| fine.map(|fine| (fine, low))))
+        })
+}
+
 /// Fans a 16-bit value out over a channel's bytes: coarse from the high
 /// byte, fine from the low; just the high byte for an 8-bit channel.
 /// Monotonic by construction (property-tested below), so a slow sweep
 /// never steps the coarse byte backwards across a fine rollover.
-pub fn fanout(def: &ChannelDef, value16: u16) -> Vec<(u16, u8)> {
+pub fn fanout(def: &ChannelDef, value16: u16) -> impl Iterator<Item = (u16, u8)> + '_ {
     let [high, low] = value16.to_be_bytes();
-    let mut out = Vec::with_capacity(2 + 2 * def.mirrors.len());
-    for (coarse, fine) in std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
-    {
-        out.push((coarse, high));
-        if let Some(fine) = fine {
-            out.push((fine, low));
-        }
+    spread(def, high, Some(low))
+}
+
+/// The bytes a normalized 0..1 value goes out as on a channel, 16-bit
+/// (`sixteen_bit`) or not: an 8-bit channel's [`dmx_byte`] of it, and no
+/// fine byte; a 16-bit channel's value rounded on the 16-bit scale, its
+/// high byte coarse and its low byte fine. The one rule for both.
+fn normalized_bytes(sixteen_bit: bool, value: f64) -> (u8, Option<u8>) {
+    if sixteen_bit {
+        let [high, low] = dmx_word(value * FULL_SCALE_16).to_be_bytes();
+        (high, Some(low))
+    } else {
+        (dmx_byte(value * 255.0), None)
     }
-    out
 }
 
 /// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets
-/// exactly the byte the engine always wrote (`(value × 255) as u8`); a
-/// 16-bit channel gets the same coarse byte and a fine byte the engine
-/// used to leave untouched.
-pub fn resolve_normalized(def: &ChannelDef, value: f64) -> Vec<(u16, u8)> {
-    match def.fine {
-        None => {
-            let byte = (value * 255.0) as u8;
-            std::iter::once(def.offset)
-                .chain(def.mirrors.iter().map(|(coarse, _)| *coarse))
-                .map(|offset| (offset, byte))
-                .collect()
-        }
-        Some(_) => fanout(def, (value.clamp(0.0, 1.0) * FULL_SCALE_16).round() as u16),
-    }
+/// [`dmx_byte`] of it; a 16-bit channel gets the value rounded on the
+/// 16-bit scale, coarse and fine ([`normalized_bytes`]).
+pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = (u16, u8)> + '_ {
+    let (high, low) = normalized_bytes(def.fine.is_some(), value);
+    spread(def, high, low)
+}
+
+/// The coarse byte a normalized 0..1 value goes out as on `def`
+/// ([`resolve_normalized`]'s, by [`normalized_bytes`]): an 8-bit
+/// channel's byte, a 16-bit channel's high byte; with no channel (`None`),
+/// an 8-bit one's. What a snapshot shows for the channel, so it is the
+/// byte on the wire.
+pub fn coarse_byte(def: Option<&ChannelDef>, value: f64) -> u8 {
+    normalized_bytes(def.is_some_and(|def| def.fine.is_some()), value).0
 }
 
 /// The degree span a channel resolves over, and the DMX sub-range it maps
@@ -200,11 +217,9 @@ pub fn resolve_degrees(def: &ChannelDef, parameter: PhysicalParameter, degrees: 
     // 64·257 .. 255·257, so its coarse byte stays inside the function.
     let lo16 = f64::from(dmx_lo) * 257.0;
     let hi16 = f64::from(dmx_hi) * 257.0;
-    let value16 = (lo16 + fraction * (hi16 - lo16))
-        .round()
-        .clamp(0.0, FULL_SCALE_16) as u16;
+    let value16 = dmx_word(lo16 + fraction * (hi16 - lo16));
     Resolved {
-        bytes: fanout(def, value16),
+        bytes: fanout(def, value16).collect(),
         clamped,
     }
 }
@@ -296,12 +311,12 @@ mod tests {
     }
 
     #[test]
-    fn eight_bit_normalized_is_the_byte_the_engine_always_wrote() {
+    fn eight_bit_normalized_is_the_level_rounded_to_a_byte() {
         let def = ChannelDef::at(3);
-        for value in [0.0, 0.25, 0.5, 0.999, 1.0] {
+        for (value, byte) in [(0.0, 0), (0.25, 64), (0.5, 128), (0.999, 255), (1.0, 255)] {
             assert_eq!(
-                resolve_normalized(&def, value),
-                vec![(3, (value * 255.0) as u8)]
+                resolve_normalized(&def, value).collect::<Vec<_>>(),
+                vec![(3, byte)]
             );
         }
     }
@@ -309,9 +324,10 @@ mod tests {
     #[test]
     fn sixteen_bit_normalized_keeps_the_coarse_byte_and_adds_the_fine() {
         let def = def16(2, 3);
-        assert_eq!(resolve_normalized(&def, 0.0), vec![(2, 0), (3, 0)]);
-        assert_eq!(resolve_normalized(&def, 1.0), vec![(2, 255), (3, 255)]);
-        let half = resolve_normalized(&def, 0.5);
+        let bytes = |value| resolve_normalized(&def, value).collect::<Vec<_>>();
+        assert_eq!(bytes(0.0), vec![(2, 0), (3, 0)]);
+        assert_eq!(bytes(1.0), vec![(2, 255), (3, 255)]);
+        let half = bytes(0.5);
         assert_eq!(half[0], (2, 128), "32768 = 0x8000");
         assert_eq!(half[1].0, 3);
     }
@@ -321,7 +337,7 @@ mod tests {
         let def = def16(1, 2);
         let mut previous = (0u8, 0u8);
         for value in 0..=u16::MAX {
-            let bytes = fanout(&def, value);
+            let bytes: Vec<_> = fanout(&def, value).collect();
             let pair = (bytes[0].1, bytes[1].1);
             assert!(pair >= previous, "{value}: {pair:?} after {previous:?}");
             previous = pair;
@@ -333,13 +349,13 @@ mod tests {
         let mut def = ChannelDef::at(1);
         def.mirrors = vec![(4, None), (7, None)];
         assert_eq!(
-            resolve_normalized(&def, 1.0),
+            resolve_normalized(&def, 1.0).collect::<Vec<_>>(),
             vec![(1, 255), (4, 255), (7, 255)]
         );
         let mut wide = def16(1, 2);
         wide.mirrors = vec![(3, Some(4))];
         assert_eq!(
-            fanout(&wide, 0x1234),
+            fanout(&wide, 0x1234).collect::<Vec<_>>(),
             vec![(1, 0x12), (2, 0x34), (3, 0x12), (4, 0x34)]
         );
     }

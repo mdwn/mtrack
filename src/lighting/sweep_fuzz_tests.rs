@@ -22,79 +22,12 @@
 
 use super::*;
 use crate::lighting::parser::{parse_light_shows, LayerCommandType};
-use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
-
-fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("parse")
-        .into_values()
-        .collect()
-}
-
-fn rgb(name: &str, address: u16) -> FixtureInfo {
-    let channels: HashMap<String, u16> = [("red", 1), ("green", 2), ("blue", 3)]
-        .into_iter()
-        .map(|(n, o)| (n.to_string(), o))
-        .collect();
-    FixtureInfo::new(
-        name.to_string(),
-        1,
-        address,
-        "RGB".to_string(),
-        channels,
-        None,
-    )
-}
+use crate::testutil::lighting::{engine_with, rgb, shows};
 
 const MOVER_ADDR: u16 = 41;
 
 fn mover(name: &str) -> FixtureInfo {
-    let channels: HashMap<String, u16> = [("pan", 1), ("tilt", 3), ("dimmer", 5)]
-        .into_iter()
-        .map(|(n, o)| (n.to_string(), o))
-        .collect();
-    let mut info = FixtureInfo::new(
-        name.to_string(),
-        1,
-        MOVER_ADDR,
-        "Mover".to_string(),
-        channels,
-        None,
-    );
-    let mut defs = HashMap::new();
-    defs.insert(
-        "pan".to_string(),
-        ChannelDef {
-            offset: 1,
-            fine: Some(2),
-            range: Some(PhysicalRange {
-                from: -270.0,
-                to: 270.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert(
-        "tilt".to_string(),
-        ChannelDef {
-            offset: 3,
-            fine: Some(4),
-            range: Some(PhysicalRange {
-                from: -135.0,
-                to: 135.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert("dimmer".to_string(), ChannelDef::at(5));
-    info = info.with_channel_defs(defs);
-    info.position = Some([0.0, 3.0, 0.0]);
-    info.rotation = Some([0.0, 0.0, 0.0]);
-    info
+    crate::testutil::lighting::mover(name, MOVER_ADDR)
 }
 
 fn fixtures() -> Vec<FixtureInfo> {
@@ -102,11 +35,7 @@ fn fixtures() -> Vec<FixtureInfo> {
 }
 
 fn fresh() -> EffectEngine {
-    let mut engine = EffectEngine::new();
-    for f in fixtures() {
-        engine.register_fixture(f);
-    }
-    engine
+    engine_with(&fixtures())
 }
 
 const LABELS: [&str; 11] = [
@@ -187,15 +116,13 @@ fn played_run(src: &str, phase: u64, until_ms: u64) -> Vec<(u64, Vec<f64>, usize
         let t = Duration::from_millis(ms);
         let u = tl.update(t);
         let clears = u
-            .layer_commands
-            .iter()
-            .zip(&u.layer_command_times)
-            .filter(|(c, _)| c.command_type == LayerCommandType::Clear)
-            .map(|(_, at)| *at);
+            .layer_commands()
+            .filter(|(_, c)| c.command_type == LayerCommandType::Clear)
+            .map(|(at, _)| at);
         let cut = clears
-            .chain(u.stop_sequence_times.iter().copied())
+            .chain(u.stop_sequences().map(|(at, _)| at))
             .max()
-            .filter(|_| !u.effects.is_empty())
+            .filter(|_| u.effects().next().is_some())
             .map_or(0, |at| at.as_millis() as usize);
         apply_timeline_update(&mut engine, u, &mut |e| e);
         let _ = engine.update(step, Some(t));
@@ -217,8 +144,7 @@ fn seek_run(src: &str, seek_ms: u64, at: &[u64]) -> Vec<(u64, Vec<f64>)> {
     let mut engine = fresh();
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     let step = Duration::from_millis(10);
     let last = *at.iter().max().unwrap();
     let mut out = Vec::new();

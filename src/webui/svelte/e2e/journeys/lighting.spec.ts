@@ -14,6 +14,8 @@
 
 import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
+import { card } from "../support/locators";
+import type { VenueList } from "../../src/gen/rules/mtrack_rules";
 import { api, expect, synthGdtf, synthMvr, test } from "./harness";
 
 // The Lighting area against the real binary: each journey does what a user
@@ -45,12 +47,6 @@ const withBricks = (venue: string) => ({
   "lighting/fixture_types/brick.fixture": BRICK,
   "lighting/venues/house.venue": venue,
 });
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 const confirmDialog = (page: Page) => page.locator(".dialog-overlay");
 
@@ -226,7 +222,15 @@ test.describe("A new venue", () => {
       ["Fixture 2", 1, 4],
       ["Fixture 3", 1, 7],
     ]);
-    const file = project.read("lighting/venues/club.light");
+    // The file the save created, as the listing reports it: a new venue
+    // is a `.venue` by the one rule for new files.
+    const listed = await api<VenueList>(project, "/lighting/venues");
+    expect(listed.owners.club).toEqual({
+      file: "club.venue",
+      editable: true,
+      reason: null,
+    });
+    const file = project.read(`lighting/venues/${listed.owners.club.file}`);
     expect(file).toContain('fixture "Fixture 3" Par @ 1:7');
   });
 });
@@ -351,11 +355,18 @@ test.describe("The fixture's settings", () => {
     expect(lineOf(file, "B1")).toContain('Brick-Two mode "8: RGBS" @ 1:1');
     expect(lineOf(file, "B1")).toContain("# front left");
     expect(file).toContain("The house rig");
-    // The type keeps its file, under its new name.
-    expect(project.read("lighting/fixture_types/brick.fixture")).toContain(
-      'fixture_type "Brick-Two"',
+    // The record was at its old name's own file, so it moves to the new
+    // name's: the file the server says owns "Brick-Two" holds it, and the
+    // old one is gone.
+    const renamed = await api<{ owner: { file: string } | null }>(
+      project,
+      "/lighting/fixture-types/Brick-Two",
     );
-    await api(project, "/lighting/fixture-types/Brick-Two");
+    expect(renamed.owner?.file).toBe("brick-two.fixture");
+    expect(
+      project.read(`lighting/fixture_types/${renamed.owner!.file}`),
+    ).toContain('fixture_type "Brick-Two"');
+    expect(project.exists("lighting/fixture_types/brick.fixture")).toBe(false);
     const status = await api<{
       hardware: { lighting_venue: { status: string } };
     }>(project, "/status");

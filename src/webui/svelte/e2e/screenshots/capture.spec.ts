@@ -26,6 +26,7 @@ import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
+import { sendWsUnchecked } from "../support/ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,8 @@ interface PlaybackState {
   song_duration_ms: number;
   playlist_name: string;
   playlist_position: number;
+  playlist_at_first: boolean;
+  playlist_at_last: boolean;
   playlist_songs: string[];
   tracks: { name: string; output_channels: number[] }[];
   available_playlists: string[];
@@ -75,6 +78,8 @@ const DEFAULT_PLAYBACK: PlaybackState = {
   song_duration_ms: 180000,
   playlist_name: "setlist",
   playlist_position: 0,
+  playlist_at_first: true,
+  playlist_at_last: false,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
     { name: "kick", output_channels: [0, 1] },
@@ -85,16 +90,6 @@ const DEFAULT_PLAYBACK: PlaybackState = {
   persisted_playlist_name: "setlist",
   locked: false,
 };
-
-async function pushWs(
-  page: Page,
-  wsId: string,
-  msg: Record<string, unknown>,
-): Promise<void> {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Capture a section of the topnav so we can show the lock chip in isolation. */
 async function topnavOnly(page: Page, file: string) {
@@ -131,7 +126,7 @@ test("dashboard", async ({ page }) => {
   await page.goto(`/?wsId=${wsId}#/`);
   // Wait for the mock server's initial state burst (last burst at 200ms) to settle.
   await page.waitForTimeout(300);
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     is_playing: true,
     elapsed_ms: 78000,
@@ -152,7 +147,7 @@ test("playback-auto-play", async ({ page }) => {
   const wsId = freshWsId("auto-play");
   await page.goto(`/?wsId=${wsId}#/`);
   await page.waitForTimeout(300);
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     song_name: "Death is a Fine Companion",
     song_duration_ms: 254000,
@@ -204,7 +199,7 @@ test("nav-unlocked", async ({ page }) => {
   const wsId = freshWsId("unlocked");
   await page.goto(`/?wsId=${wsId}#/`);
   await page.waitForTimeout(300);
-  await pushWs(page, wsId, { ...DEFAULT_PLAYBACK, locked: false });
+  await sendWsUnchecked(page, wsId, { ...DEFAULT_PLAYBACK, locked: false });
   await expect(page.locator(".topnav")).toBeVisible();
   await page.waitForTimeout(150);
   await topnavOnly(page, "nav-unlocked.png");
@@ -214,7 +209,7 @@ test("nav-locked", async ({ page }) => {
   const wsId = freshWsId("locked");
   await page.goto(`/?wsId=${wsId}#/`);
   await page.waitForTimeout(300);
-  await pushWs(page, wsId, { ...DEFAULT_PLAYBACK, locked: true });
+  await sendWsUnchecked(page, wsId, { ...DEFAULT_PLAYBACK, locked: true });
   await expect(page.locator(".topnav__lock--locked")).toBeVisible();
   await expect(page.locator(".live-stripe")).toBeVisible();
   await page.waitForTimeout(150);
@@ -225,7 +220,7 @@ test("timeline-playing", async ({ page }) => {
   const wsId = freshWsId("timeline-playing");
   await page.goto(`/?wsId=${wsId}#/songs/Test%20Song%20Alpha/lighting`);
   await page.waitForTimeout(300);
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     is_playing: true,
     elapsed_ms: 42000,
@@ -418,7 +413,7 @@ test("section-dialog", async ({ page }) => {
   await steOpen(page, STE_YAML, wsId);
   // With the song in the player the dialog also offers the playhead as a
   // boundary — the other half of authoring off the measure line.
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     song_name: STE_SONG,
     song_duration_ms: 34000,
@@ -442,7 +437,7 @@ test("section-dialog", async ({ page }) => {
 test("position-picker-time", async ({ page }) => {
   const wsId = freshWsId("picker-time");
   await steOpen(page, STE_YAML, wsId);
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     song_name: STE_SONG,
     song_duration_ms: 34000,
@@ -466,7 +461,7 @@ test("section-preview-transport", async ({ page }) => {
   await steOpen(page, STE_YAML, wsId);
   // Make this song the one in the player, stopped 12s in, so the editor
   // grows its playhead and musical readout.
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     song_name: STE_SONG,
     song_duration_ms: 34000,
@@ -487,7 +482,7 @@ test("player-section-chips", async ({ page }) => {
   await page.waitForTimeout(300);
   // Colors ride along on the WS frame, so the player's chips match the
   // timeline rather than being uniformly grey.
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, {
     ...DEFAULT_PLAYBACK,
     is_playing: true,
     song_name: STE_SONG,
@@ -778,7 +773,7 @@ test.describe(() => {
     await page.waitForTimeout(300);
     // 4/4 at 120 BPM, one measure of dots: accent / silent / half / normal.
     // Elapsed sits on beat 3, the half accent, so the flash shows its style.
-    await pushWs(page, wsId, {
+    await sendWsUnchecked(page, wsId, {
       ...DEFAULT_PLAYBACK,
       is_playing: true,
       elapsed_ms: 1000,

@@ -14,24 +14,34 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    FixtureTypeEntry,
+    FixtureTypeGdtf,
+    LightingFileError,
+    LightingOwner,
+    RowProblem,
+    RowProblems,
+    Vec3,
+    Venue,
+    VenueSource,
+  } from "../../gen/rules/mtrack_rules";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import ReadOnlyNote, { readOnly } from "./ReadOnlyNote.svelte";
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
-  import { collisions, lastAddress, nextPatch } from "../../lib/lighting/patch";
+  import { listed } from "../../lib/lighting/patch";
+  import { rules } from "../../lib/rules";
   import { isRefused } from "../../lib/lighting/modes";
   import { untrack } from "svelte";
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
-  import {
-    nextFixtureName,
-    rowProblems,
-    type RowProblem,
-  } from "../../lib/lighting/venueRows";
+  import { newestLoad } from "../../lib/util/latest";
+  import { nextFixtureName, nextPatch } from "../../lib/lighting/venueRows";
   import {
     ConflictError,
     fetchFixtureTypeGdtf,
@@ -39,12 +49,6 @@
     fetchVenues,
     saveVenue,
     deleteVenue,
-    type FixtureTypeEntry,
-    type FixtureTypeGdtf,
-    type VenueData,
-    type VenueSource,
-    type Vec3,
-    type LightingFileError,
   } from "../../lib/api/config";
 
   interface Props {
@@ -104,10 +108,13 @@
   // Fixture types, for the type dropdown on a venue's fixtures.
   let fixtureTypes = $state<Record<string, FixtureTypeEntry>>({});
   // --- Venues state ---
-  let venues = $state<Record<string, VenueData>>({});
+  let venues = $state<Record<string, Venue>>({});
   /** Each venue file's version as listed; the editor saves against the one
    *  it was opened at, so a file changed elsewhere is not overwritten. */
   let venueVersions = $state<Record<string, string>>({});
+  /** Each venue's file, and whether the UI may write it: a venue whose
+   *  file is not its alone is shown read-only, with the file and why. */
+  let venueOwners = $state<Record<string, LightingOwner>>({});
   let editVersion = $state<string | undefined>(undefined);
   let venueLoading = $state(false);
   let venueError = $state("");
@@ -118,6 +125,12 @@
   let venueSaving = $state(false);
   let venueMsg = $state("");
   let editingVenue = $state<string | null>(null);
+  /** The open venue's owner when it may not be written; null otherwise. */
+  let readOnlyOwner = $derived(
+    editingVenue && editingVenue !== "__new__"
+      ? readOnly(venueOwners[editingVenue])
+      : null,
+  );
   let editVenueName = $state("");
   let editVenueFixtures = $state<
     {
@@ -152,29 +165,49 @@
   /** A fixture from a GDTF: every row of it names its own mode. */
   const fromGdtf = (type: string) => !!fixtureTypes[type]?.referential;
 
+  /** What stops each row from saving: the player's own check of the rows
+   *  (`rules.venue_row_problems`). */
+  function rowProblems(): RowProblems[] {
+    const gdtf = Object.keys(fixtureTypes).filter(fromGdtf);
+    return rules.venue_row_problems(editVenueFixtures, gdtf) ?? [];
+  }
+
   async function loadFixtureTypes() {
     try {
-      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined)).fixtureTypes;
+      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined))
+        .fixture_types;
     } catch {
       // The dropdown falls back to a text input when no types are listed.
     }
   }
 
-  async function loadVenues() {
+  /** Re-reads the venue list. Only the newest read's answer is kept: an
+   *  older one, for a directory since changed, can answer after it. Those
+   *  awaiting it (opening the editor, after a save) read the list once the
+   *  newest read is in, whichever call started it. */
+  const loadVenues = newestLoad(async (current) => {
     venueLoading = true;
     venueError = "";
     venueFileErrors = [];
     try {
       const result = await fetchVenues(venueDir || undefined);
+      if (!current()) return;
       venues = result.venues;
-      venueVersions = result.versions;
-      venueFileErrors = result.errors;
+      venueVersions = result.versions ?? {};
+      venueOwners = result.owners ?? {};
+      venueFileErrors = result.errors ?? [];
     } catch (e: any) {
-      venueError = e.message;
+      // A list that never came reads as one: the spinner stops, and
+      // Refresh asks again.
+      if (current())
+        venueError =
+          e?.name === "TimeoutError"
+            ? get(t)("lighting.venuesTimedOut")
+            : e.message;
     } finally {
-      venueLoading = false;
+      if (current()) venueLoading = false;
     }
-  }
+  });
 
   // Re-read on a directory change, and whenever a fixture type or a venue
   // changed anywhere on the page (the plot, the inspector, the fixture
@@ -340,29 +373,51 @@
     );
   }
 
-  /** Each row's span, for the strip of words under it and the overlap check. */
+  /** Each row's span, for the strip of words under it and the overlap
+   *  check; a footprint not known yet is nothing occupied. */
   let rowSpans = $derived(
     editVenueFixtures.map((row, i) => ({
       fixture: String(i),
       universe: Number(row.universe),
       address: Number(row.start_channel),
-      footprint: rowFootprint(row),
+      footprint: rowFootprint(row) ?? 0,
     })),
   );
 
-  /** What each row runs into: other rows it partly overlaps (identical spans
-   *  gang, as on the server), and the end of the universe. */
-  let rowClashes = $derived(
-    rowSpans.map((span) => {
-      const hits = collisions(rowSpans, span).map((c) => ({
-        row: Number(c.fixture),
-        from: c.from,
-        to: c.to,
-      }));
-      const last = lastAddress(span);
-      return { hits, overrun: last !== null && last > 512 ? last : null };
-    }),
+  /** The rows the patch rule can read (a universe and address that are
+   *  whole numbers to 65535: the rule, asked with nothing to overlap, says
+   *  so). A row it cannot read gets its own word, and is kept out of the
+   *  list the others are checked against, so it never mutes them. */
+  let readableSpans = $derived(
+    rowSpans.filter((s) => rules.patch_overlaps([], s) !== undefined),
   );
+
+  /** What each row runs into, by the player's patch rules: other rows it
+   *  partly overlaps (identical spans gang), and the end of the universe;
+   *  or that the rule cannot read it. */
+  let rowClashes = $derived.by(() => {
+    const overruns = new Map(
+      (rules.patch_overruns(readableSpans) ?? []).map((o) => [
+        o.fixture,
+        o.last,
+      ]),
+    );
+    return rowSpans.map((span) => {
+      const hits = rules.patch_overlaps(readableSpans, span);
+      return {
+        hits: listed(hits ?? []).map((h) => ({
+          row: Number(h.fixture),
+          from: h.from,
+          to: h.to,
+        })),
+        overrun: overruns.get(span.fixture) ?? null,
+        unreadable: hits === undefined,
+      };
+    });
+  });
+
+  const clashing = (c: (typeof rowClashes)[number]) =>
+    c.hits.length > 0 || c.overrun !== null || c.unreadable;
 
   /** A changed type takes its own default mode: a mode names a mode of one
    *  archive. */
@@ -416,16 +471,13 @@
   /** Set by a refused save: from then on the rows are checked as they are
    *  edited, so a fixed row clears its message. */
   let checkRows = $state(false);
-  let problems = $derived(
-    checkRows
-      ? rowProblems(editVenueFixtures, fromGdtf)
-      : new Map<number, RowProblem[]>(),
-  );
+  let problems = $derived(checkRows ? rowProblems() : []);
 
   /** Words for what a row runs into. */
   function clashMessage(i: number): string {
     const clash = rowClashes[i];
     if (!clash) return "";
+    if (clash.unreadable) return get(t)("lighting.venueRow.outOfRange");
     const parts = clash.hits.map((h) =>
       get(t)("lighting.venueRow.runsInto", {
         values: {
@@ -459,13 +511,13 @@
     }
     // Every row is saved or the save is refused: a row that cannot be
     // saved is marked, never left out.
-    const found = rowProblems(editVenueFixtures, fromGdtf);
-    if (found.size > 0) {
+    const found = rowProblems();
+    if (found.length > 0) {
       checkRows = true;
       venueMsg = get(t)("lighting.venueRowsNeedAttention", {
-        values: { count: found.size },
+        values: { count: found.length },
       });
-      const first = Math.min(...found.keys());
+      const first = found[0].row;
       queueMicrotask(() =>
         document
           .querySelector<HTMLElement>(
@@ -477,11 +529,11 @@
     }
     // Overlaps and overruns do not block (a hand-made venue may have them),
     // but a save with any asks first, naming them.
-    const clashing = rowClashes
+    const clashes = rowClashes
       .map((c, i) => ({ c, i }))
-      .filter(({ c }) => c.hits.length > 0 || c.overrun !== null);
-    if (clashing.length > 0) {
-      const list = clashing
+      .filter(({ c }) => clashing(c));
+    if (clashes.length > 0) {
+      const list = clashes
         .map(
           ({ i }) =>
             `${editVenueFixtures[i].name || `#${i + 1}`}: ${clashMessage(i)}`,
@@ -524,13 +576,13 @@
           source: editVenueSource,
         },
         venueDir || undefined,
-        // A new or renamed venue is a new file; an existing one is saved
-        // against the version this form was opened at.
-        isNewVenue || isRename ? undefined : editVersion,
+        // An existing venue, renamed or not, is saved against the version
+        // this form was opened at; a new one has none.
+        isNewVenue ? undefined : editVersion,
+        // A rename is one save: the server moves the venue's file, or
+        // renames it in place, by the one rule for venue files.
+        isRename ? oldName : null,
       );
-      if (isRename) {
-        await deleteVenue(oldName, venueDir || undefined);
-      }
       await loadVenues();
       editingVenue = null;
       select(newName);
@@ -602,12 +654,16 @@
           <button
             class="btn btn-primary"
             onclick={saveVenueData}
-            disabled={venueSaving}
+            disabled={venueSaving || !!readOnlyOwner}
           >
             {venueSaving ? $t("common.saving") : $t("common.save")}
           </button>
         </div>
       </div>
+
+      {#if readOnlyOwner}
+        <ReadOnlyNote owner={readOnlyOwner} prefix="venue" />
+      {/if}
 
       <div class="field">
         <label for="venue-name">{$t("lighting.name")}</label>
@@ -615,6 +671,7 @@
           id="venue-name"
           class="input"
           bind:value={editVenueName}
+          disabled={!!readOnlyOwner}
           placeholder="e.g. main_stage"
         />
       </div>
@@ -628,7 +685,7 @@
         </div>
 
         {#each editVenueFixtures as fix, i (i)}
-          {@const rowIssues = problems.get(i) ?? []}
+          {@const rowIssues = problems.find((p) => p.row === i)?.problems ?? []}
           {@const bad = (p: RowProblem) => rowIssues.includes(p)}
           <div
             class="venue-fixture-card"
@@ -768,12 +825,12 @@
                   : $t("lighting.venueRow.span", {
                       values: {
                         from: span.address,
-                        to: span.address + (span.footprint ?? 1) - 1,
+                        to: rules.patch_last(span) ?? span.address,
                       },
                     })}
               </p>
             {/if}
-            {#if (rowClashes[i]?.hits.length ?? 0) > 0 || rowClashes[i]?.overrun}
+            {#if rowClashes[i] && clashing(rowClashes[i])}
               <p class="row-warning" data-testid="venue-row-overlap">
                 {clashMessage(i)}
               </p>
@@ -880,6 +937,9 @@
                 >
                 <button
                   class="btn btn-danger btn-sm"
+                  data-testid="venue-delete-{name}"
+                  disabled={!!readOnly(venueOwners[name])}
+                  title={readOnly(venueOwners[name])?.reason ?? undefined}
                   onclick={(e) => {
                     e.stopPropagation();
                     removeVenue(name);
@@ -912,6 +972,7 @@
     venuesDir={venueDir}
     onclose={() => (exportingVenue = null)}
     onchanged={loadVenues}
+    readOnly={readOnly(venueOwners[exportingVenue])}
   />
 {/if}
 

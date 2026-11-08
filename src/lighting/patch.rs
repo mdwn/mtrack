@@ -19,14 +19,18 @@
 //! grow into its neighbour's addresses without its line changing at all.
 //!
 //! Pure functions over [`PatchSpan`]s, so the loader, the readiness report
-//! and an editor checking a candidate patch all ask the same question.
+//! and an editor checking a candidate patch all ask the same question. The
+//! web UI's venue editor asks it too: this file is compiled into
+//! `crates/mtrack-rules-wasm` as it is, the `tsify` feature deriving the
+//! TypeScript types of the spans it is handed and the overlaps it answers.
 
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The addresses one fixture occupies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatchSpan {
     /// The fixture's name.
     pub fixture: String,
@@ -42,12 +46,12 @@ pub struct PatchSpan {
 impl PatchSpan {
     /// The last address, inclusive; `None` for a zero footprint. Widened, so
     /// a fixture patched past 512 reports where it ends instead of wrapping.
-    fn last(&self) -> Option<u32> {
+    pub fn last(&self) -> Option<u32> {
         (self.footprint > 0).then(|| u32::from(self.address) + u32::from(self.footprint) - 1)
     }
 
     /// The addresses both spans use, inclusive, when they share a universe.
-    fn intersect(&self, other: &PatchSpan) -> Option<(u32, u32)> {
+    pub(crate) fn intersect(&self, other: &PatchSpan) -> Option<(u32, u32)> {
         if self.universe != other.universe {
             return None;
         }
@@ -101,6 +105,7 @@ fn gangs(spans: &[PatchSpan]) -> Vec<Gang<'_>> {
 
 /// Two fixtures (or gangs of them) patched over part of each other's
 /// addresses: each writes over the other.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PatchOverlap {
     /// The first member of the gang that starts first (by address, then
@@ -224,6 +229,7 @@ pub const UNIVERSE_SIZE: u32 = 512;
 
 /// A fixture whose footprint runs past the end of its universe: the
 /// addresses past 512 do not exist, so its last channels are never sent.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PatchOverrun {
     pub fixture: String,

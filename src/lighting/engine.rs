@@ -15,9 +15,12 @@
 mod layers;
 pub(crate) mod processing;
 mod validation;
+mod wire;
 
 #[cfg(test)]
 mod tests;
+
+pub use wire::Wire;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -27,31 +30,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::effects::*;
 use super::tempo::TempoMap;
+use crate::lighting::timeline::Step;
+use layers::{LayerState, Now};
 use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
+pub(crate) use crate::lighting::channels::{base_channel, fades_to_dark, is_position_channel};
+use crate::lighting::channels::{dmx_byte, dmx_word, CrossKind};
 
-/// Registry of known fixtures and their DMX mappings.
-/// How a channel crosses a crossfade between two engines' frames
-/// ([`EffectEngine::crossfade_commands`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum CrossKind {
-    /// Intensity, colour, zoom, focus: fade.
-    Fade,
-    /// Pan and tilt: fade, holding a side's position where the other side
-    /// drives none.
-    Position,
-    /// Anything whose in-between values are other settings: switch at the
-    /// midpoint.
-    Snap,
-}
-
-/// Whether a channel named `channel` is a level or a colour, which going
-/// dark takes to 0 -- not a position, an optic (zoom, focus, iris, frost)
-/// or a setting, which it leaves as they are.
-pub(crate) fn fades_to_dark(channel: &str) -> bool {
-    matches!(CrossKind::of(channel), CrossKind::Fade)
-        && !matches!(base_channel(channel), "zoom" | "focus" | "iris" | "frost")
+/// The next [`EffectInstance::start_order`]: process-wide, as a seek's
+/// scratch engine hands its effects to the live one.
+fn next_start_order() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Whether a layer speed master scales its effects' time: 1 does not, and
@@ -69,41 +60,17 @@ pub(crate) fn scale_by_speed(elapsed: Duration, speed: f64) -> Duration {
     }
 }
 
-/// An effect's own elapsed from its `base` elapsed (score time less time
-/// frozen) at its layer's `speed`: where it was at the last speed change,
-/// on from there at this speed.
-pub(crate) fn own_elapsed_from(effect: &EffectInstance, base: Duration, speed: f64) -> Duration {
-    effect.elapsed_from.saturating_add(scale_by_speed(
-        base.saturating_sub(effect.speed_from),
-        speed,
-    ))
-}
-
-/// A channel's name without its section (`dimmer:background`, as GDTF
-/// profiles with several emitters name theirs) or its fine byte.
-fn base_channel(channel: &str) -> &str {
-    let base = channel.split(':').next().unwrap_or(channel);
-    base.strip_suffix("_fine").unwrap_or(base)
-}
-
-impl CrossKind {
-    fn of(channel: &str) -> CrossKind {
-        match base_channel(channel) {
-            "pan" | "tilt" => CrossKind::Position,
-            "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
-            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "indigo" | "zoom" | "focus"
-            | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
-            // GDTF's amber and lime, as their attributes come through.
-            | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
-            // GDTF's other additive and RGB colour attributes, likewise.
-            base if base.starts_with("coloradd_") || base.starts_with("colorrgb_") => {
-                CrossKind::Fade
-            }
-            _ => CrossKind::Snap,
-        }
+/// The song time `elapsed` of an effect's own time takes at a layer speed
+/// master: the inverse of [`scale_by_speed`].
+pub(crate) fn unscale_by_speed(elapsed: Duration, speed: f64) -> Duration {
+    if speed_scales(speed) {
+        Duration::try_from_secs_f64(elapsed.as_secs_f64() / speed).unwrap_or(Duration::MAX)
+    } else {
+        elapsed
     }
 }
 
+/// Registry of known fixtures and their DMX mappings.
 #[derive(Clone)]
 pub(crate) struct FixtureRegistry {
     fixtures: HashMap<String, FixtureInfo>,
@@ -139,7 +106,7 @@ impl FixtureRegistry {
         if fixture.parent.is_none() && !fixture.cells.is_empty() {
             let mut names = Vec::with_capacity(fixture.cells.len());
             for cell in &fixture.cells {
-                let name = format!("{}/{}", fixture.name, cell.name);
+                let name = cell_fixture_name(&fixture.name, &cell.name);
                 let channels: HashMap<String, u16> = cell
                     .channels
                     .iter()
@@ -173,11 +140,12 @@ impl FixtureRegistry {
         #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
-                let dmx_channel = fixture.address + offset - 1;
-                self.dmx_to_fixture_map.insert(
-                    (fixture.universe, dmx_channel),
-                    (fixture.name.clone(), channel_name.clone()),
-                );
+                if let Some(channel) = fixture.dmx_channel(offset) {
+                    self.dmx_to_fixture_map.insert(
+                        (fixture.universe, channel),
+                        (fixture.name.clone(), channel_name.clone()),
+                    );
+                }
             }
         }
         self.fixtures.insert(fixture.name.clone(), fixture);
@@ -198,54 +166,6 @@ impl FixtureRegistry {
     #[cfg(test)]
     fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
         self.dmx_to_fixture_map.get(&(universe, dmx_channel))
-    }
-}
-
-/// Layer control state: intensity masters, speed masters, and frozen layers.
-struct LayerState {
-    /// Layer intensity masters (0.0 to 1.0) — multiplies effect output per layer.
-    intensity_masters: HashMap<EffectLayer, f64>,
-    /// Layer speed masters (0.0+) — multiplies effect speed per layer (1.0 = normal).
-    speed_masters: HashMap<EffectLayer, f64>,
-    /// Frozen layers — maps layer to the Instant when it was frozen.
-    frozen: HashMap<EffectLayer, Instant>,
-    /// The song time a frozen layer was frozen at, when there was one: what
-    /// its cued effects hold at, and measure their time frozen from.
-    frozen_song: HashMap<EffectLayer, Duration>,
-}
-
-impl LayerState {
-    fn new() -> Self {
-        Self {
-            intensity_masters: HashMap::new(),
-            speed_masters: HashMap::new(),
-            frozen: HashMap::new(),
-            frozen_song: HashMap::new(),
-        }
-    }
-
-    /// Reset every layer back to defaults — no masters, nothing frozen.
-    fn reset(&mut self) {
-        self.intensity_masters.clear();
-        self.speed_masters.clear();
-        self.frozen.clear();
-        self.frozen_song.clear();
-    }
-
-    /// Reset a single layer back to defaults.
-    fn reset_layer(&mut self, layer: EffectLayer) {
-        self.intensity_masters.remove(&layer);
-        self.speed_masters.remove(&layer);
-        self.frozen.remove(&layer);
-        self.frozen_song.remove(&layer);
-    }
-
-    fn intensity_master(&self, layer: &EffectLayer) -> f64 {
-        *self.intensity_masters.get(layer).unwrap_or(&1.0)
-    }
-
-    fn speed_master(&self, layer: &EffectLayer) -> f64 {
-        *self.speed_masters.get(layer).unwrap_or(&1.0)
     }
 }
 
@@ -324,6 +244,25 @@ pub struct EffectEngine {
     /// clears and song changes on purpose — those are exactly when the
     /// strobe stops being driven.
     strobe_driven: HashSet<String>,
+    /// A reckoner (see [`Self::reckoner`]): there is no rig, so effects
+    /// start as they are, unvalidated.
+    rigless: bool,
+    /// While a reckoner reckons a show's ends: when each effect taken out
+    /// ended, `None` for one that never does.
+    ends: Option<HashMap<String, Option<Duration>>>,
+    /// A scratch's scope (see [`Self::scratch`]).
+    scope: StopScope,
+    /// A `StopScope::Nothing` scratch's use of the pose memory it started
+    /// from.
+    pose_reads: Option<PoseReads>,
+    /// The bytes the rig holds ([`Wire`]): what the frames sent through
+    /// [`Self::send`] left there. A fresh engine swapped in for this one
+    /// (a loop pass, a break) takes it over, as the universes do not
+    /// change.
+    wire: Wire,
+    /// Whether a start from history sends the frames playing through it
+    /// would have to the wire ([`Self::trace_wire`]).
+    tracing_wire: bool,
 }
 
 impl Default for EffectEngine {
@@ -340,7 +279,7 @@ impl EffectEngine {
             current_time: Instant::now(),
             engine_elapsed: Duration::ZERO,
             tempo_map: None,
-            layer_state: LayerState::new(),
+            layer_state: LayerState::default(),
             last_merged_states: HashMap::new(),
             shown: None,
             last_song_time: None,
@@ -352,6 +291,12 @@ impl EffectEngine {
             goals: HashMap::new(),
             last_dt: Duration::ZERO,
             strobe_driven: HashSet::new(),
+            rigless: false,
+            ends: None,
+            scope: StopScope::Nothing,
+            pose_reads: None,
+            wire: Wire::default(),
+            tracing_wire: false,
         }
     }
 
@@ -474,14 +419,6 @@ impl EffectEngine {
 
     /// Register a fixture with the engine
     pub fn register_fixture(&mut self, fixture: FixtureInfo) {
-        // Validate fixture capabilities based on special cases
-        if let Err(e) = validation::validate_fixture_capabilities(&fixture) {
-            eprintln!(
-                "Warning: Fixture '{}' has capability issues: {}",
-                fixture.name, e
-            );
-        }
-
         self.fixtures.register(fixture);
     }
 
@@ -530,6 +467,7 @@ impl EffectEngine {
             goals: self.goals.clone(),
             // The effects loop's stall diagnostics watch this one counter.
             update_subphase: self.update_subphase.clone(),
+            wire: self.wire.clone(),
             ..EffectEngine::new()
         }
     }
@@ -548,71 +486,147 @@ impl EffectEngine {
 
     /// The frame `t` of the way (0.0 to 1.0) through a crossfade from
     /// `outgoing` (another engine's frame for the same rig) to `incoming`
-    /// (this engine's), channel by channel as a console crosses cues:
+    /// (this engine's), channel by channel as a console crosses cues, by
+    /// the blend the fixture states cross by ([`CrossKind::cross`]):
     /// intensity, colour and other continuous channels fade, a channel only
     /// one side drives fading from or to zero; pan and tilt fade too, but a
     /// mover only one side drives holds that side's position rather than
     /// swinging home; and discrete channels -- strobe, gobo, prism and the
     /// like, where a value in between is some other setting -- switch at
-    /// the midpoint.
+    /// the midpoint. A 16-bit channel's coarse and fine bytes cross as the
+    /// one value they make, so it moves straight from one to the other.
     pub fn crossfade_commands(
         &self,
         outgoing: &[DmxCommand],
         incoming: &[DmxCommand],
         t: f64,
     ) -> Vec<DmxCommand> {
+        use std::collections::BTreeMap;
         let t = t.clamp(0.0, 1.0);
-        let mut kinds: HashMap<(u16, u16), CrossKind> = HashMap::new();
-        for fixture in self.fixtures.as_map().values() {
-            for (name, &offset) in &fixture.channels {
-                kinds.insert(
-                    (fixture.universe, fixture.address + offset - 1),
-                    CrossKind::of(name),
-                );
-            }
-        }
-
-        let mut pairs: std::collections::BTreeMap<(u16, u16), (Option<u8>, Option<u8>)> =
-            std::collections::BTreeMap::new();
+        let places = self.cross_places();
+        let mut pairs: BTreeMap<(u16, u16), (Option<u8>, Option<u8>)> = BTreeMap::new();
         for c in outgoing {
             pairs.entry((c.universe, c.channel)).or_default().0 = Some(c.value);
         }
         for c in incoming {
             pairs.entry((c.universe, c.channel)).or_default().1 = Some(c.value);
         }
+        let byte = |kind: CrossKind, (old, new): (Option<u8>, Option<u8>)| {
+            dmx_byte(kind.cross(old.map(f64::from), new.map(f64::from), t))
+        };
 
-        let lerp = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
-        pairs
-            .into_iter()
-            .map(|((universe, channel), (old, new))| {
-                let value = match kinds.get(&(universe, channel)).copied() {
-                    Some(CrossKind::Position) => {
-                        let old = old.or(new).unwrap_or(0);
-                        lerp(old, new.unwrap_or(old))
-                    }
-                    Some(CrossKind::Snap) => {
-                        if t < 0.5 {
-                            old.unwrap_or(0)
-                        } else {
-                            new.unwrap_or(0)
-                        }
-                    }
-                    Some(CrossKind::Fade) | None => lerp(old.unwrap_or(0), new.unwrap_or(0)),
-                };
-                DmxCommand {
-                    universe,
-                    channel,
-                    value,
+        let mut out = BTreeMap::new();
+        for (&(universe, channel), &values) in &pairs {
+            let at = |channel| (universe, channel);
+            match places.get(&(universe, channel)).copied() {
+                // A 16-bit value: written with its coarse byte, when either
+                // side writes its fine one.
+                Some(CrossPlace::Coarse(kind, fine)) if pairs.contains_key(&at(fine)) => {
+                    let (fine_old, fine_new) = pairs[&at(fine)];
+                    let side = |coarse: Option<u8>, fine: Option<u8>| {
+                        (coarse.is_some() || fine.is_some()).then(|| {
+                            f64::from(u16::from_be_bytes([coarse.unwrap_or(0), fine.unwrap_or(0)]))
+                        })
+                    };
+                    let value =
+                        dmx_word(kind.cross(side(values.0, fine_old), side(values.1, fine_new), t));
+                    let [high, low] = value.to_be_bytes();
+                    out.insert(at(channel), high);
+                    out.insert(at(fine), low);
                 }
+                Some(CrossPlace::Fine(kind, coarse)) => {
+                    // Its coarse byte writes it, above; with none on either
+                    // side, it crosses as a byte of its own.
+                    if !pairs.contains_key(&at(coarse)) {
+                        out.insert(at(channel), byte(kind, values));
+                    }
+                }
+                Some(CrossPlace::Coarse(kind, _) | CrossPlace::Byte(kind)) => {
+                    out.insert(at(channel), byte(kind, values));
+                }
+                None => {
+                    out.insert(at(channel), byte(CrossKind::Fade, values));
+                }
+            }
+        }
+        out.into_iter()
+            .map(|((universe, channel), value)| DmxCommand {
+                universe,
+                channel,
+                value,
             })
             .collect()
+    }
+
+    /// How each DMX channel (universe, channel) of the patched fixtures
+    /// crosses a crossfade: by its channel's kind, as a byte of its own or
+    /// as the coarse or fine byte of a 16-bit value -- the channel's own
+    /// bytes and each mirror's. Where channels overlap, inside one fixture
+    /// or between two, the same whatever order the maps hold them in
+    /// ([`CrossPlace`]'s order), and a coarse or fine byte whose partner
+    /// another channel took crosses as a byte of its own, so no channel
+    /// either side drives is dropped.
+    fn cross_places(&self) -> HashMap<(u16, u16), CrossPlace> {
+        let mut places: HashMap<(u16, u16), CrossPlace> = HashMap::new();
+        // Of two places on one channel -- a fixture's own channels over
+        // each other, or another fixture's -- the first by `CrossPlace`'s
+        // order, whatever order the maps give them in.
+        let mut claim = |address, place: CrossPlace| {
+            places
+                .entry(address)
+                .and_modify(|held| *held = (*held).min(place))
+                .or_insert(place);
+        };
+        for fixture in self.fixtures.as_map().values() {
+            let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
+            for (name, &offset) in &fixture.channels {
+                if let Some(address) = at(offset) {
+                    claim(address, CrossPlace::Byte(CrossKind::of(name)));
+                }
+            }
+            for (name, def) in &fixture.channel_defs {
+                let kind = CrossKind::of(name);
+                for (coarse, fine) in
+                    std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
+                {
+                    let (Some(coarse), fine) = (at(coarse), fine.and_then(at)) else {
+                        continue;
+                    };
+                    match fine {
+                        Some(fine) => {
+                            claim(coarse, CrossPlace::Coarse(kind, fine.1));
+                            claim(fine, CrossPlace::Fine(kind, coarse.1));
+                        }
+                        None => claim(coarse, CrossPlace::Byte(kind)),
+                    }
+                }
+            }
+        }
+        // A coarse or fine byte whose partner is not its own.
+        let partnered = |(universe, channel): (u16, u16), place: CrossPlace| match place {
+            CrossPlace::Coarse(_, fine) => {
+                matches!(places.get(&(universe, fine)), Some(CrossPlace::Fine(_, c)) if *c == channel)
+            }
+            CrossPlace::Fine(_, coarse) => matches!(
+                places.get(&(universe, coarse)),
+                Some(CrossPlace::Coarse(_, f)) if *f == channel
+            ),
+            CrossPlace::Byte(_) => true,
+        };
+        let alone: Vec<_> = places
+            .iter()
+            .filter(|&(&address, &place)| !partnered(address, place))
+            .map(|(&address, place)| (address, CrossPlace::Byte(place.kind())))
+            .collect();
+        places.extend(alone);
+        places
     }
 
     /// The channels (universe, DMX channel) of the patched fixtures that
     /// carry a position (pan, tilt): a crossfade holds those rather than
     /// fading them, so no fade takes one dark.
     pub fn position_channels(&self) -> HashSet<(u16, u16)> {
-        self.channels_where(|name| matches!(CrossKind::of(name), CrossKind::Position))
+        self.channels_where(is_position_channel)
     }
 
     /// Every DMX channel (universe, channel) a patched fixture drives for a
@@ -621,16 +635,16 @@ impl EffectEngine {
     fn channels_where(&self, keep: impl Fn(&str) -> bool) -> HashSet<(u16, u16)> {
         let mut out = HashSet::new();
         for fixture in self.fixtures.as_map().values() {
-            let at = |offset: u16| (fixture.universe, fixture.address + offset - 1);
+            let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, def) in &fixture.channel_defs {
                 if !keep(name) {
                     continue;
                 }
-                out.insert(at(def.offset));
-                out.extend(def.fine.map(at));
+                out.extend(at(def.offset));
+                out.extend(def.fine.and_then(at));
                 for &(coarse, fine) in &def.mirrors {
-                    out.insert(at(coarse));
-                    out.extend(fine.map(at));
+                    out.extend(at(coarse));
+                    out.extend(fine.and_then(at));
                 }
             }
         }
@@ -648,6 +662,90 @@ impl EffectEngine {
         self.cache.get_cached()
     }
 
+    /// The bytes the rig holds, as the frames sent through [`Self::send`]
+    /// left them.
+    pub fn wire(&self) -> &Wire {
+        &self.wire
+    }
+
+    /// Sets the universes the rig has an output for ([`Wire::set_outputs`]):
+    /// the live output's profile's. A fixture patched on any other holds
+    /// nothing and reads dark. `None`, as a fresh engine has it, takes
+    /// every universe as one: an offline evaluation's rig.
+    pub fn set_outputs(&mut self, outputs: Option<HashSet<u16>>) {
+        self.wire.set_outputs(outputs);
+    }
+
+    /// Sends `frame` -- what goes out to the universes, this engine's own
+    /// or one crossed with others -- onto the wire ([`Wire::send`]), the
+    /// patched levels and colours the last frame wrote and this one does
+    /// not going to 0. Answers those, to send after the frame.
+    pub fn send(&mut self, frame: &[DmxCommand]) -> Vec<DmxCommand> {
+        let levels = self.level_channels();
+        self.wire.send(frame, &levels)
+    }
+
+    /// From now on a start from history (see [`Self::start_from`]) sends
+    /// the wire the frames playing the history through would have: one
+    /// just before each effect in it ends and one at each cue time, so a
+    /// gobo or zoom an effect over before the start point left on the rig
+    /// is still there. For an offline evaluation, which has no rig of its
+    /// own; live, the rig already holds what it was sent.
+    ///
+    /// The frame before an end is the effect at its end: a setting still
+    /// moving then (a gobo or zoom fading down to its end, a head mid-move
+    /// at a cut) reads where it got to. Live, the last frame lands up to a
+    /// frame period earlier -- about 23 ms on a Pi, longer under load -- so
+    /// the rig can hold it one frame short of that.
+    pub(crate) fn trace_wire(&mut self) {
+        self.tracing_wire = true;
+    }
+
+    /// Renders the frame `dt` on, at `song_time` ([`Self::update`]), and
+    /// sends it to the wire ([`Self::send`]) as the live output sends an
+    /// engine's own frame: for an engine with no output of its own -- an
+    /// offline evaluation, a test playing a show through. A frame that
+    /// fails to render sends nothing.
+    pub(crate) fn render_and_send(&mut self, dt: Duration, song_time: Duration) {
+        if self.update(dt, Some(song_time)).is_ok() {
+            let frame = self.cache.get_cached().to_vec();
+            self.send(&frame);
+        }
+    }
+
+    /// Renders the frame at `song_time`, sends it to the wire and hands the
+    /// engine to `read`, then puts pose memory back as the history being
+    /// replayed has it, so the replay carries on as if no frame had been
+    /// rendered: a traced frame's and a sampled one's.
+    fn send_replayed_frame(&mut self, song_time: Duration, read: impl FnOnce(&EffectEngine)) {
+        let (poses, goals) = (self.poses.clone(), self.goals.clone());
+        self.cache.invalidate();
+        self.render_and_send(Duration::ZERO, song_time);
+        read(self);
+        self.poses = poses;
+        self.goals = goals;
+    }
+
+    /// When each effect running now that may leave a setting on the rig
+    /// ([`leaves_settings`]) ends, from now on, up to `time`, in order: the
+    /// instants a replay to `time` sends a frame just before. One that
+    /// writes only levels and colours leaves nothing: they go to 0 as it
+    /// ends, whatever its last frame sent.
+    fn ends_until(&self, time: Duration) -> Vec<Duration> {
+        let now = self.now();
+        let from = now.song.unwrap_or_default();
+        let mut ends: Vec<Duration> = self
+            .active_effects
+            .values()
+            .filter(|effect| effect.start_time.is_some() && leaves_settings(effect))
+            .filter_map(|effect| self.layer_state.clock(effect.layer).end_of(effect, now))
+            .filter(|&end| end > from && end <= time)
+            .collect();
+        ends.sort();
+        ends.dedup();
+        ends
+    }
+
     /// The pose memory: where each mover was last driven to.
     pub fn poses(&self) -> &HashMap<String, Pose> {
         &self.poses
@@ -656,7 +754,8 @@ impl EffectEngine {
     /// The fixture states `t` of the way through a crossfade from
     /// `outgoing`'s last frame to this engine's, and the poses likewise: the
     /// states [`Self::crossfade_commands`] makes of the two frames' DMX, by
-    /// the same rules, for what shows the rig rather than drives it.
+    /// the same blend ([`CrossKind::cross`]), for what shows the rig rather
+    /// than drives it.
     pub fn crossfade_states(
         &self,
         outgoing: &EffectEngine,
@@ -675,7 +774,7 @@ impl EffectEngine {
     ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
         let (onto_states, onto_poses) = onto;
         let t = t.clamp(0.0, 1.0);
-        let lerp = |a: f64, b: f64| a + (b - a) * t;
+        let lerp = |a: f64, b: f64| crate::lighting::channels::lerp(a, b, t);
         // Each side as it shows, multipliers applied and cells resolved, as
         // the DMX of each frame is: a multiplier one side has and the other
         // not is neutral there, not a level crossing from zero.
@@ -697,16 +796,8 @@ impl EffectEngine {
                 old.channels.keys().chain(new.channels.keys()).collect();
             for channel in channels {
                 let (o, n) = (old.channels.get(channel), new.channels.get(channel));
-                let value = |c: Option<&ChannelState>| c.map_or(0.0, |c| c.value);
-                let blended = match CrossKind::of(channel) {
-                    CrossKind::Position => {
-                        let from = o.or(n).map_or(0.0, |c| c.value);
-                        lerp(from, n.map_or(from, |c| c.value))
-                    }
-                    CrossKind::Snap if t < 0.5 => value(o),
-                    CrossKind::Snap => value(n),
-                    CrossKind::Fade => lerp(value(o), value(n)),
-                };
+                let blended =
+                    CrossKind::of(channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
                 let like = n.or(o).expect("a channel one side has");
                 state.channels.insert(
                     channel.clone(),
@@ -722,6 +813,12 @@ impl EffectEngine {
             };
             state.physical.pan = intent(old.physical.pan, new.physical.pan);
             state.physical.tilt = intent(old.physical.tilt, new.physical.tilt);
+            // A software strobe's rate snaps over, as its bytes do.
+            state.strobe_hz = if t < 0.5 {
+                old.strobe_hz
+            } else {
+                new.strobe_hz
+            };
             states.insert(name.clone(), state);
         }
         let mut poses = outgoing.shown_poses().clone();
@@ -765,11 +862,10 @@ impl EffectEngine {
                 if states.contains_key(parent) {
                     continue;
                 }
-                let cell_name = name.rsplit('/').next().unwrap_or(name);
                 let cell = self
                     .fixtures
                     .get(parent)
-                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name));
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(name)));
                 if let Some(cell) = cell {
                     out.insert(
                         name.clone(),
@@ -778,9 +874,10 @@ impl EffectEngine {
                 }
                 continue;
             }
-            let has_dimmer = info.is_some_and(|i| i.channels.contains_key("dimmer"));
+            let has_dimmer = info.is_some_and(FixtureInfo::has_dimmer);
             let mut resolved = FixtureState::new();
             resolved.physical = state.physical.clone();
+            resolved.strobe_hz = state.strobe_hz;
             for (channel, channel_state) in &state.channels {
                 if is_multiplier_channel(channel) {
                     continue;
@@ -790,9 +887,9 @@ impl EffectEngine {
             }
             out.insert(name.clone(), resolved);
             for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
-                let cell_name = format!("{name}/{}", cell.name);
-                let own = states.get(&cell_name);
-                out.insert(cell_name, cell_state(state.cell_values(cell, own)));
+                let sub = cell_fixture_name(name, &cell.name);
+                let own = states.get(&sub);
+                out.insert(sub, cell_state(state.cell_values(cell, own)));
             }
         }
         out
@@ -826,10 +923,17 @@ impl EffectEngine {
     /// tick, for every move, since a `from` naming an unbound focus point
     /// falls back to it too. A fixture with no memory yet starts at its
     /// target — the show's first cue is a snap, not a sweep from nowhere.
-    fn capture_start_poses(&self, effect: &mut EffectInstance) {
+    fn capture_start_poses(&mut self, effect: &mut EffectInstance) {
         let EffectType::Move { .. } = &effect.effect_type else {
             return;
         };
+        if let Some(reads) = self.pose_reads.as_mut().filter(|r| !r.released) {
+            for name in &effect.target_fixtures {
+                if !reads.written.contains(name) {
+                    reads.read.insert(name.clone());
+                }
+            }
+        }
         effect.start_poses = effect
             .target_fixtures
             .iter()
@@ -869,6 +973,8 @@ impl EffectEngine {
             return;
         }
         let mut took = false;
+        let at = self.last_song_time;
+        let ends = &mut self.ends;
         self.active_effects.retain(|id, other| {
             if *id == effect.id || !matches!(other.effect_type, EffectType::Move { .. }) {
                 return true;
@@ -878,38 +984,65 @@ impl EffectEngine {
                 .target_fixtures
                 .retain(|name| !effect.target_fixtures.contains(name));
             took |= other.target_fixtures.len() != before;
-            !other.target_fixtures.is_empty()
+            let left = !other.target_fixtures.is_empty();
+            if !left {
+                if let Some(ends) = ends.as_mut() {
+                    ends.insert(id.clone(), at);
+                }
+            }
+            left
         });
         if took {
             self.cache.invalidate();
         }
     }
 
+    /// Takes the effects `out` picks out of the running set: a clear, a
+    /// stopped sequence. Where a show's ends are reckoned, each ends now.
+    fn take_out(&mut self, mut out: impl FnMut(&EffectInstance) -> bool) {
+        let at = self.last_song_time;
+        let ends = &mut self.ends;
+        self.active_effects.retain(|id, effect| {
+            if !out(effect) {
+                return true;
+            }
+            if let Some(ends) = ends.as_mut() {
+                ends.insert(id.clone(), at);
+            }
+            false
+        });
+    }
+
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
         self.expand_cells(&mut effect);
-        // Validate effect
-        validation::validate_effect(self.fixtures.as_map(), &effect)?;
+        // Validate effect: against the rig, where there is one.
+        if !self.rigless {
+            validation::validate_effect(self.fixtures.as_map(), &effect)?;
+        }
         self.capture_start_poses(&mut effect);
         self.take_heads(&effect);
 
         // Log effect parameters
-        let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
-        debug!(
-            effect_id = %effect.id,
-            effect_kind,
-            effect_params = %effect_params,
-            layer = ?effect.layer,
-            blend_mode = ?effect.blend_mode,
-            priority = effect.priority,
-            up_time = ?effect.up_time,
-            hold_time = ?effect.hold_time,
-            down_time = ?effect.down_time,
-            targets = ?effect.target_fixtures,
-            "Starting lighting effect"
-        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
+            debug!(
+                effect_id = %effect.id,
+                effect_kind,
+                effect_params = %effect_params,
+                layer = ?effect.layer,
+                blend_mode = ?effect.blend_mode,
+                priority = effect.priority,
+                up_time = ?effect.up_time,
+                hold_time = ?effect.hold_time,
+                down_time = ?effect.down_time,
+                targets = ?effect.target_fixtures,
+                "Starting lighting effect"
+            );
+        }
 
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
+        effect.start_order = next_start_order();
         self.active_effects.insert(effect.id.clone(), effect);
         self.cache.invalidate();
         Ok(())
@@ -1013,123 +1146,6 @@ impl EffectEngine {
         self.poses = next_poses;
     }
 
-    /// Start an effect with a pre-calculated elapsed time (for seeking)
-    /// This sets the effect's start_time to be in the past so it appears at the correct point in its lifecycle
-    pub fn start_effect_with_elapsed(
-        &mut self,
-        mut effect: EffectInstance,
-        elapsed_time: Duration,
-    ) -> Result<(), EffectError> {
-        self.expand_cells(&mut effect);
-        // Validate effect
-        validation::validate_effect(self.fixtures.as_map(), &effect)?;
-        self.capture_start_poses(&mut effect);
-
-        // A move the history cut short before it arrived left its heads
-        // where they were shown at the cut, as pose memory holds them live
-        // (#596): commit that pose for the fixtures cut, in the order cut,
-        // and run the move on the rest. One cut on every fixture is over.
-        // Before any later move starts, which then picks up from there.
-        if !effect.cuts.is_empty() {
-            for cut in std::mem::take(&mut effect.cuts) {
-                let cut_fixtures = cut
-                    .fixtures
-                    .unwrap_or_else(|| effect.target_fixtures.clone());
-                if let Some(elapsed) = cut.elapsed {
-                    let poses = processing::move_poses_at(
-                        self.fixtures.as_map(),
-                        &self.focus_points,
-                        &effect,
-                        elapsed,
-                    );
-                    for (name, pose) in poses {
-                        if cut_fixtures.contains(&name) {
-                            self.goals.insert(name.clone(), pose);
-                            self.poses.insert(name, pose);
-                        }
-                    }
-                }
-                effect
-                    .target_fixtures
-                    .retain(|name| !cut_fixtures.contains(name));
-            }
-            self.cache.invalidate();
-            if effect.target_fixtures.is_empty() {
-                return Ok(());
-            }
-        }
-        // Only the heads it still has: the history already gave the rest to
-        // later moves, which may be started before it on the same cue.
-        self.take_heads(&effect);
-
-        // A move that had already finished by the time it is started — a
-        // seek past it, or an offline evaluation — is its destination: the
-        // head is committed there and the effect never runs. Done here,
-        // one effect at a time, so a later move's turn is chosen from where
-        // the earlier one ended, exactly as it would have been live.
-        // At its layer's speed, as it would run: a move on a slowed layer
-        // is part way at a base elapsed past its length.
-        if matches!(effect.effect_type, EffectType::Move { .. })
-            && own_elapsed_from(
-                &effect,
-                elapsed_time,
-                self.get_layer_speed_master(effect.layer),
-            ) >= effect.total_duration()
-        {
-            for (name, pose) in
-                processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
-            {
-                self.goals.insert(name.clone(), pose);
-                self.poses.insert(name, pose);
-            }
-            self.cache.invalidate();
-            return Ok(());
-        }
-
-        // Log effect parameters
-        let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
-        debug!(
-            effect_id = %effect.id,
-            effect_kind,
-            effect_params = %effect_params,
-            layer = ?effect.layer,
-            blend_mode = ?effect.blend_mode,
-            priority = effect.priority,
-            up_time = ?effect.up_time,
-            hold_time = ?effect.hold_time,
-            down_time = ?effect.down_time,
-            targets = ?effect.target_fixtures,
-            elapsed_time = ?elapsed_time,
-            "Starting lighting effect with elapsed time"
-        );
-
-        // Set the start time to be in the past by the elapsed amount
-        effect.start_time = Some(
-            self.current_time
-                .checked_sub(elapsed_time)
-                .unwrap_or(self.current_time),
-        );
-        // A move part way is where it has the head now, as played through:
-        // pose memory holds that before the first frame renders it, so a
-        // clear, a stop or a later move on a cue at the start point finds
-        // the head there, not where it was before the move, or nowhere.
-        if matches!(effect.effect_type, EffectType::Move { .. }) {
-            let elapsed = self.elapsed_at(&effect, self.last_song_time);
-            for (name, pose) in processing::move_poses_at(
-                self.fixtures.as_map(),
-                &self.focus_points,
-                &effect,
-                elapsed,
-            ) {
-                self.goals.insert(name.clone(), pose);
-                self.poses.insert(name, pose);
-            }
-        }
-        self.active_effects.insert(effect.id.clone(), effect);
-        self.cache.invalidate();
-        Ok(())
-    }
-
     /// Update the engine and return DMX commands
     /// song_time is the current song time (score-time) for tempo-aware effect completion checks
     pub fn update(
@@ -1172,14 +1188,16 @@ impl EffectEngine {
                 for (slot_idx, normalized_value) in store.iter_active() {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
-                        if let Some(&offset) = fixture_info.channels.get(channel_name) {
-                            let dmx_channel = fixture_info.address + offset - 1;
-                            let dmx_value = (normalized_value * 255.0) as u8;
-                            commands.push(DmxCommand {
-                                universe: fixture_info.universe,
-                                channel: dmx_channel,
-                                value: dmx_value,
-                            });
+                        if let Some(def) = fixture_info.channel_defs.get(channel_name) {
+                            for (offset, byte) in resolve_normalized(def, normalized_value) {
+                                if let Some(channel) = fixture_info.dmx_channel(offset) {
+                                    commands.push(DmxCommand {
+                                        universe: fixture_info.universe,
+                                        channel,
+                                        value: byte,
+                                    });
+                                }
+                            }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
                                 .entry(fixture_name.clone())
@@ -1266,8 +1284,13 @@ impl EffectEngine {
             }
         }
 
-        // Sort effect IDs within each layer by (priority, start_time, cue_time, id)
-        // Using cue_time ensures deterministic ordering when multiple effects start at the same time
+        // Sort effect IDs within each layer by (priority, start_time,
+        // cue_time, start_order). Using cue_time ensures deterministic
+        // ordering when multiple effects start at the same time; the start
+        // order then puts the one started later on top. Not the id: compared
+        // as strings, `song_effect_10000` sorted before `song_effect_9999`,
+        // so same-time cues swapped when the id counter crossed a power of
+        // ten (#669).
         for (_layer, effect_ids) in effects_by_layer.iter_mut() {
             effect_ids.sort_by(|a, b| {
                 let ea = self.active_effects.get(a).unwrap();
@@ -1296,7 +1319,7 @@ impl EffectEngine {
                             (None, None) => std::cmp::Ordering::Equal,
                         }
                     })
-                    .then_with(|| a.cmp(b))
+                    .then_with(|| ea.start_order.cmp(&eb.start_order))
             });
         }
 
@@ -1452,7 +1475,7 @@ impl EffectEngine {
             } else {
                 commands.extend(
                     fixture_state.to_dmx_commands_with_cells(fixture_info, |cell| {
-                        current_fixture_states.get(&format!("{fixture_name}/{cell}"))
+                        current_fixture_states.get(&cell_fixture_name(fixture_name, cell))
                     }),
                 );
             }
@@ -1526,24 +1549,28 @@ impl EffectEngine {
         self.cache.invalidate();
     }
 
-    /// Stop all effects from a specific sequence: those cued from it by
-    /// name, as a seek's replay takes them out.
+    /// Stop all effects from a specific sequence: those cued through it by
+    /// name, inside another sequence or not.
     pub fn stop_sequence(&mut self, sequence_name: &str) {
-        self.active_effects
-            .retain(|_, effect| !effect.is_from_sequence(sequence_name));
+        self.take_out(|effect| effect.is_from_sequence(sequence_name));
         self.cache.invalidate();
     }
 
     // ===== Layer Control Methods (grandMA-inspired) =====
 
+    /// The engine's now, on both its time bases: what a layer command
+    /// applies at.
+    fn now(&self) -> Now {
+        Now {
+            instant: self.current_time,
+            song: self.last_song_time,
+        }
+    }
+
     /// Clear a layer - immediately stops all effects on the specified layer
     /// This is equivalent to a "kill" or panic button for a layer
     pub fn clear_layer(&mut self, layer: EffectLayer) {
-        layers::clear_layer(
-            &mut self.active_effects,
-            &mut self.layer_state.frozen,
-            layer,
-        );
+        self.take_out(|effect| effect.layer == layer);
         // Including the layer's masters — killing a layer that stays mastered down
         // silently dims whatever is started on it next.
         self.layer_state.reset_layer(layer);
@@ -1557,7 +1584,10 @@ impl EffectEngine {
         // A clear releases pose memory: the next move starts from its target.
         self.poses.clear();
         self.goals.clear();
-        layers::clear_all_layers(&mut self.active_effects, &mut self.layer_state.frozen);
+        if let Some(reads) = self.pose_reads.as_mut() {
+            reads.released = true;
+        }
+        self.take_out(|_| true);
         // Including the layer masters — a panic button that leaves the rig mastered
         // down is not a panic button.
         self.layer_state.reset();
@@ -1568,117 +1598,49 @@ impl EffectEngine {
     /// Freeze a layer - pauses all effects on the layer at their current state
     /// Effects maintain their current output values but don't advance in time
     pub fn freeze_layer(&mut self, layer: EffectLayer) {
-        let was_frozen = self.layer_state.frozen.contains_key(&layer);
-        layers::freeze_layer(
-            &mut self.layer_state.frozen,
-            &mut self.active_effects,
-            layer,
-            self.current_time,
-        );
-        self.freeze_changed(layer, was_frozen);
+        let now = self.now();
+        self.layer_state.clock_mut(layer).freeze(now);
         self.cache.invalidate();
     }
 
     /// How far into itself `effect` is at `song_time`: what it renders and
-    /// expires on. A cued effect renders on score time, the elapsed it
-    /// expires on, so the two agree: engine time runs up to a frame ahead
-    /// of it (the effect is stamped before an update adds `dt`, and its cue
-    /// lands part way through a tick), and an effect rendered past its end
-    /// on engine time before it expired on score time went dark for a frame
-    /// at a hand-over (#551). Less the song time it has spent frozen, and on
-    /// a frozen layer at the song time it froze at: engine time, which steps
-    /// a fixed frame a tick, falls behind the song where frames run long,
-    /// and an effect timed on it after an unfreeze ended late. One with no
-    /// cue, or frozen with no song time to go by, keeps engine time; on a
-    /// frozen layer, the frozen time instead of now. Then on from where it
-    /// was at its layer's last speed change, at the layer's speed master
-    /// (0 freezes the layer, and is not a scale).
+    /// expires on (see `LayerClock::elapsed`). A cued effect renders on
+    /// score time, the elapsed it expires on, so the two agree: engine time
+    /// runs up to a frame ahead of it (the effect is stamped before an
+    /// update adds `dt`, and its cue lands part way through a tick), and an
+    /// effect rendered past its end on engine time before it expired on
+    /// score time went dark for a frame at a hand-over (#551). Engine time,
+    /// which steps a fixed frame a tick, falls behind the song where frames
+    /// run long, and an effect timed on it after an unfreeze ended late.
     pub fn elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
-        own_elapsed_from(
+        self.layer_state.clock(effect.layer).elapsed(
             effect,
-            self.base_elapsed_at(effect, song_time),
-            self.get_layer_speed_master(effect.layer),
+            Now {
+                instant: self.current_time,
+                song: song_time,
+            },
         )
     }
 
-    /// [`Self::elapsed_at`] before the layer's speed master: song time
-    /// since the cue less the time frozen, held while frozen.
-    fn base_elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
-        let layer = effect.layer;
-        let frozen_at = self.layer_state.frozen.get(&layer).cloned();
-        let frozen_song = self.layer_state.frozen_song.get(&layer).copied();
-        let reference_time = frozen_at.unwrap_or(self.current_time);
-        match (effect.start_time, effect.cue_time, song_time) {
-            (Some(_), Some(cue_time), Some(now))
-                if !effect.engine_timed && (frozen_at.is_none() || frozen_song.is_some()) =>
-            {
-                frozen_song
-                    .unwrap_or(now)
-                    .saturating_sub(cue_time)
-                    .saturating_sub(effect.score_frozen)
-            }
-            _ => effect
-                .start_time
-                .map(|start| reference_time.duration_since(start))
-                .unwrap_or(Duration::ZERO),
-        }
-    }
-
     /// Sets the song time a layer command applied before the next frame
-    /// takes as now: a start's, before its history is replayed. Without
-    /// it, a freeze in the history of a seek took the last frame rendered
-    /// before it -- the old position -- and held its effects there.
+    /// takes as now.
     pub fn set_song_time(&mut self, song_time: Duration) {
         self.last_song_time = Some(song_time);
     }
 
-    /// Keeps the song time a layer froze at, and its cued effects' time
-    /// frozen, in step with a freeze or unfreeze that has just happened (or
-    /// not) to `layer`. The song time is the command's cue's, as
-    /// [`Self::apply_layer_commands`] sets it, or a start's, as
-    /// [`Self::set_song_time`] does for a seek's history.
-    fn freeze_changed(&mut self, layer: EffectLayer, was_frozen: bool) {
-        let frozen = self.layer_state.frozen.contains_key(&layer);
-        if frozen && !was_frozen {
-            if let Some(now) = self.last_song_time {
-                self.layer_state.frozen_song.insert(layer, now);
-            }
-        } else if was_frozen && !frozen {
-            let frozen_at = self.layer_state.frozen_song.remove(&layer);
-            for effect in self.active_effects.values_mut() {
-                if effect.layer != layer {
-                    continue;
-                }
-                match (frozen_at, self.last_song_time, effect.cue_time) {
-                    // An effect cued during the freeze held its first frame
-                    // from its cue on, not from the freeze.
-                    (Some(frozen_at), Some(now), Some(cue_time)) => {
-                        effect.score_frozen += now.saturating_sub(cue_time.max(frozen_at));
-                    }
-                    (_, _, Some(_)) => effect.engine_timed = true,
-                    _ => {}
-                }
-            }
-        }
-    }
-
     /// Unfreeze a layer - resumes effects on the layer from where they left off
     pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
-        let was_frozen = self.layer_state.frozen.contains_key(&layer);
-        layers::unfreeze_layer(
-            &mut self.layer_state.frozen,
-            &mut self.active_effects,
-            layer,
-            self.current_time,
-        );
-        self.freeze_changed(layer, was_frozen);
+        let now = self.now();
+        self.layer_state
+            .clock_mut(layer)
+            .unfreeze(layer, &mut self.active_effects, now);
         self.cache.invalidate();
     }
 
     /// Check if a layer is frozen
     #[cfg(test)]
     pub fn is_layer_frozen(&self, layer: EffectLayer) -> bool {
-        self.layer_state.frozen.contains_key(&layer)
+        self.layer_state.clock(layer).is_frozen()
     }
 
     // ===== Layer Master Methods =====
@@ -1686,170 +1648,372 @@ impl EffectEngine {
     /// Set the intensity master for a layer (0.0 to 1.0)
     /// This multiplies with all effect outputs on the layer
     pub fn set_layer_intensity_master(&mut self, layer: EffectLayer, intensity: f64) {
-        layers::set_layer_intensity_master(
-            &mut self.layer_state.intensity_masters,
-            layer,
-            intensity,
-        );
+        self.layer_state.set_intensity_master(layer, intensity);
         self.cache.invalidate();
     }
 
     /// Get the intensity master for a layer (defaults to 1.0)
     pub fn get_layer_intensity_master(&self, layer: EffectLayer) -> f64 {
-        self.layer_state.intensity_master(&layer)
+        self.layer_state.intensity_master(layer)
     }
 
     /// Set the speed master for a layer (0.0+ where 1.0 = normal speed)
     /// This multiplies with effect speeds on the layer
     /// 0.5 = half speed, 2.0 = double speed, 0.0 = frozen at current state
     pub fn set_layer_speed_master(&mut self, layer: EffectLayer, speed: f64) {
-        // The change applies from now: each effect on the layer carries on
-        // from where it is, not from its cue at the new speed.
-        let now = self.last_song_time;
-        let marks: Vec<(String, Duration, Duration)> = self
-            .active_effects
-            .iter()
-            .filter(|(_, effect)| effect.layer == layer)
-            .map(|(id, effect)| {
-                (
-                    id.clone(),
-                    self.base_elapsed_at(effect, now),
-                    self.elapsed_at(effect, now),
-                )
-            })
-            .collect();
-        for (id, base, own) in marks {
-            if let Some(effect) = self.active_effects.get_mut(&id) {
-                effect.speed_from = base;
-                effect.elapsed_from = own;
-            }
-        }
-        let was_frozen = self.layer_state.frozen.contains_key(&layer);
-        layers::set_layer_speed_master(
-            &mut self.layer_state.speed_masters,
-            &mut self.layer_state.frozen,
-            &mut self.active_effects,
-            layer,
-            speed,
-            self.current_time,
-        );
-        self.freeze_changed(layer, was_frozen);
+        let now = self.now();
+        self.layer_state
+            .clock_mut(layer)
+            .set_speed(layer, &mut self.active_effects, speed, now);
         self.cache.invalidate();
     }
 
     /// Get the speed master for a layer (defaults to 1.0)
     pub fn get_layer_speed_master(&self, layer: EffectLayer) -> f64 {
-        self.layer_state.speed_master(&layer)
+        self.layer_state.clock(layer).speed()
     }
 
-    /// Applies what a timeline fired, its groups already resolved: cue time
-    /// by cue time, in order, as a seek's replay has them, and at each time
-    /// its layer commands, then its sequence stops, then its effects --
-    /// sequence effects first, so a show's own effect at the same time wins
-    /// a Replace conflict. Cues less than a frame apart land in one update,
-    /// and all its layer commands going first ran a later cue's `clear` or
-    /// `stop sequence` before an earlier cue's effect, which then survived it
-    /// (#592). In turn, a speed change or freeze finds an effect cued
-    /// before it already running, as a seek's replay does, with nothing to
-    /// make up for. What carries no time goes first: a seek's history, its
-    /// layer commands at the song time already set and its effects started
-    /// part way, in cue order. Returns the errors of the effects that would
-    /// not start.
+    /// Applies what a timeline fired as the song plays, its groups already
+    /// resolved: step by step in the order the timeline gives them (see
+    /// `TimelineUpdate`), each layer command at its cue's song time -- a
+    /// freeze holds from its cue, and an unfreeze resumes from its, rather
+    /// than from the frame they land in. Returns the errors of the effects
+    /// that would not start.
     pub fn apply_timeline_update(
         &mut self,
         update: crate::lighting::timeline::TimelineUpdate,
     ) -> Vec<EffectError> {
-        enum Step {
-            Command(crate::lighting::parser::LayerCommand),
-            Stop(String),
-            Resume(EffectInstance, Duration),
-            Start(EffectInstance),
-        }
-        let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
-        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-        let commands = update
-            .layer_commands
-            .into_iter()
-            .enumerate()
-            .map(|(i, cmd)| {
-                (
-                    update.layer_command_times.get(i).copied(),
-                    0,
-                    Step::Command(cmd),
-                )
-            });
-        let stops = update
-            .stop_sequences
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| {
-                (
-                    update.stop_sequence_times.get(i).copied(),
-                    1,
-                    Step::Stop(name),
-                )
-            });
-        let resumed = with_elapsed
-            .into_iter()
-            .map(|(effect, elapsed)| (None, 2, Step::Resume(effect, elapsed)));
-        let started = update.effects.into_iter().map(|effect| {
-            let rank = if effect.sequence.is_some() { 3 } else { 4 };
-            (effect.cue_time, rank, Step::Start(effect))
-        });
-        let mut steps: Vec<_> = commands
-            .chain(stops)
-            .chain(resumed)
-            .chain(started)
-            .collect();
-        // Stable: the cues' own order stands within a time and kind.
-        steps.sort_by_key(|(time, rank, _)| (*time, *rank));
-
+        let frame = self.last_song_time;
         let mut errors = Vec::new();
-        for (time, _, step) in steps {
-            let result = match step {
-                Step::Command(cmd) => {
-                    let times: Vec<Duration> = time.into_iter().collect();
-                    self.apply_layer_commands(std::slice::from_ref(&cmd), &times);
-                    Ok(())
-                }
-                Step::Stop(name) => {
-                    self.stop_sequence(&name);
-                    Ok(())
-                }
-                Step::Resume(effect, elapsed) => self.start_effect_with_elapsed(effect, elapsed),
-                Step::Start(effect) => self.start_effect(effect),
-            };
-            if let Err(e) = result {
+        for (time, step) in update.steps {
+            let command = matches!(step, Step::Command(_));
+            if command {
+                self.last_song_time = Some(time);
+            }
+            if let Err(e) = self.apply_step(step) {
                 errors.push(e);
+            }
+            if command {
+                self.last_song_time = frame;
             }
         }
         errors
     }
 
-    /// Applies a cue's layer commands, each at its cue's song time when
-    /// `times` gives one (see `TimelineUpdate::layer_command_times`): a
-    /// freeze holds from its cue, and an unfreeze resumes from its, rather
-    /// than from the frame before the one they land in -- which held a look
-    /// frozen on the very instant it ended, and timed a freeze up to a frame
-    /// off its cue. With no times, at the song time already set.
-    pub fn apply_layer_commands(
+    /// Starts the show part way, from `history` (a seek's, from
+    /// `LightingTimeline::start_at`, its groups resolved): stops what
+    /// `scope` reaches, then replays the history in this engine by the live
+    /// rules, cue time by cue time with no frame rendered (see `Replay`), so
+    /// the state at the start point is what playing through would have left
+    /// -- and holds the song time there for the cues from it on. With
+    /// `StopScope::Nothing` the history replays over what this engine has
+    /// (a fresh engine's rest, or in a test a layer already slowed). Returns
+    /// the errors of the effects that would not start.
+    ///
+    /// For a caller that holds this engine under a lock the effects loop
+    /// also takes, the same replay in three steps: [`Self::scratch`] (cheap:
+    /// the rig) and [`Self::install`] (as many steps as effects running)
+    /// under the lock, and [`Self::prepare`], the replay itself, with it
+    /// released.
+    pub fn start_from(
         &mut self,
-        commands: &[crate::lighting::parser::LayerCommand],
-        times: &[Duration],
-    ) {
-        debug_assert!(
-            times.is_empty() || times.len() == commands.len(),
-            "a time for every layer command, or none"
-        );
-        let frame = self.last_song_time;
-        for (i, cmd) in commands.iter().enumerate() {
-            if let Some(time) = times.get(i) {
-                self.last_song_time = Some(*time);
-            }
-            self.apply_layer_command(cmd);
+        history: crate::lighting::timeline::SeekHistory,
+        scope: StopScope,
+    ) -> Vec<EffectError> {
+        self.stop_by_scope(scope);
+        self.replay(history)
+    }
+
+    /// Stops what `scope` says a replay starts over.
+    fn stop_by_scope(&mut self, scope: StopScope) {
+        match scope {
+            StopScope::Nothing => {}
+            StopScope::Show => self.stop_show_effects(),
+            StopScope::All => self.stop_all_effects(),
         }
-        if !times.is_empty() {
-            self.last_song_time = frame;
+    }
+
+    /// Replays `history` -- every cue up to and at its start point, its
+    /// groups resolved -- in this engine, as [`Self::start_from`] with
+    /// `StopScope::Nothing` does, and at each of `times` (ascending, none
+    /// past the start point), once every cue up to and at it is in, renders
+    /// the frame there and hands the engine to `sample`: one replay read at
+    /// many instants, each read as a start there reads it. For an offline
+    /// evaluation, with the wire traced ([`Self::trace_wire`]). Returns the
+    /// errors of the effects that would not start.
+    pub(crate) fn replay_sampled(
+        &mut self,
+        history: crate::lighting::timeline::SeekHistory,
+        times: &[Duration],
+        mut sample: impl FnMut(&EffectEngine, Duration),
+    ) -> Vec<EffectError> {
+        let mut replay = Replay::new(self, history.at);
+        replay.play(history.update.steps, times, &mut sample);
+        replay.errors
+    }
+
+    /// Replays `history` in this engine, up to its start point.
+    fn replay(&mut self, history: crate::lighting::timeline::SeekHistory) -> Vec<EffectError> {
+        let mut replay = Replay::new(self, history.at);
+        replay.play(history.update.steps, &[], &mut |_, _| {});
+        replay.finish()
+    }
+
+    /// The engine a split start from history (see [`Self::start_from`])
+    /// replays in, apart from this one, for [`Self::install`] with the same
+    /// `scope`. It has this engine's rig; the history replays from rest --
+    /// no effects running, layers as nothing set them -- whatever this
+    /// engine runs now, since what it runs by the install is not known yet.
+    /// With `StopScope::Show` or `StopScope::All` that is what the stop
+    /// leaves. With `StopScope::Nothing` -- an engine fresh for the start, a
+    /// pass crossfade's -- it starts from this engine's pose memory, and
+    /// the install puts the history's state in beside whatever the engine it
+    /// goes in has started since and takes pose memory as of then where the
+    /// history did not set it.
+    pub fn scratch(&self, scope: StopScope) -> EffectEngine {
+        let mut scratch = EffectEngine {
+            current_time: self.current_time,
+            rigless: self.rigless,
+            scope,
+            // A replay sends nothing to this engine's rig: the wire stays
+            // with the engine the history is installed in.
+            wire: Wire::default(),
+            ..self.sibling()
+        };
+        match scope {
+            StopScope::Nothing => {
+                scratch.pose_reads = Some(PoseReads {
+                    initial: self.poses.clone(),
+                    ..Default::default()
+                });
+            }
+            // A stop releases pose memory.
+            StopScope::Show | StopScope::All => {
+                scratch.poses.clear();
+                scratch.goals.clear();
+            }
+        }
+        scratch
+    }
+
+    /// Replays `history` in this engine, a [`Self::scratch`]: the state it
+    /// leaves, for [`Self::install`] to put in the engine it came from.
+    pub fn prepare(mut self, history: crate::lighting::timeline::SeekHistory) -> Prepared {
+        // Kept to replay again at the install should the pose memory the
+        // replay started from have moved on by then (see `PoseReads`).
+        let again = self.pose_reads.is_some().then(|| history.clone());
+        let at = history.at;
+        let errors = self.replay(history);
+        Prepared {
+            at,
+            scope: self.scope,
+            instant: self.current_time,
+            effects: self.active_effects,
+            layer_state: self.layer_state,
+            poses: self.poses,
+            goals: self.goals,
+            pose_reads: self.pose_reads,
+            again,
+            errors,
+        }
+    }
+
+    /// Stops what the scratch's scope reaches and puts in what
+    /// [`Self::prepare`] left: its effects, layers and pose memory, their
+    /// instants moved on by the time this engine has run since the scratch
+    /// was taken, and the song time at the start point. With
+    /// `StopScope::Nothing` (see [`Self::scratch`]), nothing this engine runs
+    /// goes: its effects stay as they are beside the history's, its layers
+    /// over the history's, and its pose memory where the history set none --
+    /// and should a pose the history started a move from have moved on since
+    /// the scratch, the history replays again here, from it. Every rendered
+    /// frame rewrites a moving head's pose, so while movers move that is
+    /// most such installs, a history move reading one: the replay then runs
+    /// under the caller's lock after all, at a plain replay's cost. Returns
+    /// the errors of the effects that would not start.
+    pub fn install(&mut self, prepared: Prepared) -> Vec<EffectError> {
+        let Prepared {
+            at,
+            scope,
+            instant,
+            mut effects,
+            mut layer_state,
+            poses,
+            goals,
+            pose_reads,
+            again,
+            errors,
+        } = prepared;
+        self.stop_by_scope(scope);
+        if let (Some(reads), Some(history)) = (&pose_reads, again) {
+            if reads
+                .read
+                .iter()
+                .any(|name| self.poses.get(name) != reads.initial.get(name))
+            {
+                return self.replay(history);
+            }
+        }
+        let rebase = |then: Instant| match self.current_time.checked_duration_since(instant) {
+            Some(later) => then + later,
+            None => then
+                .checked_sub(instant.duration_since(self.current_time))
+                .unwrap_or(then),
+        };
+        for effect in effects.values_mut() {
+            effect.start_time = effect.start_time.map(rebase);
+        }
+        layer_state.rebase(rebase);
+        match pose_reads {
+            // Beside what runs here, which is later than the history.
+            Some(reads) => {
+                effects.extend(std::mem::take(&mut self.active_effects));
+                layer_state.overlay(&self.layer_state);
+                if reads.released {
+                    self.poses = poses;
+                    self.goals = goals;
+                } else {
+                    for name in &reads.written {
+                        if let Some(pose) = poses.get(name) {
+                            self.poses.insert(name.clone(), *pose);
+                        }
+                        if let Some(goal) = goals.get(name) {
+                            self.goals.insert(name.clone(), *goal);
+                        }
+                    }
+                }
+            }
+            None => {
+                self.poses = poses;
+                self.goals = goals;
+            }
+        }
+        self.active_effects = effects;
+        self.layer_state = layer_state;
+        self.last_song_time = Some(at);
+        self.cache.invalidate();
+        errors
+    }
+
+    /// Applies one step of what a timeline fired.
+    fn apply_step(&mut self, step: Step) -> Result<(), EffectError> {
+        match step {
+            Step::Command(cmd) => {
+                self.apply_layer_command(&cmd);
+                Ok(())
+            }
+            Step::Stop(name) => {
+                self.stop_sequence(&name);
+                Ok(())
+            }
+            Step::Start(effect) => self.start_effect(effect),
+        }
+    }
+
+    /// Moves a replay's time on to `time` as a frame there would, without
+    /// rendering one: the effects run their course by then go (a move's
+    /// destination committed to pose memory, as the frame it completes on
+    /// writes it), and each move still running holds its heads where it has
+    /// them then, as the frame would leave pose memory -- where a clear, a
+    /// stop or a later move at `time` finds them.
+    fn advance(&mut self, time: Duration) {
+        self.last_song_time = Some(time);
+        let now = self.now();
+        let expired: Vec<String> = self
+            .active_effects
+            .iter()
+            .filter(|(_, effect)| {
+                effect.start_time.is_some()
+                    && effect.has_reached_terminal_state(self.elapsed_at(effect, now.song))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !expired.is_empty() {
+            // The cached frame has them in it.
+            self.cache.invalidate();
+        }
+        for id in expired {
+            let Some(effect) = self.active_effects.remove(&id) else {
+                continue;
+            };
+            if let Some(ends) = self.ends.as_mut() {
+                let end = self.layer_state.clock(effect.layer).end_of(&effect, now);
+                ends.insert(id, end);
+            }
+            for (name, pose) in
+                processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
+            {
+                self.hold_pose(name, pose);
+            }
+        }
+        let mut held = Vec::new();
+        for effect in self.active_effects.values() {
+            if matches!(effect.effect_type, EffectType::Move { .. }) {
+                let elapsed = self.elapsed_at(effect, now.song);
+                held.extend(processing::move_poses_at(
+                    self.fixtures.as_map(),
+                    &self.focus_points,
+                    effect,
+                    elapsed,
+                ));
+            }
+        }
+        for (name, pose) in held {
+            self.hold_pose(name, pose);
+        }
+    }
+
+    /// Holds `name` at `pose` in pose memory, as a replay's frame leaves it.
+    fn hold_pose(&mut self, name: String, pose: Pose) {
+        if let Some(reads) = self.pose_reads.as_mut() {
+            reads.written.insert(name.clone());
+        }
+        self.goals.insert(name.clone(), pose);
+        self.poses.insert(name, pose);
+    }
+
+    /// An engine to reckon a show's ends by, with no rig: effects start as
+    /// they are, nothing renders, and each effect's end is kept as it goes
+    /// (see `lighting::timeline::effect_ends`).
+    pub(crate) fn reckoner() -> Self {
+        Self {
+            rigless: true,
+            ends: Some(HashMap::new()),
+            ..Self::new()
+        }
+    }
+
+    /// A reckoner's ends: when each effect taken out ended, and when each
+    /// still running ends from the song time last moved on to, its layer as
+    /// it is then. `None` for one that never ends.
+    pub(crate) fn take_ends(&mut self) -> HashMap<String, Option<Duration>> {
+        let now = self.now();
+        let mut ends = self.ends.take().unwrap_or_default();
+        for (id, effect) in &self.active_effects {
+            let end = self.layer_state.clock(effect.layer).end_of(effect, now);
+            ends.insert(id.clone(), end);
+        }
+        ends
+    }
+
+    /// Starts `effect` `elapsed` into itself, as a seek to that far past its
+    /// cue would: for tests of effects started part way.
+    #[cfg(test)]
+    pub fn start_effect_part_way(
+        &mut self,
+        mut effect: EffectInstance,
+        elapsed: Duration,
+    ) -> Result<(), EffectError> {
+        let cue = effect.cue_time.unwrap_or(Duration::ZERO);
+        effect.cue_time = Some(cue);
+        let mut history = crate::lighting::timeline::SeekHistory {
+            at: cue + elapsed,
+            ..Default::default()
+        };
+        history.update.steps.push((cue, Step::Start(effect)));
+        match self.start_from(history, StopScope::Nothing).pop() {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -1984,3 +2148,232 @@ impl EffectEngine {
         output
     }
 }
+
+/// The state a start from history leaves, replayed apart from the engine it
+/// goes in (see [`EffectEngine::prepare`]).
+pub struct Prepared {
+    at: Duration,
+    scope: StopScope,
+    /// The scratch engine's instant once replayed: that of `at`.
+    instant: Instant,
+    effects: HashMap<String, EffectInstance>,
+    layer_state: LayerState,
+    poses: HashMap<String, Pose>,
+    goals: HashMap<String, Pose>,
+    pose_reads: Option<PoseReads>,
+    /// The history, to replay again at the install (see `PoseReads`).
+    again: Option<crate::lighting::timeline::SeekHistory>,
+    errors: Vec<EffectError>,
+}
+
+/// How a DMX channel crosses a crossfade ([`EffectEngine::crossfade_commands`]).
+/// Ordered by which of two patched over one channel takes it: a 16-bit
+/// value's byte before a byte of its own, then by kind and partner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CrossPlace {
+    /// The coarse byte of a 16-bit value, with the DMX channel of its fine
+    /// byte.
+    Coarse(CrossKind, u16),
+    /// The fine byte of a 16-bit value, with the DMX channel of its coarse
+    /// byte.
+    Fine(CrossKind, u16),
+    /// A byte of its own.
+    Byte(CrossKind),
+}
+
+impl CrossPlace {
+    fn kind(self) -> CrossKind {
+        match self {
+            CrossPlace::Coarse(kind, _) | CrossPlace::Fine(kind, _) | CrossPlace::Byte(kind) => {
+                kind
+            }
+        }
+    }
+}
+
+/// How a replay from another engine's pose memory used it (see
+/// [`EffectEngine::scratch`]): what it started from, the heads whose pose a
+/// move started from before the replay set one there, the heads it set, and
+/// whether a full clear let it all go. The replay's poses then hold for the
+/// heads it set (all of them, after a full clear) and the memory as of the
+/// install for the rest -- unless a pose a move started from has moved on,
+/// when it replays again from the memory as it is.
+#[derive(Default)]
+struct PoseReads {
+    initial: HashMap<String, Pose>,
+    read: HashSet<String>,
+    written: HashSet<String>,
+    released: bool,
+}
+
+/// Where the stop before a start from history reaches (see
+/// [`EffectEngine::start_from`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopScope {
+    /// Nothing: the engine is fresh for the start.
+    Nothing,
+    /// This engine's show -- its effects, layers and pose memory -- but not
+    /// the MIDI DMX store every engine shares.
+    Show,
+    /// The show and the MIDI DMX store.
+    All,
+}
+
+/// A replay of cue history through an engine, cue time by cue time up to the
+/// time it starts from, no frame rendered. The engine's instant is set back
+/// to each time's place before that one, so what it stamps there -- an
+/// effect's start, a freeze -- is where playing through would have put it.
+pub(crate) struct Replay<'a> {
+    engine: &'a mut EffectEngine,
+    /// The engine's instant: that of `to`.
+    now: Instant,
+    /// The song time started from.
+    to: Duration,
+    errors: Vec<EffectError>,
+}
+
+impl<'a> Replay<'a> {
+    pub(crate) fn new(engine: &'a mut EffectEngine, to: Duration) -> Self {
+        let now = engine.current_time;
+        Self {
+            engine,
+            now,
+            to,
+            errors: Vec::new(),
+        }
+    }
+
+    /// Applies `steps`, what one time's cues fired, at `time`: the time moved
+    /// on to there first (see [`EffectEngine::advance`]). A time that fired
+    /// nothing changes nothing.
+    pub(crate) fn at(&mut self, time: Duration, steps: impl IntoIterator<Item = Step>) {
+        let steps: Vec<Step> = steps.into_iter().collect();
+        if steps.is_empty() {
+            return;
+        }
+        // While tracing, the frame here goes to the wire only where what
+        // fires can stop a byte being written: a layer command (a clear, a
+        // master), a stopped sequence, or a move, which may take heads from
+        // another (`take_heads`). An effect starting stops nothing: every
+        // byte written before it is still written after, until a traced
+        // end, cue or sample. A move taking a head writes the same pan and
+        // tilt from the same instant, so its frame is a margin rather than
+        // a need today; it is kept so that skipping plain starts does not
+        // rest on pose memory moving on without a frame for every future
+        // move or pose rule, and it costs one frame per move start.
+        let stops = steps.iter().any(|step| match step {
+            Step::Start(effect) => matches!(effect.effect_type, EffectType::Move { .. }),
+            Step::Command(_) | Step::Stop(_) => true,
+        });
+        self.trace_until(time, stops);
+        for step in steps {
+            if let Err(e) = self.engine.apply_step(step) {
+                self.errors.push(e);
+            }
+        }
+    }
+
+    /// Applies `steps` (in time order) cue time by cue time ([`Self::at`]),
+    /// and at each of `times` (ascending), once every step up to and at it
+    /// is in, [`Self::sample`]s the engine there: the one walk through a
+    /// replay's steps.
+    fn play(
+        &mut self,
+        steps: Vec<(Duration, Step)>,
+        times: &[Duration],
+        sample: &mut impl FnMut(&EffectEngine, Duration),
+    ) {
+        let mut steps = steps.into_iter().peekable();
+        let mut times = times.iter().copied().peekable();
+        loop {
+            let next_step = steps.peek().map(|&(time, _)| time);
+            let next_time = times.peek().copied();
+            // A step at a sampled time goes in before the sample.
+            match (next_step, next_time) {
+                (Some(time), at) if at.is_none_or(|at| time <= at) => {
+                    let group: Vec<Step> =
+                        std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
+                            .map(|(_, step)| step)
+                            .collect();
+                    self.at(time, group);
+                }
+                (_, Some(at)) => {
+                    times.next();
+                    self.sample(at, sample);
+                }
+                (_, None) => break,
+            }
+        }
+    }
+
+    /// Moves the time on to the start point, and leaves the engine there.
+    pub(crate) fn finish(mut self) -> Vec<EffectError> {
+        self.trace_until(self.to, true);
+        self.engine.cache.invalidate();
+        self.errors
+    }
+
+    /// Moves the time on to `time` -- every cue up to and at it already
+    /// applied -- and renders the frame there, sends it to the wire and
+    /// hands the engine to `sample`, as a start at `time` would leave it.
+    /// Pose memory is then put back as the replay has it, so the replay
+    /// carries on as if no frame had been rendered.
+    fn sample(&mut self, time: Duration, sample: &mut impl FnMut(&EffectEngine, Duration)) {
+        self.trace_until(time, false);
+        self.engine
+            .send_replayed_frame(time, |engine| sample(engine, time));
+    }
+
+    /// Moves the time on to `time` (see [`EffectEngine::advance`]), the
+    /// engine's instant with it.
+    fn move_to(&mut self, time: Duration) {
+        self.engine.current_time = self
+            .now
+            .checked_sub(self.to.saturating_sub(time))
+            .unwrap_or(self.now);
+        self.engine.advance(time);
+    }
+
+    /// Moves the time on to `time`; while the engine traces the wire
+    /// ([`EffectEngine::trace_wire`]), sending it the frame just before each
+    /// effect ending on the way goes, and -- with `frame` -- the frame at
+    /// `time` before what fires there.
+    fn trace_until(&mut self, time: Duration, frame: bool) {
+        if self.engine.tracing_wire {
+            for end in self.engine.ends_until(time) {
+                let from = self.engine.last_song_time.unwrap_or_default();
+                let before = end.saturating_sub(JUST_BEFORE).max(from);
+                self.move_to(before);
+                self.engine.send_replayed_frame(before, |_| {});
+                self.move_to(end);
+            }
+        }
+        self.move_to(time);
+        if frame && self.engine.tracing_wire {
+            self.engine.send_replayed_frame(time, |_| {});
+        }
+    }
+}
+
+/// Whether `effect` may write a channel that is not a level or colour
+/// ([`fades_to_dark`]) -- a position, a strobe, a gobo -- which the rig
+/// holds at its last byte once the effect ends. A static setting only
+/// levels and colours, a colour cycle, rainbow, dimmer, pulse or chase
+/// writes none.
+fn leaves_settings(effect: &EffectInstance) -> bool {
+    match &effect.effect_type {
+        EffectType::Static { parameters, .. } => {
+            parameters.keys().any(|channel| !fades_to_dark(channel))
+        }
+        EffectType::Move { .. } | EffectType::Strobe { .. } => true,
+        EffectType::ColorCycle { .. }
+        | EffectType::Rainbow { .. }
+        | EffectType::Dimmer { .. }
+        | EffectType::Pulse { .. }
+        | EffectType::Chase { .. } => false,
+    }
+}
+
+/// How long before an effect ends a traced replay renders its last frame
+/// (see [`Replay::trace_until`]): within the live frame before its end.
+const JUST_BEFORE: Duration = Duration::from_micros(1);

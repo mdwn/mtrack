@@ -13,6 +13,15 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    MidiEvent,
+    PilotConfig,
+    Section,
+    SongFailure,
+    SongInfo,
+    Track,
+    TrackPeaks,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import YAML from "yaml";
@@ -25,15 +34,11 @@
     uploadTrack,
     uploadTracks,
     type MetronomeConfig,
-    type PilotConfig,
     type SongFile,
-    type SongFailure,
-    type SongSummary,
     type TempoConfig,
-    type WaveformTrack,
   } from "../../lib/api/songs";
   import { fetchLightingFile } from "../../lib/api/config";
-  import { parseLightFile } from "../../lib/lighting/parser";
+  import { rules } from "../../lib/rules";
   import type { TempoSection } from "../../lib/lighting/types";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
@@ -48,15 +53,13 @@
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
-  import type { MidiEvent } from "../config/MidiEventEditor.svelte";
   import NotificationsSection from "../config/NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
-
-  interface TrackEntry {
-    name: string;
-    file: string;
-    file_channel?: number;
-  }
+  import {
+    audioAccept,
+    midiAccept,
+    withoutExtension,
+  } from "../../lib/util/paths";
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -76,13 +79,13 @@
 
   let { songName, initialTab, initialTimeMs = null }: Props = $props();
 
-  let song = $state<SongSummary | null>(null);
+  let song = $state<SongInfo | null>(null);
   let songFiles = $state<SongFile[]>([]);
-  let waveformTracks = $state<WaveformTrack[]>([]);
+  let waveformTracks = $state<TrackPeaks[]>([]);
   let rawYaml = $state("");
   let editedYaml = $state("");
   let parsedConfig = $state<Record<string, unknown> | null>(null);
-  let tracks = $state<TrackEntry[]>([]);
+  let tracks = $state<Track[]>([]);
   let loading = $state(true);
   let error = $state("");
   let failureError = $state<string | null>(null);
@@ -113,10 +116,16 @@
   // Collapsible Notifications section within Config tab
   let notifSectionOpen = $state(false);
 
+  /** Opens song `name`'s page on the tab this one shows. */
+  function goToSong(name: string) {
+    const base = `#/songs/${encodeURIComponent(name)}`;
+    window.location.hash =
+      activeTab === "tracks" ? base : `${base}/${activeTab}`;
+  }
+
   function setTab(tab: TabKey) {
     activeTab = tab;
-    const base = `#/songs/${encodeURIComponent(songName)}`;
-    window.location.hash = tab === "tracks" ? base : `${base}/${tab}`;
+    goToSong(songName);
   }
 
   const tabs: { key: TabKey; labelKey: string }[] = [
@@ -146,16 +155,7 @@
   let loopCrossfadeCut = $state<string[]>([]);
 
   // Section editor state
-  let sections = $state<
-    {
-      name: string;
-      start_measure: number;
-      end_measure: number;
-      start_beat?: number;
-      end_beat?: number;
-      color?: string;
-    }[]
-  >([]);
+  let sections = $state<Section[]>([]);
   let sectionsDirty = $state(false);
 
   // Tempo map state (the song.yaml `tempo:` block)
@@ -180,8 +180,11 @@
     const found: { file: string; tempo: TempoSection }[] = [];
     for (const file of files) {
       try {
-        const parsed = parseLightFile(await fetchLightingFile(file));
-        if (parsed.tempo) {
+        const parsed = rules.document(
+          await fetchLightingFile(file),
+          file,
+        ).document;
+        if (parsed?.tempo) {
           found.push({ file, tempo: parsed.tempo });
         }
       } catch {
@@ -224,7 +227,11 @@
       } else {
         const newTracks = paths.map((p) => {
           const filename = p.split("/").pop() ?? p;
-          return { name: filename.replace(/\.[^.]+$/, ""), file: p };
+          return {
+            name: withoutExtension(filename),
+            file: p,
+            file_channel: null,
+          };
         });
         onTracksChange([...tracks, ...newTracks]);
       }
@@ -281,7 +288,7 @@
         tracks = (parsed.tracks ?? []).map((t: Record<string, unknown>) => ({
           name: (t.name as string) ?? "",
           file: (t.file as string) ?? "",
-          file_channel: t.file_channel as number | undefined,
+          file_channel: (t.file_channel as number | undefined) ?? null,
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
         loopPlayback = parsed.loop_playback === true;
@@ -295,14 +302,7 @@
             )
           : [];
         sections = (parsed.sections ?? []).map((s: Record<string, unknown>) => {
-          const entry: {
-            name: string;
-            start_measure: number;
-            end_measure: number;
-            start_beat?: number;
-            end_beat?: number;
-            color?: string;
-          } = {
+          const entry: Section = {
             name: (s.name as string) ?? "",
             start_measure: (s.start_measure as number) ?? 1,
             end_measure: (s.end_measure as number) ?? 2,
@@ -353,7 +353,7 @@
       kind: "song",
       tracks: tracks.map((t) => {
         const entry: Record<string, unknown> = { name: t.name, file: t.file };
-        if (t.file_channel !== undefined) {
+        if (t.file_channel !== null) {
           entry.file_channel = t.file_channel;
         }
         return entry;
@@ -420,6 +420,30 @@
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
+  /**
+   * After an upload: the name the server gave the song, when it is not
+   * this page's (a new song whose name was taken, #674), opens its page,
+   * where the files that follow go. True when it did.
+   */
+  function followUploadedSong(data: { song?: unknown } | null): boolean {
+    const name = data?.song;
+    if (typeof name !== "string" || name === "" || name === songName) {
+      return false;
+    }
+    goToSong(name);
+    return true;
+  }
+
+  /** The song name a config's YAML declares, if it reads and has one. */
+  function declaredName(yaml: string): string | null {
+    try {
+      const name = (YAML.parse(yaml) as { name?: unknown } | null)?.name;
+      return typeof name === "string" && name !== "" ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function load() {
     loading = true;
     error = "";
@@ -465,7 +489,7 @@
 
   load();
 
-  function onTracksChange(updated: TrackEntry[]) {
+  function onTracksChange(updated: Track[]) {
     tracks = updated;
     const yaml = buildYaml();
     editedYaml = yaml;
@@ -493,11 +517,34 @@
     editedYaml = buildYaml();
   }
 
-  function setLightingFile(filename: string) {
+  /** A lighting file's song.yaml entry: its path relative to the song's
+   * folder. The editor hands over paths under the songs root (`Song/x.light`),
+   * which is how the lighting API addresses them; song.yaml resolves `file`
+   * from the song's own folder, so the folder comes off here. */
+  function songRelative(path: string): string {
+    const dir = song?.base_dir;
+    return dir && path.startsWith(`${dir}/`)
+      ? path.slice(dir.length + 1)
+      : path;
+  }
+
+  /** Whether a song.yaml `file` entry names `filename` in the song's
+   * folder: as written, with a leading `./`, or as an absolute path. */
+  function entryNames(entry: string, filename: string): boolean {
+    if (entry.replace(/^(\.\/)+/, "") === filename) return true;
+    const dir = song?.base_dir;
+    return (
+      entry.startsWith("/") &&
+      entry.endsWith(dir ? `/${dir}/${filename}` : `/${filename}`)
+    );
+  }
+
+  function setLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
-    if (!existing.some((l) => l.file === filename)) {
+    if (!existing.some((l) => entryNames(l.file, filename))) {
       parsedConfig = {
         ...parsedConfig,
         lighting: [...existing, { file: filename }],
@@ -506,11 +553,12 @@
     }
   }
 
-  function removeLightingFile(filename: string) {
+  function removeLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
-    const filtered = existing.filter((l) => l.file !== filename);
+    const filtered = existing.filter((l) => !entryNames(l.file, filename));
     parsedConfig = {
       ...parsedConfig,
       lighting: filtered.length > 0 ? filtered : undefined,
@@ -582,7 +630,16 @@
     saveMsg = "";
     saveOk = false;
     try {
-      // Save song config if dirty.
+      // New lighting files first: writing them registers them in the
+      // config, and the reload the config save starts wants them on disk.
+      if (lightingDirty && lightingEditorRef) {
+        await lightingEditorRef.saveLightingFiles("before");
+      }
+
+      // Save song config if dirty. The name the saved config gives the
+      // song: a rename in the editor makes it another song's page, by its
+      // new name (#680), where the next save or delete goes.
+      let savedName: string | null = null;
       if (configDirty) {
         const res = await updateSong(songName, editedYaml);
         if (!res.ok) {
@@ -591,12 +648,19 @@
             data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
           return;
         }
+        savedName = declaredName(editedYaml);
         rawYaml = editedYaml;
       }
 
-      // Save lighting files if dirty.
+      // The song's other lighting files, and the removed ones' deletion,
+      // once the config no longer names them.
       if (lightingDirty && lightingEditorRef) {
-        await lightingEditorRef.saveLightingFiles();
+        await lightingEditorRef.saveLightingFiles("after");
+      }
+
+      if (savedName && savedName !== songName) {
+        goToSong(savedName);
+        return;
       }
 
       saveMsg = get(t)("common.saved");
@@ -669,6 +733,7 @@
       }
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";
@@ -712,6 +777,7 @@
         : get(t)("songs.detail.midiUploaded");
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";
@@ -1064,7 +1130,7 @@
         />
         <div class="upload-area">
           <FileUpload
-            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+            accept={audioAccept()}
             label={uploading
               ? $t("common.uploading")
               : $t("songs.detail.dropAudio")}
@@ -1120,7 +1186,7 @@
               </div>
               <div class="upload-area">
                 <FileUpload
-                  accept=".mid"
+                  accept={midiAccept()}
                   label={uploading
                     ? $t("common.uploading")
                     : $t("songs.detail.dropMidi")}

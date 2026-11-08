@@ -23,11 +23,16 @@ include = { "include" ~ string }
 // When multiple shows are present, the parser will enforce that each has a name.
 light_show = { "show" ~ show_name? ~ show_content }
 
-show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+show_name = @{ quoted }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
+cue = { cue_body }
+
+// A show's cue and a sequence's alike; each keeps its name for the errors.
+cue_body = _{ cue_time ~ (loop_cue_command | sequence_reference | inline_loop)* }
+
+cue_time = _{ time_string | measure_time }
 
 // Sequence definition rules
 // `length:` fixes how long one pass lasts, so a loop restarts on time however
@@ -45,11 +50,11 @@ sequence_param_decl = { identifier ~ (":" ~ sequence_arg_value)? }
 
 sequence_length = { "length" ~ ":" ~ time_parameter }
 
-sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+sequence_name = @{ quoted }
 
 sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
 
-sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
+sequence_cue = { cue_body }
 
 // Sequence reference in a cue
 sequence_reference = { "sequence" ~ sequence_name ~ sequence_args? ~ (","? ~ sequence_params)? }
@@ -81,7 +86,9 @@ stop_sequence_command = { "stop" ~ "sequence" ~ sequence_name }
 inline_loop = { "loop" ~ "{" ~ inline_loop_cue* ~ "}" ~ ","? ~ "repeats" ~ ":" ~ number_value }
 
 // Cues inside an inline loop (timing is relative to loop start)
-inline_loop_cue = { (time_string | measure_time) ~ (effect | layer_command | stop_sequence_command | offset_command | reset_measures_command)* }
+inline_loop_cue = { cue_time ~ loop_cue_command* }
+
+loop_cue_command = _{ effect | layer_command | stop_sequence_command | offset_command | reset_measures_command }
 
 // Measure offset commands
 offset_command = { "offset" ~ number_value ~ "measures" }
@@ -168,11 +175,11 @@ hex_color = @{ "#" ~ ASCII_HEX_DIGIT{6} }
 // RGB color with optional spaces after commas - make atomic to control whitespace
 rgb_color = @{ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" }
 
-named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple") ~ "\"" }
+named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple" | "pink") ~ "\"" }
 
-quoted_hex_color = @{ "\"" ~ "#" ~ ASCII_HEX_DIGIT{6} ~ "\"" }
+quoted_hex_color = @{ "\"" ~ hex_color ~ "\"" }
 
-quoted_rgb_color = @{ "\"" ~ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" ~ "\"" }
+quoted_rgb_color = @{ "\"" ~ rgb_color ~ "\"" }
 
 // Time-based parameters (duration, fade, etc.) all use the same format
 // Supports absolute time (ms, s) and musical time (beats, measures)
@@ -222,7 +229,10 @@ time_unit = @{ "measures" | "measure" | "beats" | "beat" | "ms" | "s" }
 // Atomic so nothing is implicitly skipped inside the quotes: a non-atomic
 // rule let `#` start a COMMENT mid-string, so a name like "Truss #3"
 // swallowed the rest of its line.
-string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+string = @{ quoted }
+
+// Every quoted name's form; silent, so each name keeps its rule for errors.
+quoted = _{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // Atomic for the same reason bare_identifier is: without it pest inserts
 // implicit WHITESPACE inside the trailing repetition, so a venue's
@@ -247,17 +257,13 @@ tempo_changes = { "changes" ~ ":" ~ "[" ~ tempo_change_list? ~ "]" }
 
 tempo_change_list = { tempo_change ~ ("," ~ tempo_change)* }
 
-tempo_change = { (time_string | measure_time) ~ "{" ~ tempo_change_content ~ "}" }
+tempo_change = { cue_time ~ "{" ~ tempo_change_content ~ "}" }
 
 tempo_change_content = { tempo_change_param ~ ("," ~ tempo_change_param)* }
 
 tempo_change_param = { 
-    tempo_change_bpm | tempo_change_time_signature | tempo_change_transition
+    tempo_bpm | tempo_time_signature | tempo_change_transition
 }
-
-tempo_change_bpm = { "bpm" ~ ":" ~ number_value }
-
-tempo_change_time_signature = { "time_signature" ~ ":" ~ time_sig_value }
 
 tempo_change_transition = { "transition" ~ ":" ~ tempo_transition_duration }
 
@@ -269,12 +275,31 @@ tempo_transition_beats = { number_value }
 
 tempo_transition_snap = { "snap" }
 
-COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
+// A comment, to the end of its line: `# …` or `// …`. The one rule that
+// says what a comment is. The grammar skips comments as whitespace
+// (`COMMENT`, silent and atomic, so a parse and its errors are exactly as
+// they were without this rule); the web UI's document model reads the
+// comments of a file by parsing the text between a rule's children with
+// `gap`, whose `comment_tok` leaves a pair behind. The player never
+// invokes `gap`.
+comment_body = { ("//" | "#") ~ (!"\n" ~ ANY)* }
+
+COMMENT = _{ comment_body }
+
+comment_tok = @{ comment_body }
+
+gap = ${ SOI ~ (comment_tok | !comment_tok ~ ANY)* ~ EOI }
+
+// A whole value that is a sequence parameter reference: what the web UI
+// asks of text typed into a form. Atomic, so nothing is skipped around the
+// reference: `$x # c` is a reference and a comment, not a reference. The
+// player never invokes it.
+param_ref_only = @{ SOI ~ param_ref ~ EOI }
 
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }
 
-fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+fixture_type_name = @{ quoted }
 
 // Referential fixture types name the GDTF archive they are distilled from;
 // the file body carries only human additions (movement limits), which apply
@@ -359,7 +384,7 @@ channel_mapping_list = { channel_mapping ~ ("," ~ channel_mapping)* }
 
 channel_mapping = { channel_name ~ ":" ~ channel_number }
 
-channel_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+channel_name = @{ quoted }
 
 channel_number = { number_value }
 
@@ -367,7 +392,7 @@ special_cases = { "special_cases" ~ ":" ~ "[" ~ special_case_list ~ "]" }
 
 special_case_list = { special_case ~ ("," ~ special_case)* }
 
-special_case = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+special_case = @{ quoted }
 
 // Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }

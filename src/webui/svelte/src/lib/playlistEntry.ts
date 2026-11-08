@@ -16,49 +16,45 @@
 // entry's transitions summary. No Svelte, no i18n store: the caller passes
 // its translator, so these can be checked as plain values.
 
+import type { Translate } from "./i18n";
 import type {
-  AmbientSettings,
-  AutoPlay,
+  Ambient,
   EntryFades,
   FadeConfig,
-  PlaylistAmbient,
-} from "./api/config";
-import { formatFadeLength, isZeroLength } from "./util/format";
+} from "../gen/rules/mtrack_rules";
+import type { AutoPlay, PlaylistAmbient } from "./api/config";
+import { formatFadeLength } from "./util/format";
+import { rules } from "./rules";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
-export type AmbientMode = "inherit" | "off" | "custom";
+export type AmbientChoice = "inherit" | "off" | "custom";
 
-export function ambientModeOf(ambient: PlaylistAmbient): AmbientMode {
+export function ambientModeOf(ambient: PlaylistAmbient): AmbientChoice {
   return ambient === null ? "inherit" : ambient === false ? "off" : "custom";
 }
 
-export function ambientForMode(mode: AmbientMode): PlaylistAmbient {
+export function ambientForMode(mode: AmbientChoice): PlaylistAmbient {
   return mode === "inherit" ? null : mode === "off" ? false : {};
 }
 
 /** The settings with one field set, or removed when empty (to inherit). */
 export function withAmbientField(
   ambient: PlaylistAmbient,
-  key: keyof AmbientSettings,
+  key: keyof Ambient,
   value: string,
-): AmbientSettings {
-  const settings: AmbientSettings = { ...(ambient || {}) };
+): Ambient {
+  const settings: Ambient = { ...(ambient || {}) };
   if (value) settings[key] = value;
   else delete settings[key];
   return settings;
 }
 
 /** The timing fields after the show, with their labels' i18n keys. */
-export const ambientTimings: { key: keyof AmbientSettings; label: string }[] = [
+export const ambientTimings: { key: keyof Ambient; label: string }[] = [
   { key: "delay", label: "lighting.ambientDelay" },
   { key: "fade_in", label: "lighting.ambientFadeIn" },
   { key: "fade_out", label: "lighting.ambientFadeOut" },
 ];
-
-export type Translate = (
-  key: string,
-  values?: Record<string, string>,
-) => string;
 
 function fadeLength(fade: FadeConfig | null | undefined): string | null {
   if (fade === null || fade === undefined) return null;
@@ -78,17 +74,24 @@ export function entrySummary(
 ): string {
   const out = fadeLength(entry.fades?.fade_out);
   const fadeIn = fadeLength(entry.fades?.fade_in);
+  // The gap as the player reads it (`rules.auto_play_read`); a gap of none
+  // is no gap, and text the player refuses says so.
+  const gapText =
+    typeof entry.autoPlay === "string" ? entry.autoPlay.trim() : "";
+  const read = gapText ? rules.auto_play_read(gapText) : null;
   const gap =
-    typeof entry.autoPlay === "string" &&
-    entry.autoPlay.trim() &&
-    !isZeroLength(entry.autoPlay)
-      ? formatFadeLength(entry.autoPlay)
-      : null;
+    read?.kind === "invalid"
+      ? tr("playlists.autoPlayGapInvalid", { values: { gap: gapText } })
+      : read?.kind === "gap" && read.ms > 0
+        ? tr("playlists.autoPlayGapSummary", {
+            values: { gap: read.text },
+          })
+        : null;
   const ambient = entry.ambient ?? null;
   return [
-    out && tr("playlists.fadeOutSummary", { length: out }),
-    fadeIn && tr("playlists.fadeInSummary", { length: fadeIn }),
-    gap && tr("playlists.autoPlayGapSummary", { gap }),
+    out && tr("playlists.fadeOutSummary", { values: { length: out } }),
+    fadeIn && tr("playlists.fadeInSummary", { values: { length: fadeIn } }),
+    gap,
     ambient === false && tr("playlists.entryAmbientOffSummary"),
     ambient && tr("playlists.entryAmbientOwnSummary"),
   ]

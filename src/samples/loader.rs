@@ -162,11 +162,7 @@ impl SampleLoader {
         let mut loaded = HashMap::new();
 
         for file in definition.all_files() {
-            let full_path = if Path::new(file).is_absolute() {
-                PathBuf::from(file)
-            } else {
-                base_path.join(file)
-            };
+            let full_path = base_path.join(file);
 
             match self.load(&full_path) {
                 Ok(sample) => {

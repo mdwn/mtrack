@@ -12,34 +12,13 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
+import { sendWs } from "../support/ws";
+import { capturePlaylistPut } from "../support/playlists";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
-
-/** Captures each PUT to the setlist, answering it as saved. */
-async function capturePlaylistPut(page: Page) {
-  const bodies: Record<string, unknown>[] = [];
-  await page.route("**/api/playlists/setlist", async (route) => {
-    if (route.request().method() === "PUT") {
-      bodies.push(route.request().postDataJSON());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", name: "setlist" }),
-      });
-    } else {
-      await route.continue();
-    }
-  });
-  return bodies;
-}
 
 test.describe("Playlist editor: transitions", () => {
   let playlists: PlaylistEditorPage;
@@ -164,13 +143,15 @@ test.describe("Dashboard: next up", () => {
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Walk-in",
       song_duration_ms: 60000,
       playlist_name: "setlist",
       playlist_position: 0,
+      playlist_at_first: true,
+      playlist_at_last: false,
       playlist_songs: ["Walk-in", "Opener", "The Slow One"],
       tracks: [],
       available_playlists: ["all_songs", "setlist"],
@@ -180,7 +161,7 @@ test.describe("Dashboard: next up", () => {
     };
     const nextUp = page.getByTestId("next-up");
 
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       next: {
         song: "Opener",
@@ -199,24 +180,34 @@ test.describe("Dashboard: next up", () => {
       "Next breaks the loop: fades out over 1 measure into Opener",
     );
 
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       looping: false,
       next: { song: "Opener", breaks_loop: false, auto_play_ms: 2000 },
     });
     await expect(nextUp).toHaveText("Next: Opener — starts by itself after 2s");
 
-    await sendWsMessage(page, wsId, {
+    // The gap as the entry shows it: unrounded, half a millisecond is a gap.
+    await sendWs(page, wsId, {
+      ...frame,
+      looping: false,
+      next: { song: "Opener", breaks_loop: false, auto_play_ms: 1000.5 },
+    });
+    await expect(nextUp).toHaveText(
+      "Next: Opener — starts by itself after 1.0005s",
+    );
+
+    await sendWs(page, wsId, {
       ...frame,
       looping: false,
       next: { song: "The Slow One", breaks_loop: false, auto_play_ms: null },
     });
     await expect(nextUp).toHaveText("Next: The Slow One — waits for Play");
 
-    await sendWsMessage(page, wsId, { ...frame, next: { song: null } });
+    await sendWs(page, wsId, { ...frame, next: { song: null } });
     await expect(nextUp).toHaveText("End of playlist");
 
-    await sendWsMessage(page, wsId, { ...frame, next: null });
+    await sendWs(page, wsId, { ...frame, next: null });
     await expect(nextUp).toHaveCount(0);
   });
 
@@ -239,13 +230,15 @@ test.describe("Dashboard: next up", () => {
       lights: null,
     });
     const last = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Daegrima",
       song_duration_ms: 60000,
       playlist_name: "setlist",
       playlist_position: 1,
+      playlist_at_first: false,
+      playlist_at_last: true,
       playlist_songs: ["Opener", "Daegrima"],
       tracks: [],
       available_playlists: ["all_songs", "setlist"],
@@ -255,7 +248,7 @@ test.describe("Dashboard: next up", () => {
     };
 
     // The last entry, with a fade out: Next ends it.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...last,
       next: { song: null, ends_loop: true, fade_out: fade("2measures") },
     });
@@ -265,7 +258,7 @@ test.describe("Dashboard: next up", () => {
     await expect(nextButton).toBeEnabled();
 
     // Without one, the press would cut: still off.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...last,
       next: { song: null, ends_loop: true, fade_out: null },
     });
@@ -277,9 +270,11 @@ test.describe("Dashboard: next up", () => {
       ...last,
       song_name: "Throneless Postlude",
       playlist_position: 0,
+      playlist_at_first: true,
+      playlist_at_last: false,
       playlist_songs: ["Throneless Postlude", "Thunar Prelude"],
     };
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...first,
       next: {
         song: "Thunar Prelude",
@@ -294,7 +289,7 @@ test.describe("Dashboard: next up", () => {
       "title",
       "Previous ends the loop: fades out over 4s (Left Arrow)",
     );
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...first,
       next: {
         song: "Thunar Prelude",
@@ -307,7 +302,7 @@ test.describe("Dashboard: next up", () => {
     await expect(prevButton).toBeDisabled();
 
     // Stopped, the ends of the list are the ends again.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...last,
       is_playing: false,
       next: { song: null },
@@ -326,13 +321,15 @@ test.describe("Dashboard: next up", () => {
     const nextButton = page.getByRole("button", { name: "Next", exact: true });
     const rows = page.locator(".playlist-card__row");
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Daegrima",
       song_duration_ms: 60000,
       playlist_name: "setlist",
       playlist_position: 1,
+      playlist_at_first: false,
+      playlist_at_last: false,
       playlist_off_list: true,
       playlist_songs: ["Opener", "Encore"],
       tracks: [],
@@ -348,17 +345,18 @@ test.describe("Dashboard: next up", () => {
         auto_play_ms: null,
       },
     };
-    await sendWsMessage(page, wsId, frame);
+    await sendWs(page, wsId, frame);
     await expect(rows).toHaveCount(2);
     await expect(page.locator(".playlist-card__row--active")).toHaveCount(0);
     await expect(page.locator(".playlist-card__playing-dot")).toHaveCount(0);
     await expect(nextButton).toBeEnabled();
 
     // On the list again, the row is the song's.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       song_name: "Encore",
       playlist_off_list: false,
+      playlist_at_last: true,
       looping: false,
       next: { song: null },
     });
@@ -377,13 +375,15 @@ test.describe("Dashboard: next up", () => {
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Daegrima",
       song_duration_ms: 60000,
       playlist_name: "setlist",
       playlist_position: 0,
+      playlist_at_first: false,
+      playlist_at_last: false,
       playlist_off_list: true,
       playlist_songs: ["Opener", "Encore"],
       tracks: [],
@@ -394,10 +394,10 @@ test.describe("Dashboard: next up", () => {
       next: { song: "Opener", breaks_loop: false, auto_play_ms: null },
     };
     const prevButton = page.getByRole("button", { name: "Prev", exact: true });
-    await sendWsMessage(page, wsId, frame);
+    await sendWs(page, wsId, frame);
     await expect(prevButton).toBeEnabled();
     // Playing, with no fade out of its own to end on: still a move.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       is_playing: true,
       next: {
@@ -419,10 +419,11 @@ test.describe("Dashboard: next up", () => {
     await expect(miniPrev).toBeEnabled();
 
     // On the first entry, it is the start of the list again.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       song_name: "Opener",
       playlist_off_list: false,
+      playlist_at_first: true,
       looping: false,
       next: { song: "Encore", breaks_loop: false, auto_play_ms: null },
     });

@@ -12,37 +12,31 @@
      * this program. If not, see <https://www.gnu.org/licenses/>.
      *
      * -->
-<script lang="ts" module>
-  export type MetronomeSoundRole = "accent" | "half" | "normal" | "sub";
-  export interface MetronomeDefaultSounds {
-    accent?: { file?: string; freq?: number; volume?: number };
-    half?: { file?: string; freq?: number; volume?: number };
-    normal?: { file?: string; freq?: number; volume?: number };
-    sub?: { file?: string; freq?: number; volume?: number };
-  }
-</script>
-
 <script lang="ts">
+  import type { MetronomeSounds } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import { get } from "svelte/store";
   import { uploadSampleFile } from "../../lib/api/config";
   import SliderStepper from "../SliderStepper.svelte";
   import { previewClick } from "../../lib/clickPreview";
   import FileUpload from "../songs/FileUpload.svelte";
   import {
-    METRONOME_PRESETS,
-    SOUND_DEFAULTS,
+    builtinSounds,
+    metronomePresets,
+    SOUND_ROLES,
+    type SoundRole,
   } from "../../lib/metronomePresets";
 
   interface Props {
     /** The player-wide `metronome.sounds` block, or null when unset. */
-    sounds: MetronomeDefaultSounds | null;
+    sounds: MetronomeSounds | null;
     /** Default-on: songs with a tempo map get a metronome automatically. */
     enabled: boolean;
     /** Player-wide master click volume, or null to leave it at 1x. */
     volume: number | null;
     onchange: () => void;
-    onbrowse: (role: MetronomeSoundRole) => void;
+    onbrowse: (role: SoundRole) => void;
   }
 
   let {
@@ -53,11 +47,9 @@
     onbrowse,
   }: Props = $props();
 
-  const ROLES: MetronomeSoundRole[] = ["accent", "half", "normal", "sub"];
+  const DEFAULTS = builtinSounds();
 
-  const DEFAULTS = SOUND_DEFAULTS;
-
-  function applyPreset(preset: MetronomeDefaultSounds) {
+  function applyPreset(preset: MetronomeSounds) {
     sounds = structuredClone(preset);
     onchange();
   }
@@ -66,7 +58,7 @@
   let uploadMsg = $state("");
 
   function updateSound(
-    role: MetronomeSoundRole,
+    role: SoundRole,
     patch: { file?: string; freq?: number; volume?: number },
   ) {
     const next = { ...(sounds ?? {}) };
@@ -82,7 +74,7 @@
   }
 
   /** On = the config overrides this sound; off = built-in synth defaults. */
-  function toggleSound(role: MetronomeSoundRole, on: boolean) {
+  function toggleSound(role: SoundRole, on: boolean) {
     if (on) {
       updateSound(role, DEFAULTS[role]);
       return;
@@ -94,7 +86,7 @@
   }
 
   /** Uploads into the global samples directory, like the samples editor. */
-  async function handleUpload(role: MetronomeSoundRole, files: File[]) {
+  async function handleUpload(role: SoundRole, files: File[]) {
     if (files.length === 0) return;
     uploading = true;
     uploadMsg = "";
@@ -112,7 +104,7 @@
     }
   }
 
-  export function applyBrowseResult(role: MetronomeSoundRole, path: string) {
+  export function applyBrowseResult(role: SoundRole, path: string) {
     updateSound(role, { file: path });
   }
 </script>
@@ -150,7 +142,7 @@
   </div>
   <div class="presets">
     <span class="field-label">{$t("metronome.presets")}</span>
-    {#each METRONOME_PRESETS as preset (preset.key)}
+    {#each metronomePresets() as preset (preset.key)}
       <button
         class="btn btn-sm"
         onclick={() => applyPreset(preset.sounds)}
@@ -160,7 +152,7 @@
       </button>
     {/each}
   </div>
-  {#each ROLES as role (role)}
+  {#each SOUND_ROLES as role (role)}
     {@const sound = sounds?.[role]}
     <div class="sound-row" class:sound-row--off={!sound}>
       <label class="toggle-row">
@@ -240,7 +232,7 @@
               >
             </div>
             <FileUpload
-              accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+              accept={audioAccept()}
               label={uploading
                 ? $t("common.uploading")
                 : $t("samples.dropAudio")}

@@ -20,20 +20,24 @@
    * three maps the live state message carries and never touches the
    * engine, so a playing song plays on.
    */
+  import type {
+    PreviewEvaluation,
+    SongInfo,
+    StageValues,
+  } from "../../gen/rules/mtrack_rules";
   import { onDestroy, onMount } from "svelte";
   import { t } from "svelte-i18n";
   import { BadAnswerError } from "../../lib/lighting/answer";
-  import { fetchSongs, type SongSummary } from "../../lib/api/songs";
+  import { fetchSongs } from "../../lib/api/songs";
   import {
-    clock,
     evaluatePreview,
     groupActivity,
     sectionSegments,
     timelineLink,
-    type PreviewEvaluation,
-    type PreviewFrame,
   } from "../../lib/lighting/preview";
   import { playbackStore } from "../../lib/ws/stores";
+  import { rules } from "../../lib/rules";
+  import { latestLoad } from "../../lib/util/latest";
 
   interface Props {
     /** Song to open on, from the address. */
@@ -41,7 +45,7 @@
     /** Time to open at, seconds, from the address. */
     initialTime?: number | null;
     /** Called with what the scene should draw; null when there is nothing. */
-    onfeed: (frame: PreviewFrame | null) => void;
+    onfeed: (frame: StageValues | null) => void;
     /** Called with each moment evaluated, so the host can keep it in the
      *  address. */
     onmoment?: (song: string, time: number) => void;
@@ -57,7 +61,7 @@
   /** How long scrubbing rests before the show is evaluated. */
   const DEBOUNCE_MS = 120;
 
-  let songs = $state<SongSummary[]>([]);
+  let songs = $state<SongInfo[]>([]);
   let loaded = $state(false);
   let songName = $state("");
   let time = $state(0);
@@ -73,7 +77,7 @@
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** Answers arriving after a newer request went out are stale. */
-  let sequence = 0;
+  const evaluations = latestLoad();
 
   onMount(async () => {
     try {
@@ -99,28 +103,36 @@
 
   onDestroy(() => {
     clearTimeout(timer);
-    sequence++;
+    // Any answer still to come is for a panel no longer here.
+    evaluations();
     onfeed(null);
   });
 
   async function evaluateNow() {
     clearTimeout(timer);
     if (!songName) return;
-    const mine = ++sequence;
+    const current = evaluations();
     busy = true;
     try {
       const result = await evaluatePreview(songName, [time]);
-      if (mine !== sequence) return;
+      if (!current()) return;
       const at = result.evaluations[0];
       onmoment?.(songName, time);
       evaluation = at ?? null;
       untouched = result.untouched;
       error = null;
       onfeed(
-        at ? { fixtures: at.fixtures, poses: at.poses, cells: at.cells } : null,
+        at
+          ? {
+              fixtures: at.fixtures,
+              poses: at.poses,
+              cells: at.cells,
+              strobe_rates: at.strobe_rates,
+            }
+          : null,
       );
     } catch (e) {
-      if (mine !== sequence) return;
+      if (!current()) return;
       evaluation = null;
       untouched = [];
       error =
@@ -131,7 +143,7 @@
             : String(e);
       onfeed(null);
     } finally {
-      if (mine === sequence) busy = false;
+      if (current()) busy = false;
     }
   }
 
@@ -204,7 +216,7 @@
               step="0.1"
               value={time}
               disabled={!song}
-              aria-valuetext={clock(time, true)}
+              aria-valuetext={rules.clock(time, 1)}
               oninput={scrub}
             />
           </div>
@@ -212,7 +224,7 @@
             class="preview__clock"
             for="preview-time"
             data-testid="preview-clock"
-            >{clock(time, true)} / {clock(duration)}</output
+            >{rules.clock(time, 1)} / {rules.clock(duration, 0)}</output
           >
         </div>
       </div>

@@ -66,6 +66,28 @@ pub struct ConfigStore {
     change_tx: broadcast::Sender<()>,
 }
 
+/// A config section a surface updates whole from a JSON body, through
+/// [`ConfigStore::update_section`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigSection {
+    Audio,
+    Midi,
+    Dmx,
+    Controllers,
+}
+
+impl ConfigSection {
+    /// The section's name in the config.
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigSection::Audio => "audio",
+            ConfigSection::Midi => "midi",
+            ConfigSection::Dmx => "dmx",
+            ConfigSection::Controllers => "controllers",
+        }
+    }
+}
+
 /// A change to one hardware subsystem, applied wherever that subsystem is
 /// actually configured.
 ///
@@ -350,6 +372,13 @@ impl ConfigStore {
     ///
     /// Only changed profiles are rewritten. Rewriting all of them would drop
     /// the comments from files that had nothing to do with the edit.
+    ///
+    /// Leaves the config warnings remembered. Every write here is a typed
+    /// change to a config already loaded, which cannot bring back a legacy
+    /// top-level field, so it has nothing new to warn about; forgetting here
+    /// made every playlist switch repeat every legacy warning. A legacy field
+    /// comes back only through raw YAML, which is read back through
+    /// [`DiskWrite::read_back`], and that forgets.
     fn persist(&self, config: &Player, profiles_before: &[String]) -> Result<(), ConfigError> {
         let Some(dir) = self.directory_profiles(config) else {
             let yaml = to_yaml_string(config)
@@ -485,6 +514,48 @@ impl ConfigStore {
             .await
     }
 
+    /// Updates `section` from its JSON form, as MCP, gRPC and the web API
+    /// take it: `null` removes the audio, MIDI or DMX section; the
+    /// controllers are a list. A body that is not the section's shape, or a
+    /// section that does not validate, is a validation error.
+    pub async fn update_section(
+        &self,
+        section: ConfigSection,
+        body: serde_json::Value,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        fn parse<T: serde::de::DeserializeOwned>(
+            section: ConfigSection,
+            body: serde_json::Value,
+        ) -> Result<T, ConfigError> {
+            serde_json::from_value(body).map_err(|e| {
+                ConfigError::Validation(format!("invalid {} JSON: {e}", section.name()))
+            })
+        }
+        fn valid<T>(
+            section: Option<T>,
+            validate: impl Fn(&T) -> Result<(), Vec<String>>,
+        ) -> Result<Option<T>, ConfigError> {
+            if let Some(section) = &section {
+                validate(section).map_err(|errors| ConfigError::Validation(errors.join("; ")))?;
+            }
+            Ok(section)
+        }
+        let update = match section {
+            ConfigSection::Audio => {
+                SubsystemUpdate::Audio(valid(parse(section, body)?, Audio::validate)?)
+            }
+            ConfigSection::Midi => {
+                SubsystemUpdate::Midi(valid(parse(section, body)?, Midi::validate)?)
+            }
+            ConfigSection::Dmx => {
+                SubsystemUpdate::Dmx(valid(parse(section, body)?, Dmx::validate)?)
+            }
+            ConfigSection::Controllers => SubsystemUpdate::Controllers(parse(section, body)?),
+        };
+        self.update_subsystem(update, checksum).await
+    }
+
     /// Applies a subsystem update to wherever the loader will actually read it.
     ///
     /// `Player::normalize` makes `profiles` the source of truth and *discards*
@@ -604,6 +675,10 @@ impl ConfigStore {
                     "profile update removes populated section(s)"
                 );
             }
+            // The file it was loaded from stays its own: the status links
+            // the running profile by it (`hardware.profile_file`).
+            let mut profile = profile;
+            profile.set_source_file(list[index].source_file().map(String::from));
             list[index] = profile;
             Ok(())
         })
@@ -779,6 +854,9 @@ impl DiskWrite<'_> {
         // a read and the swap would be overwritten in memory by the older
         // copy, and the next persist would write that copy back over its file.
         let path = self.store.path.clone();
+        // Written to disk under this lock: a new config, which gives its own
+        // warnings even where the last one gave them.
+        super::player::forget_config_warnings();
         let config = tokio::task::spawn_blocking(move || Player::deserialize(&path))
             .await
             .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
@@ -1243,6 +1321,48 @@ profiles:
             before,
             "the checksum moved"
         );
+    }
+
+    /// A playlist switch is a typed write and cannot bring back a legacy
+    /// field, so it leaves the legacy warnings remembered: forgetting them made
+    /// every switch repeat every one. A raw-YAML save can bring one back, and
+    /// is read back with them forgotten, so the field it restores is warned
+    /// about again.
+    ///
+    /// Counted on this thread (a current-thread runtime): the remembered
+    /// warnings themselves are shared with every test running alongside.
+    #[tokio::test]
+    async fn a_playlist_switch_does_not_rewarn_and_a_raw_yaml_save_does() {
+        use crate::config::player::config_warnings_forgotten_on_this_thread as forgotten;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mtrack.yaml");
+        let legacy = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                      off_events: []\n  idling_events: []\n  playing_events: []\n";
+        std::fs::write(&path, legacy).unwrap();
+        let store = ConfigStore::new(Player::deserialize(&path).unwrap(), path.clone());
+
+        let before = forgotten();
+        store
+            .set_active_playlist("alternate".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            forgotten(),
+            before,
+            "a playlist switch let every legacy warning be given again"
+        );
+
+        // The operator's raw-YAML save, putting the legacy field back.
+        let disk_write = store.lock_for_disk_write().await;
+        crate::webui::config_io::staged_write(&path, legacy).unwrap();
+        disk_write.reload().await.unwrap();
+        assert_eq!(
+            forgotten(),
+            before + 1,
+            "a raw-YAML save that brings back a legacy field was not warned about again"
+        );
+        assert!(store.read_config().await.status_events().is_some());
     }
 
     /// Switching playlist happens constantly during a show and goes through a

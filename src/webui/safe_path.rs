@@ -67,14 +67,7 @@ impl SafePath {
         name: &str,
         root: &VerifiedRoot,
     ) -> Result<Self, SafePathError> {
-        if name.is_empty()
-            || name.contains("..")
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains('\0')
-        {
-            return Err(SafePathError::InvalidName);
-        }
+        Self::validate_name(name)?;
         let target = parent.path.join(name);
         if !target.exists() {
             Self::validate_new_name(name)?;
@@ -90,18 +83,26 @@ impl SafePath {
     }
 
     /// Validates a single path segment (filename or directory name) is safe.
-    /// Rejects empty strings, "..", and path separators.
+    /// Rejects empty strings, `.`, `..`, and path separators.
     ///
     /// Enough for a name already on disk, to read, save, rename away from or
     /// delete; a name being given to something new must also pass
     /// [`SafePath::validate_new_name`].
     pub fn validate_name(name: &str) -> Result<(), SafePathError> {
-        if name.is_empty()
-            || name == "."
-            || name.contains("..")
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains('\0')
+        if name.is_empty() || name == "." || name.contains('/') {
+            return Err(SafePathError::InvalidName);
+        }
+        Self::validate_relative_segments(name)
+    }
+
+    /// What every relative path under the root is held to: it stays inside
+    /// ([`crate::util::escapes_project`], the rule a playlist's paths are held
+    /// to as well), with no backslash or NUL in it.
+    pub(crate) fn validate_relative_segments(relative: &str) -> Result<(), SafePathError> {
+        if relative.is_empty()
+            || relative.contains('\\')
+            || relative.contains('\0')
+            || crate::util::escapes_project(Path::new(relative))
         {
             return Err(SafePathError::InvalidName);
         }
@@ -144,16 +145,7 @@ impl SafePath {
         relative: &str,
         root: &VerifiedRoot,
     ) -> Result<PathBuf, SafePathError> {
-        if relative.is_empty()
-            || relative.contains("..")
-            || relative.contains('\\')
-            || relative.contains('\0')
-        {
-            return Err(SafePathError::InvalidName);
-        }
-        if std::path::Path::new(relative).is_absolute() {
-            return Err(SafePathError::InvalidName);
-        }
+        Self::validate_relative_segments(relative)?;
         let resolved = root.as_path().join(relative);
         if resolved.exists() {
             let safe = SafePath::resolve(&resolved, root)?;
@@ -166,9 +158,7 @@ impl SafePath {
     /// Creates a nested directory path (e.g. "Artist/Album/Song") segment by segment,
     /// verifying containment at each step.
     pub fn create_dir_nested(name: &str, root: &VerifiedRoot) -> Result<Self, SafePathError> {
-        if name.is_empty() || name.contains("..") || name.contains('\\') || name.contains('\0') {
-            return Err(SafePathError::InvalidName);
-        }
+        Self::validate_relative_segments(name)?;
         // Each segment to be created is checked before any is, so a bad name
         // further down ("Artist/.hidden") leaves no new directory behind.
         let mut existing = root.as_path().to_path_buf();
@@ -463,5 +453,28 @@ mod tests {
         let root = VerifiedRoot::new(dir.path()).unwrap();
         assert!(SafePath::validate_relative("../escape", &root).is_err());
         assert!(SafePath::validate_relative("/absolute", &root).is_err());
+    }
+
+    /// `..` is an escape as a path component, not as two characters in a
+    /// name: the rule a playlist's paths are held to.
+    #[test]
+    fn a_dot_dot_inside_a_name_is_no_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+        assert!(SafePath::validate_name("v1..2").is_ok());
+        assert!(SafePath::validate_name("..").is_err());
+        assert!(SafePath::validate_relative("v1..2/show.light", &root).is_ok());
+        assert!(SafePath::validate_relative("v1/../show.light", &root).is_err());
+        assert!(SafePath::create_dir_nested("Artist/v1..2", &root).is_ok());
+        assert!(SafePath::create_dir_nested("Artist/..", &root).is_err());
+    }
+
+    /// `create_dir` holds a name to `validate_name`, so `.` names nothing.
+    #[test]
+    fn create_dir_rejects_the_current_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+        let parent = root.as_safe_path();
+        assert!(SafePath::create_dir(&parent, ".", &root).is_err());
     }
 }

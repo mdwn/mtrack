@@ -17,28 +17,7 @@
 
 use super::*;
 use crate::lighting::parser::parse_light_shows;
-
-fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("parse")
-        .into_values()
-        .collect()
-}
-
-fn rgb(name: &str, address: u16) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(
-        name.to_string(),
-        1,
-        address,
-        "RGB".to_string(),
-        channels,
-        None,
-    )
-}
+use crate::testutil::lighting::{rgb, shows};
 
 /// Played through from 0 in 10 ms frames; the frame time from which no
 /// effect is active through `until_ms` (None if one still is then).
@@ -104,10 +83,7 @@ fn lint_end(source: &str) -> Duration {
             stopped.remove(name);
         }
         for e in &cue.effects {
-            if e.sequence_name
-                .as_ref()
-                .is_some_and(|n| stopped.contains(n))
-            {
+            if e.sequences.iter().any(|n| stopped.contains(n)) {
                 continue;
             }
             let layer = e
@@ -120,9 +96,7 @@ fn lint_end(source: &str) -> Duration {
                 .map(|(_, at)| *at);
             let stopped_at = stops
                 .iter()
-                .filter(|(name, at)| {
-                    Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
-                })
+                .filter(|(name, at)| e.sequences.contains(name) && *at > cue.time)
                 .map(|(_, at)| *at);
             end = end.max(
                 cleared_at
@@ -134,11 +108,7 @@ fn lint_end(source: &str) -> Duration {
         }
         // A stop at a pass's own boundary ends that pass only.
         for name in &cue.stop_sequences {
-            if !cue
-                .effects
-                .iter()
-                .any(|e| e.sequence_name.as_ref() == Some(name))
-            {
+            if !cue.effects.iter().any(|e| e.sequences.contains(name)) {
                 stopped.insert(name.clone());
             }
         }
@@ -355,8 +325,7 @@ fn seek3(source: &str, seek_ms: u64, until_ms: u64) -> EffectEngine {
     fixtures3(&mut engine);
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     run(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }

@@ -12,6 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::fixture_types::{
+    BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
+    GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, StrobeRange,
+    TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
+};
+use crate::webui::wire::messages::FixturePlacement;
+use crate::webui::wire::preview::{
+    LightFileInfo, LightFiles, LightingGroup, LightingGroups, LightingValidation,
+};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -22,8 +31,11 @@ use axum::{
 use serde_json::json;
 
 use super::super::config_io;
+use super::super::safe_path::{SafePathError, VerifiedRoot};
 use super::super::server::WebUiState;
+use super::lighting_writes;
 use crate::lighting;
+use crate::lighting::files::Kind;
 
 /// The canonical project root the lighting endpoints write into.
 #[allow(clippy::result_large_err)]
@@ -90,20 +102,25 @@ use lighting::import::suggested_type_name;
 /// footprint, what a show can do in it (capabilities, cells, strobe range),
 /// its channel map and the distiller's warnings, or the reason it cannot be
 /// imported.
-fn inspect_description(description: &lighting::gdtf::Description) -> serde_json::Value {
+fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspection {
     // Distilling every mode is a few milliseconds each (design 12.2), so the
     // picker can say what each one lets a show do before anything is written.
     let suggested = suggested_type_name(&description.name);
     let summaries = lighting::gdtf::mode_summaries(description);
-    let modes: Vec<serde_json::Value> = summaries
+    let modes = summaries
         .iter()
         .enumerate()
         .map(|(index, summary)| {
-            let mut mode = json!({
-                "name": summary.name,
-                "footprint": summary.footprint,
-            });
-            let fields = mode.as_object_mut().expect("a json object");
+            let mut mode = GdtfMode {
+                name: summary.name.clone(),
+                footprint: summary.footprint,
+                capabilities: None,
+                wants: None,
+                cells: None,
+                strobe_range: None,
+                channels: None,
+                refused: None,
+            };
             // The importer finds a mode by name and takes the first match, so
             // a repeat could only ever import its namesake.
             let repeats = summaries[..index].iter().any(|m| m.name == summary.name);
@@ -125,36 +142,31 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    fields.insert(
-                        "capabilities".into(),
-                        json!(lighting::fit::FitFixture::from_info(&info, &[]).capability_names()),
-                    );
-                    fields.insert("cells".into(), json!(fixture_type.cells().len()));
-                    if let Some(max_hz) = fixture_type.max_strobe_frequency() {
-                        fields.insert(
-                            "strobe_range".into(),
-                            json!({
-                                "min_hz": fixture_type.min_strobe_frequency(),
-                                "max_hz": max_hz,
-                            }),
-                        );
-                    }
-                    let mut channels: Vec<(&u16, &String)> = fixture_type
+                    let fit = lighting::fit::FitFixture::from_info(&info, &[]);
+                    mode.capabilities = Some(fit.capability_names());
+                    mode.wants = Some(fit.wants());
+                    mode.cells = Some(fixture_type.cells().len());
+                    mode.strobe_range =
+                        fixture_type
+                            .max_strobe_frequency()
+                            .map(|max_hz| StrobeRange {
+                                min_hz: fixture_type.min_strobe_frequency(),
+                                max_hz,
+                            });
+                    let mut channels: Vec<(u16, String)> = fixture_type
                         .channels()
                         .iter()
-                        .map(|(name, offset)| (offset, name))
+                        .map(|(name, offset)| (*offset, name.clone()))
                         .collect();
                     channels.sort();
-                    fields.insert("channels".into(), json!(channels));
+                    mode.channels = Some(channels);
                 }
-                Err(reason) => {
-                    fields.insert("refused".into(), json!(reason));
-                }
+                Err(reason) => mode.refused = Some(reason),
             }
             mode
         })
         .collect();
-    json!({ "modes": modes })
+    GdtfInspection { modes }
 }
 
 /// Query parameters for the GDTF import endpoint.
@@ -171,8 +183,9 @@ pub(super) struct GdtfImportQuery {
 /// its modes straight away. Answers the import report
 /// (`already_imported` when the same archive was imported before and
 /// nothing was written; `renamed_from` when the archive's fixture name was
-/// taken). A different archive of the same file name already in the library
-/// is a 409; anything else refused is a 400.
+/// taken). A different archive of the same file name already in the library,
+/// or a record name or file that is taken, is a 409; anything else refused
+/// is a 400.
 pub(super) async fn import_gdtf(
     State(state): State<WebUiState>,
     Query(query): Query<GdtfImportQuery>,
@@ -180,6 +193,9 @@ pub(super) async fn import_gdtf(
 ) -> impl IntoResponse {
     let (filename, bytes) = first_multipart_file(&mut multipart).await?;
     let project = project_root(&state.config_path)?;
+    // Where the engine reads fixture types on this host, as the CLI and MCP
+    // import into (#673): its name check and a pinned record go there.
+    let types_dir = lighting_dir(&state.config_path, None, LightingDir::FixtureTypes)?;
     // The inner Result survives spawn_blocking_io so an import refusal (bad
     // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
@@ -193,27 +209,14 @@ pub(super) async fn import_gdtf(
                 &filename,
                 query.name.as_deref(),
                 &project,
-                DEFAULT_FIXTURE_TYPES_DIR,
+                &types_dir,
             )
-            .map_err(|e| {
-                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::BAD_REQUEST
-                };
-                (status, e.to_string())
-            }),
+            .map_err(|e| lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(serde_json::to_value(&report).unwrap_or_default()),
-        )
-            .into_response(),
-    )
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
+    Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
 }
 
 /// GET /api/lighting — lists available .light files from the songs directory.
@@ -230,20 +233,16 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
             Ok(f) => f,
             Err(e) => return e,
         };
-    light_files.sort_by(|a, b| {
-        a.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("path").and_then(|v| v.as_str()).unwrap_or(""))
-    });
-    (StatusCode::OK, Json(json!({"files": light_files}))).into_response()
+    light_files.sort_by(|a, b| a.path.cmp(&b.path));
+    (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
-/// Recursively finds .light files under a directory.
+/// Recursively finds light show files (`.light`, in any case:
+/// `songs::FileKind::of`) under a directory.
 pub(crate) fn find_light_files(
     base: &std::path::Path,
     dir: &std::path::Path,
-    results: &mut Vec<serde_json::Value>,
+    results: &mut Vec<LightFileInfo>,
 ) -> Result<(), std::io::Error> {
     // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
     if !dir.is_dir() {
@@ -255,7 +254,7 @@ pub(crate) fn find_light_files(
         let path = entry.path();
         if path.is_dir() {
             find_light_files(base, &path, results)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("light") {
+        } else if crate::songs::FileKind::is_lighting(&path) {
             let relative = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
@@ -266,13 +265,22 @@ pub(crate) fn find_light_files(
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            results.push(json!({
-                "name": name,
-                "path": relative,
-            }));
+            results.push(LightFileInfo {
+                name,
+                path: relative,
+            });
         }
     }
     Ok(())
+}
+
+/// The 404 for a lighting file `name` that is not there.
+fn lighting_file_not_found(name: &str) -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": format!("Lighting file not found: {name}")})),
+    )
+        .into_response()
 }
 
 /// GET /api/lighting/:name — returns the raw DSL content of a .light file.
@@ -292,11 +300,7 @@ pub(super) async fn get_lighting_file(
     let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
         Ok(p) => p,
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lighting file not found: {}", name)})),
-            )
-                .into_response();
+            return lighting_file_not_found(&name);
         }
     };
 
@@ -316,65 +320,172 @@ pub(super) async fn get_lighting_file(
     }
 }
 
-/// Where lighting file `name` is, or would be written, under the songs root.
-fn resolve_lighting_path(
-    state: &WebUiState,
-    name: &str,
-) -> Result<std::path::PathBuf, super::super::safe_path::SafePathError> {
-    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
+/// The one songs-root rule for a song's light show, written, deleted or
+/// validated, by the web UI and MCP alike: the folder `path` is in is
+/// inside the songs root `songs_root`, canonically, as
+/// [`SafePath::resolve`](super::super::safe_path::SafePath::resolve) holds
+/// every path the lighting endpoints take. A folder not there yet is held
+/// to it by its nearest part that is there, canonicalized (a symlinked
+/// `lighting/` pointing outside is outside), the rest of it plain names
+/// (no `..`, and no link that leads nowhere, which a write would follow).
+///
+/// Answers the folder resolved, joined with `path`'s own name, which is
+/// not resolved: a link there is the link, as the song loader names it,
+/// so its `include`s resolve where the loader resolves them, and a delete
+/// removes the link, never what it leads to. A write follows it, so
+/// [`light_show_to_write`] holds what it leads to as well. 403 outside
+/// the root.
+#[allow(clippy::result_large_err)]
+pub(crate) fn light_show_in_songs_root(
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, SafePathError};
 
-    let root = VerifiedRoot::new(&state.songs_path())?;
-
-    // Resolve the file path under the songs root. For existing files, SafePath::resolve
-    // canonicalizes and verifies containment. For new files, resolve the parent directory
-    // and join the filename to it.
-    let candidate = root.as_path().join(name);
-    match SafePath::resolve(&candidate, &root) {
-        Ok(p) => Ok(p.as_path().to_path_buf()),
-        Err(_) => {
-            // File doesn't exist — resolve the parent and join the filename.
-            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
-                (Some(p), Some(f)) => (p, f),
-                _ => return Err(SafePathError::InvalidName),
-            };
-            let safe_parent = SafePath::resolve(parent, &root)?;
-            Ok(safe_parent.as_path().join(filename))
+    let outside = || SafePathError::OutsideRoot.into_response();
+    let (Some(folder), Some(file_name)) = (path.parent(), path.file_name()) else {
+        return Err(outside());
+    };
+    let mut missing = Vec::new();
+    let mut existing = folder;
+    loop {
+        match SafePath::resolve(existing, root) {
+            Ok(safe) => {
+                let mut resolved = safe.as_path().to_path_buf();
+                resolved.extend(missing.iter().rev());
+                resolved.push(file_name);
+                return Ok(resolved);
+            }
+            Err(SafePathError::NotFound) => {
+                // A link that leads nowhere: what a write made through it
+                // would land on is not known to be inside.
+                if std::fs::symlink_metadata(existing).is_ok() {
+                    return Err(outside());
+                }
+                match (existing.parent(), existing.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        missing.push(name.to_os_string());
+                        existing = parent;
+                    }
+                    // A `..` past a part that is not there, or nothing
+                    // there at all: nowhere that can be shown to be inside.
+                    _ => return Err(outside()),
+                }
+            }
+            Err(e) => return Err(e.into_response()),
         }
     }
 }
 
-/// PUT /api/lighting/:name — validates and atomically writes a lighting DSL file.
+/// Where a write of the light show `path` lands, held to the songs root:
+/// [`light_show_in_songs_root`], and, the file being a link, which the
+/// write follows, what it leads to inside the songs root too (403
+/// otherwise). A link that leads nowhere is refused: the write would make
+/// its target, wherever that is. Both the name written and the file a
+/// link leads to must be `.light` files (400 otherwise): a show is never
+/// written over a song's config or anything else.
+#[allow(clippy::result_large_err)]
+fn light_show_to_write(
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, SafePathError};
+
+    let not_a_show = || {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only write .light files"})),
+        )
+            .into_response()
+    };
+    let is_show = crate::songs::FileKind::is_lighting;
+    let path = light_show_in_songs_root(root, path)?;
+    if !is_show(&path) {
+        return Err(not_a_show());
+    }
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        let target = SafePath::resolve(&path, root).map_err(|e| match e {
+            SafePathError::NotFound => SafePathError::OutsideRoot.into_response(),
+            e => e.into_response(),
+        })?;
+        if !is_show(target.as_path()) {
+            return Err(not_a_show());
+        }
+    }
+    Ok(path)
+}
+
+/// Refuses a light show path, resolved as the handler resolves it, that is
+/// inside the venues or fixture types directory the engine reads on this
+/// host: those files are written by name, by the one rule for them
+/// ([`lighting_writes`]), never as a song's light show. Compared by
+/// identity ([`crate::util::is_within_dir`]), so no spelling (`..`, a
+/// symlink, another case) gets around it.
+async fn refuse_venue_or_type_file(
+    config_path: &std::path::Path,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<(), lighting_writes::Answer> {
+    let config_path = config_path.to_path_buf();
+    let project = crate::util::project_dir_of(&config_path);
+    let (path, name) = (path.to_path_buf(), name.to_string());
+    let refused = tokio::task::spawn_blocking(move || {
+        // A config that does not load is a 500, as at every endpoint that
+        // reads these directories: the defaults may not be this host's.
+        let dirs = configured_lighting_dirs(&config_path)?;
+        Ok::<_, String>(
+            [
+                (Kind::Venue, dirs.venues),
+                (Kind::FixtureType, dirs.fixture_types),
+            ]
+            .into_iter()
+            .find(|(_, dir)| crate::util::is_within_dir(&path, &project.join(dir))),
+        )
+    })
+    .await
+    .unwrap_or(Ok(None))
+    .map_err(|e| lighting_writes::Answer::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    match refused {
+        Some((kind, dir)) => Err(lighting_writes::Answer::bad(format!(
+            "{name} is in the {noun}s directory ({dir}): a {noun} is saved by name, on the \
+             Lighting page or with MCP's {noun} tools; this endpoint is for song light shows",
+            noun = kind.noun()
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// PUT /api/lighting/:name — validates and atomically writes a lighting DSL
+/// file: a song's light show ([`save_light_show`]).
 pub(super) async fn put_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    let verified_path = match resolve_lighting_path(&state, &name) {
-        Ok(path) => path,
+    // A new file goes in a folder already there, as the editor saves it.
+    let songs_root = state.songs_path();
+    let root = match VerifiedRoot::new(&songs_root) {
+        Ok(root) => root,
         Err(e) => return e.into_response(),
+    };
+    let verified_path = match light_show_in_songs_root(&root, &songs_root.join(&name)) {
+        Ok(path) if path.parent().is_some_and(std::path::Path::is_dir) => path,
+        Ok(_) => return lighting_file_not_found(&name),
+        Err(e) => return e,
     };
 
     // Held from reading the song's tempo: a song save changing it reloads
     // the songs under this lock.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    // Validate against the tempo the owning song loads this file with. A show
-    // inheriting its song's tempo is valid content that a tempo-less parse
-    // rejects, so writing it through the UI would fail for no real reason.
     let tempo = song_tempo_for_path(&state, &verified_path);
-    if let Err(errors) = config_io::validate_light_show(
-        &body,
-        Some(&verified_path),
-        Some(&state.songs_path()),
+    match save_light_show(
+        &state.config_path,
+        &root,
+        &verified_path,
+        &name,
+        body,
         tempo.as_ref(),
-    ) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-    }
-
-    let vp = verified_path;
-    let body_owned = body;
-    match super::helpers::spawn_blocking_io("write lighting file", move || {
-        config_io::staged_write(&vp, &body_owned)
-    })
+    )
     .await
     {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
@@ -382,49 +493,130 @@ pub(super) async fn put_lighting_file(
     }
 }
 
-/// DELETE /api/lighting/:name — deletes a .light file from disk.
+/// Writes a song's light show `body` to `path` (shown as `name`), by the
+/// one rule of the web UI's light show save and MCP's
+/// `write_song_lighting` and `patch_song_lighting`: inside `songs_root`
+/// ([`light_show_to_write`]); never a file in the venues or fixture
+/// types directory ([`refuse_venue_or_type_file`]); parsed first (400 with
+/// its `errors`, each `Invalid light show DSL: ...`, as the venue and
+/// fixture type saves say it) against `tempo`, the tempo its
+/// song loads it with (a show inheriting its song's tempo is valid content
+/// that a tempo-less parse rejects), its `include`s resolved where it is
+/// written and kept inside `root`; its directory made only then. The
+/// caller holds [`super::songs_api::SONG_WRITES`].
+pub(crate) async fn save_light_show(
+    config_path: &std::path::Path,
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+    name: &str,
+    body: String,
+    tempo: Option<&crate::tempo::TempoMap>,
+) -> Result<(), axum::response::Response> {
+    // The venues and fixture types refusal first: it says what to do
+    // instead, where the songs-root one, for those directories outside the
+    // songs root, says only no.
+    refuse_venue_or_type_file(config_path, path, name)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let path = &light_show_to_write(root, path)?;
+    if let Err(errors) =
+        config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
+    {
+        let errors: Vec<String> = errors
+            .into_iter()
+            .map(|e| format!("Invalid light show DSL: {e}"))
+            .collect();
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+    }
+
+    let vp = path.to_path_buf();
+    super::helpers::spawn_blocking_io("write lighting file", move || {
+        if let Some(parent) = vp.parent() {
+            crate::util::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        config_io::staged_write(&vp, &body)
+    })
+    .await
+}
+
+/// DELETE /api/lighting/:name — deletes a song's `.light` file from disk,
+/// by the one rule of MCP's `delete_song_lighting` too
+/// ([`check_light_show_delete`]): a link is removed, never what it leads
+/// to.
 pub(super) async fn delete_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
-
-    let root = match VerifiedRoot::new(&state.songs_path()) {
-        Ok(r) => r,
+    let songs_root = state.songs_path();
+    let root = match VerifiedRoot::new(&songs_root) {
+        Ok(root) => root,
         Err(e) => return e.into_response(),
     };
-    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lighting file not found: {}", name)})),
-            )
-                .into_response();
-        }
-    };
-
-    if safe.as_path().extension().and_then(|e| e.to_str()) != Some("light") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete .light files"})),
-        )
-            .into_response();
-    }
-
-    // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
-    let path = safe.as_path().to_path_buf();
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    match super::helpers::spawn_blocking_io("delete lighting file", move || {
-        std::fs::remove_file(&path)
-    })
-    .await
-    {
+    let path =
+        match check_light_show_delete(&state.config_path, &root, &songs_root.join(&name), &name)
+            .await
+        {
+            Ok(path) => path,
+            Err(refused) => return refused,
+        };
+    match remove_light_show(&songs_root, &path).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
         Err(e) => e,
     }
+}
+
+/// Whether the file at `path` (shown as `name`) may be deleted as a song's
+/// light show, by the one rule of the web UI's delete and MCP's
+/// `delete_song_lighting`: a `.light` file (400 otherwise), never one in
+/// the venues or fixture types directory ([`refuse_venue_or_type_file`]),
+/// in a folder inside `songs_root` ([`light_show_in_songs_root`]), and
+/// there (404 otherwise). Answers the file to remove: a link itself, not
+/// what it leads to, whose name is the one checked.
+pub(crate) async fn check_light_show_delete(
+    config_path: &std::path::Path,
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    // The name checked is the one removed: the resolved path keeps it.
+    if !crate::songs::FileKind::is_lighting(path) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only delete .light files"})),
+        )
+            .into_response());
+    }
+    // As a save: the venues and fixture types refusal, which says what to
+    // do instead, before the songs root's. Of where the file is, its
+    // folder: a link there is removed, not what it leads to, so where it
+    // leads does not matter.
+    let folder = path.parent().unwrap_or(path);
+    refuse_venue_or_type_file(config_path, folder, name)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let path = light_show_in_songs_root(root, path)?;
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Err(lighting_file_not_found(name));
+    }
+    Ok(path)
+}
+
+/// Removes a song's light show file, [`check_light_show_delete`] first,
+/// off the async runtime: the file itself, a link and not what it leads
+/// to, held to `songs_root` again ([`light_show_in_songs_root`]), as it
+/// is checked some time before.
+pub(crate) async fn remove_light_show(
+    songs_root: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), axum::response::Response> {
+    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
+    // codeql[rust/path-injection] the folder is verified via SafePath::resolve against the songs root.
+    let path = light_show_in_songs_root(&root, path)?;
+    super::helpers::spawn_blocking_io("delete lighting file", move || std::fs::remove_file(&path))
+        .await
 }
 
 /// A `?song=` on an endpoint that otherwise works on bare DSL, naming the song
@@ -453,10 +645,17 @@ pub(super) async fn validate_lighting(
         .and_then(|name| state.player.songs().get(name).ok());
     let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
     let path = match query.file.as_deref() {
-        Some(file) => match resolve_lighting_path(&state, file) {
-            Ok(path) => Some(path),
-            Err(e) => return e.into_response(),
-        },
+        Some(file) => {
+            let songs_root = state.songs_path();
+            let root = match VerifiedRoot::new(&songs_root) {
+                Ok(root) => root,
+                Err(e) => return e.into_response(),
+            };
+            match light_show_in_songs_root(&root, &songs_root.join(file)) {
+                Ok(path) => Some(path),
+                Err(e) => return e,
+            }
+        }
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
     match config_io::validate_light_show(
@@ -465,10 +664,20 @@ pub(super) async fn validate_lighting(
         Some(&state.songs_path()),
         tempo.as_ref(),
     ) {
-        Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(LightingValidation {
+                valid: true,
+                errors: None,
+            }),
+        )
+            .into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({"valid": false, "errors": errors})),
+            Json(LightingValidation {
+                valid: false,
+                errors: Some(errors),
+            }),
         )
             .into_response(),
     }
@@ -478,105 +687,74 @@ pub(super) async fn validate_lighting(
 // Fixture Type & Venue CRUD endpoints
 // ---------------------------------------------------------------------------
 
-/// The project's default lighting directories, the engine's own
-/// (`config::lighting`): a request's `?dir=` is the running profile's
-/// configured directory, and without one the engine reads these.
-pub(super) use crate::config::lighting::{DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR};
-
-/// Fixture type files: `.fixture` (rich channels, GDTF records) and the v1
-/// `.light`, loaded as peers — the same pair the lighting system reads.
-const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_EXTENSIONS;
-
-/// The fixture type names a file declares; none if it cannot be read or
-/// does not parse.
-fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
-    crate::util::read_to_string(path)
-        .ok()
-        .and_then(|content| lighting::parser::parse_fixture_types(&content).ok())
-        .map(|types| types.into_keys().collect())
-        .unwrap_or_default()
+/// One of the project's lighting directories. A request names it (`?dir=`
+/// and the like), or it is the one the engine reads on this host, by the
+/// shared reader ([`crate::config::Player::lighting_dirs_at`]) the CLI and
+/// MCP ask (#673): the defaults only where the config sets none.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum LightingDir {
+    FixtureTypes,
+    Venues,
 }
 
-/// The file a fixture type of this name lives in, if one exists, in the
-/// directory or any subdirectory — the file the lighting system loads it
+/// The lighting directories the engine reads on this host, by the shared
+/// reader; a config that does not load is the error to answer (a 500), the
+/// one rule of the web endpoints for it.
+pub(super) fn configured_lighting_dirs(
+    config_path: &std::path::Path,
+) -> Result<crate::config::lighting::ProjectDirs, String> {
+    // codeql[rust/path-injection] config_path is set at startup, not user input.
+    crate::config::Player::lighting_dirs_at(config_path)
+        .map_err(|e| format!("the config does not load: {e}"))
+}
+
+/// The project-relative directory `which` a request names, else the one
+/// the engine reads on this host. A config that does not load is a 500,
+/// as it is to MCP: the defaults might not be where this host's files are.
+#[allow(clippy::result_large_err)]
+pub(super) fn lighting_dir(
+    config_path: &std::path::Path,
+    requested: Option<&str>,
+    which: LightingDir,
+) -> Result<String, axum::response::Response> {
+    if let Some(dir) = requested.filter(|d| !d.is_empty()) {
+        return Ok(dir.to_string());
+    }
+    let dirs = configured_lighting_dirs(config_path).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response()
+    })?;
+    Ok(match which {
+        LightingDir::FixtureTypes => dirs.fixture_types,
+        LightingDir::Venues => dirs.venues,
+    })
+}
+
+/// The file a fixture type of this name is declared in, if one is, in the
+/// directory or any subdirectory: the file the lighting system loads it
 /// from, by the same reader ([`lighting::project_files::type_files`]). The
 /// file's stem need not match the name: an import writes
 /// `astera_pixelbrick.fixture` for "Astera-PixelBrick", and a file written
-/// by hand is called whatever its author liked. A file at the name's own
-/// stem (`.fixture`, then `.light`) that does not declare it is still the
-/// answer when no file does, so the caller can say what is wrong with it.
+/// by hand is called whatever its author liked. A file that does not parse
+/// is never searched for it.
 pub(super) fn existing_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
 ) -> Option<std::path::PathBuf> {
-    if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
-        return Some(declared.file.clone());
-    }
-    let stem = sanitize_filename(name);
-    ["fixture", "light"]
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+    lighting::project_files::type_files(dir)
+        .get(name)
+        .map(|declared| declared.file.clone())
 }
 
-/// [`existing_fixture_type_file`] with the file it found and the other
-/// fixture types that file declares, off the async runtime. Saving or
-/// deleting one type rewrites or removes its whole file, so a caller that
-/// cannot carry the others must refuse.
+/// [`existing_fixture_type_file`], off the async runtime.
 pub(super) async fn locate_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
-) -> Result<Option<(std::path::PathBuf, Vec<String>)>, axum::response::Response> {
+) -> Result<Option<std::path::PathBuf>, axum::response::Response> {
     let (dir, name) = (dir.to_path_buf(), name.to_string());
     super::helpers::spawn_blocking_io("locate fixture type file", move || {
-        Ok::<_, String>(existing_fixture_type_file(&dir, &name).map(|path| {
-            let mut others = declared_fixture_types(&path);
-            others.retain(|n| n != &name);
-            others.sort();
-            (path, others)
-        }))
+        Ok::<_, String>(existing_fixture_type_file(&dir, &name))
     })
     .await
-}
-
-/// The 409 for a save or delete that would take a file's other fixture
-/// types with it.
-fn shared_fixture_type_file_response(
-    name: &str,
-    path: &std::path::Path,
-    others: &[String],
-    action: &str,
-) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"error": format!(
-            "fixture type \"{}\" lives in {}, which also defines {}; {} would remove them — \
-             edit the file as text instead",
-            name,
-            crate::util::filename_display(path),
-            others
-                .iter()
-                .map(|n| format!("\"{n}\""))
-                .collect::<Vec<_>>()
-                .join(", "),
-            action
-        )})),
-    )
-        .into_response()
-}
-
-/// Venue files: `.venue` (positions, focus points, MVR provenance) and the
-/// v1 `.light`, loaded as peers.
-pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
-
-/// The file a venue of this name lives in, if one exists: `.venue` first,
-/// then `.light`.
-fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let stem = sanitize_filename(name);
-    ["venue", "light"]
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
 }
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
@@ -586,7 +764,7 @@ fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::P
 /// hold it from their read to their write, or a save made between the two
 /// would be lost (#578). The saves here run on a blocking thread, and take
 /// it with `blocking_lock`.
-pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static VENUE_WRITES: super::write_lock::WriteLock = super::write_lock::WriteLock::new();
 
 /// The version of a venue file: a hash of its bytes. A client sends back the
 /// one it read (`If-Match`); a save whose version is no longer the file's is
@@ -595,96 +773,6 @@ pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::con
 pub(super) fn content_version(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
-}
-
-/// A venue file found on disk, whatever it is called.
-pub(super) struct LocatedVenue {
-    pub path: std::path::PathBuf,
-    pub bytes: Vec<u8>,
-    /// Why the file cannot be patched, when it cannot (it does not parse, is
-    /// not UTF-8, or does not define the venue after all).
-    pub broken: Option<String>,
-}
-
-impl LocatedVenue {
-    pub fn version(&self) -> String {
-        content_version(&self.bytes)
-    }
-
-    pub fn file(&self) -> String {
-        crate::util::filename_display(&self.path).to_string()
-    }
-
-    /// The file's text, when it parses and defines the venue.
-    pub fn text(&self) -> Option<&str> {
-        if self.broken.is_some() {
-            return None;
-        }
-        std::str::from_utf8(&self.bytes).ok()
-    }
-}
-
-/// Whether some line of `text` opens a block for venue `name`.
-fn mentions_venue(text: &str, name: &str) -> bool {
-    let header = format!("venue \"{name}\"");
-    text.lines().any(|l| l.trim_start().starts_with(&header))
-}
-
-/// Finds the file that defines venue `name` by scanning every venue file (in
-/// the directory and its subdirectories) for the block — the file's stem
-/// need not match the name. A file that mentions
-/// the venue but does not parse (or the file at the venue's own stem, which a
-/// save would otherwise overwrite) comes back with `broken` set, so the
-/// caller can refuse rather than replace it. `None` means a genuinely new
-/// venue.
-pub(super) fn locate_venue_file(
-    dir: &std::path::Path,
-    name: &str,
-) -> Result<Option<LocatedVenue>, String> {
-    if !dir.is_dir() {
-        return Ok(None);
-    }
-    let stem_file = existing_venue_file(dir, name);
-    // Every venue file at any depth, in path order: the files the lighting
-    // system loads ([`lighting::project_files::venues`]).
-    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
-    let mut broken: Option<LocatedVenue> = None;
-    for path in paths {
-        let bytes = crate::util::read_file(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let problem = match std::str::from_utf8(&bytes) {
-            Ok(text) => match lighting::parser::parse_venues(text) {
-                Ok(venues) if venues.contains_key(name) => {
-                    return Ok(Some(LocatedVenue {
-                        path,
-                        bytes,
-                        broken: None,
-                    }))
-                }
-                Ok(_) if stem_file.as_ref() == Some(&path) => {
-                    Some(format!("the file does not define a venue named \"{name}\""))
-                }
-                Ok(_) => None,
-                Err(e) if mentions_venue(text, name) || stem_file.as_ref() == Some(&path) => {
-                    Some(e.to_string())
-                }
-                Err(_) => None,
-            },
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&bytes);
-                (mentions_venue(&lossy, name) || stem_file.as_ref() == Some(&path))
-                    .then(|| "the file is not valid UTF-8".to_string())
-            }
-        };
-        if let (Some(problem), None) = (problem, &broken) {
-            broken = Some(LocatedVenue {
-                path,
-                bytes,
-                broken: Some(problem),
-            });
-        }
-    }
-    Ok(broken)
 }
 
 /// The `If-Match` version a client sent, unquoted.
@@ -702,71 +790,37 @@ pub(super) fn if_match_version(headers: &axum::http::HeaderMap) -> Option<String
 }
 
 /// The 409 for a save made against a version that is no longer current.
-pub(super) fn stale_venue_response(
-    name: &str,
-    current: Option<String>,
-) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
+pub(super) fn stale_venue_response(name: &str, current: Option<String>) -> lighting_writes::Answer {
+    lighting_writes::Answer {
+        status: StatusCode::CONFLICT,
+        body: json!({
             "error": format!(
                 "venue \"{name}\" changed since you loaded it (another tab, page or an edit by \
                  hand); it has been reloaded, so reapply your change"
             ),
             "conflict": true,
             "version": current,
-        })),
-    )
-        .into_response()
+        }),
+    }
 }
 
-/// The 409 for a venue file that cannot be patched.
-pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
-            "error": format!(
-                "{file} holds venue \"{name}\" but cannot be edited from here ({why}); fix the \
-                 file by hand first"
-            ),
-            "file": file,
-            "broken": true,
-        })),
-    )
-        .into_response()
-}
-
-/// Whether a venue uses syntax only `.venue` files carry: provenance, focus
-/// points, a fixture's position, rotation or beam angle, or its own GDTF mode
-/// (§21).
-fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
-    venue.source().is_some()
-        || !venue.focus_points().is_empty()
-        || venue.fixtures().values().any(|f| {
-            f.position().is_some()
-                || f.rotation().is_some()
-                || f.mode().is_some()
-                || f.beam_angle().is_some()
-        })
-}
-
-/// Resolves a lighting directory path relative to the project root.
-/// Uses the provided override (from query param) or falls back to the default.
-/// Returns an error response if the project root cannot be canonicalized or the
-/// resolved path would escape it.
+/// Resolves a lighting directory path relative to the project root: the
+/// one the request names (from a query param), else this host's
+/// ([`lighting_dir`]). Returns an error response if the project root cannot
+/// be canonicalized or the resolved path would escape it.
 #[allow(clippy::result_large_err)]
 pub(super) fn resolve_lighting_dir(
     config_path: &std::path::Path,
     override_dir: Option<&str>,
-    default: &str,
+    which: LightingDir,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
     let root = VerifiedRoot::new(&project_root(config_path)?).map_err(|e| e.into_response())?;
 
-    let relative = crate::config::lighting::resolve_dir(override_dir, default);
+    let relative = lighting_dir(config_path, override_dir, which)?;
 
-    SafePath::validate_relative(relative, &root).map_err(|e| e.into_response())
+    SafePath::validate_relative(&relative, &root).map_err(|e| e.into_response())
 }
 
 /// Checks a referential type's archive the way the lighting system will when
@@ -775,12 +829,16 @@ pub(super) fn resolve_lighting_dir(
 /// load, through the cache — but a `.fixture` whose archive is missing or
 /// outside the project cannot load, and a save is the last moment where the
 /// person still has the text in front of them to fix it.
-#[allow(clippy::result_large_err)]
-fn validate_referential_archives(
+pub(super) fn validate_referential_archives(
     root: &std::path::Path,
     types: &std::collections::HashMap<String, lighting::types::FixtureType>,
-) -> Result<(), axum::response::Response> {
-    let canonical_root = canonical_project_root(root)?;
+) -> Result<(), lighting_writes::Answer> {
+    let canonical_root = root.canonicalize().map_err(|_| {
+        lighting_writes::Answer::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to resolve project root",
+        )
+    })?;
     for (name, fixture_type) in types {
         if let Some(source) = fixture_type.source() {
             resolve_referential_archive(&canonical_root, name, source)?;
@@ -806,84 +864,40 @@ pub(super) fn canonical_project_root(
 /// One referential type's archive, resolved as the lighting system resolves
 /// it: joined to the project root, canonicalized, inside the project, and a
 /// file. The 400 names the type and the path as the `.fixture` writes it.
-#[allow(clippy::result_large_err)]
 fn resolve_referential_archive(
     canonical_root: &std::path::Path,
     name: &str,
     source: &lighting::types::GdtfSource,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+) -> Result<std::path::PathBuf, lighting_writes::Answer> {
     let archive = canonical_root.join(&source.path);
     let canonical = archive.canonicalize().map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!(
-                "fixture type \"{}\" references a GDTF archive that cannot be read: {}: {}",
-                name, source.path, e
-            )})),
-        )
-            .into_response()
+        lighting_writes::Answer::bad(format!(
+            "fixture type \"{}\" references a GDTF archive that cannot be read: {}: {}",
+            name, source.path, e
+        ))
     })?;
     if !canonical.starts_with(canonical_root) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!(
-                "fixture type \"{}\" references a GDTF archive outside the project: {}",
-                name, source.path
-            )})),
-        )
-            .into_response());
+        return Err(lighting_writes::Answer::bad(format!(
+            "fixture type \"{}\" references a GDTF archive outside the project: {}",
+            name, source.path
+        )));
     }
     if !canonical.is_file() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!(
-                "fixture type \"{}\" references a GDTF archive that is not a file: {}",
-                name, source.path
-            )})),
-        )
-            .into_response());
+        return Err(lighting_writes::Answer::bad(format!(
+            "fixture type \"{}\" references a GDTF archive that is not a file: {}",
+            name, source.path
+        )));
     }
     Ok(canonical)
-}
-
-/// The name the URL asks for must be the name the DSL declares: the webui
-/// resolves a type or venue by its file stem, so a body that renames the
-/// declaration would write `oldname.fixture` holding `newname` — a file no
-/// later GET, PUT or DELETE can reach.
-#[allow(clippy::result_large_err)]
-fn require_declared_name<T>(
-    kind: &str,
-    name: &str,
-    parsed: &std::collections::HashMap<String, T>,
-) -> Result<(), axum::response::Response> {
-    if parsed.contains_key(name) {
-        return Ok(());
-    }
-    let mut declared: Vec<&str> = parsed.keys().map(String::as_str).collect();
-    declared.sort_unstable();
-    let found = if declared.is_empty() {
-        "it declares none".to_string()
-    } else {
-        format!("it declares \"{}\"", declared.join("\", \""))
-    };
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error": format!(
-            "the DSL declares no {} named \"{}\" ({}); rename the {} in the Name field, not in \
-             the text",
-            kind, name, found, kind
-        )})),
-    )
-        .into_response())
 }
 
 /// Query parameters for lighting endpoints — allows overriding the directory.
 #[derive(serde::Deserialize, Default)]
 pub(super) struct LightingDirQuery {
     dir: Option<String>,
-    /// The extension a *new* fixture type is written with (`light` or
-    /// `fixture`). An existing file keeps its own, so this only decides
-    /// which form a type is born in.
+    /// The form a fixture type is saved in: `fixture` moves a `.light` to
+    /// a `.fixture`; `light` keeps a `.light` one. A new type is always a
+    /// `.fixture`, and a `.fixture` never goes back to `.light`.
     ext: Option<String>,
     /// The venues directory, for the fixture-type endpoints that say which
     /// venue fixtures use a type (default `lighting/venues`).
@@ -891,38 +905,30 @@ pub(super) struct LightingDirQuery {
     /// The fixture types directory, for the venue endpoints that need the
     /// types (default `lighting/fixture_types`).
     fixture_types_dir: Option<String>,
+    /// A save's old name: the save renames that venue or fixture type.
+    from: Option<String>,
 }
 
 /// Validates that a fixture type or venue name is safe for use as a filename.
-#[allow(clippy::result_large_err)]
-pub(super) fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
+pub(crate) fn validate_lighting_name(name: &str) -> Result<(), lighting_writes::Answer> {
     validate_lighting_name_to_write(name, true)
 }
 
 /// As [`validate_lighting_name`], for a fixture type or venue being written:
 /// one not already on disk (`exists` false) is being created, and its name
 /// must also pass the rules for new names.
-#[allow(clippy::result_large_err)]
-pub(super) fn validate_lighting_name_to_write(
+pub(crate) fn validate_lighting_name_to_write(
     name: &str,
     exists: bool,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), lighting_writes::Answer> {
     use super::super::safe_path::SafePath;
     if SafePath::validate_name_to_write(name, exists).is_err() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid name"})),
-        )
-            .into_response());
+        return Err(lighting_writes::Answer::bad("Invalid name"));
     }
     if RESERVED_NAMES.contains(&name) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!(
-                "`{name}` is reserved: it is the name of an API route, so a file called that could not be addressed"
-            )})),
-        )
-            .into_response());
+        return Err(lighting_writes::Answer::bad(format!(
+            "`{name}` is reserved: it is the name of an API route, so a file called that could not be addressed"
+        )));
     }
     Ok(())
 }
@@ -1043,13 +1049,13 @@ pub(super) async fn get_fixture_types(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )
     .map_err(|e| e.into_response())?;
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
@@ -1062,11 +1068,11 @@ pub(super) async fn get_fixture_types(
         // how it may be edited.
         let project = lighting::project_files::fixture_types(&root, Some(&dir));
         let shown = |path: &std::path::Path| lighting::project_files::display_in(&dir, path);
-        let mut errors: Vec<FileError> = project
+        let mut errors: Vec<LightingFileError> = project
             .files
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: shown(&p.file),
                 error: p.error.clone(),
             })
@@ -1078,23 +1084,40 @@ pub(super) async fn get_fixture_types(
             }
             all.insert(
                 declared.name.clone(),
-                json!({
-                    "referential": fixture_type.source().is_some(),
+                FixtureTypeEntry {
+                    referential: fixture_type.source().is_some(),
                     // A native type's addresses, for the venue editor's
                     // patch; a GDTF fixture's are its mode's, so null here.
-                    "footprint": fixture_type
-                        .source()
-                        .is_none()
-                        .then(|| fixture_type.footprint()),
-                    "rich": fixture_type.uses_rich_channels(),
-                    "fixture_type": fixture_type,
-                    "file": shown(&declared.file),
-                    "extension": declared
-                        .file
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or_default(),
-                }),
+                    footprint: Some(
+                        fixture_type
+                            .source()
+                            .is_none()
+                            .then(|| fixture_type.footprint()),
+                    ),
+                    rich: fixture_type.uses_rich_channels(),
+                    fixture_type: fixture_type.clone(),
+                    file: Some(shown(&declared.file)),
+                    extension: Some(
+                        declared
+                            .file
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                    owner: project.files.record.owner(&declared.name).map(|owner| {
+                        lighting_writes::wire_owner(
+                            lighting::files::Kind::FixtureType,
+                            &dir,
+                            &owner,
+                        )
+                    }),
+                    form_editable: crate::util::read_to_string(&declared.file).is_ok_and(|text| {
+                        lighting::fixture_patch::form_expresses(&text, &declared.name)
+                    }),
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         let library = project.library;
@@ -1102,7 +1125,7 @@ pub(super) async fn get_fixture_types(
         // collision is already resolved (the second fixture is renamed).
         for finding in &library.findings {
             if finding.kind == "gdtf-unreadable" {
-                errors.push(FileError {
+                errors.push(LightingFileError {
                     file: finding.file.clone(),
                     error: finding.message.clone(),
                 });
@@ -1122,14 +1145,18 @@ pub(super) async fn get_fixture_types(
             ));
             all.insert(
                 library_type.name.clone(),
-                json!({
-                    "referential": true,
-                    "footprint": null,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "file": null,
-                    "extension": null,
-                }),
+                FixtureTypeEntry {
+                    referential: true,
+                    footprint: Some(None),
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    owner: None,
+                    form_editable: false,
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         // What each referential type's archive says, for its card. One bad
@@ -1148,8 +1175,8 @@ pub(super) async fn get_fixture_types(
             let summary = parsed.map(|(bytes, description)| {
                 gdtf_list_summary(&cache, bytes, description, &name, &fixtures)
             });
-            if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
-                entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
+            if let Some(entry) = all.get_mut(&name) {
+                entry.gdtf = Some(summary);
             }
         }
         Ok::<_, String>((all, errors))
@@ -1159,7 +1186,10 @@ pub(super) async fn get_fixture_types(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"fixture_types": all, "errors": errors})),
+            Json(FixtureTypeList {
+                fixture_types: all,
+                errors,
+            }),
         )
             .into_response(),
     )
@@ -1175,9 +1205,26 @@ pub(super) async fn get_fixture_type(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
-    let Some((file_path, _)) = locate_fixture_type_file(&dir, &name).await? else {
+    let found = {
+        let (dir, name) = (dir.clone(), name.clone());
+        super::helpers::spawn_blocking_io("read fixture type", move || {
+            let read = lighting::project_files::type_files(&dir);
+            let (Some(declared), Some(owner)) = (read.get(&name), read.record.owner(&name)) else {
+                return Ok(None);
+            };
+            let content = crate::util::read_to_string(&declared.file)?;
+            Ok::<_, std::io::Error>(Some((
+                declared.item.clone(),
+                declared.file.clone(),
+                lighting_writes::wire_owner(lighting::files::Kind::FixtureType, &dir, &owner),
+                content,
+            )))
+        })
+        .await?
+    };
+    let Some((ft, file_path, owner, content)) = found else {
         // A GDTF in the library with no record: a fixture with no file.
         let root = canonical_project_root(&project_root(&state.config_path)?)?;
         let (types_dir, wanted) = (dir.clone(), name.clone());
@@ -1192,14 +1239,18 @@ pub(super) async fn get_fixture_type(
         return match found {
             Some(declared) => Ok((
                 StatusCode::OK,
-                Json(json!({
-                    "referential": true,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "dsl": null,
-                    "file": null,
-                    "extension": null,
-                })),
+                Json(FixtureTypeEntry {
+                    referential: true,
+                    footprint: None,
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    owner: None,
+                    form_editable: false,
+                    gdtf: None,
+                    dsl: Some(None),
+                }),
             )
                 .into_response()),
             None => Err((
@@ -1209,37 +1260,28 @@ pub(super) async fn get_fixture_type(
                 .into_response()),
         };
     };
-    let fp = file_path.clone();
-    let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        crate::util::read_to_string(&fp)
-    })
-    .await?;
-    let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse fixture type: {}", e)})),
-        )
-            .into_response()
-    })?;
-    match types.get(&name) {
-        Some(ft) => Ok((
-            StatusCode::OK,
-            Json(json!({
-                "referential": ft.source().is_some(),
-                "rich": ft.uses_rich_channels(),
-                "fixture_type": ft,
-                "dsl": content,
-                "file": crate::util::filename_display(&file_path),
-                "extension": file_path.extension().and_then(|e| e.to_str()).unwrap_or_default(),
-            })),
-        )
-            .into_response()),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Fixture type '{}' not found in file", name)})),
-        )
-            .into_response()),
-    }
+    Ok((
+        StatusCode::OK,
+        Json(FixtureTypeEntry {
+            referential: ft.source().is_some(),
+            footprint: None,
+            rich: ft.uses_rich_channels(),
+            fixture_type: ft,
+            file: Some(crate::util::filename_display(&file_path).to_string()),
+            extension: Some(
+                file_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            owner: Some(owner),
+            form_editable: lighting::fixture_patch::form_expresses(&content, &name),
+            gdtf: None,
+            dsl: Some(Some(content)),
+        }),
+    )
+        .into_response())
 }
 
 /// The GDTF source of a fixture type: its record's, or — for a GDTF in the
@@ -1251,7 +1293,7 @@ async fn gdtf_source_of(
     dir: &std::path::Path,
     name: &str,
 ) -> Result<Option<lighting::types::GdtfSource>, axum::response::Response> {
-    if let Some((file_path, _)) = locate_fixture_type_file(dir, name).await? {
+    if let Some(file_path) = locate_fixture_type_file(dir, name).await? {
         let content = super::helpers::spawn_blocking_io("read fixture type", move || {
             crate::util::read_to_string(&file_path)
         })
@@ -1303,7 +1345,7 @@ pub(super) async fn get_fixture_type_gdtf(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some(source) = gdtf_source_of(&root, &dir, &name).await? else {
@@ -1317,7 +1359,7 @@ pub(super) async fn get_fixture_type_gdtf(
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
 
     // Reading, parsing, distilling every mode and (cold) writing the rig are
@@ -1351,44 +1393,40 @@ pub(super) async fn get_fixture_type_gdtf(
             let (dir, _) = rel.rsplit_once('/')?;
             Some(format!("{dir}/{file}"))
         });
-        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| {
-            json!({
-                "type": b.beam_type,
-                "beam_angle": b.beam_angle,
-                "field_angle": b.field_angle,
-                "luminous_flux": b.luminous_flux,
-                "color_temperature": b.color_temperature,
-                "power": b.power_consumption,
-            })
+        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| GdtfBeam {
+            beam_type: b.beam_type.clone(),
+            beam_angle: b.beam_angle,
+            field_angle: b.field_angle,
+            luminous_flux: b.luminous_flux,
+            color_temperature: b.color_temperature,
+            power: b.power_consumption,
         });
         // Each fixture in its own mode, spelled as the archive spells it
         // (null when it names none, or none of the archive's).
-        let venues: Vec<serde_json::Value> = fixtures_by_type(&venues_dir)
+        let venues = fixtures_by_type(&venues_dir)
             .remove(&name)
             .unwrap_or_default()
             .into_iter()
-            .map(|(venue, fixtures)| {
-                let fixtures: Vec<serde_json::Value> = fixtures
+            .map(|(venue, fixtures)| TypeVenue {
+                name: venue,
+                fixtures: fixtures
                     .into_iter()
-                    .map(|(fixture, mode)| {
-                        json!({
-                            "name": fixture,
-                            "mode": mode.as_deref().and_then(|m| resolve_mode(&description, m)),
-                        })
+                    .map(|(fixture, mode)| TypeVenueFixture {
+                        name: fixture,
+                        mode: mode.as_deref().and_then(|m| resolve_mode(&description, m)),
                     })
-                    .collect();
-                json!({"name": venue, "fixtures": fixtures})
+                    .collect(),
             })
             .collect();
-        Ok(Ok(json!({
-            "archive": source.path,
-            "rig": rig,
-            "thumbnail": thumbnail,
-            "beam": beam,
-            "about": description.about,
-            "venues": venues,
-            "inspection": inspect_description(&description),
-        })))
+        Ok(Ok(FixtureTypeGdtf {
+            archive: source.path,
+            rig,
+            thumbnail,
+            beam,
+            about: description.about.clone(),
+            venues,
+            inspection: inspect_description(&description),
+        }))
     })
     .await?;
     match outcome {
@@ -1538,12 +1576,14 @@ fn gdtf_list_summary(
     description: &lighting::gdtf::Description,
     type_name: &str,
     fixtures: &[Option<&str>],
-) -> serde_json::Value {
+) -> GdtfSummary {
     // The fixture is drawn, and its beam quoted, in the first mode it can
     // drive: a GDTF fixture has no mode of its own.
     let drawn = drawn_mode(description, type_name);
-    let beam = pinned_beam(description, drawn.as_deref())
-        .map(|b| json!({"type": b.beam_type, "angle": b.beam_angle}));
+    let beam = pinned_beam(description, drawn.as_deref()).map(|b| BeamBrief {
+        beam_type: b.beam_type.clone(),
+        angle: b.beam_angle,
+    });
     // The thumbnail of the rig the details view draws, if it was drawn.
     let thumbnail = drawn.and_then(|mode| {
         let rel = lighting::distill::DistillCache::rig_path(bytes, &mode);
@@ -1561,23 +1601,34 @@ fn gdtf_list_summary(
     }
     let mut in_use: Vec<(String, usize)> = counts.into_iter().collect();
     in_use.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    json!({
-        "fixture": description.name,
-        "manufacturer": description.manufacturer,
-        "modes": description.modes.len(),
-        "beam": beam,
-        "thumbnail": thumbnail,
-        "used_by": fixtures.len(),
-        "in_use": in_use
+    GdtfSummary {
+        fixture: description.name.clone(),
+        manufacturer: description.manufacturer.clone(),
+        modes: description.modes.len(),
+        beam,
+        thumbnail,
+        used_by: fixtures.len(),
+        in_use: in_use
             .into_iter()
-            .map(|(mode, count)| json!({"mode": mode, "count": count}))
-            .collect::<Vec<_>>(),
-    })
+            .map(|(mode, count)| ModeUse { mode, count })
+            .collect(),
+    }
 }
 
-/// PUT /api/lighting/fixture-types/:name — creates or updates a fixture type.
+/// PUT /api/lighting/fixture-types/:name — creates, updates or renames a
+/// fixture type.
 ///
-/// Accepts either JSON (structured) or plain text (raw DSL).
+/// Accepts either JSON (the channel-map form) or plain text (the whole
+/// file's DSL, which must declare this one type and nothing else). By the
+/// one rule for type files ([`super::lighting_writes`]): a new name is
+/// claimed at `<fixture types dir>/<stem>.fixture`; an existing one is
+/// written only where its file is that type's alone, and refused (409, with
+/// the file and why) otherwise. `?from=<old>` renames, as for venues, and,
+/// as the fixture settings' rename does, retypes every venue line naming the
+/// old name in `venues_dir` (refused, nothing written, when any venue file
+/// cannot be; the answer's `rename` says what changed). A `.light` whose new
+/// text needs a `.fixture` (rich channels, a GDTF reference, or
+/// `?ext=fixture`) moves to `<stem>.fixture`.
 pub(super) async fn put_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1586,10 +1637,13 @@ pub(super) async fn put_fixture_type(
     body: Bytes,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
+    if let Some(from) = &query.from {
+        validate_lighting_name(from)?;
+    }
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
 
     let content_type = headers
@@ -1600,176 +1654,88 @@ pub(super) async fn put_fixture_type(
     let from_form = content_type.contains("application/json");
 
     // Whatever form the body is in, an `ext` naming no known form is a
-    // mistake worth reporting rather than quietly writing a `.light`.
-    let requested_extension = match query.ext.as_deref() {
-        None | Some("") => None,
-        Some(known @ ("light" | "fixture")) => Some(known),
-        Some(other) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Unknown fixture type extension: {}", other)})),
-            )
-                .into_response())
-        }
-    };
+    // mistake worth reporting rather than quietly ignored.
+    let ext = fixture_type_extension(query.ext.as_deref())?;
 
     let dsl = if from_form {
         // Parse JSON body and convert to DSL
-        let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Invalid JSON: {}", e)})),
-            )
-                .into_response()
-        })?;
-        fixture_type_json_to_dsl(&name, &json_body)
-            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?
+        let json_body: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| lighting_writes::Answer::bad(format!("Invalid JSON: {}", e)))?;
+        fixture_type_json_to_dsl(&name, &json_body).map_err(lighting_writes::Answer::bad)?
     } else {
         // Treat as raw DSL text
-        String::from_utf8(body.to_vec()).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid UTF-8"})),
-            )
-                .into_response()
-        })?
+        String::from_utf8(body.to_vec())
+            .map_err(|_| lighting_writes::Answer::bad("Invalid UTF-8"))?
     };
 
-    // Validate the DSL parses correctly
-    let types = lighting::parser::parse_fixture_types(&dsl).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Invalid fixture type DSL: {}", e)})),
-        )
-            .into_response()
-    })?;
-    require_declared_name("fixture type", &name, &types)?;
-    validate_referential_archives(&project_root(&state.config_path)?, &types)?;
-
-    // Held from finding the file to writing it, as MCP's patch holds it: a
-    // type added to a shared file between the two would pass the check on
-    // the file's other types below, and be lost to the form's save.
-    let _writing = VENUE_WRITES.lock().await;
-    // Read against the resolved directory rather than the created one: every
-    // refusal below should land before anything is made on disk.
-    let located = locate_fixture_type_file(&dir, &name).await?;
-    validate_lighting_name_to_write(&name, located.is_some())?;
-    // An existing type is saved back to the file it lives in, whatever that
-    // file is called; only a new type is named after itself.
-    let stem = located
-        .as_ref()
-        .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
-        .map(str::to_string)
-        .unwrap_or_else(|| sanitize_filename(&name));
-    let existing_extension = located.as_ref().and_then(|(path, _)| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_string)
-    });
-
-    // The channel-map form writes one type, so it cannot carry the others a
-    // shared file declares. Raw text is the whole file and says what it means.
-    if from_form {
-        if let Some((path, others)) = located.as_ref().filter(|(_, others)| !others.is_empty()) {
-            return Err(shared_fixture_type_file_response(
-                &name,
-                path,
-                others,
-                "saving this one from the channel-map editor",
-            ));
-        }
-    }
-
-    // The channel-map form cannot say what a `.fixture` file holds, so
-    // saving one through it would silently drop the type's rich channels or
-    // its GDTF reference.
-    if from_form && existing_extension.as_deref() == Some("fixture") {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!(
-                "fixture type \"{}\" lives in {}.fixture, whose form the channel-map editor \
-                 cannot express — edit this type as text",
-                name, stem
-            )})),
-        )
-            .into_response());
-    }
-
-    // An explicit `ext` wins — that is how a `.light` type converts to a
-    // `.fixture`. Without one, an existing file keeps its own extension and
-    // a new type is born a `.light`.
-    let extension = match (requested_extension, existing_extension.as_deref()) {
-        (Some(requested), _) => requested,
-        (None, Some(existing)) => match existing {
-            "fixture" => "fixture",
-            _ => "light",
-        },
-        (None, None) => "light",
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.venues_dir.as_deref(),
+        LightingDir::Venues,
+    )?;
+    let save = lighting_writes::TypeSave {
+        root,
+        dir,
+        venues_dir: venues_dir.clone(),
+        name: name.clone(),
+        from: query.from.clone(),
+        ext,
+        from_form,
+        body: lighting_writes::Body::Text(dsl),
     };
-
-    // The extension is the version marker: rich channel syntax written into
-    // a `.light` file would be saved, then skipped by the loader, and one
-    // missing type fails the whole venue's registration.
-    if extension == "light" {
-        if let Some(rich) = types.values().find(|t| t.uses_rich_channels()) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!(
-                    "fixture type \"{}\" uses rich channel syntax (fine, range, functions), which \
-                     belongs in a .fixture file; this editor writes .light files — save it as \
-                     {}.fixture in the fixture types directory by hand, or through \
-                     `mtrack import-gdtf`",
-                    rich.name(),
-                    stem
-                )})),
-            )
-                .into_response());
-        }
-    }
-
-    // Everything that can refuse the save has: the same helper the playlists
-    // and profiles writes use, so a refusal is reported as the configuration
-    // problem it is rather than a server fault. The file goes under the
-    // directory that was made, not the spelling.
-    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-
-    // An existing type stays in its own folder, at any depth; a new one is
-    // born at the top. A type is one file: whichever form it is saved in, the
-    // other one is retired, or the loader would register the name twice.
-    let folder = located
-        .as_ref()
-        .and_then(|(path, _)| path.parent())
-        .map_or(dir, std::path::Path::to_path_buf);
-    let file_path = folder.join(format!("{stem}.{extension}"));
-    let stale_twin = FIXTURE_TYPE_EXTENSIONS
-        .iter()
-        .map(|extension| folder.join(format!("{stem}.{extension}")))
-        .find(|path| path != &file_path && path.is_file());
-    let fp = file_path;
-    let dsl_owned = dsl;
-    super::helpers::spawn_blocking_io("write fixture type", move || {
-        config_io::staged_write(&fp, &dsl_owned)?;
-        if let Some(twin) = stale_twin {
-            // Best effort: the save is durable already, and a leftover twin
-            // surfaces as a duplicate fixture type name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the fixture type's stale twin");
-            }
-        }
-        Ok::<(), String>(())
+    let rename = super::helpers::spawn_blocking_io("write fixture type", move || {
+        Ok::<_, String>(lighting_writes::save_fixture_type(save))
     })
-    .await?;
+    .await??
+    .rename;
+    let venue_error = match &rename {
+        Some(_) => {
+            super::fixture_settings::reload_types_and_venues(
+                &state.player,
+                &state.config_path,
+                &name,
+                &venues_dir,
+            )
+            .await
+        }
+        None => None,
+    };
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "name": name})),
+            Json(crate::webui::wire::fixture_types::FixtureTypeSaved {
+                status: "saved".to_string(),
+                name,
+                rename,
+                venue_error,
+            }),
         )
             .into_response(),
     )
 }
 
-/// DELETE /api/lighting/fixture-types/:name — deletes a fixture type file.
+/// The form a fixture type save asks for (`?ext=`): `light` or `fixture`,
+/// or none; anything else is a 400.
+pub(crate) fn fixture_type_extension(
+    ext: Option<&str>,
+) -> Result<Option<&'static str>, lighting_writes::Answer> {
+    match ext {
+        None | Some("") => Ok(None),
+        Some("light") => Ok(Some("light")),
+        Some("fixture") => Ok(Some("fixture")),
+        Some(other) => Err(lighting_writes::Answer::bad(format!(
+            "Unknown fixture type extension: {}",
+            other
+        ))),
+    }
+}
+
+/// DELETE /api/lighting/fixture-types/:name — deletes a fixture type file:
+/// only one that is the type's alone (409 otherwise, with the file and
+/// why). A GDTF in the library with no record is its archive, deleted.
+#[allow(clippy::result_large_err)]
 pub(super) async fn delete_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1779,122 +1745,26 @@ pub(super) async fn delete_fixture_type(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
-    // Held from finding the record to deleting it, as MCP's delete does: a
-    // save between the two would be deleted unseen (#578).
-    let _writing = VENUE_WRITES.lock().await;
-    let Some((file_path, others)) = locate_fixture_type_file(&dir, &name).await? else {
-        // A GDTF in the library with no record is a fixture of its own;
-        // deleting it is deleting the archive.
-        let (types_dir, wanted, root) = (dir.clone(), name.clone(), root.clone());
-        let removed = super::helpers::spawn_blocking_io("delete a GDTF", move || {
-            let library = lighting::library::unrecorded_types(&root, Some(&types_dir));
-            match library.get(&wanted) {
-                Some(found) => std::fs::remove_file(root.join(&found.archive))
-                    .map(|()| Some(found.archive.clone())),
-                None => Ok(None),
-            }
-        })
-        .await?;
-        return match removed {
-            Some(archive) => Ok((
-                StatusCode::OK,
-                Json(json!({
-                    "status": "deleted",
-                    "name": name,
-                    "archive_removed": archive,
-                    "archive_kept": false,
-                })),
-            )
-                .into_response()),
-            None => Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Fixture type not found: {}", name)})),
-            )
-                .into_response()),
-        };
-    };
-    if !others.is_empty() {
-        return Err(shared_fixture_type_file_response(
-            &name,
-            &file_path,
-            &others,
-            "deleting this one",
-        ));
-    }
-    let fp = file_path;
     let deleted = name.clone();
-    let (archive_removed, archive_kept) =
-        super::helpers::spawn_blocking_io("delete fixture type", move || {
-            // A GDTF fixture's archive is mtrack's to keep, not the user's:
-            // read which one this type uses before its record goes.
-            let archive = crate::util::read_to_string(&fp)
-                .ok()
-                .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
-                .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
-            std::fs::remove_file(&fp)?;
-            Ok::<_, std::io::Error>(match archive {
-                Some(source) => remove_unused_archive(&root, &dir, &source.path),
-                None => (None, false),
-            })
-        })
-        .await?;
+    let outcome = super::helpers::spawn_blocking_io("delete fixture type", move || {
+        Ok::<_, String>(lighting_writes::delete_fixture_type(&root, &dir, &deleted))
+    })
+    .await??;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "deleted",
-                "name": name,
-                "archive_removed": archive_removed,
-                "archive_kept": archive_kept,
-            })),
+            Json(FixtureTypeDeleted {
+                status: "deleted".to_string(),
+                name,
+                archive_removed: outcome.archive_removed,
+                archive_kept: outcome.archive_kept,
+            }),
         )
             .into_response(),
     )
-}
-
-/// After a GDTF fixture's record is deleted: its archive in
-/// `lighting/library/`, removed when no other fixture type in `types_dir`
-/// uses it — otherwise archives the user cannot see pile up. Returns the
-/// removed archive (project-relative) and whether it was kept because
-/// another type still uses it. An archive outside the library is never
-/// touched, and neither is the expansion cache (it is keyed by content and
-/// rebuilt on demand).
-fn remove_unused_archive(
-    root: &std::path::Path,
-    types_dir: &std::path::Path,
-    archive_rel: &str,
-) -> (Option<String>, bool) {
-    let library = root.join("lighting").join("library");
-    let Ok(target) = root.join(archive_rel).canonicalize() else {
-        return (None, false);
-    };
-    let in_library = library
-        .canonicalize()
-        .is_ok_and(|library| target.starts_with(library));
-    if !in_library {
-        return (None, false);
-    }
-    let still_used = lighting::import::existing_types(types_dir)
-        .values()
-        .flatten()
-        .any(|other| {
-            root.join(other)
-                .canonicalize()
-                .is_ok_and(|other| other == target)
-        });
-    if still_used {
-        return (None, true);
-    }
-    match std::fs::remove_file(&target) {
-        Ok(()) => (Some(archive_rel.to_string()), false),
-        Err(e) => {
-            tracing::warn!(error = %e, "could not remove a deleted fixture's GDTF archive");
-            (None, false)
-        }
-    }
 }
 
 /// The tempo a `.light` file at this path will be loaded with, found by
@@ -1903,12 +1773,21 @@ fn song_tempo_for_path(
     state: &WebUiState,
     path: &std::path::Path,
 ) -> Option<crate::tempo::TempoMap> {
-    let song = state
-        .player
-        .songs()
-        .list()
-        .into_iter()
-        .find(|song| path.starts_with(song.base_path()))?;
+    // Both sides resolved: `path` is, and a song's folder need not be (one
+    // built from a path through a linked songs folder). The plain
+    // comparison first, so the folders are canonicalized only when no
+    // song's matches as written.
+    let songs = state.player.songs().list();
+    let song = songs
+        .iter()
+        .find(|song| path.starts_with(song.base_path()))
+        .or_else(|| {
+            songs.iter().find(|song| {
+                song.base_path()
+                    .canonicalize()
+                    .is_ok_and(|base| path.starts_with(base))
+            })
+        })?;
     song.lighting_tempo_map()
 }
 
@@ -1939,20 +1818,24 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
             .logical_groups_iter()
             .map(|(n, _)| n.clone())
             .collect();
-        let mut out: Vec<serde_json::Value> = names
+        let mut out: Vec<LightingGroup> = names
             .into_iter()
-            .map(|name| {
-                let fixtures = guard.resolve_logical_group_graceful(&name);
-                json!({"name": name, "fixtures": fixtures})
+            .map(|name| LightingGroup {
+                fixtures: guard.resolve_logical_group_graceful(&name),
+                name,
             })
             .collect();
-        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     })
     .await;
 
     match groups {
-        Ok(groups) => Json(json!({"groups": groups})).into_response(),
+        Ok(groups) => Json(LightingGroups {
+            groups,
+            resolved: None,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to resolve groups: {e}")})),
@@ -1990,10 +1873,8 @@ pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoR
 /// off the async worker.
 pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoResponse {
     let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::lighting::fit::FitReport::gather(&player).to_json()
-    })
-    .await
+    match tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+        .await
     {
         Ok(report) => Json(report).into_response(),
         Err(e) => (
@@ -2003,14 +1884,6 @@ pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoRespons
             .into_response(),
     }
 }
-
-/// The most instants one evaluate request may ask for. A scrubber asks for
-/// one; anything near this is a script.
-const MAX_EVALUATE_TIMES: usize = 64;
-
-/// The latest instant one evaluate request may ask for: a week. No song is
-/// longer, and the evaluator steps through every second it is given.
-const MAX_EVALUATE_TIME: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
 /// Body of `POST /api/lighting/evaluate`.
 #[derive(serde::Deserialize)]
@@ -2038,12 +1911,6 @@ pub(super) async fn evaluate_lighting(
     let error = |status: StatusCode, message: String| {
         (status, Json(json!({"error": message}))).into_response()
     };
-    if request.times.len() > MAX_EVALUATE_TIMES {
-        return error(
-            StatusCode::BAD_REQUEST,
-            format!("at most {MAX_EVALUATE_TIMES} times per request"),
-        );
-    }
     if request.times.iter().any(|t| !t.is_finite() || *t < 0.0) {
         return error(
             StatusCode::BAD_REQUEST,
@@ -2056,15 +1923,7 @@ pub(super) async fn evaluate_lighting(
         Ok(song) => song,
         // A song whose lighting fails to parse never loads: the registry
         // keeps its failure, and the message says why.
-        Err(_) => {
-            return match songs.failures().iter().find(|f| f.name() == request.song) {
-                Some(failure) => error(StatusCode::BAD_REQUEST, failure.error().to_string()),
-                None => error(
-                    StatusCode::NOT_FOUND,
-                    format!("unknown song: {}", request.song),
-                ),
-            };
-        }
+        Err(e) => return super::helpers::song_lookup_response(e),
     };
     let shows = crate::lighting::evaluate::registered_shows(&song);
     if shows.is_empty() {
@@ -2074,18 +1933,22 @@ pub(super) async fn evaluate_lighting(
         );
     }
     let tempo = song.lighting_tempo_map();
-    // Duration::from_secs_f64 panics on what it cannot hold, and the
-    // evaluator steps through every second it is asked for: bound both.
-    // Collected rather than sized up front: the count is already capped
-    // above, and a capacity taken from the request is what CodeQL flags.
+    // Duration::from_secs_f64 panics on what it cannot hold; the evaluator
+    // bounds the count and the latest instant itself. Collected rather than
+    // sized up front: a capacity taken from the request is what CodeQL flags.
     let times: Vec<std::time::Duration> = match request
         .times
         .iter()
-        .map(|t| crate::util::duration_from_secs(*t).filter(|d| *d <= MAX_EVALUATE_TIME))
+        .map(|t| crate::util::duration_from_secs(*t))
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,
-        None => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
+        None => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                crate::lighting::evaluate::EvaluateError::TimeOutOfRange.to_string(),
+            )
+        }
     };
     let lighting_system = state
         .player
@@ -2104,7 +1967,8 @@ pub(super) async fn evaluate_lighting(
     })
     .await;
     let evaluated = match evaluated {
-        Ok(evaluated) => evaluated,
+        Ok(Ok(evaluated)) => evaluated,
+        Ok(Err(e)) => return error(StatusCode::BAD_REQUEST, e.to_string()),
         Err(e) => {
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2113,55 +1977,47 @@ pub(super) async fn evaluate_lighting(
         }
     };
 
-    let untouched: Vec<&String> = evaluated
+    use crate::webui::wire::preview::{Preview, PreviewEffect, PreviewEvaluation};
+    let untouched = evaluated
         .venue_fixtures
         .iter()
         .filter(|name| !evaluated.targeted.contains(*name))
+        .cloned()
         .collect();
-    let evaluations: Vec<serde_json::Value> = evaluated
+    let evaluations = evaluated
         .evaluations
         .iter()
-        .map(|evaluation| {
-            let (fixtures, poses, cells) =
-                super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
-            let active: Vec<serde_json::Value> = evaluation
+        .map(|evaluation| PreviewEvaluation {
+            time: evaluation.time.as_secs_f64(),
+            frame: super::super::state::stage_frame(&evaluation.fixtures, &evaluation.poses),
+            active_effects: evaluation
                 .active_effects
                 .iter()
-                .map(|effect| {
-                    json!({
-                        "id": effect.id,
-                        "groups": evaluated.effect_groups.get(&effect.id),
-                        "kind": effect.effect_type,
-                        "layer": format!("{:?}", effect.layer).to_lowercase(),
-                        "elapsed": effect.elapsed.as_secs_f64(),
-                        "duration": effect.duration.as_secs_f64(),
-                        "fixtures": effect.fixtures,
-                    })
+                .map(|effect| PreviewEffect {
+                    id: effect.id.clone(),
+                    groups: evaluated.effect_groups.get(&effect.id).cloned(),
+                    kind: effect.effect_type.to_string(),
+                    layer: effect.layer.keyword().to_string(),
+                    elapsed: effect.elapsed.as_secs_f64(),
+                    duration: effect.duration.as_secs_f64(),
+                    fixtures: effect.fixtures.clone(),
                 })
-                .collect();
-            json!({
-                "time": evaluation.time.as_secs_f64(),
-                "fixtures": fixtures,
-                "poses": poses,
-                "cells": cells,
-                "active_effects": active,
-            })
+                .collect(),
         })
         .collect();
-    Json(json!({
-        "song": request.song,
-        "evaluations": evaluations,
-        "untouched": untouched,
-        // The current venue does not load: what is evaluated is an empty
-        // rig, and this says why rather than letting it look like one.
-        "venue_error": evaluated.venue_error,
-    }))
+    Json(Preview {
+        song: request.song,
+        evaluations,
+        untouched,
+        venue_error: evaluated.venue_error,
+    })
     .into_response()
 }
 
 /// The readiness facts for the player's running profile.
-fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
+fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readiness::Readiness {
     use crate::lighting::readiness::{group_names, VenueFacts};
+    use crate::webui::wire::readiness::*;
     use std::collections::BTreeSet;
 
     // Shows are reported with or without DMX: a laptop with no DMX output is
@@ -2185,7 +2041,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // The lighting system, under its lock for as short a time as it takes to
     // read what the sections below need.
     let mut facts = VenueFacts::default();
-    let mut venue = serde_json::Value::Null;
+    let mut venue = None;
     let mut in_use: BTreeSet<String> = BTreeSet::new();
     let mut unresolved = Vec::new();
     let mut library = Vec::new();
@@ -2198,11 +2054,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
         // The library's own findings: two archives that would share a name,
         // an archive that cannot be read. Neither stops a load.
-        library = guard
-            .library_findings()
-            .iter()
-            .map(|f| json!({"kind": f.kind, "file": f.file, "message": f.message}))
-            .collect();
+        library = guard.library_findings().to_vec();
         if let Some(current) = guard.get_current_venue() {
             let mut fixtures: Vec<&lighting::types::Fixture> =
                 current.fixtures().values().collect();
@@ -2213,43 +2065,40 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                     None => {
                         in_use.insert(fixture.fixture_type().to_string());
                     }
-                    Some(reason) => unresolved.push(json!({
-                        "fixture": fixture.name(),
-                        "type": fixture.fixture_type(),
-                        "reason": reason,
-                    })),
+                    Some(reason) => unresolved.push(UnresolvedFixture {
+                        fixture: fixture.name().to_string(),
+                        fixture_type: fixture.fixture_type().to_string(),
+                        reason,
+                    }),
                 }
             }
-            venue = json!({
-                "name": current.name(),
-                "fixtures": fixtures.len(),
-                "placed": fixtures.iter().filter(|f| f.position().is_some()).count(),
-                "focus_points": current.focus_points().keys().collect::<Vec<_>>(),
+            venue = Some(ReadinessVenue {
+                name: current.name().to_string(),
+                fixtures: fixtures.len(),
+                placed: fixtures.iter().filter(|f| f.position().is_some()).count(),
+                focus_points: current.focus_points().keys().cloned().collect(),
             });
         }
     }
 
-    let groups: Vec<serde_json::Value> = names
+    let groups: Vec<ReadinessGroup> = names
         .iter()
         .filter(|_| dmx.is_some())
-        .map(|name| {
-            let songs_using: Vec<&str> = with_lighting
+        .map(|name| ReadinessGroup {
+            name: name.clone(),
+            fixtures: facts.group_fixture_counts.get(name).copied().unwrap_or(0),
+            songs: with_lighting
                 .iter()
                 .filter(|(_, shows)| group_names(shows).contains(name))
-                .map(|(song, _)| song.name())
-                .collect();
-            json!({
-                "name": name,
-                "fixtures": facts.group_fixture_counts.get(name).copied().unwrap_or(0),
-                "songs": songs_using,
-            })
+                .map(|(song, _)| song.name().to_string())
+                .collect(),
         })
         .collect();
 
-    let mut shows: Vec<serde_json::Value> = with_lighting
+    let mut shows: Vec<ReadinessShow> = with_lighting
         .iter()
         .map(|(song, shows)| {
-            let warnings: Vec<serde_json::Value> = facts
+            let warnings: Vec<_> = facts
                 .lint(shows, Some(song))
                 .into_iter()
                 // Venue-level: the Output and Venue sections already carry
@@ -2261,7 +2110,6 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         "unconfigured-universe" | "patch-overlap" | "patch-overrun"
                     )
                 })
-                .map(|w| json!({"kind": w.kind, "message": w.message}))
                 .collect();
             let files: Vec<String> = song
                 .dsl_lighting_shows()
@@ -2274,7 +2122,12 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         .to_string()
                 })
                 .collect();
-            json!({"song": song.name(), "files": files, "warnings": warnings})
+            ReadinessShow {
+                song: song.name().to_string(),
+                files,
+                error: None,
+                warnings,
+            }
         })
         .collect();
     // A song whose show does not parse never loads (`Song::new` fails as a
@@ -2282,15 +2135,15 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // with the parser's own message, and that is the error.
     for failure in songs.failures() {
         if failure.concerns_lighting() {
-            shows.push(json!({
-                "song": failure.name(),
-                "files": [],
-                "error": failure.error(),
-                "warnings": [],
-            }));
+            shows.push(ReadinessShow {
+                song: failure.name().to_string(),
+                files: Vec::new(),
+                error: Some(failure.error().to_string()),
+                warnings: Vec::new(),
+            });
         }
     }
-    shows.sort_by(|a, b| a["song"].as_str().cmp(&b["song"].as_str()));
+    shows.sort_by(|a, b| a.song.cmp(&b.song));
 
     let unconfigured: Vec<u16> = used_universes
         .iter()
@@ -2314,35 +2167,39 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     };
     let olad = match &dmx {
         Some(dmx) if !to_probe.is_empty() => {
-            let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
-            json!({"reachable": report.reachable, "unpatched": report.unpatched})
+            let report = dmx.olad().probe(&to_probe);
+            Some(OladPatch {
+                reachable: report.reachable,
+                unpatched: report.unpatched,
+            })
         }
-        _ => serde_json::Value::Null,
+        _ => None,
     };
 
     // The venue's own findings: whether it loads at all (one fixture that
     // cannot be driven fails the whole venue, and nothing lights), and
     // fixtures patched over each other or past the universe's end.
-    let patch_warnings: Vec<serde_json::Value> = facts
-        .patch_warnings
-        .iter()
-        .map(|w| json!({"kind": w.kind, "message": w.message}))
-        .collect();
-
-    json!({
-        "dmx": dmx.is_some(),
-        "venue": venue,
-        "venue_error": facts.venue_error,
-        "patch_warnings": patch_warnings,
-        "fixture_types": {"in_use": in_use, "unresolved": unresolved, "library": library},
-        "groups": groups,
-        "shows": shows,
-        "output": {
-            "universes": used_universes,
-            "unconfigured": unconfigured,
-            "olad": olad,
+    let mut report = Readiness {
+        dmx: dmx.is_some(),
+        venue,
+        venue_error: facts.venue_error,
+        patch_warnings: facts.patch_warnings,
+        fixture_types: ReadinessTypes {
+            in_use: in_use.into_iter().collect(),
+            unresolved,
+            library,
         },
-    })
+        groups,
+        shows,
+        output: ReadinessOutput {
+            universes: used_universes.into_iter().collect(),
+            unconfigured,
+            olad,
+        },
+        checks: Vec::new(),
+    };
+    report.checks = report.verdicts();
+    report
 }
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
@@ -2358,8 +2215,7 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         crate::config::Player::deserialize(&path)
             .map(|player| {
                 player
-                    .dmx()
-                    .and_then(|dmx| dmx.lighting())
+                    .host_lighting()
                     .map(|lighting| {
                         let mut names: Vec<String> = lighting.groups().keys().cloned().collect();
                         names.sort();
@@ -2394,11 +2250,18 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         }
     };
 
-    let groups: Vec<serde_json::Value> = names
+    let groups = names
         .into_iter()
-        .map(|name| json!({"name": name, "fixtures": []}))
+        .map(|name| LightingGroup {
+            name,
+            fixtures: vec![],
+        })
         .collect();
-    Json(json!({"groups": groups, "resolved": false})).into_response()
+    Json(LightingGroups {
+        groups,
+        resolved: Some(false),
+    })
+    .into_response()
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
@@ -2406,11 +2269,24 @@ pub(super) async fn get_venues(
     State(state): State<WebUiState>,
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)
-        .map_err(|e| e.into_response())?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )
+    .map_err(|e| e.into_response())?;
     if !dir.is_dir() {
         return Ok::<_, axum::response::Response>(
-            (StatusCode::OK, Json(json!({"venues": {}}))).into_response(),
+            (
+                StatusCode::OK,
+                Json(VenueList {
+                    venues: Default::default(),
+                    owners: Default::default(),
+                    errors: None,
+                    versions: None,
+                }),
+            )
+                .into_response(),
         );
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
@@ -2419,91 +2295,101 @@ pub(super) async fn get_venues(
         let read = lighting::project_files::venues(&dir);
         let mut all = std::collections::HashMap::new();
         let mut versions = std::collections::HashMap::new();
+        let mut owners = std::collections::HashMap::new();
         for declared in read.items {
             if let Ok(bytes) = crate::util::read_file(&declared.file) {
                 versions.insert(declared.name.clone(), content_version(&bytes));
             }
+            if let Some(owner) = read.record.owner(&declared.name) {
+                owners.insert(
+                    declared.name.clone(),
+                    lighting_writes::wire_owner(Kind::Venue, &dir, &owner),
+                );
+            }
             all.insert(declared.name, declared.item);
         }
-        let errors: Vec<FileError> = read
+        let errors: Vec<LightingFileError> = read
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: lighting::project_files::display_in(&dir, &p.file),
                 error: p.error.clone(),
             })
             .collect();
-        Ok::<_, String>((all, errors, versions))
+        Ok::<_, String>((all, owners, errors, versions))
     })
     .await?;
-    let (all, errors, versions) = all;
+    let (all, owners, errors, versions) = all;
     Ok((
         StatusCode::OK,
-        Json(json!({"venues": all, "errors": errors, "versions": versions})),
+        Json(VenueList {
+            venues: all,
+            owners,
+            errors: Some(errors),
+            versions: Some(versions),
+        }),
     )
         .into_response())
 }
 
-/// GET /api/lighting/venues/:name — returns a single venue.
+/// GET /api/lighting/venues/:name — returns a single venue, from the file
+/// the loader read it from. A file that does not parse is never searched
+/// for it.
 pub(super) async fn get_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let located = {
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
+    let found = {
         let (dir, name) = (dir.clone(), name.clone());
-        super::helpers::spawn_blocking_io("locate venue file", move || {
-            locate_venue_file(&dir, &name)
+        super::helpers::spawn_blocking_io("read venue file", move || {
+            let read = lighting::project_files::venues(&dir);
+            let Some(declared) = read.get(&name) else {
+                return Ok(None);
+            };
+            crate::util::read_file(&declared.file)
+                .map(|bytes| Some((declared.item.clone(), bytes)))
+                .map_err(|e| format!("cannot read {}: {e}", declared.file.display()))
         })
         .await?
     };
-    let Some(located) = located else {
+    let Some((venue, bytes)) = found else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
     };
-    if let Some(why) = &located.broken {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse venue: {} ({})", why, located.file())})),
-        )
-            .into_response());
-    }
-    let version = located.version();
-    let content = String::from_utf8_lossy(&located.bytes).into_owned();
-    let venues = lighting::parser::parse_venues(&content).map_err(|e| {
+    Ok::<_, axum::response::Response>(
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse venue: {}", e)})),
-        )
-            .into_response()
-    })?;
-    match venues.get(&name) {
-        Some(v) => Ok((
             StatusCode::OK,
-            Json(json!({"venue": v, "dsl": content, "version": version})),
+            Json(VenueDetail {
+                venue,
+                version: content_version(&bytes),
+                dsl: String::from_utf8_lossy(&bytes).into_owned(),
+            }),
         )
-            .into_response()),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Venue '{}' not found in file", name)})),
-        )
-            .into_response()),
-    }
+            .into_response(),
+    )
 }
 
-/// PUT /api/lighting/venues/:name — creates or updates a venue.
+/// PUT /api/lighting/venues/:name — creates, updates or renames a venue.
 ///
-/// The file is found by scanning every venue file for the block, so a venue
-/// defined in a file whose stem differs from its name is patched in place. A
-/// JSON body patches the file (never regenerates an existing one); a file
-/// that does not parse is refused (409) rather than overwritten. An
-/// `If-Match` version, when sent, must be the file's current one (409
-/// otherwise); the response carries the new `version`.
+/// By the one rule for venue files ([`super::lighting_writes`]): a new name
+/// is claimed at `<venues dir>/<stem>.venue`; an existing one is written
+/// only where its file is that venue's alone, and refused (409, with the
+/// file and why) otherwise. `?from=<old>` renames: a file at the old name's
+/// canonical place moves to the new name's, any other is renamed in place.
+/// A JSON body patches the file (never regenerates an existing one); a DSL
+/// body is the whole file, and must declare this one venue and nothing
+/// else. An `If-Match` version, when sent, must be the file's current one
+/// (409 otherwise); the response carries the new `version`.
 pub(super) async fn put_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -2512,7 +2398,14 @@ pub(super) async fn put_venue(
     body: Bytes,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    if let Some(from) = &query.from {
+        validate_lighting_name(from)?;
+    }
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
 
     let content_type = headers
         .get("content-type")
@@ -2520,135 +2413,67 @@ pub(super) async fn put_venue(
         .unwrap_or("");
     let expected = if_match_version(&headers);
 
-    enum Incoming {
-        Json(serde_json::Value, lighting::types::Venue),
-        Dsl(String),
-    }
-    let incoming = if content_type.contains("application/json") {
-        let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Invalid JSON: {}", e)})),
-            )
-                .into_response()
-        })?;
-        let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
-        let venue = venue_from_json(&name, &json_body).map_err(bad)?;
-        Incoming::Json(json_body, venue)
+    let (body, needs_new_format) = if content_type.contains("application/json") {
+        let json_body: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| lighting_writes::Answer::bad(format!("Invalid JSON: {}", e)))?;
+        let venue = venue_from_json(&name, &json_body).map_err(lighting_writes::Answer::bad)?;
+        let needs = lighting_writes::needs_venue_extension(&venue);
+        let renamed_to = name.clone();
+        let subject = query.from.clone().unwrap_or_else(|| name.clone());
+        let renaming = !lighting::files::same_name(&subject, &name);
+        // An existing file is patched, not regenerated: comments, TODO
+        // lines and the file's own layout survive a save from the UI.
+        let edit: lighting_writes::Edit = Box::new(move |current| {
+            let patched = match current {
+                // Patched under the name it has, then renamed.
+                Some(text) => venue_from_json(&subject, &json_body)
+                    .and_then(|as_is| lighting::venue_patch::patch_venue(text, &subject, &as_is))
+                    .and_then(|patched| {
+                        if renaming {
+                            lighting::venue_patch::rename_venue(&patched, &subject, &renamed_to)
+                        } else {
+                            Ok(patched)
+                        }
+                    }),
+                None => venue_json_to_dsl(&renamed_to, &json_body),
+            };
+            patched.map_err(lighting_writes::Answer::bad)
+        });
+        (lighting_writes::Body::Edit(edit), Some(needs))
     } else {
-        Incoming::Dsl(String::from_utf8(body.to_vec()).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid UTF-8"})),
-            )
-                .into_response()
-        })?)
+        let text = String::from_utf8(body.to_vec())
+            .map_err(|_| lighting_writes::Answer::bad("Invalid UTF-8"))?;
+        (lighting_writes::Body::Text(text), None)
     };
 
-    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-    let saved_in = dir.clone();
-    let venue_name = name.clone();
-    let outcome = super::helpers::spawn_blocking_io("write venue", move || {
-        let name = venue_name;
-        let _guard = VENUE_WRITES.blocking_lock();
-        let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
-        let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
-        let located = locate_venue_file(&dir, &name)?;
-        if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
-            return reply(r);
-        }
-        if let Some(expected) = &expected {
-            let current = located.as_ref().map(LocatedVenue::version);
-            if current.as_deref() != Some(expected.as_str()) {
-                return reply(stale_venue_response(&name, current));
-            }
-        }
-        let dsl = match incoming {
-            Incoming::Dsl(text) => text,
-            // An existing file is patched, not regenerated: comments, TODO
-            // lines and the file's own layout survive a save from the UI.
-            Incoming::Json(json_body, venue) => match &located {
-                Some(l) => match l.text() {
-                    Some(text) => match lighting::venue_patch::patch_venue(text, &name, &venue) {
-                        Ok(patched) => patched,
-                        Err(e) => return reply(bad(e)),
-                    },
-                    None => {
-                        let why = l.broken.as_deref().unwrap_or("not valid UTF-8");
-                        return reply(broken_venue_response(&name, &l.file(), why));
-                    }
-                },
-                None => match venue_json_to_dsl(&name, &json_body) {
-                    Ok(dsl) => dsl,
-                    Err(e) => return reply(bad(e)),
-                },
-            },
-        };
-
-        // Validate the DSL parses correctly
-        let venues = match lighting::parser::parse_venues(&dsl) {
-            Ok(v) => v,
-            Err(e) => return reply(bad(format!("Invalid venue DSL: {e}"))),
-        };
-        if let Err(r) = require_declared_name("venue", &name, &venues) {
-            return reply(r);
-        }
-        let typed = venues.values().any(needs_venue_extension);
-
-        // The extension is the version marker: a venue using positions,
-        // focus points or MVR provenance is a `.venue`; anything else stays
-        // `.light`. An existing file keeps its name and extension unless the
-        // content outgrows `.light`, in which case it moves to `.venue` and
-        // the `.light` original is retired after the durable write.
-        let stem = sanitize_filename(&name);
-        let file_path = match &located {
-            Some(l) if !typed || l.path.extension().is_some_and(|e| e == "venue") => l.path.clone(),
-            Some(l) => l.path.with_extension("venue"),
-            None => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
-        };
-        let stale_twin = located
-            .as_ref()
-            .map(|l| l.path.clone())
-            .filter(|path| path != &file_path);
-        if stale_twin.is_some() && file_path.exists() {
-            return reply(
-                (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": format!(
-                        "{} already exists; it would have to be replaced to keep this venue's \
-                         new fields",
-                        crate::util::filename_display(&file_path)
-                    )})),
-                )
-                    .into_response(),
-            );
-        }
-        config_io::staged_write(&file_path, &dsl)?;
-        if let Some(twin) = stale_twin {
-            // Best effort: the save is durable already, and a leftover
-            // `.light` twin surfaces as a duplicate venue name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the venue's .light twin");
-            }
-        }
-        Ok::<_, String>(Ok(content_version(dsl.as_bytes())))
+    let save = lighting_writes::VenueSave {
+        project: super::helpers::project_dir(&state),
+        dir: dir.clone(),
+        name: name.clone(),
+        from: query.from.clone(),
+        expected,
+        needs_new_format,
+        body,
+    };
+    let saved = super::helpers::spawn_blocking_io("write venue", move || {
+        Ok::<_, String>(lighting_writes::save_venue(save))
     })
-    .await?;
-    let version = outcome?;
+    .await??;
+    let version = content_version(saved.text.as_bytes());
 
     let reloaded = reload_if_current_venue(&state, &name).await;
-    let venue_error = venue_error_after_save(&state, &name, &saved_in).await;
+    let venue_error = venue_error_after_save(&state, &name, &dir).await;
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "saved",
-                "name": name,
-                "reloaded": reloaded,
-                "version": version,
-                "venue_error": venue_error,
-            })),
+            Json(crate::webui::wire::venue::VenueSaved {
+                status: "saved".to_string(),
+                name,
+                reloaded,
+                version,
+                venue_error,
+            }),
         )
             .into_response(),
     )
@@ -2665,9 +2490,20 @@ pub(super) async fn venue_error_after_save(
     state: &WebUiState,
     name: &str,
     venues_dir: &std::path::Path,
-) -> serde_json::Value {
-    let player = state.player.clone();
-    let config_path = state.config_path.clone();
+) -> Option<crate::lighting::findings::VenueError> {
+    venue_error_of(&state.player, &state.config_path, name, venues_dir).await
+}
+
+/// [`venue_error_after_save`] for `player`, whose config is at
+/// `config_path`: what MCP's writes answer too.
+pub(crate) async fn venue_error_of(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &std::path::Path,
+    name: &str,
+    venues_dir: &std::path::Path,
+) -> Option<crate::lighting::findings::VenueError> {
+    let player = player.clone();
+    let config_path = config_path.to_path_buf();
     let venue = name.to_string();
     let venues_dir = venues_dir.to_path_buf();
     let found = tokio::task::spawn_blocking(move || {
@@ -2680,7 +2516,7 @@ pub(super) async fn venue_error_after_save(
         }
         // codeql[rust/path-injection] config_path is set at startup, not user input.
         let config = crate::config::Player::deserialize(&config_path).ok()?;
-        let lighting = config.dmx().and_then(|d| d.lighting())?;
+        let lighting = config.host_lighting()?;
         if lighting.current_venue() != Some(venue.as_str()) {
             return None;
         }
@@ -2692,10 +2528,11 @@ pub(super) async fn venue_error_after_save(
     .await
     .ok()
     .flatten();
-    match found {
-        Some((fixture, reason)) => json!({"venue": name, "fixture": fixture, "reason": reason}),
-        None => serde_json::Value::Null,
-    }
+    found.map(|(fixture, reason)| crate::lighting::findings::VenueError {
+        venue: name.to_string(),
+        fixture,
+        reason,
+    })
 }
 
 /// After a venue file changed on disk: if it is the venue the running engine
@@ -2735,59 +2572,24 @@ pub(super) async fn reload_if_current_venue(state: &WebUiState, name: &str) -> b
     }
 }
 
-/// DELETE /api/lighting/venues/:name — deletes a venue file.
+/// DELETE /api/lighting/venues/:name — deletes a venue file: only one that
+/// is the venue's alone (409 otherwise, with the file and why).
 pub(super) async fn delete_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    // Held from reading the file to deleting it, as MCP's delete does: a
-    // save adding another venue to it between the two would be lost (#578).
-    let _writing = VENUE_WRITES.lock().await;
-    // By declaration, as GET and PUT find it: an MVR import names the file by
-    // its own rule, so the stem need not be this API's spelling of the name.
-    let located = {
-        let (dir, name) = (dir.clone(), name.clone());
-        super::helpers::spawn_blocking_io("locate venue file", move || {
-            locate_venue_file(&dir, &name)
-        })
-        .await?
-    };
-    let Some(located) = located else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Venue not found: {}", name)})),
-        )
-            .into_response());
-    };
-    // Deleting the file deletes everything in it.
-    let mut others: Vec<String> = located
-        .text()
-        .and_then(|text| lighting::parser::parse_venues(text).ok())
-        .map(|venues| venues.into_keys().filter(|n| n != &name).collect())
-        .unwrap_or_default();
-    if !others.is_empty() {
-        others.sort();
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!(
-                "venue \"{}\" lives in {}, which also defines {}; deleting this one would remove \
-                 them — edit the file by hand instead",
-                name,
-                located.file(),
-                others
-                    .iter()
-                    .map(|n| format!("\"{n}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )})),
-        )
-            .into_response());
-    }
-    let fp = located.path;
-    super::helpers::spawn_blocking_io("delete venue", move || std::fs::remove_file(&fp)).await?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
+    let wanted = name.clone();
+    super::helpers::spawn_blocking_io("delete venue", move || {
+        Ok::<_, String>(lighting_writes::delete_venue(&dir, &wanted))
+    })
+    .await??;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -2800,26 +2602,6 @@ pub(super) async fn delete_venue(
 // ---------------------------------------------------------------------------
 // Lighting helpers
 // ---------------------------------------------------------------------------
-
-/// A file in a lighting directory that could not be parsed, reported alongside
-/// the ones that could.
-#[derive(serde::Serialize)]
-struct FileError {
-    file: String,
-    error: String,
-}
-
-/// Converts a name to a safe filename (lowercase, spaces to underscores).
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            ' ' => '_',
-            c if c.is_alphanumeric() || c == '_' || c == '-' => c,
-            _ => '_',
-        })
-        .collect::<String>()
-        .to_lowercase()
-}
 
 /// Converts a JSON fixture type definition to DSL format.
 fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
@@ -2834,10 +2616,31 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
 
     let mut entries: Vec<(&String, &serde_json::Value)> = channels.iter().collect();
     entries.sort_by_key(|(_, v)| v.as_u64().unwrap_or(0));
-    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
+    // The editor's own check of its rows (`venue_rows`), its first finding
+    // the refusal.
+    let mut rows = Vec::new();
+    for (ch_name, ch_offset) in &entries {
         let offset = ch_offset
             .as_u64()
             .ok_or(format!("Channel '{}' offset must be a number", ch_name))?;
+        rows.push(lighting::venue_rows::ChannelRow {
+            name: ch_name.to_string(),
+            offset: Some(offset as f64),
+        });
+    }
+    if let Some(found) = lighting::venue_rows::channel_row_problems(&rows).first() {
+        use lighting::venue_rows::ChannelProblem;
+        let name = &rows[found.row as usize].name;
+        return Err(match found.problems[0] {
+            ChannelProblem::NoName => "A channel has no name".to_string(),
+            ChannelProblem::DuplicateName => format!("Channel '{name}' listed more than once"),
+            ChannelProblem::BadOffset => {
+                format!("Channel '{name}' offset must be from 1 to 65535")
+            }
+        });
+    }
+    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
+        let offset = ch_offset.as_u64().unwrap_or_default();
         let comma = if i + 1 < entries.len() { "," } else { "" };
         dsl.push_str(&format!("    \"{ch_name}\": {offset}{comma}\n"));
     }
@@ -2872,12 +2675,15 @@ pub(super) async fn get_venue_patch(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir =
-        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let outcome = super::helpers::spawn_blocking_io("read venue patch", move || {
@@ -2889,7 +2695,7 @@ pub(super) async fn get_venue_patch(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_patch_json(&system, venue)))
+        Ok(Some(venue_patch(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2916,12 +2722,15 @@ pub(super) async fn get_venue_scene(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir =
-        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let outcome = super::helpers::spawn_blocking_io("read venue scene", move || {
@@ -2933,7 +2742,7 @@ pub(super) async fn get_venue_scene(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_scene_json(&system, venue)))
+        Ok(Some(venue_scene(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2947,11 +2756,11 @@ pub(super) async fn get_venue_scene(
 }
 
 /// The scene answer for one venue of a loaded system.
-fn venue_scene_json(
+fn venue_scene(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures: serde_json::Map<String, serde_json::Value> = venue
+) -> VenueScene {
+    let fixtures = venue
         .fixtures()
         .iter()
         .map(|(name, fixture)| {
@@ -2959,29 +2768,24 @@ fn venue_scene_json(
                 .resolve_fixture_type(fixture)
                 .ok()
                 .and_then(|t| t.rig().map(str::to_string));
-            (
-                name.clone(),
-                json!({
-                    "tags": fixture.tags(),
-                    "type": fixture.fixture_type(),
-                    "mode": fixture.mode(),
-                    "position": fixture.position(),
-                    "rotation": fixture.rotation(),
-                    "beam_angle": fixture.beam_angle(),
-                    "rig": rig,
-                }),
-            )
+            let scene = SceneFixture {
+                placement: FixturePlacement {
+                    tags: fixture.tags().to_vec(),
+                    fixture_type: fixture.fixture_type().to_string(),
+                    position: fixture.position(),
+                    rotation: fixture.rotation(),
+                    beam_angle: fixture.beam_angle(),
+                    rig,
+                },
+                mode: fixture.mode().map(String::from),
+            };
+            (name.clone(), scene)
         })
         .collect();
-    json!({
-        "fixtures": fixtures,
-        "venue": {
-            "name": venue.name(),
-            "focus_points": venue.focus_points(),
-            "scenery": system.scenery(venue.name()),
-            "scenery_error": system.scenery_error(venue.name()),
-        },
-    })
+    VenueScene {
+        fixtures,
+        venue: super::super::state::stage_venue(system, venue),
+    }
 }
 
 /// A lighting system loaded from a project's type and venue files alone, as
@@ -3007,45 +2811,32 @@ pub(super) fn system_from_files(
 }
 
 /// The patch answer for one venue of a loaded system.
-fn venue_patch_json(
+fn venue_patch(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures = venue.fixtures_by_patch();
-    let spans: Vec<serde_json::Value> = fixtures
-        .iter()
-        .map(|fixture| {
-            let footprint = system
+) -> crate::webui::wire::venue::VenuePatch {
+    use crate::webui::wire::venue::{PatchedFixture, VenuePatch};
+    let spans = venue
+        .fixtures_by_patch()
+        .into_iter()
+        .map(|fixture| PatchedFixture {
+            fixture: fixture.name().to_string(),
+            universe: fixture.universe(),
+            address: fixture.start_channel(),
+            footprint: system
                 .resolve_fixture_type(fixture)
                 .ok()
-                .map(|t| t.footprint());
-            json!({
-                "fixture": fixture.name(),
-                "universe": fixture.universe(),
-                "address": fixture.start_channel(),
-                "footprint": footprint,
-                "type": fixture.fixture_type(),
-                "mode": fixture.mode(),
-            })
+                .map(|t| t.footprint()),
+            fixture_type: fixture.fixture_type().to_string(),
+            mode: fixture.mode().map(String::from),
         })
         .collect();
     let known = system.patch_spans(venue);
-    let overlaps: Vec<serde_json::Value> = lighting::patch::venue_overlaps(&known)
-        .into_iter()
-        .map(|o| {
-            json!({
-                "a": o.first,
-                "b": o.second,
-                "a_gang": o.first_gang,
-                "b_gang": o.second_gang,
-                "universe": o.universe,
-                "from": o.from,
-                "to": o.to,
-            })
-        })
-        .collect();
-    let overruns = lighting::patch::venue_overruns(&known);
-    json!({"spans": spans, "overlaps": overlaps, "overruns": overruns})
+    VenuePatch {
+        spans,
+        overlaps: lighting::patch::venue_overlaps(&known),
+        overruns: lighting::patch::venue_overruns(&known),
+    }
 }
 
 /// Converts a JSON venue definition to DSL format.
@@ -3083,40 +2874,54 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         .and_then(|v| v.as_array())
         .ok_or("Missing 'fixtures' array")?;
 
-    let mut by_name = std::collections::HashMap::new();
+    let mut rows = Vec::new();
     for fix in fixtures {
-        let fix_name = fix
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or("Fixture missing 'name'")?;
-        let fix_type = fix
-            .get("fixture_type")
-            .and_then(|v| v.as_str())
-            .ok_or("Fixture missing 'fixture_type'")?;
-        let universe = fix
-            .get("universe")
-            .and_then(|v| v.as_u64())
-            .ok_or("Fixture missing 'universe'")?;
-        let start_channel = fix
-            .get("start_channel")
-            .and_then(|v| v.as_u64())
-            .ok_or("Fixture missing 'start_channel'")?;
-        // A row the editor could not name is refused, not saved as a fixture
-        // nobody can address (or dropped without a word).
-        if fix_name.trim().is_empty() {
-            return Err("A fixture has no name".to_string());
-        }
-        if fix_type.trim().is_empty() {
-            return Err(format!("Fixture '{fix_name}' has no fixture type"));
-        }
-        if universe == 0 {
-            return Err(format!("Fixture '{fix_name}': universe must be 1 or more"));
-        }
-        if start_channel == 0 {
-            return Err(format!(
-                "Fixture '{fix_name}': start channel must be 1 or more"
-            ));
-        }
+        let field = |key: &str| fix.get(key).ok_or(format!("Fixture missing '{key}'"));
+        let text = |key| {
+            field(key)?
+                .as_str()
+                .ok_or(format!("Fixture missing '{key}'"))
+        };
+        let number = |key| {
+            field(key)?
+                .as_u64()
+                .ok_or(format!("Fixture missing '{key}'"))
+        };
+        rows.push(lighting::venue_rows::VenueRow {
+            name: text("name")?.to_string(),
+            fixture_type: text("fixture_type")?.to_string(),
+            universe: Some(number("universe")? as f64),
+            start_channel: Some(number("start_channel")? as f64),
+            mode: None,
+        });
+    }
+    // A row the editor could not name or address is refused, not saved as
+    // a fixture nobody can address (or dropped without a word), by the
+    // editor's own check of its rows (`venue_rows`).
+    if let Some(found) = lighting::venue_rows::venue_row_problems(&rows, |_| false).first() {
+        use lighting::venue_rows::RowProblem;
+        let row = &rows[found.row as usize];
+        let name = &row.name;
+        return Err(match found.problems[0] {
+            RowProblem::NoName => "A fixture has no name".to_string(),
+            RowProblem::DuplicateName => format!("Fixture '{name}' listed more than once"),
+            RowProblem::NoType | RowProblem::NoMode => {
+                format!("Fixture '{name}' has no fixture type")
+            }
+            RowProblem::BadUniverse if row.universe == Some(0.0) => {
+                format!("Fixture '{name}': universe must be 1 or more")
+            }
+            RowProblem::BadUniverse => "Fixture 'universe' out of range".to_string(),
+            RowProblem::BadAddress if row.start_channel == Some(0.0) => {
+                format!("Fixture '{name}': start channel must be 1 or more")
+            }
+            RowProblem::BadAddress => "Fixture 'start_channel' out of range".to_string(),
+        });
+    }
+
+    let mut by_name = std::collections::HashMap::new();
+    for (fix, row) in fixtures.iter().zip(&rows) {
+        let (fix_name, fix_type) = (row.name.as_str(), row.fixture_type.as_str());
         let tags: Vec<String> = fix
             .get("tags")
             .and_then(|v| v.as_array())
@@ -3130,8 +2935,9 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         let fixture = Fixture::new(
             fix_name.to_string(),
             fix_type.to_string(),
-            u16::try_from(universe).map_err(|_| "Fixture 'universe' out of range")?,
-            u16::try_from(start_channel).map_err(|_| "Fixture 'start_channel' out of range")?,
+            // Both in 1..=65535, by the check above.
+            row.universe.unwrap_or_default() as u16,
+            row.start_channel.unwrap_or_default() as u16,
             tags,
         )
         .with_position(optional_vec3(fix, "position")?)
@@ -3143,11 +2949,12 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             Some(value) => Some(
                 value
                     .as_f64()
-                    .filter(|v| *v > 0.0 && *v <= 180.0)
+                    .filter(|v| lighting::fixture_data::beam_angle_valid(*v))
                     .ok_or_else(|| {
                         format!(
                             "Fixture '{fix_name}': 'beam_angle' must be a number of degrees, \
-                             greater than 0 and at most 180, or null"
+                             greater than 0 and at most {}, or null",
+                            lighting::fixture_data::MAX_BEAM_ANGLE
                         )
                     })?,
             ),
@@ -3163,9 +2970,7 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
                     .to_string(),
             ),
         });
-        if by_name.insert(fix_name.to_string(), fixture).is_some() {
-            return Err(format!("Fixture '{fix_name}' listed more than once"));
-        }
+        by_name.insert(fix_name.to_string(), fixture);
     }
 
     let mut focus_points = std::collections::BTreeMap::new();
@@ -3210,6 +3015,55 @@ mod test {
     /// by the engine. Answering `{"groups": []}` there emptied the cue-target
     /// autocomplete with no error to explain it, because the endpoint only read
     /// them off a live engine.
+    #[tokio::test]
+    async fn lighting_groups_come_from_this_hosts_profile() {
+        let (state, dir) = test_state();
+        std::fs::write(
+            &state.config_path,
+            r#"songs: songs
+profiles:
+  - hostname: not-this-host-x9
+    dmx:
+      universes: []
+      lighting:
+        groups:
+          elsewhere:
+            name: elsewhere
+            constraints:
+              - AllOf: ["x"]
+  - dmx:
+      universes: []
+      lighting:
+        groups:
+          here:
+            name: here
+            constraints:
+              - AllOf: ["y"]
+"#,
+        )
+        .unwrap();
+        let _keep = dir;
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<&str> = parsed["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .filter_map(|g| g["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["here"], "{parsed}");
+    }
+
     #[tokio::test]
     async fn lighting_groups_come_from_the_config_without_a_dmx_engine() {
         let (state, dir) = test_state();
@@ -3660,6 +3514,148 @@ show "test" {
         );
     }
 
+    /// A project whose songs root is the project itself (`songs: "."`, as
+    /// on the harness), so the light-show endpoint reaches the lighting
+    /// directories; `config` is its mtrack.yaml.
+    fn light_shows_at_the_root(config: &str) -> (axum::Router, tempfile::TempDir) {
+        let (state, dir) = test_state();
+        std::fs::write(dir.path().join("mtrack.yaml"), config).unwrap();
+        let mut sources = state.player.song_sources().unwrap_or_default();
+        sources.songs = dir.path().to_path_buf();
+        state.player.set_song_sources(sources);
+        for sub in [
+            "lighting/venues",
+            "lighting/fixture_types",
+            "lighting/x",
+            "shows",
+        ] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        }
+        std::fs::write(
+            dir.path().join("lighting/venues/club.light"),
+            "venue \"club\" {\n  fixture \"A\" Par @ 1:1\n}\n",
+        )
+        .unwrap();
+        (router().with_state(state), dir)
+    }
+
+    async fn light_show_call(app: &axum::Router, method: &str, path: &str) -> (StatusCode, String) {
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(format!("/lighting/{path}"))
+                    .body(Body::from(show))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response_body(response).await)
+    }
+
+    #[tokio::test]
+    async fn the_light_show_endpoint_writes_no_venue_or_type_file() {
+        let (app, dir) = light_shows_at_the_root("songs: \".\"\n");
+        let club = dir.path().join("lighting/venues/club.light");
+        let before = std::fs::read_to_string(&club).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("lighting/venues"), dir.path().join("alias"))
+            .unwrap();
+        for path in [
+            "lighting%2Fvenues%2Fclub.light",
+            "lighting%2Fvenues%2Fnew.light",
+            "lighting%2Ffixture_types%2Fnew.light",
+            "lighting%2Fx%2F..%2Fvenues%2Fnew.light",
+            "shows%2F..%2Flighting%2Fvenues%2Fclub.light",
+            "alias%2Fclub.light",
+            "alias%2Fnew.light",
+        ] {
+            let (status, body) = light_show_call(&app, "PUT", path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "PUT {path}: {body}");
+            assert!(body.contains("song light shows"), "PUT {path}: {body}");
+        }
+        for path in [
+            "lighting%2Fvenues%2Fclub.light",
+            "lighting%2Fx%2F..%2Fvenues%2Fclub.light",
+            "alias%2Fclub.light",
+        ] {
+            let (status, body) = light_show_call(&app, "DELETE", path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "DELETE {path}: {body}");
+        }
+        // Another case is another directory here (a case-sensitive file
+        // system), so there is nothing to write into; on one that folds
+        // case it is the venues directory, which identity finds.
+        for path in [
+            "Lighting%2FVenues%2Fnew.light",
+            "lighting%2FVENUES%2Fclub.light",
+        ] {
+            let (status, body) = light_show_call(&app, "PUT", path).await;
+            assert_ne!(status, StatusCode::OK, "PUT {path}: {body}");
+        }
+        assert_eq!(std::fs::read_to_string(&club).unwrap(), before);
+        let venues: Vec<_> = std::fs::read_dir(dir.path().join("lighting/venues"))
+            .unwrap()
+            .collect();
+        assert_eq!(venues.len(), 1, "nothing new in the venues directory");
+        assert!(!dir.path().join("lighting/fixture_types/new.light").exists());
+
+        // A song's light show elsewhere is still written and deleted.
+        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = light_show_call(&app, "DELETE", "shows%2Fa.light").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[test]
+    fn a_path_is_within_a_dir_by_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let venues = dir.path().join("lighting/venues");
+        std::fs::create_dir_all(&venues).unwrap();
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        std::os::unix::fs::symlink(&venues, dir.path().join("alias")).unwrap();
+        let within = |p: &str| crate::util::is_within_dir(&dir.path().join(p), &venues);
+        assert!(within("lighting/venues/new.light"));
+        assert!(within("lighting/venues/deep/er/new.light"));
+        assert!(within("other/../lighting/venues/new.light"));
+        assert!(within("alias/new.light"));
+        assert!(!within("other/new.light"));
+        assert!(!within("lighting/new.light"));
+        assert!(!crate::util::is_within_dir(
+            &dir.path().join("x"),
+            &dir.path().join("missing")
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_light_show_endpoint_refuses_the_hosts_configured_dirs() {
+        let config = "songs: \".\"\nprofiles:\n  - hostname: not-this-host-x9\n    dmx:\n      universes: []\n      lighting:\n        directories:\n          venues: shows\n  - dmx:\n      universes: []\n      lighting:\n        directories:\n          venues: rig/venues\n";
+        let (app, dir) = light_shows_at_the_root(config);
+        std::fs::create_dir_all(dir.path().join("rig/venues")).unwrap();
+        let (status, body) = light_show_call(&app, "PUT", "rig%2Fvenues%2Fnew.light").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("venues directory (rig/venues)"), "{body}");
+        // The other host's directory, and the default one this host does
+        // not read, are not this host's venues.
+        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = light_show_call(&app, "PUT", "lighting%2Fvenues%2Fnew.light").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// A config that does not load is a 500 here as at every endpoint that
+    /// reads the lighting directories, not the defaults, which may not be
+    /// this host's.
+    #[tokio::test]
+    async fn the_light_show_endpoint_answers_a_broken_config_with_a_500() {
+        let (app, _dir) = light_shows_at_the_root("profiles: [\n");
+        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.contains("the config does not load"), "{body}");
+    }
+
     #[tokio::test]
     async fn put_lighting_file_invalid_dsl() {
         let (state, _dir) = test_state();
@@ -3693,12 +3689,223 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 2);
-        let paths: Vec<&str> = results
-            .iter()
-            .map(|r| r["path"].as_str().unwrap())
-            .collect();
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
         assert!(paths.contains(&"song1/show.light"));
         assert!(paths.contains(&"top.light"));
+    }
+
+    /// A light show's extension is read in any case: `Show.LIGHT` is listed,
+    /// as `songs --init` registers it.
+    #[test]
+    fn find_light_files_reads_extensions_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Show.LIGHT"), "content").unwrap();
+        std::fs::write(dir.path().join("show.lights"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(dir.path(), dir.path(), &mut results).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "Show.LIGHT");
+        assert_eq!(results[0].name, "Show");
+    }
+
+    /// A request to the lighting endpoints, its status and body.
+    async fn lighting_request(
+        state: &WebUiState,
+        method: &str,
+        uri: &str,
+        body: &str,
+    ) -> (StatusCode, String) {
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        (response.status(), response_body(response).await)
+    }
+
+    /// A light show that is a link is deleted as the link: what it leads
+    /// to, another song's config or show, is left.
+    #[tokio::test]
+    async fn delete_lighting_file_removes_a_link_not_its_target() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
+        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
+        std::fs::write(songs.join("a/lighting/show.light"), "a's show").unwrap();
+        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
+        std::os::unix::fs::symlink("../song.yaml", songs.join("b/lighting/show.light")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../a/lighting/show.light",
+            songs.join("b/lighting/a.light"),
+        )
+        .unwrap();
+
+        for file in ["show.light", "a.light"] {
+            let uri = format!("/lighting/b%2Flighting%2F{file}");
+            let (status, body) = lighting_request(&state, "DELETE", &uri, "").await;
+            assert_eq!(status, StatusCode::OK, "{file}: {body}");
+            assert!(
+                std::fs::symlink_metadata(songs.join("b/lighting").join(file)).is_err(),
+                "{file}: the link is gone"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
+            "name: B\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
+            "a's show"
+        );
+    }
+
+    /// Only `.light` files are written as light shows: not a song's config
+    /// by name.
+    #[tokio::test]
+    async fn put_lighting_file_refuses_a_file_that_is_no_show() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("b")).unwrap();
+        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+
+        let (status, body) = lighting_request(&state, "PUT", "/lighting/b%2Fsong.yaml", show).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
+            "name: B\n"
+        );
+    }
+
+    /// A bar/beat show is checked against its song's tempo when the song's
+    /// folder is spelled through a link (the songs folder reached through
+    /// one): the show's path, resolved, and the song's folder are compared
+    /// resolved. The loader resolves the folders it loads, so this is a
+    /// song built from an unresolved path.
+    #[tokio::test]
+    async fn put_lighting_file_finds_the_songs_tempo_through_a_linked_folder() {
+        let outer = tempfile::tempdir().unwrap();
+        let real = outer.path().join("real");
+        std::fs::create_dir_all(real.join("t/lighting")).unwrap();
+        std::fs::write(
+            real.join("t/song.yaml"),
+            "name: T\ntracks: []\ntempo:\n  bpm: 120\n  time_signature: 4/4\n",
+        )
+        .unwrap();
+        let link = outer.path().join("songs-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let config = crate::config::Song::deserialize(&link.join("t/song.yaml")).unwrap();
+        let song = crate::songs::Song::new(&link.join("t"), &config).unwrap();
+        assert!(song.lighting_tempo_map().is_some());
+        let songs = crate::songs::Songs::new(std::collections::HashMap::from([(
+            "T".to_string(),
+            std::sync::Arc::new(song),
+        )]));
+        let (state, _dir) = test_state_with_registry(std::sync::Arc::new(songs));
+        {
+            let mut sources = state.player.song_sources().unwrap_or_default();
+            sources.songs = link;
+            state.player.set_song_sources(sources);
+        }
+        let show =
+            "show \"bars\" {\n    @1/1\n    lights: static color: \"red\", duration: 1beat\n}\n";
+
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/t%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// A light show that is a link leading nowhere is not written: the
+    /// write would make its target, outside the songs folder.
+    #[tokio::test]
+    async fn put_lighting_file_refuses_a_link_leading_nowhere() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("x.light");
+        std::fs::create_dir_all(songs.join("foo/lighting")).unwrap();
+        std::os::unix::fs::symlink(&target, songs.join("foo/lighting/show.light")).unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/foo%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!target.exists(), "written outside");
+    }
+
+    /// A light show saved through a link has its `include`s resolved
+    /// where the song loader resolves them: beside the link, not beside
+    /// what it leads to.
+    #[tokio::test]
+    async fn put_lighting_file_resolves_includes_beside_a_link() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
+        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
+        let shared = "sequence \"wash\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        std::fs::write(songs.join("a/lighting/common.light"), shared).unwrap();
+        std::fs::write(songs.join("a/lighting/show.light"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "../../a/lighting/show.light",
+            songs.join("b/lighting/show.light"),
+        )
+        .unwrap();
+        let show =
+            "include \"common.light\"\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
+
+        // Beside B's link there is no common.light: the loader would fail.
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/b%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
+            ""
+        );
+        // Saved as A's, it is found.
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/a%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// The editor deletes a `Show.LIGHT` as it does a `show.light`; a file
+    /// that is no light show is still refused.
+    #[tokio::test]
+    async fn delete_lighting_file_reads_extensions_in_any_case() {
+        let (state, _dir) = test_state();
+        let show = state.songs_path().join("Show.LIGHT");
+        std::fs::write(&show, "content").unwrap();
+        let notes = state.songs_path().join("notes.txt");
+        std::fs::write(&notes, "content").unwrap();
+
+        for (uri, expected) in [
+            ("/lighting/Show.LIGHT", StatusCode::OK),
+            ("/lighting/notes.txt", StatusCode::BAD_REQUEST),
+        ] {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("DELETE")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{uri}");
+        }
+        assert!(!show.exists());
+        assert!(notes.exists());
     }
 
     #[test]
@@ -3718,7 +3925,7 @@ show "test" {
         find_light_files(dir.path(), dir.path(), &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "my_show");
+        assert_eq!(results[0].name, "my_show");
     }
 
     #[test]
@@ -3734,7 +3941,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["path"].as_str().unwrap(), "a/b/c/deep.light");
+        assert_eq!(results[0].path, "a/b/c/deep.light");
     }
 
     #[test]
@@ -3763,7 +3970,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "show");
+        assert_eq!(results[0].name, "show");
     }
 
     #[tokio::test]
@@ -3975,19 +4182,6 @@ show "test" {
     }
 
     // -----------------------------------------------------------------------
-    // Unit tests: sanitize_filename
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sanitize_filename_removes_special_chars() {
-        assert_eq!(sanitize_filename("hello world"), "hello_world");
-        assert_eq!(sanitize_filename("My-Fixture_01"), "my-fixture_01");
-        assert_eq!(sanitize_filename("a/b\\c.d!e"), "a_b_c_d_e");
-        assert_eq!(sanitize_filename("UPPER"), "upper");
-        assert_eq!(sanitize_filename(""), "");
-    }
-
-    // -----------------------------------------------------------------------
     // Unit tests: validate_lighting_name
     // -----------------------------------------------------------------------
 
@@ -4156,7 +4350,7 @@ show "test" {
         .unwrap()
         .remove("v")
         .unwrap();
-        assert!(needs_venue_extension(&venue));
+        assert!(lighting_writes::needs_venue_extension(&venue));
     }
 
     #[test]
@@ -4406,15 +4600,16 @@ show "test" {
     }
 
     /// A fixture types directory holding one file, named as `import-gdtf`
-    /// names it — which is not how this API spells the same name.
+    /// used to name it (the harness's `astera_pixelbrick.fixture`), which is
+    /// not the name's own stem.
     fn imported_fixture_type_dir(
         project: &std::path::Path,
         rel: &str,
         name: &str,
         dsl: String,
     ) -> std::path::PathBuf {
-        let stem = lighting::import::fixture_filename_stem(name);
-        assert_ne!(stem, sanitize_filename(name), "the stems must differ");
+        let stem = lighting::files::stem(name).replace('-', "_");
+        assert_ne!(stem, lighting::files::stem(name), "the stems must differ");
         let dir = project.join(rel);
         std::fs::create_dir(&dir).unwrap();
         let file = dir.join(format!("{stem}.fixture"));
@@ -4579,10 +4774,8 @@ show "test" {
         let rel = "v_del_imported";
         let dir = _dir.path().join(rel);
         std::fs::create_dir(&dir).unwrap();
-        let file = dir.join(format!(
-            "{}.light",
-            lighting::import::fixture_filename_stem("House-Rig")
-        ));
+        // Not the name's stem (`house-rig`).
+        let file = dir.join("house_rig.light");
         std::fs::write(&file, sample_venue_dsl("House-Rig")).unwrap();
 
         let (status, parsed) = fixture_type_request(
@@ -4645,7 +4838,7 @@ show "test" {
         assert_eq!(parsed["name"], "MyFixture");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myfixture.light");
+        let file_path = _dir.path().join(rel).join("myfixture.fixture");
         assert!(file_path.exists());
     }
 
@@ -4704,8 +4897,8 @@ show "test" {
             .exists());
         assert!(dir.path().join("lighting/.cache").is_dir());
 
-        // A name another fixture has is the caller's error, not a server
-        // fault.
+        // A name another fixture has is a conflict naming its file, not a
+        // server fault; so is a name whose file another type has.
         let other = crate::lighting::gdtf::build_zip(&[(
             "description.xml",
             crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
@@ -4713,11 +4906,65 @@ show "test" {
                 .as_bytes(),
         )]);
         let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
-        assert!(
-            parsed["error"].as_str().unwrap().contains("already exists"),
-            "{parsed}"
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "fixture type \"Brick\" is already declared in brick.fixture; choose another name"
         );
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=BRICK%201").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=brick_1").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "brick_1.fixture is taken by \"BRICK 1\"; choose another name"
+        );
+    }
+
+    /// #673: the import's name check and its pinned record go to the
+    /// fixture types directory this host's profile sets, as the CLI and MCP
+    /// put them, not the default one the player does not read; and the
+    /// other endpoints that default a directory read it there too.
+    #[tokio::test]
+    async fn an_import_goes_to_the_hosts_configured_fixture_types_dir() {
+        let config = "songs: \".\"\nprofiles:\n  - hostname: not-this-host-x9\n    dmx:\n      \
+                      universes: []\n      lighting:\n        directories:\n          \
+                      fixture_types: other/types\n  - dmx:\n      universes: []\n      \
+                      lighting:\n        directories:\n          fixture_types: rig/types\n";
+        let (app, dir) = light_shows_at_the_root(config);
+        std::fs::create_dir_all(dir.path().join("rig/types")).unwrap();
+        let (status, parsed) =
+            import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "?name=Brick").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(dir.path().join("rig/types/brick.fixture").exists());
+        assert!(!dir
+            .path()
+            .join("lighting/fixture_types/brick.fixture")
+            .exists());
+        assert!(!dir.path().join("other/types/brick.fixture").exists());
+        // The list with no `?dir=` is this host's directory's.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/fixture-types")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("\"Brick\""), "{body}");
+        // Taken there: another archive under the name is a conflict.
+        let other = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("Synth Brick", "Other Brick")
+                .as_bytes(),
+        )]);
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
     }
 
     /// Uploads an archive to the import endpoint; the status and the answer.
@@ -4790,7 +5037,7 @@ show "test" {
         assert_eq!(parsed["renamed_from"], "Synth Brick");
         let pin = std::fs::read_to_string(
             dir.path()
-                .join("lighting/fixture_types/synth_brick_brick_v2.fixture"),
+                .join("lighting/fixture_types/synth_brick_brick-v2.fixture"),
         )
         .unwrap_or_else(|e| panic!("the newcomer's name is pinned: {e}"));
         assert!(
@@ -4937,7 +5184,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonfixture.light");
+        let file_path = _dir.path().join(rel).join("jsonfixture.fixture");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let types = lighting::parser::parse_fixture_types(&content).unwrap();
@@ -5228,7 +5475,7 @@ show "test" {
         assert_eq!(parsed["name"], "MyVenue");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myvenue.light");
+        let file_path = _dir.path().join(rel).join("myvenue.venue");
         assert!(file_path.exists());
     }
 
@@ -5272,7 +5519,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonvenue.light");
+        let file_path = _dir.path().join(rel).join("jsonvenue.venue");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let venues = lighting::parser::parse_venues(&content).unwrap();
@@ -5280,7 +5527,7 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_refuses_rich_channel_syntax() {
+    async fn a_new_rich_fixture_type_is_a_fixture_file() {
         let (state, _dir) = test_state();
         let rel = "ft_rich";
         let app = router().with_state(state);
@@ -5297,9 +5544,9 @@ show "test" {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains(".fixture"), "{body}");
+        // A new type is always born a `.fixture`, rich or not.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(_dir.path().join(rel).join("mover.fixture").exists());
         assert!(!_dir.path().join(rel).join("mover.light").exists());
     }
 
@@ -5328,7 +5575,7 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_json_refuses_a_fixture_file() {
+    async fn put_fixture_type_json_refuses_a_rich_type() {
         let (state, _dir) = test_state();
         let ft_dir = _dir.path().join("ft_form_refusal");
         std::fs::create_dir(&ft_dir).unwrap();
@@ -5352,7 +5599,7 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_body(response).await;
         assert!(body.contains("as text"), "{body}");
         // The rich definition is untouched.
@@ -6235,8 +6482,8 @@ show "test" {
         // The gang is quiet; the partial overlap names the gang once.
         let overlaps = parsed["overlaps"].as_array().unwrap();
         assert_eq!(overlaps.len(), 1, "{parsed}");
-        assert_eq!(overlaps[0]["a_gang"], serde_json::json!(["G1", "G2"]));
-        assert_eq!(overlaps[0]["b"], "Part");
+        assert_eq!(overlaps[0]["first_gang"], serde_json::json!(["G1", "G2"]));
+        assert_eq!(overlaps[0]["second"], "Part");
         let overruns = parsed["overruns"].as_array().unwrap();
         assert_eq!(overruns.len(), 1, "{parsed}");
         assert_eq!(overruns[0]["fixture"], "End");
@@ -6590,12 +6837,13 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_retires_the_stale_twin() {
+    async fn a_type_in_two_files_is_read_only() {
         let (state, _dir) = test_state();
         let ft_dir = _dir.path().join("ft_twin");
         std::fs::create_dir(&ft_dir).unwrap();
         // A GDTF import can land a `.fixture` beside a hand-written `.light`
-        // of the same name; the next save resolves the pair to one file.
+        // of the same name: the name is declared twice, so neither file is
+        // its alone, and the save is refused rather than guessing which.
         std::fs::write(ft_dir.join("mover.light"), sample_fixture_type_dsl("Mover")).unwrap();
         std::fs::write(
             ft_dir.join("mover.fixture"),
@@ -6617,9 +6865,15 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["read_only"], true);
+        assert_eq!(
+            body["files"],
+            serde_json::json!(["mover.fixture", "mover.light"])
+        );
         assert!(ft_dir.join("mover.fixture").exists());
-        assert!(!ft_dir.join("mover.light").exists());
+        assert!(ft_dir.join("mover.light").exists());
     }
 
     #[tokio::test]
@@ -6628,24 +6882,13 @@ show "test" {
         let rel = "v_put_geometry";
         let app = router().with_state(state);
 
-        // First a plain venue: it is a .light.
-        let plain = serde_json::json!({
-            "fixtures": [{"name": "Spot1", "fixture_type": "GenericPar", "universe": 1, "start_channel": 1}]
-        });
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&plain).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(_dir.path().join(rel).join("geo.light").exists());
+        // First a plain venue, written by hand as a .light.
+        std::fs::create_dir_all(_dir.path().join(rel)).unwrap();
+        std::fs::write(
+            _dir.path().join(rel).join("geo.light"),
+            "venue \"Geo\" {\n  fixture \"Spot1\" GenericPar @ 1:1\n}\n",
+        )
+        .unwrap();
 
         // Then the same venue gains a position and a focus point: it moves
         // to .venue and the .light twin is retired.
@@ -6784,19 +7027,14 @@ show "test" {
     async fn a_light_venue_that_gains_a_mode_moves_to_venue() {
         let (state, _dir) = test_state();
         let rel = "v_put_mode_ext";
-        let plain = serde_json::json!({
-            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1}]
-        });
-        let uri = format!("/lighting/venues/Rig?dir={rel}");
-        let status = put_venue_body(
-            state.clone(),
-            uri.clone(),
-            "application/json",
-            serde_json::to_vec(&plain).unwrap(),
+        // A `.light` venue written by hand (a new one is a `.venue`).
+        std::fs::create_dir_all(_dir.path().join(rel)).unwrap();
+        std::fs::write(
+            _dir.path().join(rel).join("rig.light"),
+            "venue \"Rig\" {\n  fixture \"B1\" Brick @ 1:1\n}\n",
         )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(_dir.path().join(rel).join("rig.light").exists());
+        .unwrap();
+        let uri = format!("/lighting/venues/Rig?dir={rel}");
 
         let moded = serde_json::json!({
             "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1,
@@ -7482,6 +7720,8 @@ show "test" {
         state: WebUiState,
         _state_dir: tempfile::TempDir,
         _project: tempfile::TempDir,
+        /// The port olad's web server is looked for on, where nothing listens.
+        _olad: crate::testutil::net::ClosedPort,
     }
 
     /// Writes one song directory per (name, show file body) and loads them.
@@ -7546,10 +7786,8 @@ show "test" {
         }
         let songs = song_registry(root, songs);
 
-        let dead_port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
+        let olad = crate::testutil::net::ClosedPort::bind();
+        let dead_port = olad.port();
         let universe_yaml: String = universes
             .iter()
             .map(|u| format!("  - universe: {u}\n    name: u{u}\n"))
@@ -7582,6 +7820,7 @@ show "test" {
             state,
             _state_dir: state_dir,
             _project: project,
+            _olad: olad,
         }
     }
 
@@ -7739,6 +7978,10 @@ show "test" {
             .filter_map(|w| w["kind"].as_str())
             .collect();
         assert!(kinds.contains(&"empty-group"), "{kinds:?}");
+        // The Groups check carries the empty group, not the song's.
+        let checks = report["checks"].as_array().unwrap();
+        let groups_check = checks.iter().find(|c| c["key"] == json!("groups")).unwrap();
+        assert_eq!(groups_check["state"], json!("attention"), "{report}");
 
         // Nothing listens where olad's web server should be.
         assert_eq!(report["output"]["universes"], json!([1]));
@@ -7952,7 +8195,10 @@ show "test" {
             .find(|f| f["name"] == json!("M"))
             .unwrap();
         assert_eq!(m["tags"], json!(["other"]));
-        assert_eq!(m["capabilities"], json!(["color", "pan_tilt", "dimmer"]));
+        assert_eq!(
+            m["capabilities"],
+            json!(["color", "pan_tilt", "strobe", "dimmer"])
+        );
 
         let groups = report["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
@@ -8041,14 +8287,14 @@ show "test" {
             &[(
                 "Song",
                 "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
-                 washes: strobe frequency: 8, duration: 1s\n}\n",
+                 washes: move pan: 45deg, tilt: 0deg, duration: 1s\n}\n",
             )],
             &[1],
         );
         let report = fit(rig.state.clone()).await;
         let washes = &report["groups"][0];
         assert_eq!(washes["suggestion"], json!(null));
-        assert_eq!(washes["unmet"], json!(["strobe"]));
+        assert_eq!(washes["unmet"], json!(["move"]));
         assert_eq!(washes["unmet_together"], json!(false));
     }
 
@@ -8161,13 +8407,14 @@ show "test" {
             },
         );
         for (got, want) in evaluations.iter().zip(&direct) {
-            let (fixtures, poses, cells) =
-                crate::webui::state::state_maps(&want.fixtures, &want.poses);
-            assert_eq!(got["fixtures"], json!(fixtures));
+            let maps = crate::webui::state::stage_frame(&want.fixtures, &want.poses);
+            let (poses, cells) = (json!(maps.poses), json!(maps.cells));
+            assert_eq!(got["fixtures"], json!(maps.fixtures));
+            assert_eq!(got["strobe_rates"], json!(maps.strobe_rates));
             // Pan and tilt are exact; the beam's direction and footprint are
             // trigonometry, which two evaluations agree on to the last bit or
             // two, not always the last.
-            for (name, want_pose) in &poses {
+            for (name, want_pose) in poses.as_object().unwrap() {
                 let got_pose = &got["poses"][name];
                 assert_eq!(got_pose["pan"], want_pose["pan"]);
                 assert_eq!(got_pose["tilt"], want_pose["tilt"]);
@@ -8179,7 +8426,10 @@ show "test" {
                     }
                 }
             }
-            assert_eq!(got["poses"].as_object().unwrap().len(), poses.len());
+            assert_eq!(
+                got["poses"].as_object().unwrap().len(),
+                poses.as_object().unwrap().len()
+            );
             assert_eq!(got["cells"], json!(cells));
             assert_eq!(got["time"], json!(want.time.as_secs_f64()));
         }
@@ -8290,7 +8540,9 @@ show "test" {
     // -----------------------------------------------------------------------
 
     async fn inspect(bytes: &[u8]) -> serde_json::Value {
-        inspect_description(&lighting::gdtf::parse_archive(bytes).unwrap())
+        json!(inspect_description(
+            &lighting::gdtf::parse_archive(bytes).unwrap()
+        ))
     }
 
     #[tokio::test]
@@ -8451,22 +8703,38 @@ mod venue_file_tests {
     }
 
     #[tokio::test]
-    async fn a_broken_file_is_refused_and_left_byte_identical() {
+    async fn a_broken_file_is_never_searched_and_left_byte_identical() {
         let (state, dir) = test_state();
         let d = venues_dir(&dir);
         let broken = "// mine\nvenue \"House\" {\n  fixture \"A\" brick @ !!!\n}\n";
         std::fs::write(d.join("rig.venue"), broken).unwrap();
         let app = router().with_state(state);
 
+        // Nothing is guessed from a file that does not parse: "House" is
+        // declared nowhere, so it is new, at its own canonical file.
+        let (status, _) = put(&app, None, body_for(1.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(d.join("rig.venue")).unwrap(),
+            broken
+        );
+        assert!(d.join("house.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn a_broken_file_at_the_canonical_path_is_refused_and_left_byte_identical() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        let broken = "// mine\nvenue \"House\" {\n  fixture \"A\" brick @ !!!\n}\n";
+        std::fs::write(d.join("house.venue"), broken).unwrap();
+        let app = router().with_state(state);
+
         let (status, body) = put(&app, None, body_for(1.0)).await;
         assert_eq!(status, StatusCode::CONFLICT);
         let msg = body["error"].as_str().unwrap();
-        assert!(
-            msg.contains("rig.venue") && msg.contains("by hand"),
-            "{msg}"
-        );
+        assert!(msg.contains("house.venue"), "{msg}");
         assert_eq!(
-            std::fs::read_to_string(d.join("rig.venue")).unwrap(),
+            std::fs::read_to_string(d.join("house.venue")).unwrap(),
             broken
         );
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);

@@ -13,8 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import type { TrackInfo } from "../../gen/rules/mtrack_rules";
   import { playbackStore, waveformStore } from "../../lib/ws/stores";
-  import type { TrackInfo } from "../../lib/ws/stores";
   import GainSlider from "../GainSlider.svelte";
   import {
     sendTrackGain,

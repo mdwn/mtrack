@@ -12,10 +12,19 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/// Get context around an error location for better error reporting
 /// A pest error on `content` as the parser reports it: where, what, and the
 /// lines around it.
 pub(crate) fn describe_pest_error(
+    e: &pest::error::Error<super::grammar::Rule>,
+    content: &str,
+) -> String {
+    describe_pest_error_in("DSL", e, content)
+}
+
+/// [`describe_pest_error`] for a file of `what` ("Fixture types DSL"),
+/// which names it.
+pub(crate) fn describe_pest_error_in(
+    what: &str,
     e: &pest::error::Error<super::grammar::Rule>,
     content: &str,
 ) -> String {
@@ -24,7 +33,7 @@ pub(crate) fn describe_pest_error(
         pest::error::LineColLocation::Span(pos, _) => pos,
     };
     format!(
-        "DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
+        "{what} parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
         line,
         col,
         e.variant.message(),

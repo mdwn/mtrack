@@ -13,7 +13,10 @@
 //
 use std::{error::Error, time::Duration};
 
-use duration_string::DurationString;
+pub use super::midi_event::{
+    Aftertouch, ChannelAftertouch, ControlChange, MidiEvent as Event, NoteOff, NoteOn, PitchBend,
+    ProgramChange,
+};
 use midly::{
     live::LiveEvent,
     num::{u14, u4, u7},
@@ -23,30 +26,38 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the MIDI configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Midi {
     /// The MIDI device.
     device: String,
 
     /// Controls how long to wait before playback of a MIDI file starts.
+    #[serde(default)]
     playback_delay: Option<String>,
 
     /// Enable MIDI beat clock output (24 ppqn timing clock).
+    #[serde(default)]
     beat_clock: Option<bool>,
 
     /// Keep the beat clock free-running at the last known tempo once a song
     /// stops, until the next song starts. Only meaningful when `beat_clock` is
     /// enabled.
+    #[serde(default)]
     persist_tempo: Option<bool>,
 
     /// What the beat clock does where a loop goes back (a section loop's
     /// jump, a looping song's next pass). Only meaningful when `beat_clock`
     /// is enabled.
+    #[serde(default)]
     beat_clock_seams: Option<BeatClockSeams>,
 }
 
 /// What the beat clock does where a loop goes back.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BeatClockSeams {
     /// Its pulses run straight on through the seam, from the first in the
@@ -106,14 +117,7 @@ impl Midi {
         if self.device.trim().is_empty() {
             errors.push("midi device must not be empty".to_string());
         }
-        if let Some(ref delay) = self.playback_delay {
-            if DurationString::from_string(delay.clone()).is_err() {
-                errors.push(format!(
-                    "midi playback_delay '{}' is not a valid duration",
-                    delay
-                ));
-            }
-        }
+        errors.extend(super::playback_delay_problem("midi", &self.playback_delay));
 
         if errors.is_empty() {
             Ok(())
@@ -127,19 +131,6 @@ impl Midi {
 pub trait ToMidiEvent {
     /// Converts the implementer to a MIDI live event.
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
-}
-
-/// MIDI events that can be parsed from YAML.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    NoteOff(NoteOff),
-    NoteOn(NoteOn),
-    Aftertouch(Aftertouch),
-    ControlChange(ControlChange),
-    ProgramChange(ProgramChange),
-    ChannelAftertouch(ChannelAftertouch),
-    PitchBend(PitchBend),
 }
 
 /// Creates a note on MIDI event.
@@ -166,19 +157,6 @@ impl ToMidiEvent for Event {
     }
 }
 
-/// A NoteOff event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct NoteOff {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key for the note off event.
-    key: u8,
-    /// The velocity of the note off event.
-    /// Optional for trigger matching; defaults to 0.
-    #[serde(default)]
-    velocity: u8,
-}
-
 impl ToMidiEvent for NoteOff {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -189,19 +167,6 @@ impl ToMidiEvent for NoteOff {
             },
         })
     }
-}
-
-/// A NoteOn event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct NoteOn {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key of the note on event.
-    key: u8,
-    /// The velocity of the note on event.
-    /// Optional for trigger matching; defaults to 0.
-    #[serde(default)]
-    velocity: u8,
 }
 
 impl ToMidiEvent for NoteOn {
@@ -216,17 +181,6 @@ impl ToMidiEvent for NoteOn {
     }
 }
 
-/// An Aftertouch event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct Aftertouch {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key value of the aftertouch event.
-    key: u8,
-    /// The velocity value of the aftertouch event.
-    velocity: u8,
-}
-
 impl ToMidiEvent for Aftertouch {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -237,17 +191,6 @@ impl ToMidiEvent for Aftertouch {
             },
         })
     }
-}
-
-/// A ControlChange event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ControlChange {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// Controller is the controller for a control_change event.
-    controller: u8,
-    /// Value is the control_change value.
-    value: u8,
 }
 
 impl ToMidiEvent for ControlChange {
@@ -262,15 +205,6 @@ impl ToMidiEvent for ControlChange {
     }
 }
 
-/// A ProgramChange event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ProgramChange {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// Program is the program value for program_change events.
-    program: u8,
-}
-
 impl ToMidiEvent for ProgramChange {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -282,15 +216,6 @@ impl ToMidiEvent for ProgramChange {
     }
 }
 
-/// A ChannelAftertouch event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ChannelAftertouch {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The velocity of the channel aftertouch event.
-    velocity: u8,
-}
-
 impl ToMidiEvent for ChannelAftertouch {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -300,15 +225,6 @@ impl ToMidiEvent for ChannelAftertouch {
             },
         })
     }
-}
-
-/// A PitchBend event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct PitchBend {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The pitchbend event.
-    bend: u16,
 }
 
 impl ToMidiEvent for PitchBend {
@@ -324,7 +240,7 @@ impl ToMidiEvent for PitchBend {
 
 /// Parses a channel from the config. Input is expected to be [1, 16].
 fn parse_channel(channel: u8) -> Result<u4, Box<dyn Error>> {
-    match u4::try_from(channel - 1) {
+    match channel.checked_sub(1).and_then(u4::try_from) {
         Some(val) => Ok(val),
         None => Err(format!("error parsing channel: {} is invalid", channel).into()),
     }
@@ -357,6 +273,37 @@ mod test {
     };
 
     use crate::config::midi::ToMidiEvent;
+
+    /// The ranges the web UI's editor bounds each field by are the ones
+    /// this parsing takes: both ends of each read, one past either refused.
+    #[test]
+    fn the_editors_ranges_are_what_parsing_takes() {
+        use super::super::midi_event::MidiEventShapes;
+        let shapes = MidiEventShapes::new();
+        for kind in &shapes.kinds {
+            let json = serde_json::to_value(kind).unwrap();
+            for field in json.as_object().unwrap().keys().filter(|k| *k != "type") {
+                let (lo, hi) = shapes.ranges[field.as_str()];
+                let with = |v: i64| -> Option<Result<(), String>> {
+                    let mut json = json.clone();
+                    json[field.as_str()] = v.into();
+                    let event: super::Event = serde_json::from_value(json).ok()?;
+                    Some(event.to_midi_event().map(|_| ()).map_err(|e| e.to_string()))
+                };
+                assert_eq!(with(lo.into()), Some(Ok(())), "{field} at {lo}");
+                assert_eq!(with(hi.into()), Some(Ok(())), "{field} at {hi}");
+                if let Some(result) = with(i64::from(hi) + 1) {
+                    assert!(result.is_err(), "{field} at {}", hi + 1);
+                }
+                if lo > 0 {
+                    assert!(
+                        with(i64::from(lo) - 1).unwrap().is_err(),
+                        "{field} below {lo}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn note_off() -> Result<(), Box<dyn Error>> {

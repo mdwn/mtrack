@@ -13,45 +13,20 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
 import { fromBinary } from "@bufbuild/protobuf";
 import { SeekRequestSchema } from "../../src/gen/player/v1/player_pb";
+import { sendWs } from "../support/ws";
+import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
 
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  const res = await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-  const body = await res.json();
-  if (body.sent !== 1) {
-    throw new Error(`WS message not delivered for wsId ${wsId}`);
-  }
-}
-
 /** Playback state for Test Song Beta (the mock song with a beat grid:
  * 16 measures at 120 BPM in 4/4 → beat every 0.5s, measure every 2s). */
-function playbackState(overrides: Record<string, unknown> = {}) {
-  return {
-    type: "playback",
-    is_playing: false,
-    elapsed_ms: 5000,
-    song_name: "Test Song Beta",
-    song_duration_ms: 240000,
-    playlist_name: "setlist",
-    playlist_position: 1,
-    playlist_songs: ["Test Song Alpha", "Test Song Beta"],
-    tracks: [],
-    available_playlists: ["all_songs", "setlist"],
-    persisted_playlist_name: "setlist",
-    locked: false,
-    available_sections: [],
-    active_section: null,
-    ...overrides,
-  };
+function playbackState(
+  overrides: Parameters<typeof sharedPlaybackState>[0] = {},
+) {
+  return sharedPlaybackState({ elapsed_ms: 5000, ...overrides });
 }
 
 test.describe("Section editor preview transport", () => {
@@ -62,22 +37,7 @@ test.describe("Section editor preview transport", () => {
     // per-worker counters can otherwise collide within the same millisecond.
     wsId = `preview-transport-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
-    // A well-formed grpc-web unary reply: an empty message frame followed by
-    // a trailers frame. A bare empty body makes the client's response parsing
-    // reject, which silently aborts call chains like pause's stop-then-seek.
-    const trailers = Buffer.from("grpc-status: 0\r\n");
-    const grpcWebBody = Buffer.concat([
-      Buffer.from([0x00, 0, 0, 0, 0]),
-      Buffer.from([0x80, 0, 0, 0, trailers.length]),
-      trailers,
-    ]);
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "application/grpc-web+proto" },
-        body: grpcWebBody,
-      });
-    });
+    await stubPlayerService(page, { reply: "framed" });
 
     await page.goto(`/?wsId=${wsId}#/songs/Test%20Song%20Beta/sections`);
     await expect(page.locator(".section-timeline-editor")).toBeVisible();
@@ -108,7 +68,7 @@ test.describe("Section editor preview transport", () => {
   test("playhead and musical readout appear when the song is current", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     // Stopped at 5.0s → measure 3, beat 3 of the 120 BPM 4/4 grid.
     await expect(page.locator(".playhead")).toBeVisible();
@@ -119,7 +79,7 @@ test.describe("Section editor preview transport", () => {
   test("pause on the playing current song fires Stop then Seek", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, playbackState({ is_playing: true }));
+    await sendWs(page, wsId, playbackState({ is_playing: true }));
 
     const playPause = page.locator(".preview-btn").first();
     await expect(playPause).toHaveClass(/preview-btn--live/);
@@ -136,7 +96,7 @@ test.describe("Section editor preview transport", () => {
   });
 
   test("stop rewinds the stopped current song to the top", async ({ page }) => {
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     const stopBtn = page.locator(".preview-btn").nth(1);
     await expect(stopBtn).toBeEnabled();
@@ -154,7 +114,7 @@ test.describe("Section editor preview transport", () => {
     // Two seconds in, so ArrowLeft's five-second step would land at -3s. A
     // negative Duration is rejected by the backend and only logged, which
     // would make the key a silent no-op.
-    await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 2000 }));
+    await sendWs(page, wsId, playbackState({ elapsed_ms: 2000 }));
 
     const playhead = page.locator(".playhead");
     await playhead.focus();
@@ -172,7 +132,7 @@ test.describe("Section editor preview transport", () => {
   test("arrow keys on the focused playhead seek the preview", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     const playhead = page.locator(".playhead");
     await playhead.focus();
@@ -188,7 +148,7 @@ test.describe("Section editor preview transport", () => {
     page,
   }) => {
     // Stopped at 5.0s → measure 3, beat 3 of the 120 BPM 4/4 grid.
-    await sendWsMessage(page, wsId, playbackState());
+    await sendWs(page, wsId, playbackState());
 
     const firstBlock = page.locator(".section-block").first();
     const box = await firstBlock.boundingBox();

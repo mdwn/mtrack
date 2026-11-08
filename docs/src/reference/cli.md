@@ -37,10 +37,14 @@ These talk to the player's gRPC server (`-H host:port`); see [gRPC Control](../i
 
 ## Lighting files
 
-Each of these works on a project directory (`--project`, default the current directory) and
-the default lighting directories, which `--fixture-types-dir` and `--venues-dir` move as
-`directories` does in the config
+`import-gdtf`, `import-mvr` and `export-mvr` work on a project (`--project`: its directory or its
+config file, default the current directory) and the lighting directories its config gives this
+host's profile, as the player reads them, or the defaults when it names none; `--fixture-types-dir`
+(and, for the MVR commands, `--venues-dir`) override them. The library is always the project's
+`lighting/library/`
 ([Where the lighting files live](../lighting/configuration.md#where-the-lighting-files-live)).
+`migrate` takes the project directory or config file as its argument instead
+(`mtrack migrate [path]`, default the current directory).
 
 ### `mtrack import-gdtf`
 
@@ -79,14 +83,16 @@ Writes a venue as an MVR for a console or pre-viz tool, under `lighting/export/`
 
 ```sh
 mtrack migrate              # what it would change; writes nothing
-mtrack migrate --apply      # do it, keeping mtrack.yaml.bak
+mtrack migrate --apply      # do it, backing up each file it overwrites to <file>.bak (or .bak-N)
 ```
 
 Moves an old single-file `mtrack.yaml` onto the current layout: inline hardware profiles into
 a profiles directory, the legacy playlist into a playlists directory, and legacy top-level
 hardware settings out of the file once they live in profiles. For lighting, it
 moves retired inline fixtures (a `fixtures:` map under `lighting`, which a config may no longer
-carry) into
-a venue, `lighting/venues/inline_migrated.light`, and clears them from the config. Make that
-venue current, or copy its lines into yours, for the fixtures to light. It does not touch fixture
-types, GDTFs or venues that already exist.
+carry) into a new venue, `lighting/venues/inline_migrated.venue` (`inline_migrated_2`, and so on,
+when that name or file is taken), and clears them from the config. Make that venue current, or
+copy its lines into yours, for the fixtures to light. It does not touch fixture
+types, GDTFs or venues that already exist. Every file it overwrites (the config, a profile or
+playlist file already there) is first copied to `<file>.bak`, or `<file>.bak-2` and so on when
+an earlier backup has that name.

@@ -31,6 +31,7 @@
 //! content and kept in `lighting/.cache/`; while an archive's length and
 //! modification time are unchanged it is not opened again.
 
+pub use super::findings::LibraryFinding;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -43,6 +44,25 @@ use super::gdtf;
 /// The library, relative to the project. A profile's fixture types
 /// directory override does not move it.
 pub const LIBRARY_DIR: &str = "lighting/library";
+
+/// Whether `path` is a GDTF archive in the library: a file whose
+/// extension is `.gdtf` in any case. The one rule every scan of the library
+/// takes, so a write's staged copy (`x.gdtf.<pid>.mtrack-new`) is never one.
+pub fn is_archive(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gdtf"))
+}
+
+/// The library file `file_name`: where it is in `project`, and the
+/// project-relative name records and venues refer to it by
+/// (`lighting/library/<file_name>`). The one place a library path is built.
+pub fn library_file(project: &Path, file_name: &str) -> (PathBuf, String) {
+    let rel = format!("{LIBRARY_DIR}/{file_name}");
+    (project.join(&rel), rel)
+}
 
 /// The name index's file in the project's cache, and its format version.
 const INDEX_FILE: &str = "lighting/.cache/library-names-v1.json";
@@ -63,17 +83,6 @@ pub struct LibraryType {
     pub manufacturer: String,
     /// The name it would have had, when another fixture already has it.
     pub renamed_from: Option<String>,
-}
-
-/// Something about the library a person should know: two archives stating
-/// one name (`gdtf-name-collision`), or an archive that is not a readable
-/// GDTF (`gdtf-unreadable`). Neither stops the other fixtures.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct LibraryFinding {
-    pub kind: &'static str,
-    /// The archive's file name.
-    pub file: String,
-    pub message: String,
 }
 
 /// What [`unrecorded_types`] found.
@@ -113,10 +122,13 @@ struct Names {
     manufacturer: String,
 }
 
-fn modified_ns(meta: &std::fs::Metadata) -> Option<u128> {
-    meta.modified()
+/// How a [`FileStamp`] is kept in the index: its modified time as
+/// nanoseconds since the epoch.
+fn modified_ns(stamp: &crate::util::FileStamp) -> Option<u128> {
+    stamp
+        .modified
+        .duration_since(std::time::UNIX_EPOCH)
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
 }
 
@@ -152,8 +164,14 @@ fn names_of(
     index: &mut Index,
     dirty: &mut bool,
 ) -> Result<Names, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("cannot read it: {e}"))?;
-    let stat = (meta.len(), modified_ns(&meta));
+    let stamp = crate::util::FileStamp::of(path).ok_or_else(|| {
+        let e = std::fs::metadata(path).err().map_or_else(
+            || "its modified time is unknown".to_string(),
+            |e| e.to_string(),
+        );
+        format!("cannot read it: {e}")
+    })?;
+    let stat = (stamp.len, modified_ns(&stamp));
     if let Some(seen) = index.files.get(file_name) {
         if (seen.len, seen.modified_ns) == stat {
             if let Some(names) = index.names.get(&seen.sha256) {
@@ -221,12 +239,7 @@ pub fn unrecorded_types_given(
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("gdtf"))
-        })
+        .filter(|p| is_archive(p))
         .collect();
     files.sort();
     if files.is_empty() {
@@ -304,7 +317,7 @@ pub fn unrecorded_types_given(
         taken_by.insert(name.clone(), file_name.clone());
         library.types.push(LibraryType {
             name,
-            archive: format!("{LIBRARY_DIR}/{file_name}"),
+            archive: library_file(project, &file_name).1,
             file_name,
             fixture: names.fixture,
             manufacturer: names.manufacturer,
@@ -334,12 +347,9 @@ mod tests {
     use super::*;
 
     fn gdtf_named(name: &str) -> Vec<u8> {
-        gdtf::build_zip(&[(
-            "description.xml",
-            gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", name)
-                .as_bytes(),
-        )])
+        crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Synth Brick", name),
+        )
     }
 
     fn project_with(archives: &[(&str, Vec<u8>)]) -> tempfile::TempDir {

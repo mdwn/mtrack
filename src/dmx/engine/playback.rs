@@ -29,6 +29,26 @@ use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{Engine, MidiDmxPlayback};
 
+/// How much of a song [`Engine::release_song`] lets go of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Release {
+    /// Its playback is over: its MIDI DMX playbacks go and its timeline
+    /// stops, kept for status. Its effects run on to their own ends, at its
+    /// tempo, until the next song starts (or the stage goes dark); the show
+    /// file watcher stays for a live edit.
+    Ended,
+    /// The next song has no show of its own: the timeline and tempo go too,
+    /// or it would answer status with the last song's cues and inherit its
+    /// tempo, and the watcher, whose reload would put the last song's show
+    /// back under it.
+    Replaced,
+    /// The stage goes dark between songs: everything the song left fades
+    /// out over `fade` as a loop break's fade, and with `floor` what the
+    /// rig holds lit that nothing writes any more too (#573) -- left as it
+    /// is under ambient at full, still in view where ambient does not light.
+    Dark { fade: Duration, floor: bool },
+}
+
 /// The lighting timeline of the pass a crossfading loop jump starts (see
 /// [`super::timeline::song_lighting_timeline`]), built ahead of the jump.
 #[derive(Default)]
@@ -102,6 +122,11 @@ impl Engine {
         // previous song's time and jumps; from here their writes are dropped
         // rather than landing on this one's timeline.
         let generation = dmx_engine.begin_playback_generation();
+        // The last song's show file watcher goes now too, before this one's
+        // timeline goes in, whatever this song lights -- a reload it has
+        // yet to make would put the last song's show in its place -- and
+        // any rebuild of the last song's show still on its way in with it.
+        let watcher_generation = dmx_engine.retire_watcher();
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
 
@@ -119,14 +144,7 @@ impl Engine {
             // A song with no lighting at all still has to evict the previous
             // song's state, or `status.lighting` and `get_timeline_cues()` keep
             // answering with that song's cues.
-            {
-                let mut effect_engine = dmx_engine.effect_engine.lock();
-                effect_engine.set_tempo_map(None);
-            }
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock();
-                *current_timeline = None;
-            }
+            dmx_engine.release_song(Release::Replaced);
             ready_tx.send();
             return Ok(());
         }
@@ -161,12 +179,8 @@ impl Engine {
                 // block fall back to the song's tempo map (song.yaml `tempo:`).
                 {
                     let mut effect_engine = dmx_engine.effect_engine.lock();
-                    effect_engine.set_tempo_map(
-                        timeline
-                            .tempo_map()
-                            .cloned()
-                            .or_else(|| song.lighting_tempo_map()),
-                    );
+                    effect_engine
+                        .set_tempo_map(timeline.tempo_map_or(song.lighting_tempo_map().as_ref()));
                 }
                 {
                     let mut current_timeline = dmx_engine.current_song_timeline.lock();
@@ -176,19 +190,8 @@ impl Engine {
         } else {
             // Clear lighting state from previous song so MIDI DMX songs
             // don't inherit a stale tempo map or timeline.
-            {
-                let mut effect_engine = dmx_engine.effect_engine.lock();
-                effect_engine.set_tempo_map(None);
-            }
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock();
-                *current_timeline = None;
-            }
+            dmx_engine.release_song(Release::Replaced);
         }
-
-        // Reset song time to start time for new song BEFORE starting timeline
-        // This ensures the effects loop uses the correct time when updating
-        dmx_engine.update_song_time(start_time);
 
         let universe_ids: HashSet<u16> = dmx_engine.universes.keys().cloned().collect();
 
@@ -229,18 +232,22 @@ impl Engine {
                 start_dim_rate: dmx_engine
                     .universes
                     .get(&universe_id)
-                    .map_or(1.0, |universe| universe.dim_rate()),
+                    .map_or(crate::dmx::universe::DEFAULT_DIM_TICKS, |universe| {
+                        universe.dim_rate()
+                    }),
             });
         }
         let has_midi_dmx = !midi_dmx_playbacks.is_empty();
 
         // Start the lighting timeline at the specified time
-        dmx_engine.start_lighting_timeline_with(
+        // The song time goes to the start time inside the start, before its
+        // timeline arms, so the effects loop uses the right time from there.
+        dmx_engine.start_playback_lighting(
             start_time,
             super::timeline::MidiDmxStart::Install(midi_dmx_playbacks),
         );
 
-        // Start file watcher for hot-reload if broadcast channel is available
+        // Start file watcher for hot-reload if broadcast channel is available.
         {
             let broadcast_tx = dmx_engine.broadcast_tx.lock();
             if let Some(tx) = broadcast_tx.as_ref() {
@@ -250,13 +257,9 @@ impl Engine {
                     .collect();
                 if !file_paths.is_empty() {
                     match crate::dmx::watcher::start_watching(
+                        Arc::downgrade(&dmx_engine),
+                        watcher_generation,
                         file_paths,
-                        dmx_engine.effect_engine.clone(),
-                        dmx_engine.current_song_timeline.clone(),
-                        dmx_engine.current_song_time.clone(),
-                        dmx_engine.playback_delay,
-                        dmx_engine.lighting_system.clone(),
-                        dmx_engine.lighting_config.clone(),
                         song.lighting_tempo_map(),
                         tx.clone(),
                     ) {
@@ -395,29 +398,22 @@ impl Engine {
                             // on from where it is, before the song time goes
                             // back under it.
                             dmx_engine.keep_crossfade_on_own_time();
-                            dmx_engine.update_song_time_for_generation(position, generation);
-                            dmx_engine.restart_section_at(position);
+                            dmx_engine.restart_section_rewinding(position, &|| {
+                                dmx_engine.update_song_time_for_generation(position, generation)
+                            });
                         } else {
                             // The outgoing pass is `from - to` ahead of the
                             // new one in song time, and fades out over the
-                            // overlap as the new one fades in.
-                            dmx_engine.begin_loop_crossfade(
+                            // overlap as the new one fades in. The store
+                            // carries the last pass's values into the
+                            // crossfade, MIDI DMX joining the new pass.
+                            dmx_engine.begin_loop_crossfade_with(
                                 next_pass.take(&song, &jump),
                                 jump.from,
                                 jump.to,
                                 jump.overlap,
+                                super::timeline::MidiDmxStart::Join,
                             );
-                            // The store carries the last pass's values into
-                            // the crossfade; MIDI DMX starts over from the
-                            // beginning, or from where a pass begun late
-                            // joins, rather than sending everything before
-                            // that in one frame.
-                            let join = dmx_engine.to_delayed_song_time(jump.to);
-                            if join.is_zero() {
-                                dmx_engine.rewind_midi_dmx_playbacks();
-                            } else {
-                                dmx_engine.join_midi_dmx_playbacks(join);
-                            }
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its
@@ -519,12 +515,74 @@ impl Engine {
         }
 
         // Final cleanup.
-        dmx_engine.stop_lighting_timeline();
-        dmx_engine.midi_dmx_playbacks.lock().clear();
+        dmx_engine.release_song(Release::Ended);
 
         info!("DMX playback stopped.");
 
         Ok(())
+    }
+
+    /// Lets go of what a song left driving the lights, as far as `scope`
+    /// says (see [`Release`]).
+    pub(super) fn release_song(&self, scope: Release) {
+        let rebuilding = self.rebuilding();
+        self.release_song_rebuilding(&rebuilding, scope);
+    }
+
+    /// [`Self::release_song`] under the rebuild lock, held already: a show
+    /// rebuild under way finishes first, and none starts until the song is
+    /// let go.
+    pub(super) fn release_song_rebuilding(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        scope: Release,
+    ) {
+        // What writes the rig on its own goes first, so nothing it writes
+        // after relights what fades: MIDI DMX playback, and -- the song done
+        // with -- the show file watcher, whose reload would put its show back.
+        // A playback's end leaves the watcher: a live edit still rebuilds
+        // the stopped show.
+        self.midi_dmx_playbacks.lock().clear();
+        if scope != Release::Ended {
+            self.retire_watcher_rebuilding(rebuilding);
+        }
+        match scope {
+            Release::Ended => self.stop_lighting_timeline(),
+            Release::Replaced => *self.current_song_timeline.lock() = None,
+            Release::Dark { fade, floor } => {
+                // Nothing lit, nothing to fade: a fade over nothing would
+                // only cross the next song in from black.
+                let floor = if floor {
+                    self.dark_floor(fade)
+                } else {
+                    Vec::new()
+                };
+                let lit = !self.effect_engine.lock().last_commands().is_empty();
+                if lit || !floor.is_empty() {
+                    self.begin_break_fade_over(rebuilding, fade, floor);
+                }
+            }
+        }
+        // The tempo last: a fade just begun keeps the song's in its engine.
+        if scope != Release::Ended {
+            self.effect_engine.lock().set_tempo_map(None);
+        }
+    }
+
+    /// Lets the show file watcher go: dropped, and any reload it has yet
+    /// to make refused, edits it took in before it went included. Returns
+    /// the generation a watcher started now reloads under.
+    pub(in crate::dmx) fn retire_watcher(&self) -> u64 {
+        let rebuilding = self.rebuilding();
+        self.retire_watcher_rebuilding(&rebuilding)
+    }
+
+    /// [`Self::retire_watcher`] under the rebuild lock, held already, which
+    /// a reload checks the generation under before it rebuilds.
+    fn retire_watcher_rebuilding(&self, _rebuilding: &super::timeline::Rebuilding) -> u64 {
+        let generation = self.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.watcher_handle.lock().take();
+        generation
     }
 
     /// Waits for the lighting timeline to finish, with a heartbeat check to detect

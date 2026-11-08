@@ -12,6 +12,37 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { saveVenue } from "../../src/lib/api/config";
+import type {
+  FixtureTypeSaved,
+  AimPoints,
+  Browse,
+  BulkImport,
+  ChannelCalibration,
+  FixtureTypeDeleted,
+  LightFiles,
+  LightingGroups,
+  LightingValidation,
+  MvrKept,
+  SampleUploaded,
+  SongFiles,
+  ConfigReload,
+  ConfigSaved,
+  MvrImportAnswer,
+  FixtureSettingsData,
+  FixtureTypeEntry,
+  FixtureTypeList,
+  FixtureTypeGdtf,
+  GdtfImport,
+  GdtfInspection,
+  SettingsSaved,
+  Venue,
+  VenueDetail,
+  VenueList,
+  VenueScene,
+  NoiseFloor,
+  Preview,
+} from "../../src/gen/rules/mtrack_rules";
 import express from "express";
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
@@ -53,7 +84,10 @@ app.get("/api/songs", (_req, res) => {
 
 app.get("/api/songs/:name", (req, res) => {
   const song = SONGS.songs.find((s) => s.name === req.params.name);
-  if (!song) return res.status(404).json({ error: "Song not found" });
+  if (!song)
+    return res
+      .status(404)
+      .json({ error: `unable to find song ${req.params.name}` });
   let yaml = `name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`;
   if (song.has_midi) {
     yaml += `midi_playback:\n  file: song.mid\n  exclude_midi_channels:\n    - 10\n`;
@@ -114,7 +148,7 @@ app.get("/api/songs/:name/files", (_req, res) => {
       { name: "snare.wav", type: "audio" },
       { name: "bass.wav", type: "audio" },
     ],
-  });
+  } satisfies SongFiles);
 });
 
 app.put("/api/songs/:name/tracks/:filename", (_req, res) => {
@@ -182,16 +216,31 @@ app.get("/api/devices/midi", (_req, res) => {
 
 // --- Profiles ---
 
+/** A save's hardware reload, run at once. */
+const APPLIED: ConfigReload = { applied: true, reload: "applied" };
+
 app.post("/api/config/profiles", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-1" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-1",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.put("/api/config/profiles/:index", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-2" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-2",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.delete("/api/config/profiles/:index", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-3" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-3",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.get("/api/profiles", (_req, res) => {
@@ -213,7 +262,11 @@ app.delete("/api/profiles/:filename", (_req, res) => {
 // --- Samples ---
 
 app.put("/api/config/samples", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-4" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-4",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.put("/api/samples/upload/:filename", (_req, res) => {
@@ -221,7 +274,7 @@ app.put("/api/samples/upload/:filename", (_req, res) => {
     status: "uploaded",
     file: "sample.wav",
     path: "/samples/sample.wav",
-  });
+  } satisfies SampleUploaded);
 });
 
 // --- Status ---
@@ -247,7 +300,9 @@ app.put("/api/lock", (req, res) => {
 // --- Lighting ---
 
 app.get("/api/lighting", (_req, res) => {
-  res.json({ files: [{ path: "show.light", name: "show.light" }] });
+  res.json({
+    files: [{ path: "show.light", name: "show.light" }],
+  } satisfies LightFiles);
 });
 
 app.get("/api/lighting/readiness", (_req, res) => {
@@ -263,39 +318,13 @@ app.get("/api/lighting/validate", (_req, res) => {
 });
 
 app.post("/api/lighting/validate", (_req, res) => {
-  res.json({ valid: true });
+  res.json({ valid: true } satisfies LightingValidation);
 });
 
 // The three forms a fixture type comes in: a v1 `.light` channel map, a
 // hand-written rich `.fixture`, and one distilled from a GDTF archive —
 // which has no channels of its own until the lighting system expands it.
-const FIXTURE_TYPES: Record<
-  string,
-  {
-    fixture_type: {
-      name: string;
-      channels: Record<string, number>;
-      max_strobe_frequency: number | null;
-      min_strobe_frequency: number | null;
-      strobe_dmx_offset: number | null;
-    };
-    file: string;
-    extension: string;
-    referential: boolean;
-    rich: boolean;
-    dsl: string;
-    /** A referential type's archive in brief, for its card. */
-    gdtf?: {
-      fixture: string;
-      manufacturer: string;
-      modes: number;
-      beam: { type: string | null; angle: number | null } | null;
-      thumbnail: string | null;
-      used_by: number;
-      in_use: { mode: string; count: number }[];
-    } | null;
-  }
-> = {
+const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
   par: {
     fixture_type: {
       name: "par",
@@ -305,10 +334,12 @@ const FIXTURE_TYPES: Record<
       strobe_dmx_offset: null,
     },
     file: "par.light",
+    owner: { file: "par.light", editable: true, reason: null },
+    form_editable: true,
     extension: "light",
     referential: false,
     rich: false,
-    dsl: "fixture_type par { red: 1, green: 2, blue: 3, dimmer: 4 }",
+    dsl: 'fixture_type "par" { red: 1, green: 2, blue: 3, dimmer: 4 }',
   },
   mover: {
     fixture_type: {
@@ -319,6 +350,8 @@ const FIXTURE_TYPES: Record<
       strobe_dmx_offset: null,
     },
     file: "mover.fixture",
+    owner: { file: "mover.fixture", editable: true, reason: null },
+    form_editable: false,
     extension: "fixture",
     referential: false,
     rich: true,
@@ -333,6 +366,8 @@ const FIXTURE_TYPES: Record<
       strobe_dmx_offset: null,
     },
     file: "pixelbrick.fixture",
+    owner: { file: "pixelbrick.fixture", editable: true, reason: null },
+    form_editable: false,
     extension: "fixture",
     referential: true,
     rich: false,
@@ -360,7 +395,7 @@ app.get("/api/lighting/fixture-types", (_req, res) => {
       { ...entry, dsl: undefined },
     ]),
   );
-  res.json({ fixture_types });
+  res.json({ fixture_types, errors: [] } satisfies FixtureTypeList);
 });
 
 app.get("/api/lighting/fixture-types/:name", (req, res) => {
@@ -371,26 +406,45 @@ app.get("/api/lighting/fixture-types/:name", (req, res) => {
   res.json(entry);
 });
 
-app.put("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({ status: "saved" });
+app.put("/api/lighting/fixture-types/:name", (req, res) => {
+  // A rename (`?from=`) retypes the venue lines naming the old name.
+  const from = typeof req.query.from === "string" ? req.query.from : null;
+  res.json({
+    status: "saved",
+    name: req.params.name,
+    rename:
+      from && from !== req.params.name
+        ? {
+            from,
+            to: req.params.name,
+            lines: 3,
+            venues: [
+              { venue: "built-in", file: "built_in.venue", lines: 2 },
+              { venue: "club", file: "club.venue", lines: 1 },
+            ],
+          }
+        : null,
+    venue_error: null,
+  } satisfies FixtureTypeSaved);
 });
 
-app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({ status: "deleted", archive_removed: null, archive_kept: false });
+app.delete("/api/lighting/fixture-types/:name", (req, res) => {
+  res.json({
+    status: "deleted",
+    name: req.params.name,
+    archive_removed: null,
+    archive_kept: false,
+  } satisfies FixtureTypeDeleted);
 });
 
 // The PB15's modes, as the inspect endpoint and the details view answer them.
-const GDTF_INSPECTION = {
-  fixture: "PB15 PixelBrick",
-  manufacturer: "Astera LED Technology",
-  suggested_name: "PB15 PixelBrick",
-  fixture_types_dir: "lighting/fixture_types",
+const GDTF_INSPECTION: GdtfInspection = {
   modes: [
     {
       name: "1: RGB",
-      channel_count: 4,
       footprint: 3,
-      capabilities: ["color", "dimmer"],
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
       cells: 0,
       channels: [
         [1, "red"],
@@ -400,9 +454,9 @@ const GDTF_INSPECTION = {
     },
     {
       name: "8: RGBS",
-      channel_count: 5,
       footprint: 4,
-      capabilities: ["color", "dimmer", "strobe"],
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
       cells: 0,
       strobe_range: { min_hz: 0.4, max_hz: 25 },
       channels: [
@@ -430,7 +484,7 @@ app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
     // The PB15's strobe function has only its endpoints.
     strobe: { steps: 0, automatic: "declared" },
     version: "mock-v1",
-  });
+  } satisfies FixtureSettingsData);
 });
 
 app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
@@ -452,7 +506,7 @@ app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
       : null,
     venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
     venue_error: null,
-  });
+  } satisfies SettingsSaved);
 });
 
 // A referential type's archive, for its details view: the mock's one rig
@@ -492,7 +546,7 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
       { name: "club", fixtures: [{ name: "Solo", mode: "1: RGB" }] },
     ],
     inspection: GDTF_INSPECTION,
-  });
+  } satisfies FixtureTypeGdtf);
 });
 
 // Testing a fixture from its page. Stateless: the options are derived from
@@ -533,9 +587,13 @@ app.get("/api/lighting/fixture-test/options", (req, res) => {
     ? GDTF_INSPECTION.modes.map((m) =>
         testModeFor(
           m.name,
-          Object.fromEntries(m.channels.map(([o, n]) => [n, o])),
-          (m as { strobe_range?: { min_hz: number; max_hz: number } })
-            .strobe_range ?? null,
+          Object.fromEntries((m.channels ?? []).map(([o, n]) => [n, o])),
+          m.strobe_range
+            ? {
+                min_hz: m.strobe_range.min_hz ?? 0,
+                max_hz: m.strobe_range.max_hz,
+              }
+            : null,
         ),
       )
     : [testModeFor(null, entry.fixture_type.channels, null)];
@@ -604,10 +662,12 @@ app.post("/api/lighting/evaluate", (req, res) => {
       fixtures: {},
       poses: {},
       cells: {},
+      strobe_rates: {},
       active_effects: [],
     })),
     untouched: [],
-  });
+    venue_error: null,
+  } satisfies Preview);
 });
 
 // One-step import: no mode, no name. The mock answers as if the archive
@@ -622,7 +682,8 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
     already_imported: false,
     renamed_from: null,
     refused_modes: [],
-  });
+    fixture_file: null,
+  } satisfies GdtfImport);
 });
 
 // MVR import and export (lighting UI design section 11). Tests that need a
@@ -635,7 +696,7 @@ app.post("/api/lighting/mvr/import", (_req, res) => {
   res.json({
     write: false,
     plan: { ...MVR_INSPECTION.report, origin: [0, 1, 0.5] },
-  });
+  } satisfies MvrImportAnswer);
 });
 
 app.get("/api/lighting/mvr/export/summary", (_req, res) => {
@@ -662,14 +723,16 @@ app.post("/api/lighting/mvr/export/keep", (req, res) => {
     return;
   }
   keptExports.add(file);
-  res.json({ kept: `lighting/export/${file}` });
+  res.json({ kept: `lighting/export/${file}` } satisfies MvrKept);
 });
 
 app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
   res.json({
     created: [{ name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] }],
     reloaded: false,
-  });
+    version: "mock-v2",
+    venue_error: null,
+  } satisfies AimPoints);
 });
 
 // The one mesh the mock store serves, read once at startup (the server
@@ -713,31 +776,26 @@ app.get("/api/lighting/venues", (_req, res) => {
             universe: 1,
             start_channel: 1,
             tags: ["front", "left"],
+            position: null,
+            rotation: null,
           },
         },
-        groups: {},
+        focus_points: {},
+        source: null,
       },
     },
-  });
+    owners: {
+      "test-venue": { file: "test-venue.venue", editable: true, reason: null },
+    },
+    errors: [],
+    versions: { "test-venue": "mock-v1" },
+  } satisfies VenueList);
 });
 
 // Venue saves are remembered per name so a second edit sees the first,
 // the way the real server's file does.
-type VenueFixture = {
-  name: string;
-  fixture_type: string;
-  universe: number;
-  start_channel: number;
-  tags: string[];
-  position?: [number, number, number] | null;
-  rotation?: [number, number, number] | null;
-  beam_angle?: number | null;
-};
-type VenueBody = {
-  fixtures: VenueFixture[];
-  focus_points?: Record<string, [number, number, number]>;
-  source?: { mvr: string; origin: [number, number, number] } | null;
-};
+/** A venue save's body, as the page sends it. */
+type VenueBody = Parameters<typeof saveVenue>[1];
 const savedVenues = new Map<string, VenueBody>();
 const MOCK_VENUE: VenueBody = {
   fixtures: [
@@ -757,8 +815,13 @@ const MOCK_VENUE: VenueBody = {
 
 app.get("/api/lighting/venues/:name", (req, res) => {
   const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
-  const fixtures: Record<string, VenueFixture> = {};
-  for (const f of body.fixtures) fixtures[f.name] = f;
+  const fixtures: Venue["fixtures"] = {};
+  for (const f of body.fixtures)
+    fixtures[f.name] = {
+      ...f,
+      mode: f.mode ?? undefined,
+      beam_angle: f.beam_angle ?? undefined,
+    };
   res.json({
     venue: {
       name: req.params.name,
@@ -767,7 +830,8 @@ app.get("/api/lighting/venues/:name", (req, res) => {
       source: body.source ?? null,
     },
     dsl: "venue test-venue {\n  fixture front-left par@1:1 [front, left]\n}",
-  });
+    version: "mock-v1",
+  } satisfies VenueDetail);
 });
 
 // What the 3D view draws for a venue that is not the current one: the
@@ -779,7 +843,7 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
     return;
   }
   const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
-  const fixtures: Record<string, unknown> = {};
+  const fixtures: VenueScene["fixtures"] = {};
   for (const f of body.fixtures) {
     fixtures[f.name] = {
       tags: f.tags,
@@ -799,7 +863,7 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
       scenery: null,
       scenery_error: null,
     },
-  });
+  } satisfies VenueScene);
 });
 
 // Keyed by venue name so parallel tests, each editing its own venue, never
@@ -836,8 +900,7 @@ app.get("/api/lighting/groups", (_req, res) => {
       { name: "front_wash", fixtures: ["par1", "par2"] },
       { name: "back_wash", fixtures: ["par3"] },
     ],
-    resolved: true,
-  });
+  } satisfies LightingGroups);
 });
 
 app.get("/api/lighting/:name", (_req, res) => {
@@ -859,7 +922,7 @@ app.delete("/api/lighting/:name", (_req, res) => {
 // --- Browse ---
 
 app.get("/api/browse", (_req, res) => {
-  res.json({ path: "/songs", root: "/songs", entries: [] });
+  res.json({ path: "/songs", root: "/songs", entries: [] } satisfies Browse);
 });
 
 app.post("/api/browse/create-song", (_req, res) => {
@@ -867,7 +930,7 @@ app.post("/api/browse/create-song", (_req, res) => {
 });
 
 app.post("/api/browse/bulk-import", (_req, res) => {
-  res.json({ created: [], skipped: [], failed: [] });
+  res.json({ created: [], skipped: [], failed: [] } satisfies BulkImport);
 });
 
 // --- Calibration ---
@@ -880,7 +943,7 @@ app.post("/api/calibrate/start", (_req, res) => {
     channel: 0,
     sample_rate: 48000,
     device_channels: 2,
-  });
+  } satisfies NoiseFloor);
 });
 
 app.post("/api/calibrate/capture", (_req, res) => {
@@ -897,7 +960,7 @@ app.post("/api/calibrate/stop", (_req, res) => {
     num_hits_detected: 5,
     noise_floor_peak: 0.01,
     max_hit_amplitude: 0.8,
-  });
+  } satisfies ChannelCalibration);
 });
 
 app.delete("/api/calibrate", (_req, res) => {

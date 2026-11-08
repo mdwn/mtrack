@@ -19,11 +19,13 @@ pub(crate) mod fixture_settings;
 pub(crate) mod fixture_test;
 pub(crate) mod helpers;
 pub(crate) mod lighting_api;
+pub(crate) mod lighting_writes;
 pub(crate) mod mvr_api;
 pub(crate) mod playlists;
 pub(crate) mod profiles;
 pub(crate) mod songs_api;
 pub(crate) mod status;
+pub(crate) mod write_lock;
 
 use axum::{
     body::Bytes,
@@ -36,42 +38,21 @@ use axum::{
 use serde_json::json;
 
 use super::server::WebUiState;
+use crate::player::lock_policy::{self, Surface};
 use crate::songs as songs_crate;
 
-/// The routes that stay open while the player is locked, by method and the
-/// route's own pattern (never the request path: a venue named `lock` matches
-/// `/lighting/venues/{name}`, not the lock toggle). These are the lock toggle,
-/// validation, playlist activation (a playback control, not an edit), the
-/// controller restart, and the pure reads that happen to be POSTs (a preview
-/// evaluation and the upload inspectors, which write nothing).
-const LOCKED_ALLOWLIST: &[(&str, &str)] = &[
-    ("PUT", "/lock"),
-    ("POST", "/config/validate"),
-    ("POST", "/lighting/validate"),
-    ("POST", "/playlists/{name}/activate"),
-    ("POST", "/controllers/restart"),
-    ("POST", "/lighting/evaluate"),
-    ("POST", "/lighting/mvr/inspect"),
-    // Releasing a fixture test only ever makes the lights go back to the show.
-    ("DELETE", "/lighting/fixture-test"),
-];
-
-/// True when a request may proceed while the player is locked.
+/// True when a request may proceed while the player is locked: every GET,
+/// and the routes [`lock_policy::OPEN_WHILE_LOCKED`] lists, by method and
+/// the route's own pattern (never the request path: a venue named `lock`
+/// matches `/lighting/venues/{name}`, not the lock toggle).
 fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
-    if method == axum::http::Method::GET {
-        return true;
-    }
-    let Some(pattern) = pattern else {
-        return false;
-    };
+    let pattern = pattern.unwrap_or_default();
     let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
-    LOCKED_ALLOWLIST
-        .iter()
-        .any(|(m, p)| *m == method.as_str() && *p == pattern)
+    lock_policy::open_while_locked(Surface::Web, &format!("{method} {pattern}"))
 }
 
 /// Middleware that rejects mutating requests (non-GET) when the player is locked,
-/// except the exact routes in [`LOCKED_ALLOWLIST`].
+/// except the exact routes [`lock_policy::OPEN_WHILE_LOCKED`] lists.
 /// Applied at the server layer where the state is available.
 pub(crate) async fn lock_guard(
     State(state): State<WebUiState>,
@@ -283,11 +264,9 @@ fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Re
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if !songs_crate::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if songs_crate::FileKind::of(path) != songs_crate::FileKind::Audio {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -362,11 +341,11 @@ async fn upload_sample_file(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "uploaded",
-                "file": filename,
-                "path": relative_path,
-            })),
+            Json(crate::webui::wire::config::SampleUploaded {
+                status: "uploaded".to_string(),
+                file: filename,
+                path: relative_path,
+            }),
         )
             .into_response(),
     )
@@ -477,6 +456,21 @@ pub(super) mod test_helpers {
         audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
         dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
     ) -> (WebUiState, tempfile::TempDir) {
+        test_state_on_disk(playlists, active, audio, dmx_engine, "songs: []\n", true)
+    }
+
+    /// A WebUiState whose player has `playlists`, `active` playing, in a
+    /// temporary directory holding `mtrack.yaml`, an empty `songs/`, and
+    /// the legacy `playlist.yaml` holding `legacy_playlist`; the directory
+    /// the player's playlists directory too if `playlists_dir`.
+    pub(in crate::webui) fn test_state_on_disk(
+        playlists: std::collections::HashMap<String, std::sync::Arc<crate::playlist::Playlist>>,
+        active: &str,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+        dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
+        legacy_playlist: &str,
+        playlists_dir: bool,
+    ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
         use tokio::sync::{broadcast, watch};
 
@@ -488,7 +482,7 @@ pub(super) mod test_helpers {
 
         // Create a minimal playlist file
         let playlist_path = dir.path().join("playlist.yaml");
-        std::fs::write(&playlist_path, "songs: []\n").unwrap();
+        std::fs::write(&playlist_path, legacy_playlist).unwrap();
 
         // Create songs directory
         let songs_path = dir.path().join("songs");
@@ -502,10 +496,8 @@ pub(super) mod test_helpers {
         let devices = PlayerDevices {
             audio,
             mappings,
-            midi: None,
             dmx_engine,
-            sample_engine: None,
-            trigger_engine: None,
+            ..crate::testutil::player::no_devices()
         };
         let player = std::sync::Arc::new(
             crate::player::Player::new_with_devices(devices, playlists, active.to_string(), None)
@@ -518,7 +510,7 @@ pub(super) mod test_helpers {
 
         player.set_song_sources(crate::player::SongSources {
             songs: songs_path,
-            playlists_dir: Some(dir.path().to_path_buf()),
+            playlists_dir: playlists_dir.then(|| dir.path().to_path_buf()),
             legacy_playlist: Some(playlist_path),
         });
         let state = WebUiState::new(super::super::server::WebUiStateParams {
@@ -592,6 +584,28 @@ mod test {
         // Verify file was created in samples/ directory next to config.
         let samples_dir = state.config_path.parent().unwrap().join("samples");
         assert!(samples_dir.join("kick.wav").exists());
+    }
+
+    /// A sample's extension is read in any case: `Kick.WAV` is audio.
+    #[tokio::test]
+    async fn upload_sample_file_uppercase_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/samples/upload/Kick.WAV")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let samples_dir = state.config_path.parent().unwrap().join("samples");
+        assert!(samples_dir.join("Kick.WAV").exists());
     }
 
     #[tokio::test]

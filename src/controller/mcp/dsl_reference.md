@@ -28,52 +28,57 @@ show "Optional Name" {
   snake_case identifiers.
 - Multiple effects under the same `@time` can be stacked by repeating
   `group: effect …` on the next line under the same timestamp.
+- A colour alone does not light a fixture that has a dimmer channel: its
+  dimmer holds 0 until something sends it a level. Light such fixtures with
+  a `static` with `dimmer:`/`intensity:`, or a `dimmer` effect on another
+  layer under a `cycle`; a `chase` writes the dimmer itself. Otherwise the
+  show comes out dark, as `evaluate_show` reports it (`dark: true`).
 
 ### Effects
 
-| Effect    | Required params                                        | Notes |
-|-----------|--------------------------------------------------------|-------|
-| `static`  | `duration`                                             | Hold a color/intensity. Use `color`, and `intensity` or `dimmer` for the level. |
-| `cycle`   | one or more `color:`, `duration`                       | Iterates colors. Optional `speed`, `direction`. |
-| `strobe`  | `frequency`, `duration`                                | Hz strobe. Takes no color or intensity — it gates whatever is beneath it. |
-| `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `base_level` (default 50%) and `pulse_amplitude` (also spelled `intensity`). |
-| `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. With `blend_mode: multiply` (or `replace`) it gates the bed: one fixture lit, the rest dark. With `screen` or `add` it lifts: the active fixture brightens toward white and the others keep the bed, so the stage stays lit. Optional `direction`, `pattern: linear|snake|random`. |
-| `dimmer`  | `start_level`, `end_level`, `duration`                 | Linear ramp; `curve: linear` optional. |
-| `rainbow` | `duration`                                             | Hue sweep. Optional `speed`. |
-
-Every effect must specify a finite `duration`. Effects can crossfade — set
-`up_time`, `hold_time`, and `down_time` (each a `time_parameter`).
-
-### Common parameters
-
-- `duration`, `up_time`, `down_time`, `hold_time`: time values. Units
-  are `ms`, `s`, `beats`, `beat`, `measures`, or `measure`. **No whitespace
-  between number and unit** — write `500ms`, `2s`, `4beats`, `2measures` (not
-  `4 beats`). `speed` and `frequency` parameters accept the same forms
-  (`speed: 1measure`, `frequency: 1beat`).
-- `color` (**`static` and `cycle` only**): a named color (`"red"`, `"blue"`,
-  `"white"`, `"orange"`, …), a hex string (`#FF8800` or `"#FF8800"`), or
-  `rgb(255, 128, 0)`. The other effect types have no color of their own — a
-  `chase` or `strobe` gates whatever is beneath it, so put the color on the bed.
-- `dimmer`, `red`, `green`, `blue` (**`static` only**), and `intensity`
-  (**`static` and `pulse` only**): floats `0.0`–`1.0`, or a percentage like
-  `60%`.
+{{effects}}
+An effect runs for a finite time: write `duration` (how long it holds) or
+`hold_time`, which stands in for it; a line with neither is a parse error. Two
+exceptions: a `dimmer`'s `duration` has the default above, and a `move` needs
+`duration` itself (its travel time). Effects can crossfade — set `up_time`,
+`hold_time`, and `down_time` (each a time value): the fades are added around
+the hold, not taken out of it.
 
 These are listed per effect deliberately. A parameter an effect does not read is
 accepted by the parser and dropped, so writing one produces a setting that never
 takes effect — `validate_lighting` reports it as an `unused-parameter` warning.
+On a `static`, an unknown name with a level is read as a channel of that name.
+
+### Common parameters
+
+Every effect also reads {{common_params}}.
+
+- Times (`duration`, `up_time`, `down_time`, `hold_time`) take a unit:
+  {{units}}. **No whitespace between number and unit** — write `500ms`, `2s`,
+  `4beats`, `2measures` (not `4 beats`). Rates (`speed`, `frequency`) are a
+  bare number per second or take the same forms (`speed: 1measure`,
+  `frequency: 1beat`).
+- `color`: a named color ({{named_colors}}, quoted), a hex string (`#FF8800`
+  or `"#FF8800"`), or `rgb(255, 128, 0)`. Only {{color_effects}} read it —
+  a `chase` or `strobe` gates whatever is beneath it, so put the color on the
+  bed.
+- Levels (`dimmer`, `intensity`, `red`, `green`, `blue`, `white`,
+  `base_level`, `start_level`, …): floats `0.0`–`1.0`, or a percentage like
+  `60%`.
 - `direction`: the accepted values depend on the effect — they are two
   separate sets, not one list.
-  - `cycle`: `forward | backward | pingpong` (the order colours are stepped).
-  - `chase`: `left_to_right | right_to_left | top_to_bottom | bottom_to_top |
-    clockwise | counter_clockwise` (where the mask travels).
-  - No other effect reads `direction`; on `rainbow` it is accepted and ignored.
-- `transition` (`cycle`, `chase`): `snap | fade` (`crossfade` = `fade`). A
-  `cycle` also takes `hue`, a fade around the colour wheel: use it when
-  consecutive colours are far apart (yellow → blue, red → cyan), whose plain
-  fade passes through grey.
-- `layer`: `background | midground | foreground` (grandMA-inspired layers).
-- `blend_mode`: `replace | multiply | add | overlay | screen`.
+  - `cycle`: {{cycle_directions}} (the order colours are stepped).
+  - `chase`: {{chase_directions}} (where the mask travels).
+- `pattern` (`chase`): {{chase_patterns}}.
+- `transition`: `cycle` takes {{cycle_transitions}}; `chase` takes
+  {{chase_transitions}}. `crossfade` is `fade` by another name.
+- `curve` (`dimmer`): {{curves}}.
+- `easing` (`move`): {{easings}}.
+- `layer`: {{layers}} (grandMA-inspired layers).
+- `blend_mode`: {{blend_modes}}.
+- `per`: {{per}} — `cell` (or `cells`) runs the effect across a pixel
+  fixture's cells. `spread`: an angle (`360deg`) that phases a `cycle` or a
+  `rainbow` across its targets.
 
 A `pulse`'s amplitude is added *on top of* its base level: it sweeps
 `base_level` to `base_level + amplitude` rather than modulating around the level
@@ -82,8 +87,9 @@ Set `base_level` explicitly to place the pulse where you want it.
 
 ### Layer commands
 
-Layer state can be managed mid-show. Each command takes parenthesised
-parameters: `layer:` is required, the others are optional.
+Layer state can be managed mid-show. The commands are {{layer_commands}};
+each takes parenthesised parameters ({{layer_command_params}}). `layer:` is
+required, but for `clear()`, which with no layer clears every layer.
 
 ```
 @01:00.000
@@ -115,7 +121,7 @@ show, reference it on its own cue line:
 ```
 sequence "Verse" {
     @00:00.000
-    front_wash: static color: "blue", duration: 4s
+    front_wash: static color: "blue", dimmer: 100%, duration: 4s
 
     @00:02.000
     movers: chase speed: 2.0, direction: left_to_right, duration: 4s
@@ -139,9 +145,9 @@ end early, declare the pass length, in the same units as `duration:`:
 ```
 sequence "Centre Beats", length: 1measure {
     @1/1
-    centre: static color: "blue", duration: 1beat
+    centre: static color: "blue", dimmer: 100%, duration: 1beat
     @1/3
-    centre: static color: "white", duration: 1.5beats
+    centre: static color: "white", dimmer: 100%, duration: 1.5beats
 }
 ```
 
@@ -156,9 +162,9 @@ substituted as written (a quoted colour, a group, a number, a duration):
 ```
 sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
     @1/1
-    $target: static color: $bed, layer: background, duration: 2measures
+    $target: static color: $bed, dimmer: 100%, layer: background, duration: 2measures
     @1/1
-    $target: static color: $hit, layer: foreground, duration: 1beat
+    $target: static color: $hit, dimmer: 100%, layer: foreground, duration: 1beat
 }
 
 show "Song" {
@@ -185,7 +191,7 @@ the block are relative to the loop's start:
 @00:00.000
 loop {
     @00:00.000
-    all_lights: static color: "red", duration: 250ms
+    all_lights: static color: "red", dimmer: 100%, duration: 250ms
     @00:00.250
     all_lights: static color: "black", duration: 250ms
 } repeats: 8
@@ -193,9 +199,10 @@ loop {
 
 ### Tempo and beat-based timing
 
-A `tempo { ... }` block enables musical-time conversion. Place it either at
-file scope (applies to every show/sequence) or as the first item inside a
-`show { ... }` body. Fields go on separate lines:
+A `tempo { ... }` block enables musical-time conversion. Place it at file
+scope (applies to every show/sequence) or inside a `show { ... }` or
+`sequence { ... }` body, where it governs every cue of that body; where there
+are several, the last wins. Fields go on separate lines:
 
 ```
 tempo {
@@ -237,7 +244,7 @@ expressed relative to a new "bar 1":
 ```
 @8/1
 offset 8 measures   # cues at @N/M now mean (N+8)/M in song time
-all_lights: static color: "blue", duration: 4beats
+all_lights: static color: "blue", dimmer: 100%, duration: 4beats
 
 reset_measures      # back to the original baseline
 ```
@@ -321,7 +328,8 @@ web UI's 3D view that never changes the DMX), in any order after the tags.
 2. **Discover groups first.** Use `list_groups` for the active venue so cues
    target real groups (`front_wash`, `movers`, etc.) rather than guesses.
 3. **Crossfade by setting `up_time`/`down_time`.** Otherwise effects snap on.
-4. **End the show.** A trailing `dimmer end_level: 0%, duration: 2s` on
-   `all_lights` (or whatever your "all" group is called) gives a clean fade-out.
+4. **End the show.** A trailing `dimmer start_level: 100%, end_level: 0%,
+   duration: 2s` on `all_lights` (or whatever your "all" group is called)
+   gives a clean fade-out.
 5. **Prefer absolute times for songs without tempo metadata.** Switch to
    `@bar/beat` only after confirming a `tempo { … }` block exists.

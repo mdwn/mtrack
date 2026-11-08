@@ -13,18 +13,26 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    AudioConfig,
+    AudioDeviceInfo,
+    AudioProbe,
+    ResamplerType,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import {
+    COMMON_BIT_DEPTHS,
+    COMMON_SAMPLE_RATES,
     channelsLabel,
     probeAudioDevice,
-    type AudioDeviceInfo,
-    type AudioProbeResult,
   } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   interface Props {
-    audio: any;
+    audio: AudioConfig;
     devices: AudioDeviceInfo[];
     trackNames: string[];
     onrefresh: () => void | Promise<void>;
@@ -54,7 +62,7 @@
   // The generic form, not `let x: T | null = $state(null)`: with the latter
   // TypeScript narrows the variable to `null` for the rest of the file, and the
   // deriveds below would come out as `null` rather than the result type.
-  let probeResult = $state<AudioProbeResult | null>(null);
+  let probeResult = $state<AudioProbe | null>(null);
   let probeErrorText = $state<string | null>(null);
   // The settings the result describes, captured when the probe was sent.
   let probedSettings = $state<string | null>(null);
@@ -103,7 +111,7 @@
     }
   }
 
-  const PROBE_MESSAGES: Record<AudioProbeResult["outcome"], string> = {
+  const PROBE_MESSAGES: Record<AudioProbe["outcome"], string> = {
     streaming: "audio.testStreaming",
     opened_cannot_report: "audio.testOpenedCannotReport",
     opened_but_silent: "audio.testOpenedButSilent",
@@ -111,7 +119,7 @@
     in_use: "audio.testInUse",
   };
 
-  function probeMessage(result: AudioProbeResult): string {
+  function probeMessage(result: AudioProbe): string {
     // "In use" splits on health: the device is open either way, but an open
     // device whose callback has stopped is the failure worth shouting about.
     if (result.outcome === "in_use" && !result.ok) {
@@ -145,12 +153,16 @@
     return [...bits].sort((a, b) => a - b);
   });
 
-  function set(key: string, value: any) {
+  function set<K extends keyof AudioConfig>(key: K, value: AudioConfig[K]) {
     audio[key] = value;
     onchange();
   }
 
-  function setOrDelete(key: string, value: any, defaultVal: any) {
+  function setOrDelete<K extends keyof AudioConfig>(
+    key: K,
+    value: AudioConfig[K] | "",
+    defaultVal: AudioConfig[K],
+  ) {
     if (value === defaultVal || value === "" || value === undefined) {
       delete audio[key];
     } else {
@@ -165,14 +177,14 @@
   );
 
   function addMapping() {
-    if (!audio.track_mappings) audio.track_mappings = {};
-    audio.track_mappings[""] = [1];
+    (audio.track_mappings ??= {})[""] = [1];
     onchange();
   }
 
   function removeMapping(name: string) {
-    delete audio.track_mappings[name];
-    if (Object.keys(audio.track_mappings).length === 0) {
+    const mappings = audio.track_mappings ?? {};
+    delete mappings[name];
+    if (Object.keys(mappings).length === 0) {
       delete audio.track_mappings;
     }
     onchange();
@@ -180,9 +192,10 @@
 
   function updateMappingName(oldName: string, newName: string) {
     if (oldName === newName || !newName) return;
-    const channels = audio.track_mappings[oldName];
-    delete audio.track_mappings[oldName];
-    audio.track_mappings[newName] = channels;
+    const mappings = (audio.track_mappings ??= {});
+    const channels = mappings[oldName];
+    delete mappings[oldName];
+    mappings[newName] = channels;
     onchange();
   }
 
@@ -204,7 +217,7 @@
 
   function updateMappingChannels(name: string, value: string) {
     channelErrors[name] = validateChannelMapping(value);
-    audio.track_mappings[name] = value
+    (audio.track_mappings ??= {})[name] = value
       .split(",")
       .map((s: string) => parseInt(s.trim()))
       .filter((n: number) => !isNaN(n));
@@ -284,9 +297,9 @@
             <option value={String(rate)}>{rate}</option>
           {/each}
         {:else}
-          <option value="44100">44100</option>
-          <option value="48000">48000</option>
-          <option value="96000">96000</option>
+          {#each COMMON_SAMPLE_RATES as rate (rate)}
+            <option value={String(rate)}>{rate}</option>
+          {/each}
         {/if}
         {#if audio.sample_rate && !sampleRateOptions.includes(audio.sample_rate) && sampleRateOptions.length > 0}
           <option value={String(audio.sample_rate)}>{audio.sample_rate}</option>
@@ -303,7 +316,9 @@
         onchange={(e) =>
           setOrDelete(
             "sample_format",
-            (e.target as HTMLSelectElement).value || undefined,
+            ((e.target as HTMLSelectElement).value || undefined) as
+              | ResamplerType
+              | undefined,
             undefined,
           )}
       >
@@ -313,8 +328,9 @@
             <option value={fmt}>{fmt}</option>
           {/each}
         {:else}
-          <option value="int">int</option>
-          <option value="float">float</option>
+          {#each choices.sample_formats as fmt (fmt)}
+            <option value={fmt}>{fmt}</option>
+          {/each}
         {/if}
         {#if audio.sample_format && !sampleFormatOptions.includes(audio.sample_format) && sampleFormatOptions.length > 0}
           <option value={audio.sample_format}>{audio.sample_format}</option>
@@ -345,9 +361,9 @@
             <option value={String(bits)}>{bits}</option>
           {/each}
         {:else}
-          <option value="16">16</option>
-          <option value="24">24</option>
-          <option value="32">32</option>
+          {#each COMMON_BIT_DEPTHS as bits (bits)}
+            <option value={String(bits)}>{bits}</option>
+          {/each}
         {/if}
         {#if audio.bits_per_sample && !bitsPerSampleOptions.includes(audio.bits_per_sample) && bitsPerSampleOptions.length > 0}
           <option value={String(audio.bits_per_sample)}
@@ -442,13 +458,16 @@
         onchange={(e) =>
           setOrDelete(
             "resampler",
-            (e.target as HTMLSelectElement).value || undefined,
+            ((e.target as HTMLSelectElement).value || undefined) as
+              | ResamplerType
+              | undefined,
             undefined,
           )}
       >
         <option value="">{$t("audio.resamplerDefault")}</option>
-        <option value="sinc">sinc</option>
-        <option value="fft">fft</option>
+        {#each choices.resamplers as r (r)}
+          <option value={r}>{r}</option>
+        {/each}
       </select>
     </div>
 

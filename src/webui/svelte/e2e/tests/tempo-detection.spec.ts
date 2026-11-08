@@ -13,6 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
+import type { TempoGuess } from "../../src/gen/rules/mtrack_rules";
+
+/** The guess as a song's `tempo:` block, as the player serves it. */
+const CONFIG = { bpm: 120, time_signature: "4/4" };
 
 // Minimal valid tempo-guess response — well-aligned MIDI (no warning expected).
 const GOOD_MIDI_TEMPO = {
@@ -24,7 +28,8 @@ const GOOD_MIDI_TEMPO = {
     changes: [],
     alignment_rms_ms: 4.2,
   },
-};
+  config: CONFIG,
+} satisfies TempoGuess;
 
 // Tempo-guess response with poor alignment (warning should appear).
 const BAD_MIDI_TEMPO = {
@@ -36,7 +41,8 @@ const BAD_MIDI_TEMPO = {
     changes: [],
     alignment_rms_ms: 87.5,
   },
-};
+  config: CONFIG,
+} satisfies TempoGuess;
 
 // Beat-grid-only response (no alignment_rms_ms — no warning expected).
 const BEAT_GRID_TEMPO = {
@@ -47,7 +53,8 @@ const BEAT_GRID_TEMPO = {
     time_signature: [4, 4],
     changes: [],
   },
-};
+  config: CONFIG,
+} satisfies TempoGuess;
 
 /** Navigate to a song's lighting page and open the TempoEditor panel. */
 async function openTempoEditor(
@@ -166,7 +173,8 @@ test.describe("Tempo Detection - MIDI source (Test Song Alpha)", () => {
             changes: [],
             // alignment_rms_ms intentionally absent
           },
-        }),
+          config: CONFIG,
+        } satisfies TempoGuess),
       });
     });
 

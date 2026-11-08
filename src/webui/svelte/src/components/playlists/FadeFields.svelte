@@ -13,8 +13,9 @@
      *
      * -->
 <script lang="ts">
-  import type { FadeConfig } from "../../lib/api/config";
+  import type { FadeConfig } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     /** Which fade: only a fade out crosses the lights. */
@@ -124,10 +125,9 @@
         disabled={disabled || !full}
         onchange={(e) => setCurve((e.target as HTMLSelectElement).value)}
       >
-        <option value="equal_power"
-          >{$t("playlists.fadeCurveEqualPower")}</option
-        >
-        <option value="linear">{$t("playlists.fadeCurveLinear")}</option>
+        {#each rules.config_choices().fade_curves as c (c)}
+          <option value={c}>{$t(`playlists.fadeCurves.${c}`)}</option>
+        {/each}
       </select>
     </div>
     {#if kind === "fade_out"}

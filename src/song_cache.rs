@@ -19,9 +19,10 @@
 //! source files have changed.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 
+use crate::util::FileStamp;
 use crate::webui::config_io::staged_write;
 use serde::{Deserialize, Serialize};
 
@@ -49,28 +50,41 @@ struct ChannelCache {
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
 }
 
-/// Metadata from the filesystem used for cache invalidation.
-struct FileMeta {
-    mtime_secs: u64,
-    mtime_nanos: u32,
-    size: u64,
-}
+impl FileCacheEntry {
+    /// An entry for a file as stamped, holding nothing yet.
+    fn new(stamp: FileStamp) -> Self {
+        let mut entry = FileCacheEntry {
+            mtime_secs: 0,
+            mtime_nanos: 0,
+            size: 0,
+            channels: HashMap::new(),
+        };
+        entry.set_stamp(stamp);
+        entry
+    }
 
-fn get_file_meta(path: &Path) -> Option<FileMeta> {
-    let metadata = fs::metadata(path).ok()?;
-    let mtime = metadata.modified().ok()?;
-    let since_epoch = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some(FileMeta {
-        mtime_secs: since_epoch.as_secs(),
-        mtime_nanos: since_epoch.subsec_nanos(),
-        size: metadata.len(),
-    })
-}
+    /// Whether the entry is of the file as it is now stamped.
+    fn matches(&self, stamp: FileStamp) -> bool {
+        self.stamp() == Some(stamp)
+    }
 
-fn meta_matches(entry: &FileCacheEntry, meta: &FileMeta) -> bool {
-    entry.mtime_secs == meta.mtime_secs
-        && entry.mtime_nanos == meta.mtime_nanos
-        && entry.size == meta.size
+    fn stamp(&self) -> Option<FileStamp> {
+        let since_epoch = Duration::new(self.mtime_secs, self.mtime_nanos);
+        Some(FileStamp {
+            modified: UNIX_EPOCH.checked_add(since_epoch)?,
+            len: self.size,
+        })
+    }
+
+    fn set_stamp(&mut self, stamp: FileStamp) {
+        let since_epoch = stamp
+            .modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        self.mtime_secs = since_epoch.as_secs();
+        self.mtime_nanos = since_epoch.subsec_nanos();
+        self.size = stamp.len;
+    }
 }
 
 fn filename_key(file: &Path) -> Option<String> {
@@ -124,12 +138,12 @@ pub fn load_cached_peaks(
             None => continue,
         };
 
-        let meta = match get_file_meta(file) {
+        let stamp = match FileStamp::of(file) {
             Some(m) => m,
             None => continue,
         };
 
-        if !meta_matches(entry, &meta) {
+        if !entry.matches(stamp) {
             continue;
         }
 
@@ -170,22 +184,18 @@ pub fn save_peaks(
             None => continue,
         };
 
-        let meta = match get_file_meta(file) {
+        let stamp = match FileStamp::of(file) {
             Some(m) => m,
             None => continue,
         };
 
-        let entry = cache.tracks.entry(key).or_insert_with(|| FileCacheEntry {
-            mtime_secs: meta.mtime_secs,
-            mtime_nanos: meta.mtime_nanos,
-            size: meta.size,
-            channels: HashMap::new(),
-        });
+        let entry = cache
+            .tracks
+            .entry(key)
+            .or_insert_with(|| FileCacheEntry::new(stamp));
 
         // Update metadata in case the file was just recomputed after a change.
-        entry.mtime_secs = meta.mtime_secs;
-        entry.mtime_nanos = meta.mtime_nanos;
-        entry.size = meta.size;
+        entry.set_stamp(stamp);
 
         let channel_key = channel.to_string();
         let existing_tempo_map = entry
@@ -224,9 +234,7 @@ pub fn load_cached_beat_grid(
     let cache = read_cache(song_dir)?;
     let key = filename_key(file)?;
     let entry = cache.tracks.get(&key)?;
-    let meta = get_file_meta(file)?;
-
-    if !meta_matches(entry, &meta) {
+    if !entry.matches(FileStamp::of(file)?) {
         return None;
     }
 
@@ -256,21 +264,16 @@ pub fn save_beat_grid(
         None => return Ok(()),
     };
 
-    let meta = match get_file_meta(file) {
+    let stamp = match FileStamp::of(file) {
         Some(m) => m,
         None => return Ok(()),
     };
 
-    let entry = cache.tracks.entry(key).or_insert_with(|| FileCacheEntry {
-        mtime_secs: meta.mtime_secs,
-        mtime_nanos: meta.mtime_nanos,
-        size: meta.size,
-        channels: HashMap::new(),
-    });
-
-    entry.mtime_secs = meta.mtime_secs;
-    entry.mtime_nanos = meta.mtime_nanos;
-    entry.size = meta.size;
+    let entry = cache
+        .tracks
+        .entry(key)
+        .or_insert_with(|| FileCacheEntry::new(stamp));
+    entry.set_stamp(stamp);
 
     let channel_key = channel.to_string();
     let existing_peaks = entry

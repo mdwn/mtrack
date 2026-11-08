@@ -38,49 +38,13 @@
 //! No geometry-tree kinematics: a page of trigonometry, property-tested
 //! and cross-checked against rig kinematics in `golden_tests`.
 
+pub use crate::lighting::fixture_data::AimCalibration;
+
 /// A pan/tilt pair in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub pan: f64,
     pub tilt: f64,
-}
-
-/// How a fixture's joints sit inside its mounting frame, read from its
-/// GDTF geometry (design §18.6). Most fixtures are the identity: the
-/// yoke turns about the mounting's Z and the head about the yoke's X,
-/// with the beam down −Z at rest. Some are not — the Ayrton MagicDot SX
-/// yaws its yoke geometry 90° — and for those the plain math would aim
-/// the head into the wrong plane. With a calibration the beam is
-///
-/// ```text
-/// direction = R · pre · Rz(pan + pan_offset) · Rx(tilt + tilt_offset) · (0, 0, −1)
-/// ```
-///
-/// `pre` is the rotation the geometry puts before the pan joint, and the
-/// offsets are yaws between the joints and the beam's rest angle in the
-/// head. The three translations put the lens where the geometry has it,
-/// so the beam is aimed from the lens, not the mounting point:
-///
-/// ```text
-/// origin = mount_to_pan + pre · Rz(pan) · (pan_to_tilt + Rz(pan_offset) · Rx(tilt) · tilt_to_lens)
-/// ```
-///
-/// Derived by [`crate::lighting::gdtf::aim_calibration`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AimCalibration {
-    /// Rotation from the joint frame into the mounting frame (row-major).
-    pub pre: [[f64; 3]; 3],
-    /// Degrees added to the pan the geometry wants, to get the pan the
-    /// fixture's own channel means.
-    pub pan_offset: f64,
-    /// Likewise for tilt.
-    pub tilt_offset: f64,
-    /// The pan joint's position in the mounting frame, meters.
-    pub mount_to_pan: [f64; 3],
-    /// The tilt joint's position in the pan joint's frame.
-    pub pan_to_tilt: [f64; 3],
-    /// The lens's position in the tilt joint's frame.
-    pub tilt_to_lens: [f64; 3],
 }
 
 impl AimCalibration {
@@ -206,7 +170,11 @@ impl AimCalibration {
                 tilt: 0.0,
             }; 2];
         }
-        let mounting = into_frame(rotation, [d[0] / length, d[1] / length, d[2] / length]);
+        let mounting = frame(
+            rotation,
+            true,
+            [d[0] / length, d[1] / length, d[2] / length],
+        );
         let local = mat_t_vec(self.pre, mounting);
         joint_solutions(local).map(|pose| Pose {
             pan: wrap_pan(pose.pan - self.pan_offset),
@@ -218,8 +186,10 @@ impl AimCalibration {
 /// The beam a joint pose sends, in the joint frame:
 /// `Rz(pan)·Rx(tilt)·(0,0,−1)`.
 fn joint_direction(pose: Pose) -> [f64; 3] {
-    let (pan, tilt) = (pose.pan.to_radians(), pose.tilt.to_radians());
-    [-pan.sin() * tilt.sin(), pan.cos() * tilt.sin(), -tilt.cos()]
+    rot_z(
+        pose.pan.to_radians(),
+        rot_x(pose.tilt.to_radians(), [0.0, 0.0, -1.0]),
+    )
 }
 
 /// Both joint poses sending the beam along a unit direction in the joint
@@ -255,14 +225,50 @@ fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn rot_z(angle: f64, v: [f64; 3]) -> [f64; 3] {
+#[derive(Clone, Copy)]
+enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+/// `v` rotated by `angle` (radians) about one axis -- `Rx`, `Ry` or `Rz`
+/// -- or, `transposed`, by the inverse. The one place a rotation is
+/// written out; the transpose only negates the sine, so each product is
+/// the same number either way round.
+fn rotate(axis: Axis, angle: f64, transposed: bool, v: [f64; 3]) -> [f64; 3] {
     let (c, s) = (angle.cos(), angle.sin());
-    [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+    let s = if transposed { -s } else { s };
+    match axis {
+        Axis::X => [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]],
+        Axis::Y => [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]],
+        Axis::Z => [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]],
+    }
+}
+
+fn rot_z(angle: f64, v: [f64; 3]) -> [f64; 3] {
+    rotate(Axis::Z, angle, false, v)
 }
 
 fn rot_x(angle: f64, v: [f64; 3]) -> [f64; 3] {
-    let (c, s) = (angle.cos(), angle.sin());
-    [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
+    rotate(Axis::X, angle, false, v)
+}
+
+/// The mounting rotation `R = Rz·Ry·Rx`, degrees about X, Y and Z applied
+/// in that order, applied to `v` -- or, `into` the frame, its inverse
+/// `Rᵀ`: the same three rotations, each transposed, in the opposite
+/// order.
+fn frame(rotation_deg: [f64; 3], into: bool, v: [f64; 3]) -> [f64; 3] {
+    let [rx, ry, rz] = rotation_deg.map(f64::to_radians);
+    if into {
+        let v = rotate(Axis::Z, rz, true, v);
+        let v = rotate(Axis::Y, ry, true, v);
+        rotate(Axis::X, rx, true, v)
+    } else {
+        let v = rotate(Axis::X, rx, false, v);
+        let v = rotate(Axis::Y, ry, false, v);
+        rotate(Axis::Z, rz, false, v)
+    }
 }
 
 pub(crate) fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
@@ -281,38 +287,17 @@ fn mat_t_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// Rotates a stage-space vector into a mounting frame given by degrees
-/// about X, Y and Z applied in that order — the inverse (transpose) of
-/// `R = Rz·Ry·Rx`.
-fn into_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
-    let (rx, ry, rz) = (
-        rotation_deg[0].to_radians(),
-        rotation_deg[1].to_radians(),
-        rotation_deg[2].to_radians(),
-    );
-    // Apply Rzᵀ, then Ryᵀ, then Rxᵀ.
-    let (cz, sz) = (rz.cos(), rz.sin());
-    let v = [cz * v[0] + sz * v[1], -sz * v[0] + cz * v[1], v[2]];
-    let (cy, sy) = (ry.cos(), ry.sin());
-    let v = [cy * v[0] - sy * v[2], v[1], sy * v[0] + cy * v[2]];
-    let (cx, sx) = (rx.cos(), rx.sin());
-    [v[0], cx * v[1] + sx * v[2], -sx * v[1] + cx * v[2]]
-}
-
 /// Rotates a mounting-frame vector out into stage space: `R = Rz·Ry·Rx` —
 /// where a cell's offset in the fixture's frame lands on the stage.
 pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
-    let (rx, ry, rz) = (
-        rotation_deg[0].to_radians(),
-        rotation_deg[1].to_radians(),
-        rotation_deg[2].to_radians(),
-    );
-    let (cx, sx) = (rx.cos(), rx.sin());
-    let v = [v[0], cx * v[1] - sx * v[2], sx * v[1] + cx * v[2]];
-    let (cy, sy) = (ry.cos(), ry.sin());
-    let v = [cy * v[0] + sy * v[2], v[1], -sy * v[0] + cy * v[2]];
-    let (cz, sz) = (rz.cos(), rz.sin());
-    [cz * v[0] - sz * v[1], sz * v[0] + cz * v[1], v[2]]
+    frame(rotation_deg, false, v)
+}
+
+/// The direction a fixture mounted at `rotation_deg` points at rest, a unit
+/// vector in stage space: −(third column of R = Rz·Ry·Rx), the mounting's
+/// −Z. Straight down for an unrotated fixture.
+pub fn rest_beam(rotation_deg: [f64; 3]) -> [f64; 3] {
+    out_of_frame(rotation_deg, [0.0, 0.0, 1.0]).map(|c| -c)
 }
 
 /// Both poses that aim a fixture at `position` with mounting `rotation`
@@ -367,8 +352,8 @@ pub fn nearest_pan(pan: f64, current: f64, range: (f64, f64)) -> f64 {
 /// Interpolates a pose along the shortest path in degrees.
 pub fn lerp(from: Pose, to: Pose, t: f64) -> Pose {
     Pose {
-        pan: from.pan + (to.pan - from.pan) * t,
-        tilt: from.tilt + (to.tilt - from.tilt) * t,
+        pan: crate::lighting::channels::lerp(from.pan, to.pan, t),
+        tilt: crate::lighting::channels::lerp(from.tilt, to.tilt, t),
     }
 }
 
@@ -533,6 +518,96 @@ mod tests {
                     .sum::<f64>()
                     .sqrt();
                 assert!(miss < 1e-6, "{target:?} {pose:?}: misses by {miss} m");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    /// The frame rotations and the joint direction as they were written
+    /// out, product by product, before `rotate` was the one place.
+    fn into_frame_written_out(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+        let [rx, ry, rz] = rotation_deg.map(f64::to_radians);
+        let (cz, sz) = (rz.cos(), rz.sin());
+        let v = [cz * v[0] + sz * v[1], -sz * v[0] + cz * v[1], v[2]];
+        let (cy, sy) = (ry.cos(), ry.sin());
+        let v = [cy * v[0] - sy * v[2], v[1], sy * v[0] + cy * v[2]];
+        let (cx, sx) = (rx.cos(), rx.sin());
+        [v[0], cx * v[1] + sx * v[2], -sx * v[1] + cx * v[2]]
+    }
+
+    fn out_of_frame_written_out(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+        let [rx, ry, rz] = rotation_deg.map(f64::to_radians);
+        let (cx, sx) = (rx.cos(), rx.sin());
+        let v = [v[0], cx * v[1] - sx * v[2], sx * v[1] + cx * v[2]];
+        let (cy, sy) = (ry.cos(), ry.sin());
+        let v = [cy * v[0] + sy * v[2], v[1], -sy * v[0] + cy * v[2]];
+        let (cz, sz) = (rz.cos(), rz.sin());
+        [cz * v[0] - sz * v[1], sz * v[0] + cz * v[1], v[2]]
+    }
+
+    fn joint_direction_closed_form(pose: Pose) -> [f64; 3] {
+        let (pan, tilt) = (pose.pan.to_radians(), pose.tilt.to_radians());
+        [-pan.sin() * tilt.sin(), pan.cos() * tilt.sin(), -tilt.cos()]
+    }
+
+    fn same_bits(a: [f64; 3], b: [f64; 3], what: &str) {
+        for i in 0..3 {
+            assert_eq!(a[i].to_bits(), b[i].to_bits(), "{what}: component {i}");
+        }
+    }
+
+    #[test]
+    fn frame_rotations_are_bit_for_bit_as_written_out() {
+        let angles = [-170.0, -90.0, -33.3, 0.0, 12.5, 45.0, 90.0, 123.4, 180.0];
+        let vectors = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.3, -0.4, 0.866],
+            [-2.5, 1.75, 0.125],
+        ];
+        for &rx in &angles {
+            for &ry in &angles {
+                for &rz in &angles {
+                    let rotation = [rx, ry, rz];
+                    for &v in &vectors {
+                        same_bits(
+                            frame(rotation, true, v),
+                            into_frame_written_out(rotation, v),
+                            "into",
+                        );
+                        same_bits(
+                            out_of_frame(rotation, v),
+                            out_of_frame_written_out(rotation, v),
+                            "out of",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn joint_direction_is_the_closed_form() {
+        let angles = [-180.0, -135.0, -90.0, -30.0, 0.0, 17.5, 90.0, 150.0, 180.0];
+        for &pan in &angles {
+            for &tilt in &angles {
+                let pose = Pose { pan, tilt };
+                let (got, want) = (joint_direction(pose), joint_direction_closed_form(pose));
+                for i in 0..3 {
+                    assert_eq!(got[i], want[i], "pan {pan} tilt {tilt}: component {i}");
+                    if want[i] != 0.0 {
+                        assert_eq!(
+                            got[i].to_bits(),
+                            want[i].to_bits(),
+                            "pan {pan} tilt {tilt}: component {i}"
+                        );
+                    }
+                }
             }
         }
     }

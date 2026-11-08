@@ -22,25 +22,32 @@
 //! These are warnings, never errors. A show that parses is still valid; these
 //! only say what looks suspicious.
 
+pub use crate::lighting::findings::{Severity, Want, Warning};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
-use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
-use crate::lighting::parser::LightShow;
-use crate::lighting::parser::{Cue, Effect, LayerCommandType};
-
-/// A non-fatal finding.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Warning {
-    /// Stable identifier, so callers can filter without matching prose.
-    pub kind: &'static str,
-    pub message: String,
-}
+use crate::lighting::effects::{
+    BlendMode, EffectLayer, EffectType, MoveTarget, DEFAULT_BLEND, DEFAULT_LAYER,
+};
+use crate::lighting::parser::{effect_keyword, Cue, Effect, LightShow};
+use crate::lighting::timeline::EffectEnd;
 
 impl Warning {
     fn new(kind: &'static str, message: String) -> Self {
-        Warning { kind, message }
+        Warning {
+            kind,
+            message,
+            severity: Severity::Note,
+        }
+    }
+
+    /// A warning that the rig will not do what the show says.
+    fn attention(kind: &'static str, message: String) -> Self {
+        Warning {
+            severity: Severity::Attention,
+            ..Warning::new(kind, message)
+        }
     }
 }
 
@@ -66,6 +73,78 @@ pub struct LintContext<'a> {
     pub focus_points: Option<HashSet<String>>,
 }
 
+impl Want {
+    /// What an effect needs of its group's fixtures to do what it says,
+    /// if anything: a chase, or a static naming no colour, asks nothing
+    /// in particular.
+    pub fn of(effect_type: &EffectType) -> Option<Want> {
+        match effect_type {
+            EffectType::Strobe { .. } => Some(Want::Strobe),
+            EffectType::Dimmer { .. } | EffectType::Pulse { .. } => Some(Want::Dimmer),
+            EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => Some(Want::Color),
+            EffectType::Move { .. } => Some(Want::Move),
+            // A static's colour arrives as red, green and blue.
+            EffectType::Static { parameters, .. }
+                if ["red", "green", "blue"]
+                    .iter()
+                    .any(|c| parameters.contains_key(*c)) =>
+            {
+                Some(Want::Color)
+            }
+            EffectType::Static { .. } | EffectType::Chase { .. } => None,
+        }
+    }
+
+    /// The name used in the API and in findings.
+    pub fn name(self) -> &'static str {
+        match self {
+            Want::Move => "move",
+            Want::Color => "color",
+            Want::Strobe => "strobe",
+            Want::Cells => "cells",
+            Want::Dimmer => "dimmer",
+        }
+    }
+
+    /// Whether `fixture` has what this asks for. The one rule, for lint's
+    /// findings and for refusing an effect at load.
+    pub fn met_by(self, fixture: &crate::lighting::effects::FixtureInfo) -> bool {
+        use crate::lighting::effects::FixtureCapabilities as Cap;
+        let has = |cap| fixture.has_capability(cap);
+        match self {
+            Want::Move => has(Cap::PANNING) || has(Cap::TILTING),
+            Want::Color => has(Cap::RGB_COLOR),
+            Want::Strobe => has(Cap::STROBING) || has(Cap::DIMMING) || has(Cap::RGB_COLOR),
+            Want::Cells => !fixture.cells.is_empty(),
+            Want::Dimmer => has(Cap::DIMMING) || has(Cap::RGB_COLOR),
+        }
+    }
+
+    /// What a fixture has it with, for a finding.
+    pub(crate) fn what(self) -> &'static str {
+        match self {
+            Want::Move => "pan or tilt channels",
+            Want::Color => "colour channels (RGB or CMY)",
+            Want::Strobe => "a strobe channel, a dimmer or colour channels",
+            Want::Cells => "cells",
+            Want::Dimmer => "a dimmer or colour channels",
+        }
+    }
+}
+
+/// The focus points a `move` aims at: its `to`, and its `from` when it has
+/// one. Nothing for any other effect.
+pub fn focus_targets(effect_type: &EffectType) -> impl Iterator<Item = &str> {
+    let targets = match effect_type {
+        EffectType::Move { to, from, .. } => [Some(to), from.as_ref()],
+        _ => [None, None],
+    };
+    targets.into_iter().flatten().filter_map(|t| match t {
+        MoveTarget::Focus(name) => Some(name.as_str()),
+        _ => None,
+    })
+}
+
 /// How many of a group's fixtures have each capability an effect can ask
 /// for, derived from their channel maps.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -86,30 +165,37 @@ pub struct GroupCapabilities {
 }
 
 impl GroupCapabilities {
+    /// How many of the group's fixtures can do what `want` asks.
+    pub fn have(&self, want: Want) -> usize {
+        match want {
+            Want::Move => self.pan_tilt,
+            Want::Color => self.rgb,
+            Want::Strobe => self.strobe + self.dimmer + self.rgb,
+            Want::Cells => self.cells,
+            Want::Dimmer => self.dimmer + self.rgb,
+        }
+    }
+
     /// Tallies a group from its resolved fixtures.
     pub fn from_fixtures<'f>(
         fixtures: impl IntoIterator<Item = &'f crate::lighting::effects::FixtureInfo>,
     ) -> GroupCapabilities {
-        use crate::lighting::effects::FixtureCapabilities;
         let mut out = GroupCapabilities::default();
         for fixture in fixtures {
-            let capabilities = fixture.capabilities();
             out.fixtures += 1;
-            if !fixture.cells.is_empty() {
+            if Want::Cells.met_by(fixture) {
                 out.cells += 1;
             }
-            if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+            if Want::Color.met_by(fixture) {
                 out.rgb += 1;
             }
-            if capabilities.contains(FixtureCapabilities::DIMMING) {
+            if fixture.has_dimmer() {
                 out.dimmer += 1;
             }
-            if capabilities.contains(FixtureCapabilities::STROBING) {
+            if fixture.has_capability(crate::lighting::effects::FixtureCapabilities::STROBING) {
                 out.strobe += 1;
             }
-            let moves = capabilities.contains(FixtureCapabilities::PANNING)
-                || capabilities.contains(FixtureCapabilities::TILTING);
-            if moves {
+            if Want::Move.met_by(fixture) {
                 out.pan_tilt += 1;
                 if fixture.position.is_some() {
                     out.positioned += 1;
@@ -131,6 +217,26 @@ impl GroupCapabilities {
     }
 }
 
+/// Fixtures grouped by the universes `configured` says nothing drives:
+/// universe -> fixture names, both sorted for stable reporting.
+pub fn unconfigured_universes(
+    fixtures: &[crate::lighting::effects::FixtureInfo],
+    configured: impl Fn(u16) -> bool,
+) -> BTreeMap<u16, Vec<String>> {
+    let mut gaps: BTreeMap<u16, Vec<String>> = Default::default();
+    for fixture in fixtures {
+        if !configured(fixture.universe) {
+            gaps.entry(fixture.universe)
+                .or_default()
+                .push(fixture.name.clone());
+        }
+    }
+    for names in gaps.values_mut() {
+        names.sort_unstable();
+    }
+    gaps
+}
+
 /// A venue-level finding: fixtures patched on a universe the active
 /// profile configures no output for. Reported at registration and on
 /// first drop today; this makes it a pre-show answer. `configured` is the
@@ -139,19 +245,9 @@ pub fn universe_coverage(
     fixtures: &[crate::lighting::effects::FixtureInfo],
     configured: &[u16],
 ) -> Vec<Warning> {
-    let mut by_universe: std::collections::BTreeMap<u16, Vec<&str>> = Default::default();
-    for fixture in fixtures {
-        if !configured.contains(&fixture.universe) {
-            by_universe
-                .entry(fixture.universe)
-                .or_default()
-                .push(&fixture.name);
-        }
-    }
-    by_universe
+    unconfigured_universes(fixtures, |universe| configured.contains(&universe))
         .into_iter()
-        .map(|(universe, mut names)| {
-            names.sort_unstable();
+        .map(|(universe, names)| {
             Warning::new(
                 "unconfigured-universe",
                 format!(
@@ -181,14 +277,17 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
     // Across all shows at once, for the same reason the stomp check is: a
-    // `clear` in one show of a file ends effects in its siblings.
-    effects_past_end_of_song(shows, ctx, &mut warnings);
+    // `clear` in one show of a file ends effects in its siblings. Each
+    // effect's real end, as the show plays (#595).
+    let cues: Vec<&Cue> = shows.iter().flat_map(|show| show.cues.iter()).collect();
+    let ends = crate::lighting::timeline::effect_ends(cues.iter().copied());
+    effects_past_end_of_song(&cues, &ends, ctx, &mut warnings);
     parameters_the_effect_ignores(shows, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
-    stomping_replace_effects(shows, &mut warnings);
+    stomping_replace_effects(&cues, &ends, &mut warnings);
     warnings
 }
 
@@ -199,7 +298,7 @@ fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let kind = dsl_keyword(&effect.effect_type);
+            let kind = effect_keyword(&effect.effect_type);
             let varies = matches!(
                 effect.effect_type,
                 EffectType::Chase { .. }
@@ -267,20 +366,6 @@ fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
     }
 }
 
-/// The keyword an author writes for an effect type.
-fn dsl_keyword(effect_type: &EffectType) -> &'static str {
-    match effect_type {
-        EffectType::Static { .. } => "static",
-        EffectType::ColorCycle { .. } => "cycle",
-        EffectType::Strobe { .. } => "strobe",
-        EffectType::Pulse { .. } => "pulse",
-        EffectType::Chase { .. } => "chase",
-        EffectType::Dimmer { .. } => "dimmer",
-        EffectType::Rainbow { .. } => "rainbow",
-        EffectType::Move { .. } => "move",
-    }
-}
-
 /// A parameter the effect type does not use.
 ///
 /// The DSL accepts any parameter and each effect type takes what it recognises,
@@ -296,7 +381,7 @@ fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
                 // The DSL keyword, not the Rust variant: `ColorCycle` would be
                 // reported as "colorcycle", which is not a word the author can
                 // have written.
-                let kind = dsl_keyword(&effect.effect_type);
+                let kind = effect_keyword(&effect.effect_type);
                 // Once per (group, effect type, parameter): a show repeating
                 // the same mistake on forty cues has one problem, not forty —
                 // but the message names a group and a time, so two groups
@@ -358,44 +443,26 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let (needs, have, what): (&str, fn(&GroupCapabilities) -> usize, &str) =
-                match &effect.effect_type {
-                    EffectType::Strobe { .. } => ("strobe", |c| c.strobe, "a strobe channel"),
-                    EffectType::Dimmer { .. } | EffectType::Pulse { .. } => (
-                        "dimmer",
-                        |c| c.dimmer + c.rgb,
-                        "a dimmer or colour channels",
-                    ),
-                    EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
-                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
-                    }
-                    EffectType::Move { .. } => ("move", |c| c.pan_tilt, "pan or tilt channels"),
-                    // A static's colour arrives as red, green and blue.
-                    EffectType::Static { parameters, .. }
-                        if ["red", "green", "blue"]
-                            .iter()
-                            .any(|c| parameters.contains_key(*c)) =>
-                    {
-                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
-                    }
-                    EffectType::Static { .. } | EffectType::Chase { .. } => continue,
-                };
+            let Some(want) = Want::of(&effect.effect_type) else {
+                continue;
+            };
             for group in &effect.groups {
                 let Some(capabilities) = ctx.group_capabilities.get(group) else {
                     continue;
                 };
                 // An empty group is its own finding.
-                if capabilities.fixtures == 0 || have(capabilities) > 0 {
+                if capabilities.fixtures == 0 || capabilities.have(want) > 0 {
                     continue;
                 }
-                if reported.insert((group.clone(), needs)) {
-                    out.push(Warning::new(
+                if reported.insert((group.clone(), want)) {
+                    out.push(Warning::attention(
                         "capability-gap",
                         format!(
-                            "`{}` on `{group}` at {:.3}s needs {what}, and none of the \
+                            "`{}` on `{group}` at {:.3}s needs {}, and none of the \
                              group's {} fixtures has one — the cue will not do what it says",
-                            dsl_keyword(&effect.effect_type),
+                            effect_keyword(&effect.effect_type),
                             cue.time.as_secs_f64(),
+                            want.what(),
                             capabilities.fixtures,
                         ),
                     ));
@@ -413,18 +480,13 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let EffectType::Move { to, from, .. } = &effect.effect_type else {
+            if !matches!(effect.effect_type, EffectType::Move { .. }) {
                 continue;
-            };
-            let targets = [Some(to), from.as_ref()];
-            let focus_names = targets.iter().flatten().filter_map(|t| match t {
-                crate::lighting::effects::MoveTarget::Focus(name) => Some(name.as_str()),
-                _ => None,
-            });
-            for name in focus_names {
+            }
+            for name in focus_targets(&effect.effect_type) {
                 if let Some(points) = &ctx.focus_points {
                     if !points.contains(name) && reported.insert(("focus", name.to_string())) {
-                        out.push(Warning::new(
+                        out.push(Warning::attention(
                             "unbound-focus-point",
                             format!(
                                 "`move` on `{}` at {:.3}s aims at focus point \"{name}\", which \
@@ -437,10 +499,7 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
                     }
                 }
             }
-            let aims_at_focus = targets
-                .iter()
-                .flatten()
-                .any(|t| matches!(t, crate::lighting::effects::MoveTarget::Focus(_)));
+            let aims_at_focus = focus_targets(&effect.effect_type).next().is_some();
             for group in &effect.groups {
                 let Some(capabilities) = ctx.group_capabilities.get(group) else {
                     continue;
@@ -487,7 +546,18 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
 
 /// An effect whose duration runs past the end of the song. Playback truncates
 /// it, which is usually not what the author meant.
-fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Vec<Warning>) {
+///
+/// By its real end (see `timeline::effect_ends`), not the written one: a long
+/// bed cut by a `clear` or a `stop sequence`, or taken off its heads by a
+/// later move, does not overrun the song, and warning that it does is a false
+/// positive; a freeze or a slowed layer carries an effect past its written
+/// end. One held for good by a freeze runs to the end it was written with.
+fn effects_past_end_of_song(
+    cues: &[&Cue],
+    ends: &[EffectEnd],
+    ctx: &LintContext,
+    out: &mut Vec<Warning>,
+) {
     let Some(song_end) = ctx.song_duration else {
         return;
     };
@@ -496,36 +566,25 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
     if song_end.is_zero() {
         return;
     }
-    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
-    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
-        for effect in &cue.effects {
-            // The authored end is not the real one. A long bed cut by a
-            // `clear` or a `stop sequence` does not overrun the song, and
-            // warning that it does is a false positive.
-            let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            let end = cuts.effective_end(
-                cue.time + effect.total_duration(),
-                cue.time,
-                layer,
-                effect.sequence_name.as_deref(),
-            );
-            // Under a frame past the end is rounding against the audio's
-            // length, not an effect cut short: nothing that brief can be seen.
-            if end <= song_end + PAST_END_TOLERANCE {
-                continue;
-            }
-            out.push(Warning::new(
-                "past-end-of-song",
-                format!(
-                    "an effect on `{}` at {:.3}s runs to {:.3}s, past the song's {:.3}s — \
-                     it will be cut short",
-                    effect.groups.join(", "),
-                    cue.time.as_secs_f64(),
-                    end.as_secs_f64(),
-                    song_end.as_secs_f64(),
-                ),
-            ));
+    for end in ends {
+        let (cue, effect) = (cues[end.cue], &cues[end.cue].effects[end.effect]);
+        let end = end.until();
+        // Under a frame past the end is rounding against the audio's
+        // length, not an effect cut short: nothing that brief can be seen.
+        if end <= song_end + PAST_END_TOLERANCE {
+            continue;
         }
+        out.push(Warning::new(
+            "past-end-of-song",
+            format!(
+                "an effect on `{}` at {:.3}s runs to {:.3}s, past the song's {:.3}s — \
+                 it will be cut short",
+                effect.groups.join(", "),
+                cue.time.as_secs_f64(),
+                end.as_secs_f64(),
+                song_end.as_secs_f64(),
+            ),
+        ));
     }
 }
 
@@ -548,41 +607,33 @@ type Span<'a> = (Duration, Duration, &'a Effect);
 /// Two `replace`-blend effects overlapping on the same layer *and* group. Last
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
-fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
-    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
-
+///
+/// By their real spans (see `timeline::effect_ends`): a `clear` on the layer,
+/// a `stop sequence` naming the effect's sequence or a later move taking its
+/// heads ends it there, and comparing written spans would report a stomp
+/// between two effects that never coexist.
+fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<Warning>) {
     // (layer, group) -> the spans replace-blend effects occupy on it, with the
     // effect occupying each.
     let mut spans: BTreeMap<(EffectLayer, String), Vec<Span>> = BTreeMap::new();
 
-    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
-        for effect in &cue.effects {
-            // Both default to the same values the engine applies when the DSL
-            // omits them, so an unannotated effect is checked as it will run.
-            let blend = effect.blend_mode.unwrap_or(BlendMode::Replace);
-            if blend != BlendMode::Replace {
-                continue;
-            }
-            let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            // The authored end is not the real one: a `clear` on this layer,
-            // or a `stop sequence` naming this effect's sequence, ends it
-            // there. Comparing authored spans would report a stomp between two
-            // effects that never coexist.
-            let end = cuts.effective_end(
-                cue.time + effect.total_duration(),
-                cue.time,
-                layer,
-                effect.sequence_name.as_deref(),
-            );
-            if end <= cue.time {
-                continue;
-            }
-            for group in &effect.groups {
-                spans
-                    .entry((layer, group.clone()))
-                    .or_default()
-                    .push((cue.time, end, effect));
-            }
+    for end in ends {
+        let (cue, effect) = (cues[end.cue], &cues[end.cue].effects[end.effect]);
+        // Both default to what the engine applies when the DSL omits them,
+        // so an unannotated effect is checked as it will run.
+        if effect.blend_mode.unwrap_or(DEFAULT_BLEND) != BlendMode::Replace {
+            continue;
+        }
+        let layer = effect.layer.unwrap_or(DEFAULT_LAYER);
+        let end = end.until();
+        if end <= cue.time {
+            continue;
+        }
+        for group in &effect.groups {
+            spans
+                .entry((layer, group.clone()))
+                .or_default()
+                .push((cue.time, end, effect));
         }
     }
 
@@ -606,7 +657,7 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
                 format!(
                     "two `replace` effects overlap on `{group}` in the {} layer between \
                      {:.3}s and {:.3}s — the later one wins and the earlier appears to do nothing",
-                    format!("{layer:?}").to_lowercase(),
+                    layer.keyword(),
                     second_start.as_secs_f64(),
                     first_end.as_secs_f64(),
                 ),
@@ -624,77 +675,6 @@ fn restates(earlier: &Effect, later: &Effect) -> bool {
         && earlier.effect_type.parameters() == later.effect_type.parameters()
         && earlier.per_cell == later.per_cell
         && earlier.spread == later.spread
-}
-
-/// When each layer is cleared and each sequence stopped, in time order and
-/// looked up by layer and by name, so that an effect's real end is a search
-/// rather than a scan of every clear and stop. A sequence on `loop: loop`
-/// stops itself at each of its 10,000 passes, and scanning those for every
-/// effect it starts took seconds to build a timeline (#595).
-#[derive(Default)]
-pub(crate) struct Cuts {
-    /// `clear()` with no layer, which clears every layer.
-    all: Vec<Duration>,
-    layers: HashMap<EffectLayer, Vec<Duration>>,
-    stops: HashMap<String, Vec<Duration>>,
-}
-
-impl Cuts {
-    pub(crate) fn new<'a>(cues: impl IntoIterator<Item = &'a Cue>) -> Self {
-        let mut cuts = Self::default();
-        for cue in cues {
-            for cmd in &cue.layer_commands {
-                if cmd.command_type != LayerCommandType::Clear {
-                    continue;
-                }
-                match cmd.layer {
-                    Some(layer) => cuts.layers.entry(layer).or_default().push(cue.time),
-                    None => cuts.all.push(cue.time),
-                }
-            }
-            for name in &cue.stop_sequences {
-                cuts.stops.entry(name.clone()).or_default().push(cue.time);
-            }
-        }
-        cuts.all.sort();
-        for times in cuts.layers.values_mut().chain(cuts.stops.values_mut()) {
-            times.sort();
-        }
-        cuts
-    }
-
-    /// An effect's real end: the earliest of its authored end, a `clear`
-    /// affecting its layer, and a `stop sequence` naming the sequence it came
-    /// from.
-    ///
-    /// The lint's checks and the show's end all go through here rather than
-    /// each capping by the mechanisms it happens to remember. They did not
-    /// always: the stomp check capped by clears and stops while the past-end
-    /// check capped by clears alone, so the two disagreed about the same
-    /// effect — one treating a stopped bed as ending at the stop, the other
-    /// warning that it overran the song by the difference.
-    pub(crate) fn effective_end(
-        &self,
-        authored_end: Duration,
-        start: Duration,
-        layer: EffectLayer,
-        sequence: Option<&str>,
-    ) -> Duration {
-        // The first of `times` after the effect starts: one at its very
-        // start does not cut it.
-        let next =
-            |times: &Vec<Duration>| times.get(times.partition_point(|at| *at <= start)).copied();
-        // `LightingEngine::stop_sequence` drops every effect cued from the
-        // sequence, so a stop really is an end.
-        let stopped = sequence.and_then(|name| self.stops.get(name));
-        [Some(&self.all), self.layers.get(&layer), stopped]
-            .into_iter()
-            .flatten()
-            .filter_map(next)
-            .filter(|at| *at < authored_end)
-            .min()
-            .unwrap_or(authored_end)
-    }
 }
 
 /// A `tempo` block that disagrees with the click-derived grid. Silent, and
@@ -786,14 +766,9 @@ fn grid_measure_count(ctx: &LintContext) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::parser::{parse_light_shows, parse_light_shows_with_tempo};
+    use crate::lighting::parser::parse_light_shows_with_tempo;
 
-    fn shows(source: &str) -> Vec<LightShow> {
-        parse_light_shows(source)
-            .expect("test show should parse")
-            .into_values()
-            .collect()
-    }
+    use crate::testutil::lighting::shows;
 
     fn kinds(warnings: &[Warning]) -> Vec<&str> {
         warnings.iter().map(|w| w.kind).collect()
@@ -905,7 +880,7 @@ show "s" {
     spots: strobe frequency: 10, duration: 1s
 
     @00:02.000
-    wash: rainbow speed: 1, duration: 1s
+    spots: rainbow speed: 1, duration: 1s
 }
 "#,
         );
@@ -914,19 +889,17 @@ show "s" {
             "wash".to_string(),
             GroupCapabilities {
                 fixtures: 4,
-                rgb: 4,
-                dimmer: 0,
-                strobe: 0,
+                pan_tilt: 4,
                 ..GroupCapabilities::default()
             },
         );
+        // A strobe channel, a dimmer or colour will do: the engine strobes
+        // a dimmer or colour in software.
         group_capabilities.insert(
             "spots".to_string(),
             GroupCapabilities {
                 fixtures: 2,
                 rgb: 2,
-                dimmer: 2,
-                strobe: 2,
                 ..GroupCapabilities::default()
             },
         );
@@ -1122,6 +1095,38 @@ show "s" {
     }
 
     #[test]
+    fn unconfigured_universes_group_sorted_fixtures() {
+        let fixture = |name: &str, universe: u16| {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            crate::lighting::effects::FixtureInfo::new(
+                name.to_string(),
+                universe,
+                1,
+                "Par".to_string(),
+                channels,
+                None,
+            )
+        };
+        let fixtures = vec![
+            fixture("Wash1", 1),
+            fixture("Truss2", 9),
+            fixture("Truss1", 9),
+            fixture("Side1", 4),
+        ];
+        let gaps = unconfigured_universes(&fixtures, |universe| universe == 1);
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
+        assert_eq!(
+            gaps[&9],
+            vec!["Truss1".to_string(), "Truss2".to_string()],
+            "fixture names sort for stable reports"
+        );
+        assert!(!gaps.contains_key(&1));
+        assert!(unconfigured_universes(&fixtures[..1], |universe| universe == 1).is_empty());
+    }
+
+    #[test]
     fn without_a_venue_the_group_check_does_not_guess() {
         let source = r#"
 show "T" {
@@ -1293,6 +1298,38 @@ show "T" {
         assert!(lint_shows(&shows(source), &ctx).is_empty());
     }
 
+    /// By the effect's real end, as the show plays (the lint used to cap
+    /// the written end by clears and stops alone): a layer slowed to half
+    /// speed carries a bed past the song, and a move another takes the heads
+    /// from ends there.
+    #[test]
+    fn past_the_song_is_judged_by_the_real_end() {
+        let ctx = LintContext {
+            song_duration: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let slowed = r#"
+show "T" {
+    @00:00.000
+    master(layer: background, speed: 0.5)
+    wash: static color: "blue", duration: 8s
+}
+"#;
+        assert_eq!(
+            kinds(&lint_shows(&shows(slowed), &ctx)),
+            ["past-end-of-song"]
+        );
+        let taken = r#"
+show "T" {
+    @00:00.000
+    movers: move pan: 90deg, tilt: 0deg, duration: 30s
+    @00:05.000
+    movers: move pan: 0deg, tilt: 0deg, duration: 2s
+}
+"#;
+        assert!(lint_shows(&shows(taken), &ctx).is_empty());
+    }
+
     // ── stomping replace effects ───────────────────────────────────
 
     #[test]
@@ -1309,6 +1346,39 @@ show "T" {
         let warnings = lint_shows(&shows(source), &LintContext::default());
         assert_eq!(kinds(&warnings), ["replace-overlap"]);
         assert!(warnings[0].message.contains("wash"), "{warnings:?}");
+    }
+
+    /// By real spans: a bed the speed master runs at double speed is over
+    /// before the next look comes in, and a sequence's pass that never fires,
+    /// the sequence stopped first, stomps nothing.
+    #[test]
+    fn overlaps_are_judged_by_the_real_spans() {
+        let sped = r#"
+show "T" {
+    @00:00.000
+    master(layer: background, speed: 2)
+    wash: static color: "blue", duration: 4s
+    @00:03.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        assert!(lint_shows(&shows(sped), &LintContext::default()).is_empty());
+        let stopped = r#"
+sequence "s" {
+    @00:00.000
+    wash: static color: "blue", duration: 4s
+}
+
+show "T" {
+    @00:00.000
+    sequence "s", loop: 3
+    @00:01.000
+    stop sequence "s"
+    @00:05.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        assert!(lint_shows(&shows(stopped), &LintContext::default()).is_empty());
     }
 
     /// An overlap shorter than a millisecond is rounding, not a stomp (#534).
@@ -1738,52 +1808,16 @@ show "T" {
         );
     }
 
-    /// The web UI's own table of per-effect parameters must match the engine.
-    ///
-    /// `EffectForm.svelte` keeps a `USED_PARAMS` map that decides which fields
-    /// survive an effect-type change. It was written by hand from what the
-    /// engine accepts, and nothing tied the two together — so a parameter added
-    /// to an effect, or removed from one, would leave the editor silently
-    /// dropping a real setting or carrying a dead one. Both are the failure this
-    /// branch exists to remove, so the table is read from the source and checked
-    /// rather than trusted.
+    /// The parameters the editor keeps on an effect-type change and offers
+    /// controls for (`EffectKind::params`, the web UI's vocabulary) must
+    /// each be one the engine reads, or the editor would carry a dead
+    /// setting the engine silently drops.
     #[test]
     fn the_editors_parameter_table_matches_what_the_engine_accepts() {
-        let source =
-            std::fs::read_to_string("src/webui/svelte/src/components/lighting/EffectForm.svelte")
-                .expect("the effect form must be readable");
-
-        // From the object literal's opening brace, so the type annotation —
-        // `Record<EffectType, string[]>` — does not leak in with its own
-        // brackets and break the parse below.
-        let table = source
-            .split_once("const USED_PARAMS")
-            .and_then(|(_, rest)| rest.split_once('{'))
-            .and_then(|(_, body)| body.split_once("};"))
-            .map(|(body, _)| body.to_string())
-            .expect("USED_PARAMS must still be a literal this test can read");
-
-        // `kind: ["a", "b"]` across however many lines prettier wrapped it to.
-        let flattened: String = table.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut checked = 0;
-        for entry in flattened.split(']') {
-            let Some((kind, params)) = entry.split_once('[') else {
-                continue;
-            };
-            let kind = kind
-                .trim()
-                .trim_start_matches(',')
-                .trim()
-                .trim_end_matches(':')
-                .trim();
-            if kind.is_empty() {
-                continue;
-            }
-            for param in params.split(',') {
-                let param = param.trim().trim_matches('"');
-                if param.is_empty() {
-                    continue;
-                }
+        for words in crate::lighting::parser::edit::vocabulary().effects {
+            let kind = words.kind.keyword();
+            for param in words.params {
                 let value = sample_value(kind, param);
                 // A `move` needs a target; a parameter that is not one gets
                 // a focus point to ride along with.
@@ -1812,10 +1846,7 @@ show "T" {
                 checked += 1;
             }
         }
-        assert!(
-            checked >= 25,
-            "only {checked} parameters were checked; the table was probably not parsed"
-        );
+        assert!(checked >= 25, "only {checked} parameters were checked");
     }
 
     /// A value the parser accepts for a given parameter.
@@ -1831,6 +1862,8 @@ show "T" {
             "focus" | "to" | "from" => "\"drummer\"",
             "pan" | "tilt" | "from_pan" | "from_tilt" => "45deg",
             "easing" => "smooth",
+            "color" => "\"red\"",
+            "spread" => "30deg",
             _ => "0.5",
         }
     }

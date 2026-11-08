@@ -16,7 +16,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::tempo::{
-    TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    check_bpm, check_change_bpm, check_transition, measure_beat_order, parse_signature_in,
+    SignatureRange, TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature,
+    TransitionCurve,
 };
 
 /// A YAML representation of a song's tempo map. This is the canonical
@@ -26,6 +28,11 @@ use crate::tempo::{
 /// BPM is expressed in quarter notes per minute, and mid-measure `beat`
 /// positions are in quarter-note units, matching the lighting DSL's
 /// `tempo {}` block.
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct TempoConfig {
     /// The initial tempo in quarter-note beats per minute.
@@ -42,6 +49,7 @@ pub struct TempoConfig {
 }
 
 /// A tempo and/or time signature change at a measure position.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct TempoChangeConfig {
     /// The measure (1-indexed) at which the change takes effect.
@@ -62,6 +70,7 @@ pub struct TempoChangeConfig {
 }
 
 /// How a tempo change transitions from the previous tempo.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionConfig {
@@ -72,36 +81,14 @@ pub enum TransitionConfig {
 }
 
 fn default_time_signature() -> String {
-    "4/4".to_string()
+    let meter = crate::tempo::DEFAULT_TIME_SIGNATURE;
+    format!("{}/{}", meter.numerator, meter.denominator)
 }
 
-/// Parses a "numerator/denominator" time signature string.
+/// Parses a "numerator/denominator" time signature string, in the range a
+/// song's `tempo:` block takes.
 pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
-    let mut parts = raw.split('/');
-    let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(n), Some(d), None) => (
-            n.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature numerator in {raw:?}"))?,
-            d.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
-        ),
-        _ => {
-            return Err(format!(
-                "time signature {raw:?} must be numerator/denominator"
-            ))
-        }
-    };
-    if numerator == 0 || numerator > 64 {
-        return Err(format!("time signature numerator {numerator} out of range"));
-    }
-    if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
-        return Err(format!(
-            "time signature denominator {denominator} must be a power of two up to 32"
-        ));
-    }
-    Ok(TimeSignature::new(numerator, denominator))
+    parse_signature_in(raw, SignatureRange::Song)
 }
 
 impl TempoConfig {
@@ -110,46 +97,62 @@ impl TempoConfig {
         self.to_tempo_map().map(|_| ())
     }
 
-    /// The time signature in effect at the start of a measure (1-indexed),
-    /// or `None` if any signature along the way fails to parse.
+    /// How many beats a measure (1-indexed) holds, as the beat grid counts
+    /// them: one per numerator unit, so 6/8 is six beats and not three.
+    /// This is the unit `start_beat` / `end_beat` are expressed in. `None`
+    /// if the configuration does not make a tempo map (`validate` says why).
     ///
     /// A change anchored mid-measure does not govern the measure it lands
     /// in — `BeatGrid::from_tempo_map` reads the signature at the measure's
     /// downbeat — so only changes at or before that downbeat count.
-    pub fn time_signature_at_measure(&self, measure: u32) -> Option<TimeSignature> {
-        let mut signature = parse_time_signature(&self.time_signature).ok()?;
-        let mut best: Option<(u32, f64)> = None;
-        for change in &self.changes {
-            let beat = change.beat.unwrap_or(1.0);
-            let governs = change.measure < measure || (change.measure == measure && beat <= 1.0);
-            if !governs {
-                continue;
-            }
-            let Some(raw) = &change.time_signature else {
-                continue;
-            };
-            if best.is_some_and(|(m, b)| (change.measure, beat) < (m, b)) {
-                continue;
-            }
-            signature = parse_time_signature(raw).ok()?;
-            best = Some((change.measure, beat));
-        }
-        Some(signature)
+    pub fn beats_in_measure(&self, measure: u32) -> Option<u32> {
+        let map = self.to_tempo_map().ok()?;
+        Some(
+            map.time_signature_at_measure(measure)
+                .grid_beats_per_measure(),
+        )
     }
 
-    /// How many beats a measure (1-indexed) holds, as the beat grid counts
-    /// them: one per numerator unit, so 6/8 is six beats and not three.
-    /// This is the unit `start_beat` / `end_beat` are expressed in.
-    pub fn beats_in_measure(&self, measure: u32) -> Option<u32> {
-        self.time_signature_at_measure(measure)
-            .map(|sig| sig.numerator)
+    /// This configuration with its changes in the order [`Self::to_tempo_map`]
+    /// requires -- ascending (measure, beat), `measure_beat_order` -- and one
+    /// change per position: the last written, since `TempoMap::new` applies
+    /// changes in order and that is the one that was in effect. Returns it
+    /// with how many changes were dropped for repeating a position. An
+    /// editor that adds a change out of turn, or an import whose changes
+    /// share a position, goes through here before a save.
+    pub fn normalized(&self) -> (TempoConfig, usize) {
+        let mut changes = self.changes.clone();
+        changes.sort_by(|a, b| {
+            measure_beat_order(
+                (a.measure, a.beat.unwrap_or(1.0)),
+                (b.measure, b.beat.unwrap_or(1.0)),
+            )
+        });
+        let before = changes.len();
+        let mut kept: Vec<TempoChangeConfig> = Vec::with_capacity(before);
+        for change in changes {
+            let position = (change.measure, change.beat.unwrap_or(1.0));
+            if kept
+                .last()
+                .is_some_and(|last| (last.measure, last.beat.unwrap_or(1.0)) == position)
+            {
+                kept.pop();
+            }
+            kept.push(change);
+        }
+        let dropped = before - kept.len();
+        (
+            TempoConfig {
+                changes: kept,
+                ..self.clone()
+            },
+            dropped,
+        )
     }
 
     /// Converts this configuration into a resolved tempo map.
     pub fn to_tempo_map(&self) -> Result<TempoMap, String> {
-        if !self.bpm.is_finite() || self.bpm <= 0.0 {
-            return Err(format!("tempo bpm must be positive, got {}", self.bpm));
-        }
+        check_bpm(self.bpm)?;
         let initial_time_signature = parse_time_signature(&self.time_signature)?;
         let start = self.start.unwrap_or(0.0);
         if !start.is_finite() || start < 0.0 {
@@ -177,13 +180,9 @@ impl TempoConfig {
             }
             last_position = (change.measure, beat);
 
+            let at = format!("measure {}", change.measure);
             if let Some(bpm) = change.bpm {
-                if !bpm.is_finite() || bpm <= 0.0 {
-                    return Err(format!(
-                        "tempo change at measure {} has invalid bpm {bpm}",
-                        change.measure
-                    ));
-                }
+                check_change_bpm(&at, bpm)?;
             }
             if change.bpm.is_none() && change.time_signature.is_none() {
                 return Err(format!(
@@ -199,24 +198,13 @@ impl TempoConfig {
             let transition = match change.transition {
                 None => TempoTransition::Snap,
                 Some(TransitionConfig::Beats(beats)) => {
-                    if !beats.is_finite() || beats <= 0.0 {
-                        return Err(format!(
-                            "tempo change at measure {} has invalid transition length",
-                            change.measure
-                        ));
-                    }
                     TempoTransition::Beats(beats, TransitionCurve::Linear)
                 }
                 Some(TransitionConfig::Measures(measures)) => {
-                    if !measures.is_finite() || measures <= 0.0 {
-                        return Err(format!(
-                            "tempo change at measure {} has invalid transition length",
-                            change.measure
-                        ));
-                    }
                     TempoTransition::Measures(measures, TransitionCurve::Linear)
                 }
             };
+            check_transition(&at, transition)?;
 
             changes.push(TempoChange {
                 position: TempoChangePosition::MeasureBeat(change.measure, beat),
@@ -248,26 +236,6 @@ mod tests {
             .unwrap()
             .try_deserialize()
             .unwrap()
-    }
-
-    #[test]
-    fn parse_time_signatures() {
-        assert_eq!(
-            parse_time_signature("4/4").unwrap(),
-            TimeSignature::new(4, 4)
-        );
-        assert_eq!(
-            parse_time_signature("7/8").unwrap(),
-            TimeSignature::new(7, 8)
-        );
-        assert_eq!(
-            parse_time_signature(" 6 / 8 ").unwrap(),
-            TimeSignature::new(6, 8)
-        );
-        assert!(parse_time_signature("44").is_err());
-        assert!(parse_time_signature("4/3").is_err());
-        assert!(parse_time_signature("0/4").is_err());
-        assert!(parse_time_signature("4/4/4").is_err());
     }
 
     #[test]
@@ -361,6 +329,27 @@ changes:
         )
         .to_tempo_map()
         .is_err());
+    }
+
+    #[test]
+    fn normalized_orders_and_keeps_the_last_of_a_position() {
+        let config = deserialize(
+            "bpm: 120\nchanges:\n  - measure: 10\n    bpm: 100\n  - measure: 5\n    bpm: 90\n  - measure: 5\n    beat: 1\n    bpm: 80\n",
+        );
+        assert!(config.to_tempo_map().is_err());
+        let (fixed, dropped) = config.normalized();
+        assert_eq!(dropped, 1);
+        assert!(fixed.to_tempo_map().is_ok());
+        assert_eq!(
+            fixed
+                .changes
+                .iter()
+                .map(|c| (c.measure, c.bpm))
+                .collect::<Vec<_>>(),
+            vec![(5, Some(80.0)), (10, Some(100.0))]
+        );
+        // A valid config is left as it is.
+        assert_eq!(fixed.normalized(), (fixed.clone(), 0));
     }
 
     #[test]

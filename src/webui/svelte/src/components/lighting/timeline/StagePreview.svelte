@@ -13,6 +13,11 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    FixtureMetadata,
+    StageValues,
+    VenueMetadata,
+  } from "../../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { get } from "svelte/store";
@@ -20,17 +25,14 @@
     metadataStore,
     fixtureStore,
     effectsStore,
+    strobeRateStore,
     venueStore,
     poseStore,
-  } from "../../../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    VenueMetadata,
   } from "../../../lib/ws/stores";
   import {
     beamEnd,
     drawBeam,
+    drawFixture,
     fitFrame,
     hasGeometry,
     positionalLayout,
@@ -41,6 +43,7 @@
     type Rect,
     type StageFrame,
   } from "../../../lib/stage/layout";
+  import { beamLook } from "../../../lib/stage/rig";
 
   const FIXTURE_RADIUS = 14;
   const GLOW_RADIUS = 32;
@@ -159,7 +162,7 @@
     if (resized) draw(get(fixtureStore));
   }
 
-  function draw(fixtureStates: Record<string, FixtureChannels>) {
+  function draw(fixtureStates: StageValues["fixtures"]) {
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -192,73 +195,29 @@
       h - 2 * PADDING + 20,
     );
 
+    const now = Date.now();
+    const strobeRates = get(strobeRateStore);
     for (const name of Object.keys($metadataStore)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
 
-      const state = fixtureStates[name] || {};
-      const r = state.red || 0;
-      const g = state.green || 0;
-      const b = state.blue || 0;
-      const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-      const strobe = state.strobe || 0;
-
-      const brightness = dimmer / 255;
-      const fr = Math.round(r * brightness);
-      const fg = Math.round(g * brightness);
-      const fb = Math.round(b * brightness);
-
-      let strobeVisible = true;
-      if (strobe > 10) {
-        const freq = 2 + (strobe / 255) * 18;
-        const phase = (Date.now() / 1000) * freq;
-        strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
-      }
-
-      const intensity = (fr + fg + fb) / (3 * 255);
-      const finalR = strobeVisible ? fr : 0;
-      const finalG = strobeVisible ? fg : 0;
-      const finalB = strobeVisible ? fb : 0;
-
-      // Glow
-      if (intensity > 0.02 && strobeVisible) {
-        const gradient = ctx.createRadialGradient(
-          pos.x,
-          pos.y,
-          FIXTURE_RADIUS,
-          pos.x,
-          pos.y,
-          GLOW_RADIUS,
-        );
-        gradient.addColorStop(
-          0,
-          `rgba(${finalR},${finalG},${finalB},${intensity * 0.5})`,
-        );
-        gradient.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, GLOW_RADIUS, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Fixture body — dashed when the venue has not placed it yet.
-      ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
-      ctx.strokeStyle = fixtureStroke;
-      ctx.lineWidth = 1;
-      if (frame && $metadataStore[name]?.position == null) {
-        ctx.setLineDash([3, 2]);
-      }
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Label
-      ctx.fillStyle = labelFill;
-      ctx.font = "9px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
+      drawFixture(
+        ctx,
+        pos,
+        name,
+        beamLook(fixtureStates[name], strobeRates[name], now),
+        {
+          radius: FIXTURE_RADIUS,
+          glow: GLOW_RADIUS,
+          lineWidth: 1,
+          unplacedDash: [3, 2],
+          stroke: fixtureStroke,
+          font: "9px monospace",
+          labelFill,
+          labelGap: 10,
+        },
+        { unplaced: !!frame && $metadataStore[name]?.position == null },
+      );
     }
 
     // Beams of placed movers, ending at their footprint on the deck.
@@ -272,7 +231,7 @@
           ctx,
           from,
           end,
-          fixtureStates[name] || {},
+          beamLook(fixtureStates[name], strobeRates[name], now),
           pose.floor !== null,
           {
             dark: isDark,

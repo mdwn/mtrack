@@ -13,17 +13,20 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    PilotConfig,
+    PilotHint,
+    Section,
+    SongInfo,
+    TrackPeaks,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type {
-    SongSummary,
-    WaveformTrack,
     TempoConfig,
-    PilotConfig,
-    PilotHintConfig,
     MetronomeConfig,
     SongFile,
   } from "../../lib/api/songs";
-  import { sortTempoChanges } from "../../lib/util/tempo";
+  import { rules } from "../../lib/rules";
   import type { TempoSection } from "../../lib/lighting/types";
   import { accentsGlyph, subdivisionChip } from "../../lib/meter";
   import SectionBar from "./SectionBar.svelte";
@@ -33,24 +36,16 @@
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
-  import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
+  import TempoMarkerDialog, {
+    type MarkerPosition,
+  } from "./TempoMarkerDialog.svelte";
   import PilotHintDialog from "./PilotHintDialog.svelte";
   import SectionEditDialog from "./SectionEditDialog.svelte";
 
-  interface SectionEntry {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-    /** 1-based beat within the measure, fractional allowed; absent = 1. */
-    start_beat?: number;
-    end_beat?: number;
-    color?: string;
-  }
-
   interface Props {
-    song: SongSummary;
-    waveformTracks: WaveformTrack[];
-    sections: SectionEntry[];
+    song: SongInfo;
+    waveformTracks: TrackPeaks[];
+    sections: Section[];
     dirty?: boolean;
     /** The song's `tempo:` block; edited via the tempo layer. */
     tempo?: TempoConfig | null;
@@ -177,7 +172,7 @@
     applyZoom(pixelsPerMs * factor, mouseMs, mouseXInViewport);
   }
 
-  function handleSectionsChange(updated: SectionEntry[]) {
+  function handleSectionsChange(updated: Section[]) {
     sections = updated;
     dirty = true;
   }
@@ -260,66 +255,24 @@
     previewSeek(playheadMs + (e.key === "ArrowLeft" ? -5000 : 5000));
   }
 
-  function formatPlayheadMs(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, "0")}`;
-  }
-
-  /** Musical position + tempo/meter at the playhead, from the beat grid and
-   * the tempo config — live while playing and while dragging. */
+  /** Musical position + tempo/meter at the playhead, from the player's grid
+   * and tempo map (the `tempo:` block's, else the one the grid itself
+   * makes) — live while playing and while dragging. The readout rounds the
+   * tempo to a tenth: inside a ramp it is a running value. */
   let playheadInfo = $derived.by(() => {
     const grid = song.beat_grid;
-    if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
-      return null;
-    }
-    const secs = playheadMs / 1000;
-
-    // The last beat at or before the playhead (binary search).
-    let beatIdx = 0;
-    if (secs >= grid.beats[0]) {
-      let lo = 0;
-      let hi = grid.beats.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (grid.beats[mid] <= secs) lo = mid;
-        else hi = mid - 1;
-      }
-      beatIdx = lo;
-    }
-    let measure = 0;
-    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
-      if (grid.measure_starts[i] <= beatIdx) {
-        measure = i;
-        break;
-      }
-    }
-    const beat = beatIdx - grid.measure_starts[measure] + 1;
-
-    // Tempo/meter in effect at this measure/beat, from the config (snap
-    // semantics — gradual transitions show their target once passed).
-    let bpm: number | null = null;
-    let sig: string | null = null;
-    if (tempo) {
-      bpm = tempo.bpm;
-      sig = tempo.time_signature ?? "4/4";
-      const sorted = [...(tempo.changes ?? [])].sort(
-        (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
-      );
-      for (const c of sorted) {
-        const atOrBefore =
-          c.measure < measure + 1 ||
-          (c.measure === measure + 1 && (c.beat ?? 1) <= beat);
-        if (!atOrBefore) break;
-        if (c.bpm !== undefined) bpm = c.bpm;
-        if (c.time_signature) sig = c.time_signature;
-      }
-    } else if (beatIdx + 1 < grid.beats.length) {
-      // No tempo map: estimate from the local beat spacing.
-      const interval = grid.beats[beatIdx + 1] - grid.beats[beatIdx];
-      if (interval > 0) bpm = Math.round(600 / interval) / 10;
-    }
-
-    return { measure: measure + 1, beat, bpm, sig };
+    if (!grid) return null;
+    const at = rules.grid_query(grid, { secs: playheadMs / 1000 });
+    if (!at) return null;
+    const point = rules.tempo_query(tempo ? { config: tempo } : { grid }, {
+      ms: playheadMs,
+    });
+    return {
+      measure: at.measure,
+      beat: Math.floor(at.beat),
+      bpm: point ? Math.round(point.bpm * 10) / 10 : null,
+      sig: point ? point.sig.join("/") : null,
+    };
   });
 
   function msToProtoDuration(ms: number) {
@@ -389,41 +342,19 @@
   let sectionDialogIndex = $state<number | null>(null);
 
   /** The nearest (measure, beat) at a timeline position, snapped to `snap`
-   * of a beat. Used to capture the preview playhead as a section boundary.
-   *
-   * The snap lands on the flat beat index and the measure is read off
-   * afterwards, so a position three quarters through the last beat of a
-   * measure becomes the next measure's beat 1 — never this measure's beat
-   * "one past the end", which is the same instant under a name the beat
-   * grid does not accept. */
+   * of a beat by the player's own rounding — which re-asks the grid, so a
+   * position three quarters through the last beat of a measure becomes the
+   * next measure's beat 1, never this measure's beat "one past the end".
+   * Used to capture the preview playhead as a section boundary. */
   function msToMeasureBeat(
     ms: number,
     snap = 0.5,
   ): { measure: number; beat: number } | null {
     const grid = song.beat_grid;
-    if (!grid || grid.beats.length < 2) return null;
-    const sec = ms / 1000;
-    // Last beat at or before the position (binary search).
-    let lo = 0;
-    let hi = grid.beats.length - 1;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2);
-      if (grid.beats[mid] <= sec) lo = mid;
-      else hi = mid - 1;
-    }
-    const gap =
-      grid.beats[lo + 1] !== undefined
-        ? grid.beats[lo + 1] - grid.beats[lo]
-        : 0;
-    const frac = gap > 0 ? (sec - grid.beats[lo]) / gap : 0;
-    const idx = lo + Math.round(frac / snap) * snap;
-    // Measure containing the (possibly fractional) beat index.
-    let mIdx = 0;
-    for (let i = 0; i < grid.measure_starts.length; i++) {
-      if (grid.measure_starts[i] <= idx) mIdx = i;
-      else break;
-    }
-    return { measure: mIdx + 1, beat: idx - grid.measure_starts[mIdx] + 1 };
+    const at = grid
+      ? rules.grid_query(grid, { secs: ms / 1000, snap: { step: snap } })
+      : null;
+    return at ? { measure: at.measure, beat: at.beat } : null;
   }
 
   /** Playhead position as a section boundary, when this song is loaded. */
@@ -434,8 +365,10 @@
   let playheadTime = $derived(isCurrentSong ? playheadMs / 1000 : null);
 
   /** Beat-snapping for edge drags: only when zoomed in far enough that
-   * individual beats are visually distinct; zoomed out, edges keep
-   * snapping to measure lines (SectionBar falls back on null). */
+   * individual beats are visually distinct (the grid's average beat
+   * spacing, in pixels — a zoom threshold, not a position rule); zoomed
+   * out, edges keep snapping to measure lines (SectionBar falls back on
+   * null). Edge drags snap to whole beats; fractions stay a dialog affair. */
   const BEAT_SNAP_MIN_PX = 14;
   function snapBoundary(ms: number): { measure: number; beat: number } | null {
     const grid = song.beat_grid;
@@ -445,13 +378,10 @@
         (grid.beats.length - 1)) *
       1000;
     if (avgBeatGapMs * pixelsPerMs < BEAT_SNAP_MIN_PX) return null;
-    // Edge drags snap to whole beats; fractions stay a dialog affair.
-    // Rounding the beat here instead would push the last beat of a measure
-    // up to one past its end rather than onto the next downbeat.
     return msToMeasureBeat(ms, 1);
   }
 
-  function patchSection(index: number, patch: Partial<SectionEntry>) {
+  function patchSection(index: number, patch: Partial<Section>) {
     const updated = [...sections];
     const merged = { ...updated[index], ...patch };
     // An empty name keeps the previous one; "auto" color drops the key.
@@ -471,68 +401,51 @@
 
   // --- Tempo / pilot marker layers ---
 
-  interface MarkerPosition {
-    measure: number;
-    beat: number;
-  }
-
   let tempoDialogTarget = $state<"start" | MarkerPosition | null>(null);
   let pilotDialogIndex = $state<number | null>(null);
 
-  /** Time (ms) of a measure/beat position on the beat grid. */
+  /** Time (ms) of a measure/beat position on the beat grid: where the
+   * player's `BeatGrid::beat_time` puts it, or the song's end for a position
+   * the grid does not hold. */
   function measureBeatToMs(measure: number, beat: number): number {
     const grid = song.beat_grid;
     if (!grid) return 0;
-    const startIdx = grid.measure_starts[measure - 1];
-    if (startIdx === undefined) return songDurationMs;
-    const offset = beat - 1;
-    const base = startIdx + Math.floor(offset);
-    const t0 = grid.beats[base];
-    if (t0 === undefined) return songDurationMs;
-    // Fractional beats interpolate between grid beats, matching the
-    // Rust-side BeatGrid::beat_time.
-    const frac = offset - Math.floor(offset);
-    if (frac === 0) return t0 * 1000;
-    const t1 = grid.beats[base + 1];
-    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
+    const at = rules.grid_query(grid, { measure, beat });
+    return at ? at.secs * 1000 : songDurationMs;
   }
 
-  /** Signature in effect at a position (base + prior changes). */
+  /** Signature of the bar a position is in, as the player's tempo map has
+   * it; the player's default metre while the tempo block makes no map. */
   function sigAt(measure: number, beat: number): [number, number] {
-    const parse = (raw: string | undefined): [number, number] | null => {
-      const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-      return match ? [parseInt(match[1]), parseInt(match[2])] : null;
-    };
-    let sig = parse(tempo?.time_signature) ?? [4, 4];
-    const sorted = [...(tempo?.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
-    );
-    for (const c of sorted) {
-      const atOrBefore =
-        c.measure < measure || (c.measure === measure && (c.beat ?? 1) <= beat);
-      if (!atOrBefore) break;
-      sig = parse(c.time_signature) ?? sig;
-    }
-    return sig;
-  }
-
-  /** Pattern resized to the meter at its position, like the renderer. */
-  function chipPattern(levels: number[], numerator: number): number[] {
-    return Array.from({ length: numerator }, (_, i) => levels[i] ?? 1);
+    const at = tempo
+      ? rules.tempo_query({ config: tempo }, { measure, beat })
+      : undefined;
+    return at?.sig ?? rules.tempo_defaults().time_signature;
   }
 
   /** One marker per position, merging tempo changes with metronome feel
    * changes at the same measure. */
   let tempoMarkers = $derived.by(() => {
     if (!tempo) return [];
-    const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
+    const baseParts = [
+      `${tempo.bpm}`,
+      tempo.time_signature ?? rules.tempo_defaults().time_signature.join("/"),
+    ];
     if (metronome?.accents?.length) {
+      // The base pattern as the renderer sizes it to the metre the block
+      // sets at bar 1 (`sig_set`: the one the pads are for).
+      const opening =
+        rules.tempo_query({ config: tempo }, { measure: 1, beat: 1 })
+          ?.sig_set ?? sigAt(1, 1);
       baseParts.push(
-        accentsGlyph(chipPattern(metronome.accents, sigAt(1, 0)[0])),
+        accentsGlyph(
+          rules.accent_pattern({ ...metronome, changes: [] }, 1, opening[0]) ??
+            [],
+        ),
       );
     }
     if (metronome?.subdivision !== undefined && metronome.subdivision !== 1) {
-      baseParts.push(subdivisionChip(metronome.subdivision, sigAt(1, 0)[1]));
+      baseParts.push(subdivisionChip(metronome.subdivision, sigAt(1, 1)[1]));
     }
     const markers = [
       {
@@ -569,8 +482,19 @@
       if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
       if (tc?.time_signature) parts.push(tc.time_signature);
       const sig = sigAt(pos.measure, pos.beat);
-      if (mc?.accents)
-        parts.push(accentsGlyph(chipPattern(mc.accents, sig[0])));
+      // The glyph is sized to the metre the marker sets (`sig_set`), as the
+      // dialog's pads are; `sig` is the bar's, for the subdivision chip.
+      const set =
+        rules.tempo_query(
+          { config: tempo },
+          { measure: pos.measure, beat: pos.beat },
+        )?.sig_set ?? sig;
+      if (mc?.accents && metronome)
+        parts.push(
+          accentsGlyph(
+            rules.accent_pattern(metronome, pos.measure, set[0]) ?? [],
+          ),
+        );
       if (mc?.subdivision !== undefined) {
         parts.push(subdivisionChip(mc.subdivision, sig[1]));
       }
@@ -618,14 +542,14 @@
     return best;
   }
 
-  /** The BPM in effect at a measure (base tempo + preceding changes). */
+  /** The BPM in force at a measure's downbeat, as the player plays it
+   * (inside a ramp, the ramp's value there), to the hundredth a `tempo:`
+   * block is written to — a formatting choice for the new marker's value,
+   * not a rule; the base tempo while the tempo block makes no map. */
   function effectiveBpmAt(measure: number): number {
-    if (!tempo) return 120;
-    let bpm = tempo.bpm;
-    for (const c of sortTempoChanges(tempo.changes ?? [])) {
-      if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
-    }
-    return bpm;
+    if (!tempo) return rules.tempo_defaults().bpm;
+    const bpm = rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.bpm;
+    return bpm === undefined ? tempo.bpm : Math.round(bpm * 100) / 100;
   }
 
   function handleTempoMarkerClick(id: string) {
@@ -645,7 +569,8 @@
   function handleTempoEmptyClick(ms: number) {
     if (!tempo) {
       // No tempo map yet — create one and open its editor right away.
-      ontempochange?.({ bpm: 120, time_signature: "4/4" });
+      const { bpm, time_signature } = rules.tempo_defaults();
+      ontempochange?.({ bpm, time_signature: time_signature.join("/") });
       tempoDialogTarget = "start";
       return;
     }
@@ -669,39 +594,27 @@
       return;
     }
     // Tapping a spot before an existing change must not append out of order —
-    // the backend rejects a non-ascending map.
+    // the backend rejects a non-ascending map, so the player's own ordering
+    // puts the new change in its place.
     const entry = { measure, bpm: effectiveBpmAt(measure) };
-    const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
-    ontempochange?.({ ...tempo, changes });
+    const appended = { ...tempo, changes: [...(tempo.changes ?? []), entry] };
+    ontempochange?.(rules.tempo_normalize(appended)?.config ?? appended);
     tempoDialogTarget = { measure, beat: 1 };
   }
 
-  /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
+  /** Nearest beat as measure/beat for a position (ms), as the player snaps
+   * a time to one; null off-grid. Beat 1 stays implicit. */
   function nearestBeatAt(
     ms: number,
   ): { measure: number; beat?: number } | null {
     const grid = song.beat_grid;
-    if (!grid || grid.beats.length === 0) return null;
-    const secs = ms / 1000;
-    let nearest = 0;
-    for (let i = 1; i < grid.beats.length; i++) {
-      if (
-        Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)
-      ) {
-        nearest = i;
-      }
-    }
-    let measure = 0;
-    while (
-      measure + 1 < grid.measure_starts.length &&
-      grid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - grid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
+    const at = grid
+      ? rules.grid_query(grid, { secs: ms / 1000, snap: { step: 1 } })
+      : undefined;
+    if (!at) return null;
+    return at.beat > 1
+      ? { measure: at.measure, beat: at.beat }
+      : { measure: at.measure };
   }
 
   function handlePilotMarkerClick(id: string) {
@@ -715,7 +628,7 @@
     pilotDialogIndex = hints.length - 1;
   }
 
-  function patchPilotHint(index: number, patch: Partial<PilotHintConfig>) {
+  function patchPilotHint(index: number, patch: Partial<PilotHint>) {
     const hints = [...(pilot?.hints ?? [])];
     const merged = { ...hints[index], ...patch };
     if (merged.align === "end") delete merged.align;
@@ -755,7 +668,7 @@
         <span class="playhead-info__pos"
           >m{playheadInfo.measure}.{playheadInfo.beat}</span
         >
-        · {formatPlayheadMs(playheadMs)}
+        · {rules.clock(playheadMs / 1000, 0)}
         {#if playheadInfo.bpm !== null}
           · {playheadInfo.bpm}
           {$t("tempo.bpm")}
@@ -810,7 +723,7 @@
         aria-valuemin={0}
         aria-valuemax={Math.floor(songDurationMs / 1000)}
         aria-valuenow={Math.floor(playheadMs / 1000)}
-        aria-valuetext={formatPlayheadMs(playheadMs)}
+        aria-valuetext={rules.clock(playheadMs / 1000, 0)}
         onpointerdown={handlePlayheadDown}
         onpointermove={handlePlayheadMove}
         onpointerup={handlePlayheadUp}
@@ -818,7 +731,8 @@
         onkeydown={handlePlayheadKeydown}
       >
         {#if playheadDragMs !== null}
-          <span class="playhead__time mono">{formatPlayheadMs(playheadMs)}</span
+          <span class="playhead__time mono"
+            >{rules.clock(playheadMs / 1000, 0)}</span
           >
         {/if}
       </div>

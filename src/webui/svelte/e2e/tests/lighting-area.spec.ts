@@ -13,14 +13,10 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
+import type { ProfileFileInfo } from "../../src/gen/rules/mtrack_rules";
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Two profiles, both with lighting, so the Groups picker has a choice. The
  *  mock reports `test-host` as the running profile. Each test routes its own
@@ -57,6 +53,9 @@ test.describe("Lighting area: routes and navigation", () => {
     page,
   }) => {
     await page.goto("/#/");
+    // evaluateAll reads the nav as it is, without waiting: wait for it to
+    // have rendered, or a slow start reads no tabs at all.
+    await expect(page.locator('.topnav__tab[href="#/lighting"]')).toBeVisible();
     const hrefs = await page
       .locator(".topnav__tab")
       .evaluateAll((els) => els.map((e) => e.getAttribute("href")));
@@ -276,7 +275,10 @@ test.describe("Lighting area: Groups", () => {
         contentType: "application/json",
         body: JSON.stringify([
           {
-            filename: "test-host.yaml",
+            file: "test-host.yaml",
+            filename: "test-host",
+            addressable: true,
+            error: null,
             hostname: "test-host",
             has_audio: false,
             has_midi: false,
@@ -284,7 +286,7 @@ test.describe("Lighting area: Groups", () => {
             has_trigger: false,
             has_controllers: false,
           },
-        ]),
+        ] satisfies ProfileFileInfo[]),
       });
     });
     let version = "v1";
@@ -382,7 +384,7 @@ test.describe("Lighting area: Config and the dashboard link across", () => {
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "metadata",
       fixtures: {
         "front-left": {
@@ -444,7 +446,7 @@ test.describe("Lighting area: Venues stage plot", () => {
       await page.setViewportSize(size);
       await page.goto(`/?wsId=${wsId}#/lighting/venues`);
       const name = `venue-${wsId}`;
-      await sendWsMessage(page, wsId, GEOMETRY(name));
+      await sendWs(page, wsId, GEOMETRY(name));
       await expect(page.locator(".stage-card--geometry")).toBeVisible();
       await expect(page.getByTestId("stage-venue-label")).toHaveText(
         `Current venue: ${name} · live`,

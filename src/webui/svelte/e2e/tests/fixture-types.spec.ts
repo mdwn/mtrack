@@ -12,15 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
-
-/** The card of one named type. The mock serves three, in all three forms,
- *  so position no longer identifies one. */
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
+import { test, expect } from "@playwright/test";
+import { card } from "../support/locators";
 
 test.describe("Fixture Types Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -257,7 +250,7 @@ test.describe("Fixture Types Management", () => {
     // The channel map is the default way in; this is the way out of it, and
     // the only path from a v1 file to the rich form.
     await card(page, "par").getByTestId("ft-edit-text").click();
-    await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type par/);
+    await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type "par"/);
     await expect(page.locator(".channel-row")).toHaveCount(0);
 
     // Saved back as it was found, unless the form is changed.
@@ -301,24 +294,30 @@ test.describe("Fixture Types Management", () => {
       .fill('fixture_type "renamed" {\n  channel "pan" @ 1 fine 2\n}\n');
     await expect(nameField).toHaveValue("renamed");
 
-    // The rename goes to the declared name, and the old file is deleted —
-    // the same two steps the channel-map form takes.
+    // The rename is one save under the declared name, from the old one:
+    // the server moves or renames the file, so nothing is deleted after.
+    const deletes: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "DELETE") deletes.push(req.url());
+    });
     const putPromise = page.waitForRequest(
       (req) =>
         req.url().includes("/api/lighting/fixture-types/renamed") &&
         req.method() === "PUT",
     );
-    const deletePromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/mover") &&
-        req.method() === "DELETE",
-    );
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await putPromise;
-    await deletePromise;
+    const put = await putPromise;
+    expect(new URL(put.url()).searchParams.get("from")).toBe("mover");
+    // The rename retyped the venue lines naming it, and says so, as the
+    // fixture settings' rename does.
+    await expect(page.locator(".save-msg").first()).toContainText(
+      "Renamed in 3 venue lines: built-in (2), club (1).",
+    );
+    await page.waitForTimeout(300);
+    expect(deletes).toHaveLength(0);
   });
 
   test("Define a fixture by hand offers both forms", async ({ page }) => {
@@ -326,7 +325,9 @@ test.describe("Fixture Types Management", () => {
       .getByRole("button", { name: "Define a fixture by hand" })
       .click();
     await expect(page.getByTestId("new-ft-choice")).toBeVisible();
-    await page.getByRole("button", { name: ".light (channel map)" }).click();
+    await page
+      .getByRole("button", { name: "Channel map", exact: true })
+      .click();
     await expect(page.locator(".editor-form")).toBeVisible();
     await expect(page.locator("#ft-name")).toHaveValue("");
   });

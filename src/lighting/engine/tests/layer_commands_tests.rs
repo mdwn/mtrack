@@ -392,7 +392,7 @@ fn test_layer_intensity_master() {
     let commands_half = engine.update(Duration::from_millis(16), None).unwrap();
     assert_eq!(commands_half.len(), 1);
     let half_value = commands_half[0].value;
-    assert_eq!(half_value, 127); // 50% of 255
+    assert_eq!(half_value, 128); // 50% of 255
 }
 
 #[test]
@@ -636,6 +636,8 @@ fn cued_green_static() -> EffectEngine {
     let mut engine = EffectEngine::new();
     let mut channels = HashMap::new();
     channels.insert("green".to_string(), 1);
+    channels.insert("red".to_string(), 2);
+    channels.insert("blue".to_string(), 3);
     engine.register_fixture(FixtureInfo::new(
         "brick".to_string(),
         1,

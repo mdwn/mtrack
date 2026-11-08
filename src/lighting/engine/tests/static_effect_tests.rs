@@ -47,9 +47,9 @@ fn test_static_effect() {
     // Should have commands for dimmer and red channels
     assert_eq!(commands.len(), 2);
 
-    // Check dimmer command (50% = 127)
+    // Check dimmer command (50% = 128)
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    assert_eq!(dimmer_cmd.value, 127);
+    assert_eq!(dimmer_cmd.value, 128);
 
     // Check red command (100% = 255)
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
@@ -58,11 +58,7 @@ fn test_static_effect() {
 
 /// An RGB-only fixture (no dimmer), like a PixelBrick in RGBS mode.
 fn rgb_fixture(name: &str) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(name.to_string(), 1, 1, "RGB".to_string(), channels, None)
+    crate::testutil::lighting::rgb(name, 1)
 }
 
 fn color_static(

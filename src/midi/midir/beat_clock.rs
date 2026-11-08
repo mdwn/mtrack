@@ -151,7 +151,7 @@ pub(super) fn run_beat_clock(
                     // Nothing to go back to, and no pulse left to put back.
                     continue;
                 }
-                thread::sleep(Duration::from_millis(5));
+                pause(Duration::from_millis(5), false);
             }
         };
         if let Some(jump) = deferred.take() {
@@ -255,7 +255,7 @@ pub(super) fn run_beat_clock(
         if let Some(sent) = transport_sent.take() {
             let since = sent.elapsed();
             if since < START_TO_CLOCK {
-                spin_sleep::sleep(START_TO_CLOCK - since);
+                pause(START_TO_CLOCK - since, true);
             }
         }
         if let Err(e) = sender.send(&clock_bytes) {
@@ -633,6 +633,56 @@ fn lands_in(ticks: &[Duration], jump: &crate::section_loop::SectionJump) -> bool
     ticks.get(index).is_some_and(|tick| *tick < jump.from)
 }
 
+/// Waits `length` in a schedule: to the moment if `precise` (a pulse is due
+/// then), else as an ordinary sleep, to poll. On a test's thread that has
+/// set its own time ([`TestPauses`]), that time moves on instead, and
+/// nothing sleeps.
+fn pause(length: Duration, precise: bool) {
+    #[cfg(test)]
+    if TEST_PAUSE.with(|hook| {
+        hook.borrow()
+            .as_ref()
+            .map(|advance| advance(length))
+            .is_some()
+    }) {
+        return;
+    }
+    if precise {
+        spin_sleep::sleep(length);
+    } else {
+        thread::sleep(length);
+    }
+}
+
+/// What a test's [`TestPauses`] does with a wait's length.
+#[cfg(test)]
+type Advance = Box<dyn Fn(Duration)>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PAUSE: std::cell::RefCell<Option<Advance>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A test's own time for the schedules it runs on this thread, until it is
+/// dropped: each wait calls `advance` with its length in place of sleeping.
+#[cfg(test)]
+pub(super) struct TestPauses;
+
+#[cfg(test)]
+impl TestPauses {
+    pub(super) fn set(advance: impl Fn(Duration) + 'static) -> TestPauses {
+        TEST_PAUSE.with(|hook| *hook.borrow_mut() = Some(Box::new(advance)));
+        TestPauses
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPauses {
+    fn drop(&mut self) {
+        TEST_PAUSE.with(|hook| *hook.borrow_mut() = None);
+    }
+}
+
 /// The playback clock the notes and audio follow (on a rig with audio, the
 /// interface's sample counter), and the playback delay between its zero and
 /// the schedule's.
@@ -712,14 +762,14 @@ impl Discipline {
             return;
         }
         let Some(reference) = reference else {
-            spin_sleep::sleep(target - now);
+            pause(target - now, true);
             return;
         };
-        spin_sleep::sleep((target - now).mul_f64(self.next_fraction()));
+        pause((target - now).mul_f64(self.next_fraction()), true);
         self.observe(wall.elapsed(), reference.offset_from(wall));
         let now = wall.elapsed();
         if target > now {
-            spin_sleep::sleep(target - now);
+            pause(target - now, true);
         }
     }
 

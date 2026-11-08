@@ -12,6 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Matrix4, RigModel } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
+
 /**
  * The rig model as the asset store writes it (design §16.2), and the
  * math that turns a rig plus a pose into rotations — kept free of three.js
@@ -35,77 +38,6 @@
  * applied outside the joints as R = Rz·Ry·Rx, so a fixture's beam is
  * `R · Rz(pan) · Rx(tilt) · (0, 0, −1)`.
  */
-
-export type Mat4 = [
-  [number, number, number, number],
-  [number, number, number, number],
-  [number, number, number, number],
-  [number, number, number, number],
-];
-
-export type RigRole =
-  | { kind: "body" }
-  | { kind: "pan" }
-  | { kind: "tilt" }
-  | { kind: "beam" }
-  | { kind: "cell"; index: number };
-
-export type RigShape =
-  /** A mesh, with its Model's declared Length, Width, Height in meters:
-   *  the scene fits the mesh to it (`fit.ts`); 0 means not stated. */
-  | { shape: "model"; file: string; size: [number, number, number] }
-  | { shape: "primitive"; kind: string; size: [number, number, number] }
-  | { shape: "empty" };
-
-export interface RigNode {
-  name: string;
-  parent: number | null;
-  role: RigRole;
-  /** Row-major 4×4, translation in the fourth column, meters. */
-  transform: Mat4;
-  shape: RigShape;
-}
-
-export interface RigBeam {
-  node: number;
-  angle_deg: number;
-  field_deg: number | null;
-  kind: string;
-  flux_lm: number | null;
-  cct_k: number | null;
-  radius_m: number | null;
-}
-
-export interface RigModel {
-  version: number;
-  fixture_type: string;
-  mode: string;
-  nodes: RigNode[];
-  pan: number | null;
-  tilt: number | null;
-  beams: RigBeam[];
-  thumbnail: string | null;
-  warnings?: string[];
-}
-
-/** A venue's scenery as the asset store writes it (design §16.3). */
-export interface SceneryModel {
-  version: number;
-  objects: SceneryObject[];
-  formats: Record<string, number>;
-  warnings?: string[];
-}
-
-export interface SceneryObject {
-  name: string;
-  kind: string;
-  layer: string;
-  /** Row-major 4×4 in stage space, translation in meters. */
-  transform: Mat4;
-  meshes: { file: string; transform: Mat4 }[];
-  /** Mesh files the store could not hold (formats it does not draw). */
-  skipped: string[];
-}
 
 /** The beam angle a rig without photometrics is drawn with, degrees. */
 export const GENERIC_BEAM_DEG = 20;
@@ -159,7 +91,7 @@ export function genericRig(typeName: string): RigModel {
   };
 }
 
-export function identity(): Mat4 {
+export function identity(): Matrix4 {
   return [
     [1, 0, 0, 0],
     [0, 1, 0, 0],
@@ -213,53 +145,65 @@ export function beamLength(
   return { length: options.skyLength, onDeck: false };
 }
 
+/** What the stage views draw a fixture as; see {@link beamLook}. */
+export interface BeamLook {
+  /** The colour at its level, each 0..1. */
+  rgb: [number, number, number];
+  intensity: number;
+  /** False in the dark half of a strobe's cycle. */
+  strobeOn: boolean;
+  /** Whether it is lit: the engine's test of a lit fixture
+   *  (`rules.fixture_lit`), outside a strobe's dark half. */
+  lit: boolean;
+}
+
 /**
- * The colour and level a fixture's channels show, as the 2D view reads
- * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
- * white by `dimmer` alone. A CMY fixture's state carries the engine's RGB
- * (its flags take the complement at output), so it shows its colour here
- * too. A colour wheel is not read: the engine sends it no colour, and the
- * fixture shows as a dimmer-only white.
- * `undefined` (nothing reported for the fixture) is dark, not full.
+ * The colour and level a fixture's state shows, the one reading every
+ * stage view (2D plot, timeline preview, 3D scene) draws from: the
+ * player's own (`rules.fixture_color`, which the TUI draws by too) --
+ * each part that lights the fixture in its emitters' colours (red, amber,
+ * UV, white, ...) at their levels, added, times its dimmer; a dimmer alone
+ * a warm white -- and lit as the player has it
+ * (`rules.fixture_lit`). The level is the colour's mean.
+ *
+ * `strobeHz` is the rate the player says the fixture is flashing at (the
+ * state's `strobe_rates`: its strobe byte read back through its own strobe
+ * rule, or in an evaluation a software strobe's rate), and the look is
+ * dark for half of each cycle at `now` (ms). The view does not guess a
+ * rate from the byte: the fixture's range and curve are the player's to
+ * know.
+ *
+ * `undefined` channels (nothing reported for the fixture) is dark, not
+ * full.
  */
 export function beamLook(
-  channels:
-    | {
-        red?: number;
-        green?: number;
-        blue?: number;
-        dimmer?: number;
-        strobe?: number;
-        white?: number;
-      }
-    | undefined,
-): { rgb: [number, number, number]; intensity: number; strobeOn: boolean } {
+  channels: Record<string, number | undefined> | undefined,
+  strobeHz?: number,
+  now: number = Date.now(),
+): BeamLook {
   // No state at all for the fixture (idle player, nothing reported yet):
-  // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
-  if (!channels) return { rgb: [0, 0, 0], intensity: 0, strobeOn: true };
-  const dimmer = (channels.dimmer ?? 255) / 255;
-  const hasColor =
-    channels.red !== undefined ||
-    channels.green !== undefined ||
-    channels.blue !== undefined;
-  // A dimmer-only fixture is a warm white; a colour fixture shows its mix.
-  let r = hasColor ? (channels.red ?? 0) / 255 : 1;
-  let g = hasColor ? (channels.green ?? 0) / 255 : 0.92;
-  let b = hasColor ? (channels.blue ?? 0) / 255 : 0.8;
-  if (channels.white !== undefined) {
-    const w = channels.white / 255;
-    r = Math.min(1, r + w);
-    g = Math.min(1, g + w);
-    b = Math.min(1, b + w);
-  }
+  // dark.
+  if (!channels)
+    return { rgb: [0, 0, 0], intensity: 0, strobeOn: true, lit: false };
+  const rgb = rules.fixture_color(channels);
   let strobeOn = true;
-  const strobe = channels.strobe ?? 0;
-  if (strobe > 10) {
-    const freq = 2 + (strobe / 255) * 18;
-    strobeOn = Math.sin((Date.now() / 1000) * freq * Math.PI * 2) > 0;
+  const hz = strobeHz ?? 0;
+  if (hz > 0) {
+    strobeOn = Math.sin((now / 1000) * hz * Math.PI * 2) > 0;
   }
-  const intensity = ((r + g + b) / 3) * dimmer;
-  return { rgb: [r * dimmer, g * dimmer, b * dimmer], intensity, strobeOn };
+  return {
+    rgb,
+    intensity: (rgb[0] + rgb[1] + rgb[2]) / 3,
+    strobeOn,
+    lit: strobeOn && rules.fixture_lit(channels),
+  };
+}
+
+/** A look as a canvas colour: its colour, or black in a strobe's dark half. */
+export function beamCss(look: BeamLook): string {
+  if (!look.strobeOn) return "rgb(0,0,0)";
+  const [r, g, b] = look.rgb.map((c) => Math.round(c * 255));
+  return `rgb(${r},${g},${b})`;
 }
 
 /**

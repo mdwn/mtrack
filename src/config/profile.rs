@@ -27,6 +27,8 @@ use super::trigger::TriggerConfig;
 ///
 /// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
 /// round-trips — important for the web UI config editor.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AudioConfig {
     #[serde(flatten)]
@@ -35,9 +37,11 @@ pub struct AudioConfig {
     /// still being set up; playback requires at least one mapping and fails
     /// with a descriptive error otherwise.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number[]>"))]
     track_mappings: IndexMap<String, Vec<u16>>,
     /// Per-output-track gain in dB. Tracks without an entry play at unity.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number>"))]
     track_gains: IndexMap<String, f32>,
 }
 
@@ -125,6 +129,7 @@ impl AudioConfig {
 /// A unified hardware profile representing one complete host configuration.
 /// Profiles are tried in list order; the first one whose hostname matches (or has
 /// no constraint) is used.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Profile {
     /// Identifies this config file as a hardware profile.
@@ -132,18 +137,23 @@ pub struct Profile {
     kind: super::kind::ConfigKind,
 
     /// Optional hostname restriction.
+    #[serde(default)]
     hostname: Option<String>,
 
     /// Audio configuration (optional if absent from profile).
+    #[serde(default)]
     audio: Option<AudioConfig>,
 
     /// MIDI configuration (optional if absent from profile).
+    #[serde(default)]
     midi: Option<Midi>,
 
     /// DMX configuration (optional if absent from profile).
+    #[serde(default)]
     dmx: Option<Dmx>,
 
     /// Audio trigger configuration (optional).
+    #[serde(default)]
     trigger: Option<TriggerConfig>,
 
     /// Controllers associated with this profile. `null` reads as none, so a
@@ -159,6 +169,12 @@ pub struct Profile {
     /// Status events — MIDI events emitted on player state changes.
     #[serde(default)]
     status_events: Option<super::statusevents::StatusEvents>,
+
+    /// The file in `profiles_dir` this profile was loaded from, as its file
+    /// name (`stage.yml`): none for an inline profile, or a name that is not
+    /// UTF-8. Not part of the file.
+    #[serde(skip)]
+    source_file: Option<String>,
 }
 
 /// A list that may be written as `null`, read as empty.
@@ -237,7 +253,18 @@ impl Profile {
             controllers: Vec::new(),
             notifications: None,
             status_events: None,
+            source_file: None,
         }
+    }
+
+    /// The file in `profiles_dir` this profile was loaded from, if it was.
+    pub fn source_file(&self) -> Option<&str> {
+        self.source_file.as_deref()
+    }
+
+    /// Records the file this profile was loaded from.
+    pub fn set_source_file(&mut self, file: Option<String>) {
+        self.source_file = file;
     }
 
     /// Returns the optional hostname constraint.

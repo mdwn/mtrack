@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     colors: string[];
@@ -23,23 +24,10 @@
 
   let { colors, onchange, multi = true }: Props = $props();
 
-  const NAMED_COLORS: Record<string, string> = {
-    red: "#ff0000",
-    green: "#00ff00",
-    blue: "#0000ff",
-    white: "#ffffff",
-    black: "#000000",
-    yellow: "#ffff00",
-    cyan: "#00ffff",
-    magenta: "#ff00ff",
-    orange: "#ffa500",
-    purple: "#800080",
-    pink: "#ffc0cb",
-  };
-
-  function normalizeColor(c: string): string {
-    const lower = c.toLowerCase();
-    return NAMED_COLORS[lower] ?? c;
+  /** The colour as the picker shows it: `#rrggbb`, by the parser's own
+   *  reading of a hex, `rgb()` or named colour (`rules.color_hex`). */
+  function pickerColor(c: string): string {
+    return rules.color_hex(c) ?? c;
   }
 
   function updateColor(index: number, value: string) {
@@ -63,7 +51,7 @@
       <input
         type="color"
         class="color-picker"
-        value={normalizeColor(color)}
+        value={pickerColor(color)}
         onchange={(e) => updateColor(i, (e.target as HTMLInputElement).value)}
       />
       <input

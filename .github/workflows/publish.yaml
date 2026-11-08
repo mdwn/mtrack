@@ -38,6 +38,13 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: actions/setup-node@v7
       with:
         node-version: '22'
@@ -121,7 +128,12 @@ jobs:
         run: brew install pkg-config protobuf
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+      - name: Install wasm-opt
+        run: ./scripts/install-binaryen.sh
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "release-${{ matrix.target }}"

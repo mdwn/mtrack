@@ -19,6 +19,15 @@
    * Every operation is one venue save, made through the plan's own `persist`
    * so it and a drag can never race, and the plan redraws from the reload.
    */
+  import type {
+    FixtureMetadata,
+    FixtureTypeEntry,
+    FixtureTypeGdtf,
+    Vec3,
+    Venue,
+    VenueMetadata,
+    VenuePatch,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
@@ -31,32 +40,24 @@
     fetchFixtureTypes,
     fetchVenue,
     fetchVenuePatch,
-    type FixtureTypeEntry,
-    type FixtureTypeGdtf,
-    type VenueData,
-    type VenuePatch,
   } from "../../lib/api/config";
   import {
-    collisions,
+    listed,
+    overlaps,
     room,
     stripCells,
     stripWindow,
-    type Span,
+    type PatchSpan,
   } from "../../lib/lighting/patch";
   import { isRefused } from "../../lib/lighting/modes";
+  import { rules } from "../../lib/rules";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
-  import type {
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
-  } from "../../lib/ws/stores";
   import {
     BEARINGS,
     MOVER_MOUNTINGS,
     aimRotation,
     deckFootprint,
     faceRotation,
-    restAim,
   } from "../../lib/stage/aim";
   import {
     alignOnLine,
@@ -70,7 +71,7 @@
     selection: string[];
     onSelect: (names: string[]) => void;
     /** The plan's read-change-write of the venue file. */
-    persist: (update: (venue: VenueData) => void) => Promise<boolean>;
+    persist: (update: (venue: Venue) => void) => Promise<boolean>;
     saving: boolean;
     /** The fixture types directory override (a profile's setting). */
     fixtureTypesDir?: string;
@@ -101,7 +102,7 @@
   $effect(() => {
     const dir = fixtureTypesDir;
     fetchFixtureTypes(dir || undefined)
-      .then((r) => (fixtureTypes = r.fixtureTypes))
+      .then((r) => (fixtureTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });
@@ -164,8 +165,8 @@
       const next = { ...poses };
       for (const name of names) {
         const { position, rotation } = meta[name] ?? {};
-        if (isMover(name) || !position || !rotation) continue;
-        const aim = restAim(rotation);
+        const aim = rotation && rules.rest_beam(rotation);
+        if (isMover(name) || !position || !aim) continue;
         next[name] = {
           pan: 0,
           tilt: 0,
@@ -178,7 +179,7 @@
   }
 
   async function apply(
-    compute: (venue: VenueData) => {
+    compute: (venue: Venue) => {
       changes: Record<string, Change>;
       notes?: string[];
     },
@@ -198,7 +199,7 @@
           rotated.push(name);
         }
         if (change.beam_angle !== undefined)
-          fixture.beam_angle = change.beam_angle;
+          fixture.beam_angle = change.beam_angle ?? undefined;
       }
     });
     if (ok) {
@@ -208,7 +209,7 @@
   }
 
   /** The selected fixtures the file places, as arrange wants them. */
-  function placedIn(venue: VenueData, names: string[]): Placed[] {
+  function placedIn(venue: Venue, names: string[]): Placed[] {
     return names
       .filter((n) => venue.fixtures[n]?.position)
       .map((n) => ({
@@ -353,11 +354,12 @@
     void sharedBeam;
     beamEdited = false;
   });
-  /** Empty removes the override; otherwise 0 < angle <= 180. */
+  /** Empty removes the override; otherwise a beam angle by the player's
+   *  rule (`rules.beam_angle_valid`). */
   let beamValue = $derived.by<number | null | undefined>(() => {
     if (beamDraft.trim() === "") return null;
     const v = Number(beamDraft);
-    return Number.isFinite(v) && v > 0 && v <= 180 ? v : undefined;
+    return rules.beam_angle_valid(v) ? v : undefined;
   });
 
   function setBeamAngle() {
@@ -450,16 +452,17 @@
     }
     // A new address is checked against the patch before it is saved, in
     // the fixture's current mode (a new type's footprint is not known yet).
-    const own = patch?.spans.find((s) => s.fixture === from);
+    const own = spans.find((s) => s.fixture === from);
     if (own && own.type === draft.fixture_type.trim()) {
-      const candidate: Span = {
+      const candidate: PatchSpan = {
         fixture: from,
         universe: Number(draft.universe),
         address: Number(draft.start_channel),
         footprint: own.footprint,
       };
-      const hits = collisions(spans, candidate);
+      const hits = overlaps(spans, candidate);
       if (hits.length > 0 && candidate.footprint) {
+        const names = listed(hits).map((h) => h.fixture);
         patchMsg = {
           ok: false,
           text: get(t)("venues.inspector.addressRefused", {
@@ -467,9 +470,9 @@
               name: from,
               universe: candidate.universe,
               from: candidate.address,
-              to: candidate.address + candidate.footprint - 1,
-              names: unique(hits.map((h) => h.fixture)).join(", "),
-              count: unique(hits.map((h) => h.fixture)).length,
+              to: rules.patch_last(candidate) ?? candidate.address,
+              names: names.join(", "),
+              count: names.length,
             },
           }),
         };
@@ -508,8 +511,6 @@
 
   // --- The mode and the patch (design §21)
 
-  const unique = (names: string[]) => [...new Set(names)];
-
   /** A refusal from the patch check, said beside the strip. */
   let patchMsg = $state<{ text: string; ok: boolean } | null>(null);
   /** The strip's scroller: kept on this fixture's cells. */
@@ -547,7 +548,11 @@
       });
     return () => (stale = true);
   });
-  let spans = $derived<Span[]>(patch?.spans ?? []);
+  /** The venue's spans for the patch rule, a footprint it does not know
+   *  (type or mode not loading) handed over as nothing occupied. */
+  let spans = $derived<(PatchSpan & { type: string })[]>(
+    (patch?.spans ?? []).map((s) => ({ ...s, footprint: s.footprint ?? 0 })),
+  );
 
   /** Each GDTF type's archive, for its modes; fetched once per type. */
   let archives = $state<Record<string, FixtureTypeGdtf | null>>({});
@@ -604,12 +609,12 @@
     patchMsg = null;
     const footprint = footprintOf(next);
     if (ownSpan && footprint) {
-      const candidate: Span = { ...ownSpan, footprint };
-      const hits = collisions(spans, candidate);
+      const candidate: PatchSpan = { ...ownSpan, footprint };
+      const hits = overlaps(spans, candidate);
       if (hits.length > 0) {
         // Refused before the save: the select goes back to what is saved.
         select.value = previous;
-        const names = unique(hits.map((h) => h.fixture));
+        const names = listed(hits).map((h) => h.fixture);
         const fits = room(spans, candidate);
         patchMsg = {
           ok: false,
@@ -621,7 +626,7 @@
               values: {
                 mode: next,
                 from: candidate.address,
-                to: candidate.address + footprint - 1,
+                to: rules.patch_last(candidate) ?? candidate.address,
                 names: names.join(", "),
                 count: names.length,
                 first: names[0],
@@ -635,7 +640,7 @@
     }
     const ok = await persist((venue) => {
       const fixture = venue.fixtures[name];
-      if (fixture) fixture.mode = next || null;
+      if (fixture) fixture.mode = next || undefined;
     });
     if (ok) {
       draft.mode = next || null;
