@@ -509,7 +509,7 @@ fn the_playback_delay_counts_from_the_clocks_start() {
             beat_clock_engine_loop(&mut FirstClock { clock, at }, false, &tempo, &rx);
         }
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
     while at.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -564,7 +564,7 @@ fn a_reopen_mid_schedule_carries_the_schedule_tempo() {
         transport: None,
     }))
     .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
     while sent.load(std::sync::atomic::Ordering::SeqCst) < 3 {
         assert!(
             std::time::Instant::now() < deadline,
@@ -731,7 +731,7 @@ fn stop_returns_while_a_schedule_waits_for_its_start() {
             let _ = done_tx.send(());
         }
     });
-    let stopped = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+    let stopped = done_rx.recv_timeout(crate::testutil::PATIENCE).is_ok();
     cancel.cancel(); // let the thread go either way
     assert!(stopped, "stop() hung on a schedule waiting for its start");
 }
@@ -3643,7 +3643,7 @@ mod run_beat_clock_tests {
             }
         });
         // A cancelled schedule returns at once; give it ample time.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !handle.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4527,7 +4527,7 @@ mod beat_clock_engine_tests {
         tx.send(BeatClockCommand::Play(play)).unwrap();
         thread::sleep(Duration::from_millis(50));
         drop(tx);
-        let ended = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let ended = done_rx.recv_timeout(crate::testutil::PATIENCE).is_ok();
         cancel.cancel();
         assert!(ended, "the engine kept waiting on a closed channel");
     }
@@ -4637,7 +4637,7 @@ mod beat_clock_engine_tests {
         }
     }
 
-    /// Polls until `cond` holds or the deadline passes.
+    /// Polls until `cond` holds or the test patience runs out.
     ///
     /// These tests assert that a free-running clock keeps running at all,
     /// not that it hits a precise count in a precise window. A shared CI
@@ -4645,8 +4645,8 @@ mod beat_clock_engine_tests {
     /// a fixed sleep plus an exact count is a flake waiting to happen --
     /// which is exactly how both of these first landed. Polling makes a slow
     /// machine slower rather than red.
-    fn wait_for(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while std::time::Instant::now() < deadline {
             if cond() {
                 return true;
@@ -4681,7 +4681,7 @@ mod beat_clock_engine_tests {
         });
 
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= HELD_TICKS),
+            wait_for(|| sender.len() >= HELD_TICKS),
             "the held tempo was not run before a song"
         );
         assert!(sender.sent.lock().iter().all(|msg| *msg == clock_bytes()));
@@ -4695,9 +4695,7 @@ mod beat_clock_engine_tests {
             CancelHandle::new(),
         )))
         .unwrap();
-        let set = wait_for(Duration::from_secs(10), || {
-            *tempo.lock().unwrap() == Some(Duration::from_millis(20))
-        });
+        let set = wait_for(|| *tempo.lock().unwrap() == Some(Duration::from_millis(20)));
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
         assert!(
@@ -4732,7 +4730,7 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > 5),
+            wait_for(|| sender.len() > 5),
             "the first song never established a held tempo"
         );
         let before = sender.len();
@@ -4754,20 +4752,18 @@ mod beat_clock_engine_tests {
         // The go signal is withheld for this whole window, so everything
         // arriving is the held tempo. Blocking silently on the clock -- the
         // behaviour this guards against -- emits nothing here at all.
-        let held = wait_for(Duration::from_secs(10), || {
-            sender.len() >= before + HELD_TICKS
-        });
+        let held = wait_for(|| sender.len() >= before + HELD_TICKS);
         let during = sender.len();
         assert!(
             held,
-            "clock went silent while waiting for the go signal: {} messages in 10s",
+            "clock went silent while waiting for the go signal: {} messages",
             during - before
         );
 
         // Releasing the go signal must still let the schedule play.
         slow_clock.start();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > during),
+            wait_for(|| sender.len() > during),
             "the schedule never ran once the clock started"
         );
         tx.send(BeatClockCommand::Shutdown).unwrap();
@@ -4803,7 +4799,7 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() > 5),
+            wait_for(|| sender.len() > 5),
             "the first song never established a held tempo"
         );
 
@@ -4816,14 +4812,12 @@ mod beat_clock_engine_tests {
         )))
         .unwrap();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= before + 3),
+            wait_for(|| sender.len() >= before + 3),
             "the short schedule never played"
         );
         let after_short = sender.len();
 
-        let still_running = wait_for(Duration::from_secs(10), || {
-            sender.len() >= after_short + HELD_TICKS
-        });
+        let still_running = wait_for(|| sender.len() >= after_short + HELD_TICKS);
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
 
@@ -4950,7 +4944,7 @@ mod beat_clock_engine_tests {
         // Wait for the schedule (START + 3 clocks + STOP = 5) plus some held
         // ticks to accumulate. Polled rather than slept: a starved thread
         // makes this slower, not wrong.
-        let held_ticks = wait_for(Duration::from_secs(10), || sender.len() > 5);
+        let held_ticks = wait_for(|| sender.len() > 5);
         let held = sender.len();
         assert!(
             held_ticks,
@@ -4995,7 +4989,7 @@ mod beat_clock_engine_tests {
         // purpose: load can only make a silent engine emit *less*, so it
         // cannot turn this green when it should be red.
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= 4),
+            wait_for(|| sender.len() >= 4),
             "the schedule never played, got {}",
             sender.len()
         );
@@ -5109,7 +5103,7 @@ mod beat_clock_engine_tests {
         // Releasing the go signal lets the schedule play.
         clock.start();
         assert!(
-            wait_for(Duration::from_secs(10), || sender.len() >= 4),
+            wait_for(|| sender.len() >= 4),
             "schedule should play once the clock starts, got {}",
             sender.len()
         );
@@ -5144,7 +5138,7 @@ mod beat_clock_engine_tests {
             assert!(matches!(cmd, Some(BeatClockCommand::Shutdown)));
         });
 
-        let ticked = wait_for(Duration::from_secs(10), || !sender.sent.lock().is_empty());
+        let ticked = wait_for(|| !sender.sent.lock().is_empty());
         tx.send(BeatClockCommand::Shutdown).unwrap();
         handle.join().unwrap();
 

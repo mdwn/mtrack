@@ -53,6 +53,9 @@ test.describe("Lighting area: routes and navigation", () => {
     page,
   }) => {
     await page.goto("/#/");
+    // evaluateAll reads the nav as it is, without waiting: wait for it to
+    // have rendered, or a slow start reads no tabs at all.
+    await expect(page.locator('.topnav__tab[href="#/lighting"]')).toBeVisible();
     const hrefs = await page
       .locator(".topnav__tab")
       .evaluateAll((els) => els.map((e) => e.getAttribute("href")));

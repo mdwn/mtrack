@@ -756,8 +756,8 @@ mod tests {
     use std::{error::Error, sync::Arc, thread::sleep};
 
     use super::*;
+    use crate::clock::TestClock;
     use crate::config;
-    use crate::dmx::engine::pass::TestClock;
     use crate::dmx::ola_client::OlaClientFactory;
 
     /// A fade of no time is at its end at once, exactly there; one of some

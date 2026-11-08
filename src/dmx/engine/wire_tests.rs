@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use super::{config, Engine};
@@ -33,9 +32,8 @@ fn rig() -> Result<Engine, Box<dyn Error>> {
         &config::Dmx::new(
             None,
             None,
-            Some(crate::testutil::net::free_tcp_port_on(
-                Ipv4Addr::UNSPECIFIED,
-            )),
+            // The mock client never connects: the port is never bound.
+            Some(9090),
             vec![config::Universe::new(5, "universe1".to_string())],
             None,
         ),

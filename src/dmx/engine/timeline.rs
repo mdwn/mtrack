@@ -290,7 +290,7 @@ impl Engine {
                 outgoing_engine,
                 timeline,
                 PassClock::Wall {
-                    started: super::pass::wall_now(),
+                    started: crate::clock::wall_now(),
                     from,
                 },
                 fade,

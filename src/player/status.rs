@@ -410,7 +410,7 @@ mod tests {
         assert!(matches!(read, DmxRead::TimedOut));
         released.store(true, std::sync::atomic::Ordering::SeqCst);
         // The read finishes with nobody waiting on it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !reads
             .pending
             .lock()
