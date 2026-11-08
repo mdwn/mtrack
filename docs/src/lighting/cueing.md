@@ -201,10 +201,10 @@ counted from the sequence's first cue:
 ```light
 sequence "Centre Beats", length: 1measure {
     @1/1
-    centre: static color: "blue", duration: 1beat
+    centre: static color: "blue", dimmer: 100%, duration: 1beat
 
     @1/3
-    centre: static color: "white", duration: 1.5beats
+    centre: static color: "white", dimmer: 100%, duration: 1.5beats
 }
 ```
 
@@ -221,10 +221,10 @@ binds them, so a figure that differs between songs only by colour or group is wr
 ```light
 sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
     @1/1
-    $target: static color: $bed, layer: background, duration: 2measures
+    $target: static color: $bed, dimmer: 100%, layer: background, duration: 2measures
 
     @1/1
-    $target: static color: $hit, layer: foreground, duration: 1beat
+    $target: static color: $hit, dimmer: 100%, layer: foreground, duration: 1beat
 }
 
 show "Song" {

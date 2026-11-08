@@ -764,6 +764,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state used to leave it out and so judged the fixture by its colour alone: on a fixture with a
   dimmer channel, `static color: "blue"` with no `dimmer` now reads dark (MCP `dark: true`, drawn
   dark), as the head is -- give it `dimmer: 100%` to light it.
+  Live state after a seek holds what was last sent before the seek, as the universe does, which is
+  not always what playing through to that time would leave (a gobo set only by an effect the seek
+  jumped over reads as before the seek); `evaluate_show` at that time gives the play-through
+  answer. A mover a clear released from pose memory is drawn where its held pan and tilt point,
+  not at rest, and a fixture patched on a universe the profile has no output for reads 0 on every
+  channel, as nothing reaches it.
   DMX output is unchanged: the live output and the state now share one record of what each
   channel was last sent (`Wire`), which also carries the release of a level nothing writes (#581)
   that the output did on its own.
