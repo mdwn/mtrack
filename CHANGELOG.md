@@ -758,6 +758,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fixture's state reports the bytes the rig holds, including what an ended effect left set**:
+  a DMX universe holds a byte until it is sent another, and when an effect ends only its levels
+  and colours are sent 0 (#581); a gobo, zoom, focus, iris, prism, colour wheel or mode it set is
+  held. The fixture's state (the live stream behind the web UI's stage views and the TUI, MCP
+  `get_fixture_state`, `evaluate_show` and its `dark`, and the web UI's preview) read every
+  channel nothing drove any more as 0, or left it out. With `static dimmer: 100%, red: 100%,
+  gobo: 50%, zoom: 40%, duration: 5s` and then, at 5 s, `static dimmer: 100%, red: 100%`, the
+  head keeps gobo 128 and zoom 102 from 5 s on, and the state now says `gobo: 128, zoom: 102`
+  where it said nothing. Live, every channel of a fixture the show has written reads the byte the
+  universe holds -- across a seek, a song change and a stop alike, as the universe does not reset
+  at any of them -- so a fixture no effect drives any more stays in the state at its held bytes
+  rather than dropping out. An evaluation (MCP `evaluate_show`, the web UI's preview) reads the
+  rig playing the show through from its start leaves at that time: what each effect ended before
+  it last sent, a strobe nobody drives any more sent off. Levels and colours read as before, and
+  a CMY head's flags read as the wire holds them (open once nothing drives them, as since #661).
+  A dimmer channel nothing has ever sent a byte reads 0, as the universe holds it, where the
+  state used to leave it out and so judged the fixture by its colour alone: on a fixture with a
+  dimmer channel, `static color: "blue"` with no `dimmer` now reads dark (MCP `dark: true`, drawn
+  dark), as the head is -- give it `dimmer: 100%` to light it.
+  Live state after a seek holds what was last sent before the seek, as the universe does, which is
+  not always what playing through to that time would leave (a gobo set only by an effect the seek
+  jumped over reads as before the seek); `evaluate_show` at that time gives the play-through
+  answer. A setting still moving when its effect ends or a cue cuts it (a zoom fading down, a head
+  mid-move) evaluates where it got to at that instant; live, the last frame lands up to a frame
+  earlier (about 23 ms on a Pi, longer under load), so the rig can hold it one frame short of
+  that. A mover a clear released from pose memory is drawn where its held pan and tilt point,
+  not at rest, and a fixture patched on a universe the profile has no output for reads 0 on every
+  channel, as nothing reaches it.
+  DMX output is unchanged: the live output and the state now share one record of what each
+  channel was last sent (`Wire`), which also carries the release of a level nothing writes (#581)
+  that the output did on its own.
+
 - **A plug node opens at the width of the hardware behind it**: `alsa:plughw:CARD=Headphones,DEV=0`
   (and any plug node) was opened at cpal's clamped 64 channels, because opening took the node's
   own report while only the device listing looked up the hardware sibling's real count. The mixer

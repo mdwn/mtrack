@@ -164,7 +164,7 @@ bar's cells into the next bar's. See `per` under
 **Example:**
 ```light
 @00:25.000
-movers: static color: "red", duration: 10s, layer: background
+movers: static color: "red", dimmer: 100%, duration: 10s, layer: background
 movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s, layer: midground
 bars: chase pattern: linear, direction: left_to_right, per: cell, duration: 10s, layer: midground
 ```

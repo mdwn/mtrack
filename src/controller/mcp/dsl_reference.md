@@ -28,6 +28,11 @@ show "Optional Name" {
   snake_case identifiers.
 - Multiple effects under the same `@time` can be stacked by repeating
   `group: effect …` on the next line under the same timestamp.
+- A colour alone does not light a fixture that has a dimmer channel: its
+  dimmer holds 0 until something sends it a level. Light such fixtures with
+  a `static` with `dimmer:`/`intensity:`, or a `dimmer` effect on another
+  layer under a `cycle`; a `chase` writes the dimmer itself. Otherwise the
+  show comes out dark, as `evaluate_show` reports it (`dark: true`).
 
 ### Effects
 
@@ -116,7 +121,7 @@ show, reference it on its own cue line:
 ```
 sequence "Verse" {
     @00:00.000
-    front_wash: static color: "blue", duration: 4s
+    front_wash: static color: "blue", dimmer: 100%, duration: 4s
 
     @00:02.000
     movers: chase speed: 2.0, direction: left_to_right, duration: 4s
@@ -140,9 +145,9 @@ end early, declare the pass length, in the same units as `duration:`:
 ```
 sequence "Centre Beats", length: 1measure {
     @1/1
-    centre: static color: "blue", duration: 1beat
+    centre: static color: "blue", dimmer: 100%, duration: 1beat
     @1/3
-    centre: static color: "white", duration: 1.5beats
+    centre: static color: "white", dimmer: 100%, duration: 1.5beats
 }
 ```
 
@@ -157,9 +162,9 @@ substituted as written (a quoted colour, a group, a number, a duration):
 ```
 sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
     @1/1
-    $target: static color: $bed, layer: background, duration: 2measures
+    $target: static color: $bed, dimmer: 100%, layer: background, duration: 2measures
     @1/1
-    $target: static color: $hit, layer: foreground, duration: 1beat
+    $target: static color: $hit, dimmer: 100%, layer: foreground, duration: 1beat
 }
 
 show "Song" {
@@ -186,7 +191,7 @@ the block are relative to the loop's start:
 @00:00.000
 loop {
     @00:00.000
-    all_lights: static color: "red", duration: 250ms
+    all_lights: static color: "red", dimmer: 100%, duration: 250ms
     @00:00.250
     all_lights: static color: "black", duration: 250ms
 } repeats: 8
@@ -239,7 +244,7 @@ expressed relative to a new "bar 1":
 ```
 @8/1
 offset 8 measures   # cues at @N/M now mean (N+8)/M in song time
-all_lights: static color: "blue", duration: 4beats
+all_lights: static color: "blue", dimmer: 100%, duration: 4beats
 
 reset_measures      # back to the original baseline
 ```

@@ -639,8 +639,13 @@ impl Engine {
     /// again. What MIDI DMX holds through the store fades in the store
     /// itself, over the same `fade`.
     pub(super) fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
-        let written = self.last_written.lock().clone();
-        let positions = self.effect_engine.lock().position_channels();
+        // The channels the last frame wrote: one lit but not among them is
+        // held by the universe from an effect long gone, which nothing will
+        // write again (#573).
+        let (written, positions) = {
+            let engine = self.effect_engine.lock();
+            (engine.wire().written().clone(), engine.position_channels())
+        };
         let floor = self
             .universes
             .iter()

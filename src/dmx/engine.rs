@@ -47,6 +47,8 @@ mod pass;
 mod playback;
 mod test_output;
 mod timeline;
+#[cfg(test)]
+mod wire_tests;
 
 pub use crate::player::TestOutputStatus;
 pub use ambient::{AmbientMode, AmbientReport, AmbientStatus};
@@ -139,10 +141,6 @@ pub struct Engine {
     pub(super) outgoing_pass: Mutex<Option<pass::OutgoingPass>>,
     /// Loop breaks' fades still going out. Locked after `outgoing_pass`.
     pub(super) break_fades: Mutex<pass::BreakFades>,
-    /// The channels (universe, 1-based channel) the last frame wrote. A
-    /// channel lit but not among them is held by the universe from an
-    /// effect long gone, which nothing will write again (#573).
-    pub(super) last_written: Mutex<HashSet<(u16, u16)>>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -275,7 +273,10 @@ impl Engine {
                 None
             };
 
-        let ee = EffectEngine::new();
+        let mut ee = EffectEngine::new();
+        // A fixture patched on a universe with no output here holds
+        // nothing: the wire keeps no bytes for it, and its state reads dark.
+        ee.set_outputs(Some(universes.keys().copied().collect()));
         let update_subphase = ee.update_subphase();
         let effect_engine = Arc::new(Mutex::new(ee));
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
@@ -305,7 +306,6 @@ impl Engine {
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
             break_fades: Mutex::new(Default::default()),
-            last_written: Mutex::new(HashSet::new()),
             playback_generation,
             current_song_time,
             timeline_finished,
@@ -574,9 +574,6 @@ impl Engine {
                 return Ok(());
             }
         };
-        // What a channel no frame writes any more goes to, below: 0 for a
-        // level or colour.
-        let levels = effect_engine.level_channels();
         // The main engine's frame, with each layer of light still crossing
         // over it folded on in turn by the one blend (`pass::cross`): a
         // looping song's outgoing pass, the loop breaks' fades, ambient.
@@ -649,26 +646,10 @@ impl Engine {
         // its effect over, its MIDI DMX cleared at a song start -- goes to
         // 0: the universe would hold it lit, with nothing to say so (#581).
         // A position or a setting holds where it was, as going dark leaves
-        // it.
-        let written: HashSet<(u16, u16)> =
-            commands.iter().map(|c| (c.universe, c.channel)).collect();
-        let released: Vec<crate::lighting::effects::DmxCommand> = {
-            let mut last = self.last_written.lock();
-            let gone: Vec<(u16, u16)> = last.difference(&written).copied().collect();
-            *last = written;
-            if gone.is_empty() {
-                Vec::new()
-            } else {
-                gone.into_iter()
-                    .filter(|at| levels.contains(at))
-                    .map(|(universe, channel)| crate::lighting::effects::DmxCommand {
-                        universe,
-                        channel,
-                        value: 0,
-                    })
-                    .collect()
-            }
-        };
+        // it. The engine's wire records what the universes hold, which is
+        // what its state reports.
+        let commands = commands.to_vec();
+        let released = effect_engine.send(&commands);
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =

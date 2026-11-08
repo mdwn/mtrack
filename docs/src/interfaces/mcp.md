@@ -131,7 +131,9 @@ About 65 tools are available. They fall into a few groups:
   not light. `evaluate_show`
   needs no audio, no DMX output, and no real-time waiting, so a show can be verified without
   playing the song through the PA and the rig — and without perturbing playback if a song *is*
-  running.
+  running. A setting still moving when its effect ends or a cue cuts it (a zoom
+  fading down, a head mid-move) evaluates where it got to at that instant; the live rig can hold
+  it one output frame short of that (about 23 ms on a Pi, longer under load).
 
 Every write and patch tool validates its input (YAML schema or `.light` DSL parse) **before** it
 writes to disk, so a malformed edit is rejected rather than corrupting a project file.
