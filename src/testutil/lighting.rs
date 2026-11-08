@@ -78,8 +78,11 @@ pub fn generic(name: &str, universe: u16, address: u16, channels: &[&str]) -> Fi
 /// four seconds, each firing one to three statics -- on a random fixture
 /// of `fixtures` (its name and the channels a static may set), random
 /// channels of it at random levels, a random layer, a random length --
-/// and now and then a clear of a layer first.
-pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])]) -> String {
+/// and now and then a clear of a layer first. Channels that change over
+/// time too: a `cycle` of colours on one of `fixtures`, and `mover` sent
+/// to a random pan and tilt by a `move` and then, after it arrives, the
+/// whole rig cleared, so the head holds a pose nothing remembers.
+pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> String {
     let mut state = seed;
     let mut next = |n: u64| {
         state = state
@@ -90,8 +93,17 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])]) -> String {
     let layers = ["background", "midground", "foreground"];
     let mut out = String::from("show \"made up\" {\n");
     let mut at = 0u64;
-    for _ in 0..8 {
+    let cycle_at = next(8);
+    let move_at = next(4);
+    // When the move arrives; the clear comes at the first cue after.
+    let mut clear_after: Option<u64> = None;
+    let mut cleared = false;
+    for cue in 0..8 {
         out.push_str(&format!("    @{}.{:03}\n", at / 1000, at % 1000));
+        if clear_after.is_some_and(|arrives| at > arrives) && !cleared {
+            out.push_str("    clear()\n");
+            cleared = true;
+        }
         if next(6) == 0 {
             let layer = layers[next(3) as usize];
             out.push_str(&format!("    clear(layer: {layer})\n"));
@@ -114,7 +126,35 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])]) -> String {
                 params.join(", "),
             ));
         }
+        if cue == cycle_at {
+            let (fixture, _) = fixtures[next(fixtures.len() as u64) as usize];
+            let layer = layers[next(3) as usize];
+            let speed = 1 + next(4);
+            let length = 400 + next(2000);
+            out.push_str(&format!(
+                "    {fixture}: cycle color: \"red\", color: \"green\", color: \"blue\", \
+                 speed: {speed}.0, layer: {layer}, duration: {length}ms\n",
+            ));
+        }
+        if cue == move_at {
+            let pan = next(361) as i64 - 180;
+            let tilt = next(181) as i64 - 90;
+            let length = 200 + next(1000);
+            out.push_str(&format!(
+                "    {mover}: move pan: {pan}deg, tilt: {tilt}deg, duration: {length}ms\n",
+            ));
+            clear_after = Some(at + length);
+        }
         at += 100 + next(900);
+    }
+    if !cleared {
+        // After the last cue, and after the move arrives.
+        let at = clear_after.map_or(at, |arrives| at.max(arrives + 100));
+        out.push_str(&format!(
+            "    @{}.{:03}\n    clear()\n",
+            at / 1000,
+            at % 1000
+        ));
     }
     out.push_str("}\n");
     out

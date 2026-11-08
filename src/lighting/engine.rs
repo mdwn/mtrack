@@ -668,6 +668,14 @@ impl EffectEngine {
         &self.wire
     }
 
+    /// Sets the universes the rig has an output for ([`Wire::set_outputs`]):
+    /// the live output's profile's. A fixture patched on any other holds
+    /// nothing and reads dark. `None`, as a fresh engine has it, takes
+    /// every universe as one: an offline evaluation's rig.
+    pub fn set_outputs(&mut self, outputs: Option<HashSet<u16>>) {
+        self.wire.set_outputs(outputs);
+    }
+
     /// Sends `frame` -- what goes out to the universes, this engine's own
     /// or one crossed with others -- onto the wire ([`Wire::send`]), the
     /// patched levels and colours the last frame wrote and this one does
@@ -687,27 +695,39 @@ impl EffectEngine {
         self.tracing_wire = true;
     }
 
+    /// Renders the frame `dt` on, at `song_time` ([`Self::update`]), and
+    /// sends it to the wire ([`Self::send`]) as the live output sends an
+    /// engine's own frame: for an engine with no output of its own -- an
+    /// offline evaluation, a test playing a show through. A frame that
+    /// fails to render sends nothing.
+    pub(crate) fn render_and_send(&mut self, dt: Duration, song_time: Duration) {
+        if self.update(dt, Some(song_time)).is_ok() {
+            let frame = self.cache.get_cached().to_vec();
+            self.send(&frame);
+        }
+    }
+
     /// Renders the frame at `song_time` and sends it to the wire, leaving
     /// pose memory as the history being replayed has it.
     fn send_replayed_frame(&mut self, song_time: Duration) {
         let (poses, goals) = (self.poses.clone(), self.goals.clone());
-        if self.update(Duration::ZERO, Some(song_time)).is_ok() {
-            let frame = self.cache.get_cached().to_vec();
-            self.send(&frame);
-        }
+        self.render_and_send(Duration::ZERO, song_time);
         self.poses = poses;
         self.goals = goals;
     }
 
-    /// When each effect running now ends, from now on, up to `time`, in
-    /// order: the instants a replay to `time` sends a frame just before.
+    /// When each effect running now that may leave a setting on the rig
+    /// ([`leaves_settings`]) ends, from now on, up to `time`, in order: the
+    /// instants a replay to `time` sends a frame just before. One that
+    /// writes only levels and colours leaves nothing: they go to 0 as it
+    /// ends, whatever its last frame sent.
     fn ends_until(&self, time: Duration) -> Vec<Duration> {
         let now = self.now();
         let from = now.song.unwrap_or_default();
         let mut ends: Vec<Duration> = self
             .active_effects
             .values()
-            .filter(|effect| effect.start_time.is_some())
+            .filter(|effect| effect.start_time.is_some() && leaves_settings(effect))
             .filter_map(|effect| self.layer_state.clock(effect.layer).end_of(effect, now))
             .filter(|&end| end > from && end <= time)
             .collect();
@@ -1703,6 +1723,34 @@ impl EffectEngine {
         }
     }
 
+    /// Replays `history` -- every cue up to and at its start point, its
+    /// groups resolved -- in this engine, as [`Self::start_from`] with
+    /// `StopScope::Nothing` does, and at each of `times` (ascending, none
+    /// past the start point), once every cue up to and at it is in, renders
+    /// the frame there and hands the engine to `sample`: one replay read at
+    /// many instants, each read as a start there reads it. For an offline
+    /// evaluation, with the wire traced ([`Self::trace_wire`]). Returns the
+    /// errors of the effects that would not start.
+    pub(crate) fn replay_sampled(
+        &mut self,
+        history: crate::lighting::timeline::SeekHistory,
+        times: &[Duration],
+        mut sample: impl FnMut(&EffectEngine, Duration),
+    ) -> Vec<EffectError> {
+        let mut replay = Replay::new(self, history.at);
+        let mut steps = history.update.steps.into_iter().peekable();
+        for &at in times {
+            while let Some(&(time, _)) = steps.peek().filter(|(time, _)| *time <= at) {
+                let group: Vec<Step> = std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
+                    .map(|(_, step)| step)
+                    .collect();
+                replay.at(time, group);
+            }
+            replay.sample(at, &mut sample);
+        }
+        replay.errors
+    }
+
     /// Replays `history` in this engine, up to its start point.
     fn replay(&mut self, history: crate::lighting::timeline::SeekHistory) -> Vec<EffectError> {
         let mut replay = Replay::new(self, history.at);
@@ -1732,6 +1780,9 @@ impl EffectEngine {
             current_time: self.current_time,
             rigless: self.rigless,
             scope,
+            // A replay sends nothing to this engine's rig: the wire stays
+            // with the engine the history is installed in.
+            wire: Wire::default(),
             ..self.sibling()
         };
         match scope {
@@ -1882,6 +1933,10 @@ impl EffectEngine {
             })
             .map(|(id, _)| id.clone())
             .collect();
+        if !expired.is_empty() {
+            // The cached frame has them in it.
+            self.cache.invalidate();
+        }
         for id in expired {
             let Some(effect) = self.active_effects.remove(&id) else {
                 continue;
@@ -2197,11 +2252,20 @@ impl<'a> Replay<'a> {
     /// on to there first (see [`EffectEngine::advance`]). A time that fired
     /// nothing changes nothing.
     pub(crate) fn at(&mut self, time: Duration, steps: impl IntoIterator<Item = Step>) {
-        let mut steps = steps.into_iter().peekable();
-        if steps.peek().is_none() {
+        let steps: Vec<Step> = steps.into_iter().collect();
+        if steps.is_empty() {
             return;
         }
-        self.trace_until(time);
+        // While tracing, the frame here goes to the wire only where what
+        // fires can stop a byte being written: a layer command (a clear, a
+        // release), a stopped sequence, a move taking heads from another.
+        // An effect starting stops nothing: every byte written before it is
+        // still written after, until a traced end, cue or sample.
+        let stops = steps.iter().any(|step| match step {
+            Step::Start(effect) => matches!(effect.effect_type, EffectType::Move { .. }),
+            Step::Command(_) | Step::Stop(_) => true,
+        });
+        self.trace_until(time, stops);
         for step in steps {
             if let Err(e) = self.engine.apply_step(step) {
                 self.errors.push(e);
@@ -2211,9 +2275,24 @@ impl<'a> Replay<'a> {
 
     /// Moves the time on to the start point, and leaves the engine there.
     pub(crate) fn finish(mut self) -> Vec<EffectError> {
-        self.trace_until(self.to);
+        self.trace_until(self.to, true);
         self.engine.cache.invalidate();
         self.errors
+    }
+
+    /// Moves the time on to `time` -- every cue up to and at it already
+    /// applied -- and renders the frame there, sends it to the wire and
+    /// hands the engine to `sample`, as a start at `time` would leave it.
+    /// Pose memory is then put back as the replay has it, so the replay
+    /// carries on as if no frame had been rendered.
+    fn sample(&mut self, time: Duration, sample: &mut impl FnMut(&EffectEngine, Duration)) {
+        self.trace_until(time, false);
+        let (poses, goals) = (self.engine.poses.clone(), self.engine.goals.clone());
+        self.engine.cache.invalidate();
+        self.engine.render_and_send(Duration::ZERO, time);
+        sample(self.engine, time);
+        self.engine.poses = poses;
+        self.engine.goals = goals;
     }
 
     /// Moves the time on to `time` (see [`EffectEngine::advance`]), the
@@ -2228,9 +2307,9 @@ impl<'a> Replay<'a> {
 
     /// Moves the time on to `time`; while the engine traces the wire
     /// ([`EffectEngine::trace_wire`]), sending it the frame just before each
-    /// effect ending on the way goes, and the frame at `time` before what
-    /// fires there.
-    fn trace_until(&mut self, time: Duration) {
+    /// effect ending on the way goes, and -- with `frame` -- the frame at
+    /// `time` before what fires there.
+    fn trace_until(&mut self, time: Duration, frame: bool) {
         if self.engine.tracing_wire {
             for end in self.engine.ends_until(time) {
                 let from = self.engine.last_song_time.unwrap_or_default();
@@ -2241,9 +2320,28 @@ impl<'a> Replay<'a> {
             }
         }
         self.move_to(time);
-        if self.engine.tracing_wire {
+        if frame && self.engine.tracing_wire {
             self.engine.send_replayed_frame(time);
         }
+    }
+}
+
+/// Whether `effect` may write a channel that is not a level or colour
+/// ([`fades_to_dark`]) -- a position, a strobe, a gobo -- which the rig
+/// holds at its last byte once the effect ends. A static setting only
+/// levels and colours, a colour cycle, rainbow, dimmer, pulse or chase
+/// writes none.
+fn leaves_settings(effect: &EffectInstance) -> bool {
+    match &effect.effect_type {
+        EffectType::Static { parameters, .. } => {
+            parameters.keys().any(|channel| !fades_to_dark(channel))
+        }
+        EffectType::Move { .. } | EffectType::Strobe { .. } => true,
+        EffectType::ColorCycle { .. }
+        | EffectType::Rainbow { .. }
+        | EffectType::Dimmer { .. }
+        | EffectType::Pulse { .. }
+        | EffectType::Chase { .. } => false,
     }
 }
 

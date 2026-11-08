@@ -35,6 +35,11 @@ pub struct Wire {
     bytes: HashMap<(u16, u16), u8>,
     /// The channels the last frame wrote.
     written: HashSet<(u16, u16)>,
+    /// The universes there is an output for, when that is known (the live
+    /// output's profile): a byte for any other goes nowhere, so the wire
+    /// holds none there. `None` -- an offline evaluation -- takes every
+    /// universe as one.
+    outputs: Option<HashSet<u16>>,
 }
 
 impl Wire {
@@ -42,7 +47,13 @@ impl Wire {
     /// now. Answers the levels and colours (of `levels`) the last frame
     /// wrote and this one does not, at 0, to send after it; they are held
     /// at 0 here already.
+    /// A byte for a universe with no output ([`Self::set_outputs`]) is
+    /// not held: it never reaches a universe.
     pub fn send(&mut self, frame: &[DmxCommand], levels: &HashSet<(u16, u16)>) -> Vec<DmxCommand> {
+        let frame: Vec<&DmxCommand> = frame
+            .iter()
+            .filter(|c| self.outputs_to(c.universe))
+            .collect();
         let written: HashSet<(u16, u16)> = frame.iter().map(|c| (c.universe, c.channel)).collect();
         let released: Vec<DmxCommand> = self
             .written
@@ -54,7 +65,7 @@ impl Wire {
                 value: 0,
             })
             .collect();
-        for command in frame.iter().chain(&released) {
+        for command in frame.into_iter().chain(&released) {
             self.bytes
                 .insert((command.universe, command.channel), command.value);
         }
@@ -71,6 +82,25 @@ impl Wire {
     /// The channels the last frame wrote.
     pub fn written(&self) -> &HashSet<(u16, u16)> {
         &self.written
+    }
+
+    /// Sets the universes there is an output for (`None`: every one). The
+    /// bytes held for any other are dropped: they never reached a rig.
+    pub fn set_outputs(&mut self, outputs: Option<HashSet<u16>>) {
+        if let Some(outputs) = &outputs {
+            self.bytes
+                .retain(|(universe, _), _| outputs.contains(universe));
+            self.written
+                .retain(|(universe, _)| outputs.contains(universe));
+        }
+        self.outputs = outputs;
+    }
+
+    /// Whether `universe` has an output, so the wire carries its bytes to
+    /// a rig. A fixture patched on one that does not is dark, whatever
+    /// its effects compute.
+    pub fn outputs_to(&self, universe: u16) -> bool {
+        self.outputs.as_ref().is_none_or(|o| o.contains(&universe))
     }
 }
 
@@ -103,5 +133,26 @@ mod tests {
         assert_eq!(wire.byte(1, 3), None, "never written");
         // Released once: nothing to send again.
         assert!(wire.send(&[], &levels).is_empty());
+    }
+
+    #[test]
+    fn a_universe_with_no_output_holds_nothing() {
+        let mut wire = Wire::default();
+        wire.set_outputs(Some(HashSet::from([1])));
+        let levels = HashSet::from([(1, 1), (2, 1)]);
+        let mut frame = frame(&[(1, 200)]);
+        frame.push(DmxCommand {
+            universe: 2,
+            channel: 1,
+            value: 255,
+        });
+        assert!(wire.send(&frame, &levels).is_empty());
+        assert_eq!((wire.byte(1, 1), wire.byte(2, 1)), (Some(200), None));
+        assert!(!wire.outputs_to(2));
+        assert!(!wire.written().contains(&(2, 1)));
+        // Nothing held there, so nothing to release.
+        let released = wire.send(&[], &levels);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].universe, 1);
     }
 }

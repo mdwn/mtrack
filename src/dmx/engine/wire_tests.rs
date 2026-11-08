@@ -25,8 +25,9 @@ use crate::dmx::ola_client::OlaClientFactory;
 use crate::lighting::timeline::LightingTimeline;
 
 /// An engine on universe 5 with a CMY wash (dimmer, cyan, magenta,
-/// yellow, gobo, zoom at 1-6) and an RGB par (red, green, blue, dimmer,
-/// focus, strobe at 7-12).
+/// yellow, gobo, zoom at 1-6), an RGB par (red, green, blue, dimmer,
+/// focus, strobe at 7-12) and a mover, `spot` (16-bit pan and tilt,
+/// dimmer at 13-17).
 fn rig() -> Result<Engine, Box<dyn Error>> {
     let engine = Engine::new(
         &config::Dmx::new(
@@ -55,6 +56,9 @@ fn rig() -> Result<Engine, Box<dyn Error>> {
         7,
         &["red", "green", "blue", "dimmer", "focus", "strobe"],
     ));
+    let mut spot = crate::testutil::lighting::mover("spot", 13);
+    spot.universe = 5;
+    effects.register_fixture(spot);
     drop(effects);
     Ok(engine)
 }
@@ -221,7 +225,7 @@ const MADE_UP: [(&str, &[&str]); 2] = [
 #[test]
 fn across_made_up_shows_the_state_is_the_wire_on_every_channel() -> Result<(), Box<dyn Error>> {
     for seed in 1..=12 {
-        let source = crate::testutil::lighting::made_up_show(seed, &MADE_UP);
+        let source = crate::testutil::lighting::made_up_show(seed, &MADE_UP, "spot");
         let engine = rig()?;
         play_from(&engine, &source, 0.0);
         let mut secs = 0.0;
@@ -235,5 +239,80 @@ fn across_made_up_shows_the_state_is_the_wire_on_every_channel() -> Result<(), B
         frame(&engine, 1.7);
         assert_state_is_wire(&engine, &format!("seed {seed}, after a seek\n{source}"));
     }
+    Ok(())
+}
+
+#[test]
+fn a_mover_cleared_after_a_move_is_drawn_where_its_bytes_point() -> Result<(), Box<dyn Error>> {
+    // The clear releases pose memory, but the head holds the pan and tilt
+    // it was last sent: the pose drawn is the one the bytes say, not rest.
+    let engine = rig()?;
+    let show = r#"show "song" {
+    @0.000
+    spot: move pan: 90deg, tilt: 45deg, duration: 500ms
+    @1.000
+    clear()
+}
+"#;
+    play_from(&engine, show, 0.0);
+    for secs in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5] {
+        frame(&engine, secs);
+        assert_state_is_wire(&engine, &format!("{secs}s"));
+    }
+    assert!(
+        !engine.effect_engine.lock().poses().contains_key("spot"),
+        "the clear released pose memory"
+    );
+    let snapshot =
+        crate::state::engine_snapshot(&engine.effect_engine.lock(), None, &HashMap::new());
+    let pose = snapshot.poses.iter().find(|p| p.name == "spot").unwrap();
+    assert!(
+        (pose.pan - 90.0).abs() < 0.1 && (pose.tilt - 45.0).abs() < 0.1,
+        "drawn at {}/{}",
+        pose.pan,
+        pose.tilt
+    );
+    // A mover nothing has sent a byte rests.
+    let fresh = rig()?;
+    frame(&fresh, 0.0);
+    let snapshot =
+        crate::state::engine_snapshot(&fresh.effect_engine.lock(), None, &HashMap::new());
+    let pose = snapshot.poses.iter().find(|p| p.name == "spot").unwrap();
+    assert_eq!((pose.pan, pose.tilt), (0.0, 0.0));
+    Ok(())
+}
+
+#[test]
+fn a_fixture_on_a_universe_with_no_output_reads_dark() -> Result<(), Box<dyn Error>> {
+    // The profile configures universe 5 only: a fixture patched on 6 puts
+    // no light out, whatever its effects compute, and its state says so.
+    let engine = rig()?;
+    engine
+        .effect_engine
+        .lock()
+        .register_fixture(crate::testutil::lighting::generic(
+            "stray",
+            6,
+            1,
+            &["dimmer", "red", "gobo"],
+        ));
+    let show = r#"show "song" {
+    @0.000
+    stray: static, dimmer: 100%, red: 100%, gobo: 50%, duration: 5s
+    par: static, dimmer: 100%, red: 100%, duration: 5s
+}
+"#;
+    play_from(&engine, show, 0.0);
+    frame(&engine, 0.0);
+    frame(&engine, 1.0);
+    let state = state(&engine);
+    let stray = &state["stray"];
+    assert_eq!(
+        (stray["dimmer"], stray["red"], stray["gobo"]),
+        (0, 0, 0),
+        "nothing reaches universe 6"
+    );
+    assert_eq!(state["par"]["red"], 255, "universe 5 is lit");
+    assert_eq!(engine.effect_engine.lock().wire().byte(6, 1), None);
     Ok(())
 }

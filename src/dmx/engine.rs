@@ -272,7 +272,10 @@ impl Engine {
                 None
             };
 
-        let ee = EffectEngine::new();
+        let mut ee = EffectEngine::new();
+        // A fixture patched on a universe with no output here holds
+        // nothing: the wire keeps no bytes for it, and its state reads dark.
+        ee.set_outputs(Some(universes.keys().copied().collect()));
         let update_subphase = ee.update_subphase();
         let effect_engine = Arc::new(Mutex::new(ee));
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =

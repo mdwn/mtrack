@@ -112,7 +112,6 @@ pub(crate) fn apply_test_overlay(
     overlay: &TestOverlay,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) -> Vec<String> {
-    use crate::lighting::effects::{degrees_from_bytes, PhysicalParameter, Pose};
     let bytes: HashMap<u16, u8> = overlay.channels.iter().copied().collect();
     let read = |universe: u16, channel: u16| {
         (universe == overlay.universe)
@@ -120,10 +119,30 @@ pub(crate) fn apply_test_overlay(
             .flatten()
     };
     let touched = lay_bytes(fixtures, registry, read, Fill::Covered);
-    for name in &touched {
-        let info = &registry[name];
+    // A covered pan or tilt turns the head.
+    poses_from_bytes(poses, &touched, registry, read);
+    touched
+}
+
+/// Turns each of `names` to the pan and tilt its bytes (`read`: universe,
+/// 1-based channel) say, decoded through its own channel definitions: the
+/// one reading of a pose off DMX bytes, for a fixture test's
+/// ([`apply_test_overlay`]) and the rig's ([`shown_poses_on_wire`]). A
+/// fixture neither of whose coarse pan and tilt bytes is read keeps the
+/// pose it has (or has none); one with only one of them read keeps the
+/// other axis, at rest where it had no pose.
+fn poses_from_bytes<'a>(
+    poses: &mut HashMap<String, crate::lighting::effects::Pose>,
+    names: impl IntoIterator<Item = &'a String>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    read: impl Fn(u16, u16) -> Option<u8>,
+) {
+    use crate::lighting::effects::{degrees_from_bytes, PhysicalParameter, Pose};
+    for name in names {
+        let Some(info) = registry.get(name) else {
+            continue;
+        };
         let at = |offset: u16| read(info.universe, info.dmx_channel(offset)?);
-        // A covered pan or tilt turns the head.
         let mut pose = poses.get(name).copied().unwrap_or(Pose {
             pan: 0.0,
             tilt: 0.0,
@@ -147,7 +166,29 @@ pub(crate) fn apply_test_overlay(
             poses.insert(name.clone(), pose);
         }
     }
-    touched
+}
+
+/// The poses the rig shows ([`EffectEngine::shown_poses`]), with each
+/// mover pose memory has no pose for -- a clear released it, its effect
+/// long over -- where the pan and tilt bytes the wire holds point it: the
+/// head stays where it was last sent, so its beam is drawn there, as its
+/// channels say. A mover pose memory holds keeps that pose (a move's own,
+/// at full precision); one no frame has sent a pan or tilt byte rests.
+pub(crate) fn shown_poses_on_wire(
+    engine: &EffectEngine,
+) -> HashMap<String, crate::lighting::effects::Pose> {
+    let mut poses = engine.shown_poses().clone();
+    let registry = engine.get_fixture_registry();
+    let wire = engine.wire();
+    let unposed: Vec<String> = registry
+        .iter()
+        .filter(|(name, info)| info.parent.is_none() && !poses.contains_key(*name))
+        .map(|(name, _)| name.clone())
+        .collect();
+    poses_from_bytes(&mut poses, &unposed, registry, |universe, channel| {
+        wire.byte(universe, channel)
+    });
+    poses
 }
 
 /// Which channels of a fixture [`lay_bytes`] lays a byte on.
@@ -273,7 +314,8 @@ fn lay_bytes(
 /// channel nothing drives any more holds the last byte it was sent -- a
 /// gobo or a zoom an effect over left set -- and the state says so, as
 /// it does for one something drives. A fixture no frame has written a
-/// byte of is left as the state has it.
+/// byte of is left as the state has it; one patched on a universe the
+/// rig has no output for reads 0 on every channel, as nothing reaches it.
 ///
 /// [`Wire`]: crate::lighting::engine::Wire
 fn attach_wire(
@@ -284,9 +326,41 @@ fn attach_wire(
     lay_bytes(
         fixtures,
         registry,
-        |universe, channel| wire.byte(universe, channel),
+        // A universe with no output holds nothing: the fixture is dark.
+        |universe, channel| match wire.outputs_to(universe) {
+            true => wire.byte(universe, channel),
+            false => Some(0),
+        },
         Fill::Fixture,
     );
+}
+
+/// Adds every fixture of `registry` that `fixtures` has no snapshot of,
+/// each channel at 0, under the names [`attach_wire`] gives a fixture's
+/// channels -- one reading, [`lay_bytes`], of a fixture whose every byte
+/// is 0 -- so a fixture nothing touched names its channels as one the
+/// rig wrote does. A cell's sub-fixture is its fixture's, not one of its
+/// own.
+pub(crate) fn fill_dark_fixtures(
+    fixtures: &mut Vec<FixtureSnapshot>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    let mut dark = Vec::new();
+    lay_bytes(&mut dark, registry, |_, _| Some(0), Fill::Fixture);
+    // A fixture with no channels at all is still there, dark.
+    for (name, info) in registry {
+        if info.parent.is_none() && !dark.iter().any(|d: &FixtureSnapshot| &d.name == name) {
+            dark.push(FixtureSnapshot {
+                strobe_hz: None,
+                name: name.clone(),
+                channels: HashMap::new(),
+                cells: Default::default(),
+            });
+        }
+    }
+    dark.retain(|d| !fixtures.iter().any(|f| f.name == d.name));
+    fixtures.extend(dark);
+    fixtures.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 /// The farthest a beam footprint is drawn from its fixture, meters: a
@@ -426,11 +500,11 @@ pub(crate) fn engine_snapshot(
     active_effects.sort();
     let (poses, under_test) = match overlay {
         None => (
-            compute_pose_snapshots(engine.shown_poses(), registry),
+            compute_pose_snapshots(&shown_poses_on_wire(engine), registry),
             Vec::new(),
         ),
         Some(overlay) => {
-            let mut poses = engine.shown_poses().clone();
+            let mut poses = shown_poses_on_wire(engine);
             let under_test = apply_test_overlay(&mut fixtures, &mut poses, overlay, registry);
             attach_strobe_rates(&mut fixtures, registry, StrobeRates::Live);
             (compute_pose_snapshots(&poses, registry), under_test)

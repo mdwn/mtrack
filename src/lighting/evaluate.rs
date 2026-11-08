@@ -18,19 +18,21 @@
 //! output, or wall-clock waiting. Verifying a show otherwise means playing the
 //! song in real time through the PA and the rig, once per check.
 //!
-//! Each requested time is evaluated independently against a fresh engine, by
-//! the same start the seek path uses: replay the cue history up to T through
-//! the engine, then render one frame and snapshot it as a live engine is.
+//! The requested times are read off one replay of the cue history through a
+//! fresh engine, by the same rules the seek path's start uses: at each time,
+//! in order, the cues up to and at it are in, one frame renders and is
+//! snapshot as a live engine is. A later time is the earlier one replayed
+//! on, which is what a start there replays from the top, so each reads as if
+//! evaluated alone: `[10.0, 200.0]` reads as `[200.0, 10.0]` does, and
+//! neither perturbs the other.
 //! The replay sends the rig the frames playing through would have (see
 //! `EffectEngine::trace_wire`), so a channel an effect over before T left set
 //! -- a gobo, a zoom -- reads as the rig holds it, as it does live.
-//! Nothing accumulates between samples, so evaluating `[10.0, 200.0]` costs the
-//! same as `[200.0, 10.0]` and neither perturbs the other.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::lighting::effects::{is_multiplier_channel, EffectInstance, EffectLayer, FixtureInfo};
+use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
 use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
@@ -122,39 +124,40 @@ pub fn evaluate_show<F>(
 where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
+    let Some(&last) = times.iter().max() else {
+        return Vec::new();
+    };
     let mut timeline = LightingTimeline::new(shows);
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
-    times
-        .iter()
-        .map(|&time| {
-            let mut engine = EffectEngine::new();
-            engine.set_tempo_map(tempo_map.clone());
-            engine.set_focus_points(focus_points.clone());
-            for fixture in fixtures {
-                engine.register_fixture(fixture.clone());
-            }
-            // The rig as playing the show through from its start leaves it:
-            // what each frame up to `time` sent, a gobo an effect over
-            // before then left set still set.
-            engine.trace_wire();
+    let mut engine = EffectEngine::new();
+    engine.set_tempo_map(tempo_map);
+    engine.set_focus_points(focus_points.clone());
+    for fixture in fixtures {
+        engine.register_fixture(fixture.clone());
+    }
+    // The rig as playing the show through from its start leaves it: what
+    // each frame up to each time sent, a gobo an effect over before then
+    // left set still set.
+    engine.trace_wire();
 
-            // Start from everything before `time`, then fire the cues
-            // landing exactly on it. `start_at` stops short of `time` by
-            // design, so both halves are needed for a cue at the requested
-            // instant to count.
-            start_from(&mut engine, timeline.start_at(time), &mut resolve_groups);
-            let now = timeline.update(time);
-            apply_timeline_update(&mut engine, now, &mut resolve_groups);
+    // Every cue up to the last time asked for and at it: `start_at` stops
+    // short of its time by design, the update fires the cues landing on it.
+    let mut history = timeline.start_at(last);
+    history.update.steps.extend(timeline.update(last).steps);
+    history.map_effects(&mut resolve_groups);
 
-            // Render a single frame at `time`. A zero delta keeps the engine's
-            // clock exactly where the history left it.
-            if engine.update(Duration::ZERO, Some(time)).is_ok() {
-                let frame = engine.last_commands().to_vec();
-                engine.send(&frame);
-            }
-            snapshot(&engine, time)
-        })
-        .collect()
+    // One replay, read at each time in order: a later time is the earlier
+    // one played on, as a start there would replay it from the top.
+    let mut ascending = times.to_vec();
+    ascending.sort();
+    ascending.dedup();
+    let mut sampled: HashMap<Duration, Evaluation> = HashMap::with_capacity(ascending.len());
+    // As with a live start, an effect that will not start (a cue targeting
+    // a group with no fixtures in this venue) is no reason to abandon it.
+    let _ = engine.replay_sampled(history, &ascending, |engine, time| {
+        sampled.insert(time, snapshot(engine, time));
+    });
+    times.iter().map(|time| sampled[time].clone()).collect()
 }
 
 /// The shows a song registers: every show its `.light` files hold, in file
@@ -319,37 +322,6 @@ pub fn evaluate_with_system(
     })
 }
 
-/// Adds every known fixture that no effect is driving, with all its channels at
-/// zero.
-///
-/// The engine only holds state for fixtures something is currently touching, so
-/// without this a dark fixture is simply missing — indistinguishable from one
-/// that is not in the venue at all. "Par2 is dark" and "Par2 does not exist"
-/// are very different answers when you are checking a show's coverage.
-fn fill_dark_fixtures<'a>(
-    snapshots: &mut Vec<FixtureSnapshot>,
-    known: impl Iterator<Item = &'a FixtureInfo>,
-) {
-    for info in known {
-        // A cell's sub-fixture is its fixture's, not a fixture of its own.
-        if info.parent.is_some() || snapshots.iter().any(|s| s.name == info.name) {
-            continue;
-        }
-        snapshots.push(FixtureSnapshot {
-            strobe_hz: None,
-            cells: Default::default(),
-            name: info.name.clone(),
-            channels: info
-                .channels
-                .keys()
-                .filter(|name| !is_multiplier_channel(name))
-                .map(|name| (name.clone(), 0u8))
-                .collect(),
-        });
-    }
-    snapshots.sort_by(|a, b| a.name.cmp(&b.name));
-}
-
 /// Snapshots a running engine into the same shape [`evaluate_show`] produces.
 ///
 /// This is the live twin of offline evaluation: predicted and actual state come
@@ -412,9 +384,14 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         engine.wire(),
         crate::state::StrobeRates::Instant,
     );
-    fill_dark_fixtures(&mut fixtures, registry.values());
+    // The engine only holds state for fixtures something is touching, so
+    // without this a dark fixture would be missing -- indistinguishable
+    // from one not in the venue. "Par2 is dark" and "Par2 does not exist"
+    // are different answers when checking a show's coverage.
+    crate::state::fill_dark_fixtures(&mut fixtures, registry);
 
-    let poses = crate::state::compute_pose_snapshots(engine.shown_poses(), registry);
+    let poses =
+        crate::state::compute_pose_snapshots(&crate::state::shown_poses_on_wire(engine), registry);
     Evaluation {
         time: at,
         fixtures,
@@ -440,7 +417,9 @@ pub(crate) fn apply_timeline_update<F>(
 }
 
 /// Starts a fresh engine from a seek's history, as the live start paths do
-/// (see [`EffectEngine::start_from`]), its groups resolved first.
+/// (see [`EffectEngine::start_from`]), its groups resolved first: for tests
+/// of the live start against an evaluation.
+#[cfg(test)]
 pub(crate) fn start_from<F>(
     engine: &mut EffectEngine,
     mut history: crate::lighting::timeline::SeekHistory,
@@ -908,11 +887,8 @@ show "T" {
         loop {
             let update = timeline.update(now);
             apply_timeline_update(&mut engine, update, &mut |e| e);
-            if engine.update(step, Some(now)).is_ok() {
-                // Out to the rig, as the live output sends it.
-                let frame = engine.last_commands().to_vec();
-                engine.send(&frame);
-            }
+            // Out to the rig, as the live output sends it.
+            engine.render_and_send(step, now);
 
             if times.contains(&now) {
                 sampled.push((now, snapshot(&engine, now).fixtures));
@@ -1104,10 +1080,11 @@ show "T" {
                 &["dimmer", "red", "green", "blue", "focus", "strobe"],
             ),
         ];
-        let fixtures = wire_rig();
+        let mut fixtures = wire_rig();
+        fixtures.push(crate::testutil::lighting::mover("spot", 13));
         let times: Vec<Duration> = (0..=36).map(|n| Duration::from_millis(n * 250)).collect();
         for seed in 1..=12 {
-            let source = crate::testutil::lighting::made_up_show(seed, &MADE_UP);
+            let source = crate::testutil::lighting::made_up_show(seed, &MADE_UP, "spot");
             let stepped = play_through(&source, &fixtures, &times);
             let evaluated = evaluate_show(
                 shows(&source),
@@ -1126,7 +1103,60 @@ show "T" {
                     .collect();
                 assert_eq!(want, got, "seed {seed} at {time:?}\n{source}");
             }
+            // One time asked alone reads as it does among the others: the
+            // replay they share carries nothing over from an earlier time.
+            for i in [3, 17, 30] {
+                let alone = &evaluate_show(
+                    shows(&source),
+                    &fixtures,
+                    &HashMap::new(),
+                    None,
+                    &times[i..=i],
+                    |e| e,
+                )[0];
+                let fixtures_of = |e: &Evaluation| -> Vec<_> {
+                    e.fixtures
+                        .iter()
+                        .map(|f| (f.name.clone(), f.channels.clone()))
+                        .collect()
+                };
+                assert_eq!(
+                    fixtures_of(alone),
+                    fixtures_of(&evaluated[i]),
+                    "seed {seed} at {:?} alone\n{source}",
+                    times[i]
+                );
+                let poses = |e: &Evaluation| -> Vec<_> {
+                    e.poses
+                        .iter()
+                        .map(|p| (p.name.clone(), p.pan, p.tilt))
+                        .collect()
+                };
+                assert_eq!(poses(alone), poses(&evaluated[i]));
+            }
         }
+    }
+
+    #[test]
+    fn a_mover_cleared_after_a_move_is_drawn_where_its_bytes_point() {
+        // The clear releases pose memory; the head holds the pan and tilt
+        // it was last sent, and the pose says so, as live.
+        let mut fixtures = wire_rig();
+        fixtures.push(crate::testutil::lighting::mover("spot", 13));
+        let source = "show \"T\" {\n    @0.000\n    spot: move pan: 90deg, tilt: 45deg, duration: 500ms\n    @1.000\n    clear()\n}\n";
+        let evaluation = &eval(source, &fixtures, &[1.5])[0];
+        let pose = evaluation.poses.iter().find(|p| p.name == "spot").unwrap();
+        assert!(
+            (pose.pan - 90.0).abs() < 0.1 && (pose.tilt - 45.0).abs() < 0.1,
+            "drawn at {}/{}",
+            pose.pan,
+            pose.tilt
+        );
+        // Never moved: at rest.
+        let source = "show \"T\" {\n    @0.000\n    par: static, red: 100%, duration: 5s\n}\n";
+        let evaluation = &eval(source, &fixtures, &[1.0])[0];
+        let pose = evaluation.poses.iter().find(|p| p.name == "spot").unwrap();
+        assert_eq!((pose.pan, pose.tilt), (0.0, 0.0));
     }
 
     #[test]

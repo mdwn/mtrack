@@ -30,7 +30,8 @@ fn run_frames(tl: &mut LightingTimeline, engine: &mut EffectEngine, from_ms: u64
         let t = Duration::from_millis(ms);
         let u = tl.update(t);
         apply_timeline_update(engine, u, &mut |e| e);
-        let _ = engine.update(step, Some(t));
+        // Out to the rig, as the live output sends it.
+        engine.render_and_send(step, t);
         ms += 10;
     }
 }
@@ -424,9 +425,14 @@ fn compare_heads(
                     "{name} {head} seek {seek} at {at}: live {l:?} seek {s:?}"
                 ));
             }
-            // Evaluate reports a head with no pose at rest, at 0.
+            // Evaluate draws a head as the live snapshot does: one with no
+            // pose where its held pan points (a clear released it), else at
+            // rest, at 0.
+            let drawn = crate::state::shown_poses_on_wire(&live)
+                .get(head)
+                .map(|pose| pose.pan);
             let e = eval_pan(src, fixtures, at, head);
-            if !close(l.or(Some(0.0)), e) {
+            if !close(l.or(drawn).or(Some(0.0)), e) {
                 bad.push(format!("{name} {head} eval at {at}: live {l:?} eval {e:?}"));
             }
         }
