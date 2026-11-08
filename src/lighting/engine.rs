@@ -707,11 +707,15 @@ impl EffectEngine {
         }
     }
 
-    /// Renders the frame at `song_time` and sends it to the wire, leaving
-    /// pose memory as the history being replayed has it.
-    fn send_replayed_frame(&mut self, song_time: Duration) {
+    /// Renders the frame at `song_time`, sends it to the wire and hands the
+    /// engine to `read`, then puts pose memory back as the history being
+    /// replayed has it, so the replay carries on as if no frame had been
+    /// rendered: a traced frame's and a sampled one's.
+    fn send_replayed_frame(&mut self, song_time: Duration, read: impl FnOnce(&EffectEngine)) {
         let (poses, goals) = (self.poses.clone(), self.goals.clone());
+        self.cache.invalidate();
         self.render_and_send(Duration::ZERO, song_time);
+        read(self);
         self.poses = poses;
         self.goals = goals;
     }
@@ -1738,29 +1742,14 @@ impl EffectEngine {
         mut sample: impl FnMut(&EffectEngine, Duration),
     ) -> Vec<EffectError> {
         let mut replay = Replay::new(self, history.at);
-        let mut steps = history.update.steps.into_iter().peekable();
-        for &at in times {
-            while let Some(&(time, _)) = steps.peek().filter(|(time, _)| *time <= at) {
-                let group: Vec<Step> = std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
-                    .map(|(_, step)| step)
-                    .collect();
-                replay.at(time, group);
-            }
-            replay.sample(at, &mut sample);
-        }
+        replay.play(history.update.steps, times, &mut sample);
         replay.errors
     }
 
     /// Replays `history` in this engine, up to its start point.
     fn replay(&mut self, history: crate::lighting::timeline::SeekHistory) -> Vec<EffectError> {
         let mut replay = Replay::new(self, history.at);
-        let mut steps = history.update.steps.into_iter().peekable();
-        while let Some(&(time, _)) = steps.peek() {
-            let group: Vec<Step> = std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
-                .map(|(_, step)| step)
-                .collect();
-            replay.at(time, group);
-        }
+        replay.play(history.update.steps, &[], &mut |_, _| {});
         replay.finish()
     }
 
@@ -2258,17 +2247,52 @@ impl<'a> Replay<'a> {
         }
         // While tracing, the frame here goes to the wire only where what
         // fires can stop a byte being written: a layer command (a clear, a
-        // release), a stopped sequence, a move taking heads from another.
-        // An effect starting stops nothing: every byte written before it is
-        // still written after, until a traced end, cue or sample.
-        let stops = steps.iter().any(|step| match step {
-            Step::Start(effect) => matches!(effect.effect_type, EffectType::Move { .. }),
-            Step::Command(_) | Step::Stop(_) => true,
-        });
+        // master) or a stopped sequence. An effect starting stops nothing:
+        // every byte written before it is still written after, until a
+        // traced end, cue or sample. That holds for a move taking a head
+        // from another too: it writes the same pan and tilt from the same
+        // instant, and pose memory, which it starts from, moves on without
+        // a frame.
+        let stops = steps
+            .iter()
+            .any(|step| matches!(step, Step::Command(_) | Step::Stop(_)));
         self.trace_until(time, stops);
         for step in steps {
             if let Err(e) = self.engine.apply_step(step) {
                 self.errors.push(e);
+            }
+        }
+    }
+
+    /// Applies `steps` (in time order) cue time by cue time ([`Self::at`]),
+    /// and at each of `times` (ascending), once every step up to and at it
+    /// is in, [`Self::sample`]s the engine there: the one walk through a
+    /// replay's steps.
+    fn play(
+        &mut self,
+        steps: Vec<(Duration, Step)>,
+        times: &[Duration],
+        sample: &mut impl FnMut(&EffectEngine, Duration),
+    ) {
+        let mut steps = steps.into_iter().peekable();
+        let mut times = times.iter().copied().peekable();
+        loop {
+            let next_step = steps.peek().map(|&(time, _)| time);
+            let next_time = times.peek().copied();
+            // A step at a sampled time goes in before the sample.
+            match (next_step, next_time) {
+                (Some(time), at) if at.is_none_or(|at| time <= at) => {
+                    let group: Vec<Step> =
+                        std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
+                            .map(|(_, step)| step)
+                            .collect();
+                    self.at(time, group);
+                }
+                (_, Some(at)) => {
+                    times.next();
+                    self.sample(at, sample);
+                }
+                (_, None) => break,
             }
         }
     }
@@ -2287,12 +2311,8 @@ impl<'a> Replay<'a> {
     /// carries on as if no frame had been rendered.
     fn sample(&mut self, time: Duration, sample: &mut impl FnMut(&EffectEngine, Duration)) {
         self.trace_until(time, false);
-        let (poses, goals) = (self.engine.poses.clone(), self.engine.goals.clone());
-        self.engine.cache.invalidate();
-        self.engine.render_and_send(Duration::ZERO, time);
-        sample(self.engine, time);
-        self.engine.poses = poses;
-        self.engine.goals = goals;
+        self.engine
+            .send_replayed_frame(time, |engine| sample(engine, time));
     }
 
     /// Moves the time on to `time` (see [`EffectEngine::advance`]), the
@@ -2315,13 +2335,13 @@ impl<'a> Replay<'a> {
                 let from = self.engine.last_song_time.unwrap_or_default();
                 let before = end.saturating_sub(JUST_BEFORE).max(from);
                 self.move_to(before);
-                self.engine.send_replayed_frame(before);
+                self.engine.send_replayed_frame(before, |_| {});
                 self.move_to(end);
             }
         }
         self.move_to(time);
         if frame && self.engine.tracing_wire {
-            self.engine.send_replayed_frame(time);
+            self.engine.send_replayed_frame(time, |_| {});
         }
     }
 }

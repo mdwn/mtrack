@@ -173,13 +173,21 @@ fn poses_from_bytes<'a>(
 /// long over -- where the pan and tilt bytes the wire holds point it: the
 /// head stays where it was last sent, so its beam is drawn there, as its
 /// channels say. A mover pose memory holds keeps that pose (a move's own,
-/// at full precision); one no frame has sent a pan or tilt byte rests.
+/// at full precision); one no frame has sent a pan or tilt byte rests, as
+/// does one on a universe the rig has no output for.
 pub(crate) fn shown_poses_on_wire(
     engine: &EffectEngine,
 ) -> HashMap<String, crate::lighting::effects::Pose> {
     let mut poses = engine.shown_poses().clone();
     let registry = engine.get_fixture_registry();
     let wire = engine.wire();
+    // A head on a universe with no output was never sent where pose
+    // memory has it: its channels read 0, and it is drawn at rest.
+    poses.retain(|name, _| {
+        registry
+            .get(name)
+            .is_none_or(|info| wire.outputs_to(info.universe))
+    });
     let unposed: Vec<String> = registry
         .iter()
         .filter(|(name, info)| info.parent.is_none() && !poses.contains_key(*name))
@@ -333,6 +341,15 @@ fn attach_wire(
         },
         Fill::Fixture,
     );
+    // Nor does it strobe.
+    for snapshot in fixtures.iter_mut() {
+        if registry
+            .get(&snapshot.name)
+            .is_some_and(|info| !wire.outputs_to(info.universe))
+        {
+            snapshot.strobe_hz = None;
+        }
+    }
 }
 
 /// Adds every fixture of `registry` that `fixtures` has no snapshot of,

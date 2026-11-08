@@ -29,9 +29,10 @@ show "Optional Name" {
 - Multiple effects under the same `@time` can be stacked by repeating
   `group: effect …` on the next line under the same timestamp.
 - A colour alone does not light a fixture that has a dimmer channel: its
-  dimmer holds 0 until something sends it a level. Give a `static` (or
-  `cycle`, `chase`) on such fixtures `dimmer: 100%` (or `intensity:`), or
-  the show comes out dark, as `evaluate_show` reports it (`dark: true`).
+  dimmer holds 0 until something sends it a level. Light such fixtures with
+  a `static` with `dimmer:`/`intensity:`, or a `dimmer` effect on another
+  layer under a `cycle`; a `chase` writes the dimmer itself. Otherwise the
+  show comes out dark, as `evaluate_show` reports it (`dark: true`).
 
 ### Effects
 

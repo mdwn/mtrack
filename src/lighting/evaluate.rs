@@ -1095,13 +1095,45 @@ show "T" {
                 |e| e,
             );
             for (i, time) in times.iter().enumerate() {
-                let want: Vec<_> = stepped[i].iter().map(|f| (&f.name, &f.channels)).collect();
-                let got: Vec<_> = evaluated[i]
-                    .fixtures
-                    .iter()
-                    .map(|f| (&f.name, &f.channels))
-                    .collect();
-                assert_eq!(want, got, "seed {seed} at {time:?}\n{source}");
+                let names = |fixtures: &[FixtureSnapshot]| -> Vec<_> {
+                    fixtures
+                        .iter()
+                        .map(|f| {
+                            let mut channels: Vec<_> = f.channels.keys().cloned().collect();
+                            channels.sort();
+                            (f.name.clone(), channels)
+                        })
+                        .collect()
+                };
+                let fixtures = &evaluated[i].fixtures;
+                assert_eq!(
+                    names(&stepped[i]),
+                    names(fixtures),
+                    "seed {seed} at {time:?}"
+                );
+                for (want, got) in stepped[i].iter().zip(fixtures) {
+                    for (channel, &w) in &want.channels {
+                        let g = got.channels[channel];
+                        // A setting still fading when its effect ends or
+                        // is cut holds what its last frame sent: played, a
+                        // frame (5 ms) before; evaluated, at the end or cut.
+                        // The generated fades take at least 150 ms, so a
+                        // frame moves a byte at most 255 * 5 / 150 = 8.5.
+                        // A fine byte is that motion's remainder: any.
+                        let slack = if channel.ends_with("_fine") {
+                            u8::MAX
+                        } else if crate::lighting::channels::is_level_channel(channel) {
+                            0
+                        } else {
+                            9
+                        };
+                        assert!(
+                            w.abs_diff(g) <= slack,
+                            "seed {seed} at {time:?}: {}.{channel} played {w}, evaluated {g}\n{source}",
+                            want.name
+                        );
+                    }
+                }
             }
             // One time asked alone reads as it does among the others: the
             // replay they share carries nothing over from an earlier time.

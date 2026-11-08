@@ -294,10 +294,15 @@ fn a_fixture_on_a_universe_with_no_output_reads_dark() -> Result<(), Box<dyn Err
             1,
             &["dimmer", "red", "gobo"],
         ));
+    let mut lost = crate::testutil::lighting::mover("lost", 10);
+    lost.universe = 6;
+    engine.effect_engine.lock().register_fixture(lost);
     let show = r#"show "song" {
     @0.000
     stray: static, dimmer: 100%, red: 100%, gobo: 50%, duration: 5s
+    stray: strobe frequency: 5, duration: 5s, layer: foreground
     par: static, dimmer: 100%, red: 100%, duration: 5s
+    lost: move pan: 90deg, tilt: 45deg, duration: 200ms
 }
 "#;
     play_from(&engine, show, 0.0);
@@ -312,5 +317,18 @@ fn a_fixture_on_a_universe_with_no_output_reads_dark() -> Result<(), Box<dyn Err
     );
     assert_eq!(state["par"]["red"], 255, "universe 5 is lit");
     assert_eq!(engine.effect_engine.lock().wire().byte(6, 1), None);
+    // Nor does it strobe or point anywhere: a mover there is drawn at rest,
+    // whatever pose memory says.
+    let effects = engine.effect_engine.lock();
+    assert!(effects.poses().contains_key("lost"));
+    let evaluation = crate::lighting::evaluate::snapshot(&effects, Duration::from_secs(1));
+    let stray = evaluation
+        .fixtures
+        .iter()
+        .find(|f| f.name == "stray")
+        .unwrap();
+    assert_eq!(stray.strobe_hz, None);
+    let pose = evaluation.poses.iter().find(|p| p.name == "lost").unwrap();
+    assert_eq!((pose.pan, pose.tilt), (0.0, 0.0));
     Ok(())
 }
