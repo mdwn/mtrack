@@ -873,12 +873,12 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // First message: metadata
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .unwrap();
 
         // Second message: waveform (from pre-populated cache)
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for waveform message")
             .expect("stream ended")
@@ -908,7 +908,7 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // First message should be the metadata JSON
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for WS message")
             .expect("stream ended")
@@ -934,12 +934,12 @@ mod test {
         let (_, mut read) = ws_stream.split();
 
         // Skip the metadata message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .unwrap();
 
         // Next messages should include a playback update (poller runs at 200ms)
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), read.next())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for playback message")
             .expect("stream ended")

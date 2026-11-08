@@ -176,7 +176,11 @@ impl OutputManager {
         // a live stream" can no longer be confused for each other.
         let (first_result_tx, first_result_rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
 
+        // Streams are timed on the spawning thread's wall clock: a test's,
+        // when it runs on one.
+        let clock = crate::clock::WallClock::current();
         let output_thread = thread::spawn(move || {
+            clock.install();
             let mut first_run = true;
             let mut backoff = REBUILD_BACKOFF_START;
             // Flap accounting. Diagnosis only — see the warning below for why
@@ -223,7 +227,7 @@ impl OutputManager {
                         // A new stream's window starts with it, so a rebuild's
                         // outage cannot stretch one into a warning.
                         underruns.restart_window();
-                        let built_at = std::time::Instant::now();
+                        let built_at = crate::clock::wall_now();
                         if first_run {
                             info!(
                                 "Audio output stream started successfully (direct callback mode)"
@@ -261,14 +265,14 @@ impl OutputManager {
                             // The callback only counts underruns; this thread,
                             // which is not realtime, is where they are told.
                             if let Some(sustained) =
-                                underruns.observe(std::time::Instant::now(), health.underruns())
+                                underruns.observe(crate::clock::wall_now(), health.underruns())
                             {
                                 warn_sustained_underruns(&description, &sustained);
                             }
                         }
 
                         // Drop the stream so we can create a new one.
-                        let lifetime = built_at.elapsed();
+                        let lifetime = crate::clock::wall_now().saturating_duration_since(built_at);
                         drop(stream);
 
                         // A stream that dies as fast as it starts says the buffer
@@ -286,8 +290,10 @@ impl OutputManager {
                         // silence. The storm is ugly, and it is also the recovery.
                         if lifetime < STREAM_FLAPPING_UNDER {
                             flaps += 1;
-                            let due =
-                                last_flap_warn.is_none_or(|at| at.elapsed() >= FLAP_WARN_INTERVAL);
+                            let now = crate::clock::wall_now();
+                            let due = last_flap_warn.is_none_or(|at| {
+                                now.saturating_duration_since(at) >= FLAP_WARN_INTERVAL
+                            });
                             if due {
                                 warn!(
                                     lifetime_ms = lifetime.as_millis() as u64,
@@ -296,7 +302,7 @@ impl OutputManager {
                                      the buffer is likely too small for this machine to \
                                      service reliably"
                                 );
-                                last_flap_warn = Some(std::time::Instant::now());
+                                last_flap_warn = Some(now);
                             }
                         }
                     }
@@ -364,7 +370,7 @@ impl OutputManager {
         if *guard {
             return true;
         }
-        condvar.wait_for(&mut guard, duration);
+        crate::clock::pause(condvar, &mut guard, duration);
         *guard
     }
 }
@@ -509,14 +515,8 @@ mod test {
 
             // Wait on the build count, not on is_alive — the original stream is still
             // alive at this point, so an is_alive check would pass before the thread
-            // has even woken up.
-            //
-            // Backoff is 250ms then 500ms, so allow room for both failed retries plus
-            // the successful third build.
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while std::time::Instant::now() < deadline && handle.build_count() < 4 {
-                thread::sleep(Duration::from_millis(25));
-            }
+            // has even woken up. Backoff is 250ms then 500ms before the third.
+            handle.wait_for_builds(4);
 
             assert!(
                 handle.is_alive(),
@@ -538,8 +538,13 @@ mod test {
         /// POLLERR, so audio delivered is a duty cycle of stream lifetime over
         /// rebuild interval. Throttling was tried and measured — it turned 77%
         /// choppy audio into 2% silence.
+        ///
+        /// On a clock standing still every stream dies as fast as it started,
+        /// so each one flaps, however slowly the runner gets round to it, and
+        /// each fault is triggered once the stream before has been replaced.
         #[test]
         fn a_flapping_stream_is_still_rebuilt_promptly() {
+            let clock = crate::clock::TestClock::start();
             let (factory, handle) = ErrorCapturingFactory::new();
             let mut manager = OutputManager::new(2, 44100).unwrap();
             manager
@@ -547,21 +552,41 @@ mod test {
                 .expect("should start");
             assert_eq!(handle.build_count(), 1);
 
-            for _ in 0..5 {
+            for fault in 1..=5 {
                 handle.trigger_error();
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
-                let want = handle.build_count() + 1;
-                while std::time::Instant::now() < deadline && handle.build_count() < want {
-                    thread::sleep(Duration::from_millis(5));
-                }
+                handle.wait_for_builds(1 + fault);
             }
 
-            assert!(
-                handle.build_count() >= 6,
-                "each fault should still produce a rebuild, got {}",
-                handle.build_count()
+            // One rebuild per fault, none failed and retried after a wait,
+            // and none held back: the output thread asked for no pause.
+            assert_eq!(handle.build_count(), 6);
+            assert_eq!(
+                clock.pauses(),
+                Vec::<Duration>::new(),
+                "the rebuild after a flap waited"
             );
+            drop(manager);
+        }
 
+        /// The control for the test above: a rebuild that fails is retried
+        /// after the backoff, and the output thread's pause is seen on the
+        /// test's clock. Without it, "no pauses" could hold because none
+        /// were ever noted.
+        #[test]
+        fn a_failed_rebuild_pauses_for_the_backoff() {
+            let clock = crate::clock::TestClock::start();
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+
+            handle.fail_next_builds(1);
+            handle.trigger_error();
+            // The failed rebuild, then the retry after the backoff.
+            handle.wait_for_builds(3);
+
+            assert_eq!(clock.pauses(), [REBUILD_BACKOFF_START]);
             drop(manager);
         }
 
@@ -607,8 +632,7 @@ mod test {
             // Simulate a backend error — the output thread should recreate the stream.
             handle.trigger_error();
 
-            // Give the thread time to drop old stream and build a new one.
-            thread::sleep(Duration::from_millis(250));
+            handle.wait_for_builds(2);
             assert_eq!(
                 handle.build_count(),
                 2,

@@ -779,6 +779,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error naming the tracks and channels and showing it on the status page beside the connected
   audio device, which it keeps.
 
+- **The current venue picker waits for the venue list** (#622): on the Lighting area's Groups
+  page, the current venue field was a text input until the venue list arrived, and then a
+  dropdown; a venue typed or picked as the list arrived went into the input the dropdown replaced.
+  Until the list arrives the field is now a disabled dropdown showing the current venue, then the
+  dropdown of venues, or the text input when none are listed.
+
+- **gRPC and MCP controllers log the address they listen on**: `Starting gRPC server on
+  0.0.0.0:43234`, and the MCP server's start line, name the address bound, so a controller
+  configured with `port: 0` names the port the system picked. A controller that cannot bind its
+  port fails before logging that it started.
+
+- **A DMX reload asks olad afresh about its patch**: olad's patch report (the readiness hub, the
+  fit view, the fixture test's warnings) was cached for 10 s per port across the whole process; it
+  is now cached per DMX engine, so a profile reload asks again rather than answering from the
+  engine before it.
+
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
   fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
   red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state

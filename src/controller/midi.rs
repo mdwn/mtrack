@@ -460,7 +460,7 @@ mod test {
         let handle = crate::controller::Driver::monitor_events(&*driver);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         device.stop_watch_events();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, handle)
             .await
             .expect("the driver ran on with nothing watching")?;
         assert!(result.is_err(), "the driver ended as if stopped");
