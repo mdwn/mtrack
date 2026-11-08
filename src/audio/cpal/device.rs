@@ -112,18 +112,22 @@ fn validate_channel_count(
     Ok(())
 }
 
-/// Resolves the output buffer size for the CPAL stream based on the config setting.
-/// Returns `None` for default (let CPAL decide), or `Some(size)` for a fixed frame count.
+/// Resolves the output buffer size for the CPAL stream based on the config setting:
+/// `None` for default (let CPAL decide), or `Some(size)` for a fixed frame count,
+/// with the setting that chose it, which the underrun warning's advice names.
 fn resolve_buffer_size(
     stream_buffer_size: Option<StreamBufferSize>,
     fallback_buffer_size: u32,
     min_supported: Option<u32>,
-) -> Option<u32> {
+) -> (Option<u32>, PeriodSetting) {
     match stream_buffer_size {
-        None => Some(fallback_buffer_size),
-        Some(StreamBufferSize::Default) => None,
-        Some(StreamBufferSize::Min) => min_supported.or(Some(fallback_buffer_size)),
-        Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
+        None => (Some(fallback_buffer_size), PeriodSetting::BufferSize),
+        Some(StreamBufferSize::Default) => (None, PeriodSetting::BackendDefault),
+        Some(StreamBufferSize::Min) => match min_supported {
+            Some(min) => (Some(min), PeriodSetting::Min),
+            None => (Some(fallback_buffer_size), PeriodSetting::MinFallback),
+        },
+        Some(StreamBufferSize::Fixed(n)) => (Some(n as u32), PeriodSetting::Fixed),
     }
 }
 
@@ -675,6 +679,13 @@ trait NodeProbe {
     fn hw_channels(&mut self, card: &str, dev: u16) -> Option<u16>;
 }
 
+/// Whether `device_id` is one of the nodes [`NodeProbe::card_nodes`] probes
+/// for `name`: the node itself, or a raw `hw` node on its `card`.
+fn is_card_node(device_id: &str, name: &str, card: &str) -> bool {
+    device_id.trim() == name.trim()
+        || (is_hw_node(device_id) && card_token(device_id).as_deref() == Some(card))
+}
+
 /// [`NodeProbe`] on this machine.
 struct SystemProbe {
     sample_rate: Option<u32>,
@@ -700,9 +711,7 @@ impl NodeProbe for SystemProbe {
     ) -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
         let mut infos = Vec::new();
         walk_output_devices(|host_id, device, device_id| {
-            let wanted = device_id.trim() == name.trim()
-                || (is_hw_node(&device_id) && card_token(&device_id).as_deref() == Some(card));
-            if wanted {
+            if is_card_node(&device_id, name, card) {
                 if let Some(configs) = output_configs(&device) {
                     infos.push(device_info(host_id, device_id, &configs));
                 }
@@ -1214,13 +1223,24 @@ impl Device {
                 "Opening a virtual node at the width of the hardware behind it"
             );
         } else if virtual_node && !channels_known && reported >= CPAL_CHANNEL_CLAMP {
-            warn!(
-                device = %resolved.name,
-                channels,
-                "Could not read the channel count of the hardware behind this virtual \
-                 node (busy, absent, or no card named); opening it at cpal's clamped \
-                 width, and track mappings are not checked against the hardware"
-            );
+            // A node naming no card (a desktop's `alsa:default`) has no
+            // hardware to ask, every startup: that is how it is, not a fault.
+            if card_token(name).is_some() {
+                warn!(
+                    device = %resolved.name,
+                    channels,
+                    "Could not read the channel count of the hardware behind this virtual \
+                     node (busy or absent); opening it at cpal's clamped width, and track \
+                     mappings are not checked against the hardware"
+                );
+            } else {
+                info!(
+                    device = %resolved.name,
+                    channels,
+                    "This virtual node names no card, so its hardware's channel count is \
+                     unknown; opening it at cpal's clamped width"
+                );
+            }
         }
         let mut device = Device::placeholder(resolved, channels)?;
         device.channels_known = channels_known;
@@ -1293,33 +1313,27 @@ impl Device {
         // Resolve stream buffer size for CPAL (default / min / fixed)
         let min_size =
             min_supported_buffer_size(&device.device, &device.target_format, device.max_channels);
-        let output_buffer_size = resolve_buffer_size(
+        let (output_buffer_size, period_setting) = resolve_buffer_size(
             config.stream_buffer_size(),
             config.buffer_size() as u32,
             min_size,
         );
-        if let (Some(StreamBufferSize::Min), Some(s)) =
-            (config.stream_buffer_size(), output_buffer_size)
-        {
-            if min_size.is_some() {
-                // Report the period in milliseconds as well as frames. "12
-                // frames" is what the MAT's minimum resolves to on the test rig
-                // and it means nothing on its own; "0.2ms" is immediately legible
-                // as the callback deadline it actually is. `min` reads as a
-                // recommendation, so the number behind it should not need
-                // arithmetic to interpret.
-                let period_ms = crate::audio::health::callback_period_ms(
-                    Some(s),
-                    device.target_format.sample_rate,
-                )
-                .unwrap_or(0.0);
-                info!(
-                    stream_buffer_size = s,
-                    period_ms = format!("{period_ms:.2}"),
-                    "Using minimum supported stream buffer size — lowest latency, \
-                     and the least tolerance for scheduling jitter"
-                );
-            }
+        if let (PeriodSetting::Min, Some(s)) = (period_setting, output_buffer_size) {
+            // Report the period in milliseconds as well as frames. "12
+            // frames" is what the MAT's minimum resolves to on the test rig
+            // and it means nothing on its own; "0.2ms" is immediately legible
+            // as the callback deadline it actually is. `min` reads as a
+            // recommendation, so the number behind it should not need
+            // arithmetic to interpret.
+            let period_ms =
+                crate::audio::health::callback_period_ms(Some(s), device.target_format.sample_rate)
+                    .unwrap_or(0.0);
+            info!(
+                stream_buffer_size = s,
+                period_ms = format!("{period_ms:.2}"),
+                "Using minimum supported stream buffer size — lowest latency, \
+                 and the least tolerance for scheduling jitter"
+            );
         }
 
         // Start the output thread with resolved buffer size
@@ -1328,13 +1342,7 @@ impl Device {
             device.name.clone(),
             device.target_format.clone(),
             output_buffer_size,
-            match config.stream_buffer_size() {
-                None => PeriodSetting::BufferSize,
-                Some(StreamBufferSize::Fixed(_)) => PeriodSetting::Fixed,
-                Some(StreamBufferSize::Default) => PeriodSetting::BackendDefault,
-                Some(StreamBufferSize::Min) if min_size.is_some() => PeriodSetting::Min,
-                Some(StreamBufferSize::Min) => PeriodSetting::MinFallback,
-            },
+            period_setting,
         ));
         output_manager.start_output_thread(factory)?;
 
@@ -2019,11 +2027,7 @@ mod test {
                 Ok(self
                     .listing
                     .iter()
-                    .filter(|info| {
-                        info.name == name
-                            || (is_hw_node(&info.name)
-                                && card_token(&info.name).as_deref() == Some(card))
-                    })
+                    .filter(|info| is_card_node(&info.name, name, card))
                     .cloned()
                     .collect())
             }
@@ -2708,15 +2712,21 @@ mod test {
 
         #[test]
         fn none_returns_fallback() {
-            assert_eq!(resolve_buffer_size(None, 256, None), Some(256));
-            assert_eq!(resolve_buffer_size(None, 512, Some(64)), Some(512));
+            assert_eq!(
+                resolve_buffer_size(None, 256, None),
+                (Some(256), PeriodSetting::BufferSize)
+            );
+            assert_eq!(
+                resolve_buffer_size(None, 512, Some(64)),
+                (Some(512), PeriodSetting::BufferSize)
+            );
         }
 
         #[test]
         fn default_returns_none() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Default), 256, None),
-                None
+                (None, PeriodSetting::BackendDefault)
             );
         }
 
@@ -2724,7 +2734,7 @@ mod test {
         fn min_returns_min_supported_when_available() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Min), 256, Some(64)),
-                Some(64)
+                (Some(64), PeriodSetting::Min)
             );
         }
 
@@ -2732,7 +2742,7 @@ mod test {
         fn min_falls_back_when_no_min_supported() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Min), 256, None),
-                Some(256)
+                (Some(256), PeriodSetting::MinFallback)
             );
         }
 
@@ -2740,7 +2750,7 @@ mod test {
         fn fixed_returns_specified_value() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Fixed(128)), 256, Some(64)),
-                Some(128)
+                (Some(128), PeriodSetting::Fixed)
             );
         }
     }
