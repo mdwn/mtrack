@@ -924,6 +924,15 @@ Upgrade notes: what an existing setup can notice. Each is described in full belo
   error naming the tracks and channels and showing it on the status page beside the connected
   audio device, which it keeps.
 
+- **A route node reporting no channel limit takes its card's width**: `alsa:surround71:CARD=MAT,DEV=0`
+  listed as `Channels=64+` on a card every other node lists at 8, and would have opened at 64.
+  ALSA's `surround71` on a USB card is a plug/route chain that accepts any channel count, so cpal
+  reports its clamp, but it is not one of the plugin nodes whose width is borrowed from the `hw`
+  node. Any node naming a card, other than the `hw` node itself, now takes the card's width when
+  its own report is cpal's clamp, by the same rule for the listing and the open: `surround71` lists
+  and opens at 8. Nodes reporting an honest width (`front`, `surround40`) keep it, `dmix` keeps
+  its narrower one, and `alsa:default`, naming no card, stays unknown.
+
 - **Startup log lines lost under systemd**: audio device enumeration silenced ALSA by swapping the
   whole process's stdout and stderr for a pipe, and whatever any other thread wrote in that window
   went into the pipe and was discarded. Started under systemd with olad already running, the DMX
