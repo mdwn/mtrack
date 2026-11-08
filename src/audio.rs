@@ -220,37 +220,14 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
 /// takes turns with them and ALSA's chatter about the devices it passes stays
 /// off stderr. So it must not be called with that guard already held.
 pub fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
-    use ::cpal::traits::{DeviceTrait, HostTrait};
+    cpal::find_input_device(name)
+        .map_err(|e| AudioError::Playback(e.to_string()))?
+        .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
+}
 
-    let _silenced = cpal::silence_enumeration();
-
-    for host_id in ::cpal::available_hosts() {
-        let host =
-            ::cpal::host_from_id(host_id).map_err(|e| AudioError::Playback(e.to_string()))?;
-        let devices = match host.input_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(
-                    host = host_id.name(),
-                    error = %e,
-                    "Failed to list input devices for host"
-                );
-                continue;
-            }
-        };
-
-        for device in devices {
-            let device_id = match device.id() {
-                Ok(id) => id.to_string(),
-                Err(_) => continue,
-            };
-            if device_id.trim() == name.trim() {
-                return Ok(device);
-            }
-        }
-    }
-
-    Err(AudioError::DeviceNotFound(name.to_string()))
+/// Lists the devices that capture audio, input-only ones included.
+pub fn list_input_device_info() -> Result<Vec<cpal::InputDeviceInfo>, AudioError> {
+    cpal::list_input_device_info().map_err(|e| AudioError::Playback(e.to_string()))
 }
 
 /// Finds a cpal output device by name, searching all available hosts.

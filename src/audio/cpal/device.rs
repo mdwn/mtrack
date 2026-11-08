@@ -550,8 +550,58 @@ pub(super) fn resolve_output_device(
 /// The cpal output device called `name`, if there is one: [`resolve_output_device`]
 /// without the configurations, for callers outside the player that open the
 /// device themselves (the hardware harness).
+///
+/// A device whose name matches but which reports no output configurations
+/// (an input-only id, which `devices()` lists too) is skipped: the scan goes on
+/// past it, and if nothing else matches the answer is "not found".
 pub fn find_output_device(name: &str) -> Result<Option<cpal::Device>, Box<dyn Error>> {
     Ok(resolve_output_device(name)?.map(|resolved| resolved.device))
+}
+
+/// The cpal input device called `name`, if there is one. Holds no other device
+/// open, as [`resolve_output_device`] does not.
+pub fn find_input_device(name: &str) -> Result<Option<cpal::Device>, Box<dyn Error>> {
+    let mut found = None;
+    walk_input_devices(|_, device, device_id| {
+        if device_id.trim() != name.trim() {
+            return ControlFlow::Continue(());
+        }
+        found = Some(device);
+        ControlFlow::Break(())
+    })?;
+    Ok(found)
+}
+
+/// An audio device with input channels, as [`list_input_device_info`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDeviceInfo {
+    pub name: String,
+    pub max_channels: u16,
+    pub host_name: String,
+}
+
+/// Lists the devices that capture audio, with their widest input channel
+/// count. Devices reporting no input channels are left out.
+///
+/// [`list_device_info`] lists only devices that play, so an input-only
+/// interface appears here alone.
+pub fn list_input_device_info() -> Result<Vec<InputDeviceInfo>, Box<dyn Error>> {
+    let mut infos = Vec::new();
+    walk_input_devices(|host_id, device, name| {
+        let max_channels = device
+            .supported_input_configs()
+            .map(|configs| configs.map(|c| c.channels()).max().unwrap_or(0))
+            .unwrap_or(0);
+        if max_channels > 0 {
+            infos.push(InputDeviceInfo {
+                name,
+                max_channels,
+                host_name: host_id.name().to_string(),
+            });
+        }
+        ControlFlow::Continue(())
+    })?;
+    Ok(infos)
 }
 
 /// Every host's devices, visited one at a time in host then device order:
@@ -560,20 +610,44 @@ pub fn find_output_device(name: &str) -> Result<Option<cpal::Device>, Box<dyn Er
 /// before anything else is asked of it, so its handle is held no longer
 /// than its id takes to read; a host whose devices will not list is logged
 /// and skipped. `visit` says whether to go on.
+///
+/// Every device a host lists, not only outputs: callers filter on the
+/// output configurations they need.
 fn walk_output_devices(
+    visit: impl FnMut(cpal::HostId, cpal::Device, String) -> ControlFlow<()>,
+) -> Result<(), Box<dyn Error>> {
+    walk_devices("", |host| Ok(Box::new(host.devices()?)), visit)
+}
+
+/// [`walk_output_devices`] over the devices that capture.
+fn walk_input_devices(
+    visit: impl FnMut(cpal::HostId, cpal::Device, String) -> ControlFlow<()>,
+) -> Result<(), Box<dyn Error>> {
+    walk_devices("input ", |host| Ok(Box::new(host.input_devices()?)), visit)
+}
+
+/// One host's devices, as a walk lists them.
+type HostDevices = Box<dyn Iterator<Item = cpal::Device>>;
+
+/// The walk behind [`walk_output_devices`] and [`walk_input_devices`], under
+/// [`silence_enumeration`]. `kind` names the devices in the log line for a
+/// host whose list fails.
+fn walk_devices(
+    kind: &str,
+    list: impl Fn(&cpal::Host) -> Result<HostDevices, cpal::Error>,
     mut visit: impl FnMut(cpal::HostId, cpal::Device, String) -> ControlFlow<()>,
 ) -> Result<(), Box<dyn Error>> {
     // Suppress noisy output here.
     let _silenced = silence_enumeration();
 
     for host_id in cpal::available_hosts() {
-        let host_devices = match cpal::host_from_id(host_id)?.devices() {
+        let host_devices = match list(&cpal::host_from_id(host_id)?) {
             Ok(host_devices) => host_devices,
             Err(e) => {
                 error!(
                     err = e.to_string(),
                     host = host_id.name(),
-                    "Unable to list devices for host"
+                    "Unable to list {kind}devices for host"
                 );
                 continue;
             }
@@ -2213,7 +2287,6 @@ mod test {
 
         /// Counts too: on alsa-lib 1.2.15+ the log handler takes precedence
         /// over the error handler, so the missing PCM is reported here.
-        #[allow(clippy::too_many_arguments)]
         unsafe extern "C" fn count_log(
             _prio: c_int,
             _interface: c_int,
