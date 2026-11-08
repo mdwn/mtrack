@@ -31,6 +31,7 @@ use axum::{
 use serde_json::json;
 
 use super::super::config_io;
+use super::super::safe_path::{SafePathError, VerifiedRoot};
 use super::super::server::WebUiState;
 use super::lighting_writes;
 use crate::lighting;
@@ -253,7 +254,7 @@ pub(crate) fn find_light_files(
         let path = entry.path();
         if path.is_dir() {
             find_light_files(base, &path, results)?;
-        } else if crate::songs::FileKind::of(&path) == crate::songs::FileKind::Lighting {
+        } else if crate::songs::FileKind::is_lighting(&path) {
             let relative = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
@@ -273,6 +274,15 @@ pub(crate) fn find_light_files(
     Ok(())
 }
 
+/// The 404 for a lighting file `name` that is not there.
+fn lighting_file_not_found(name: &str) -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": format!("Lighting file not found: {name}")})),
+    )
+        .into_response()
+}
+
 /// GET /api/lighting/:name — returns the raw DSL content of a .light file.
 ///
 /// The `name` parameter is the relative path within the songs directory (as returned by
@@ -290,11 +300,7 @@ pub(super) async fn get_lighting_file(
     let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
         Ok(p) => p,
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lighting file not found: {}", name)})),
-            )
-                .into_response();
+            return lighting_file_not_found(&name);
         }
     };
 
@@ -314,31 +320,99 @@ pub(super) async fn get_lighting_file(
     }
 }
 
-/// Where lighting file `name` is, or would be written, under the songs root.
-fn resolve_lighting_path(
-    state: &WebUiState,
-    name: &str,
-) -> Result<std::path::PathBuf, super::super::safe_path::SafePathError> {
-    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
+/// The one songs-root rule for a song's light show, written, deleted or
+/// validated, by the web UI and MCP alike: the folder `path` is in is
+/// inside the songs root `songs_root`, canonically, as
+/// [`SafePath::resolve`](super::super::safe_path::SafePath::resolve) holds
+/// every path the lighting endpoints take. A folder not there yet is held
+/// to it by its nearest part that is there, canonicalized (a symlinked
+/// `lighting/` pointing outside is outside), the rest of it plain names
+/// (no `..`, and no link that leads nowhere, which a write would follow).
+///
+/// Answers the folder resolved, joined with `path`'s own name, which is
+/// not resolved: a link there is the link, as the song loader names it,
+/// so its `include`s resolve where the loader resolves them, and a delete
+/// removes the link, never what it leads to. A write follows it, so
+/// [`light_show_to_write`] holds what it leads to as well. 403 outside
+/// the root.
+#[allow(clippy::result_large_err)]
+pub(crate) fn light_show_in_songs_root(
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, SafePathError};
 
-    let root = VerifiedRoot::new(&state.songs_path())?;
-
-    // Resolve the file path under the songs root. For existing files, SafePath::resolve
-    // canonicalizes and verifies containment. For new files, resolve the parent directory
-    // and join the filename to it.
-    let candidate = root.as_path().join(name);
-    match SafePath::resolve(&candidate, &root) {
-        Ok(p) => Ok(p.as_path().to_path_buf()),
-        Err(_) => {
-            // File doesn't exist — resolve the parent and join the filename.
-            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
-                (Some(p), Some(f)) => (p, f),
-                _ => return Err(SafePathError::InvalidName),
-            };
-            let safe_parent = SafePath::resolve(parent, &root)?;
-            Ok(safe_parent.as_path().join(filename))
+    let outside = || SafePathError::OutsideRoot.into_response();
+    let (Some(folder), Some(file_name)) = (path.parent(), path.file_name()) else {
+        return Err(outside());
+    };
+    let mut missing = Vec::new();
+    let mut existing = folder;
+    loop {
+        match SafePath::resolve(existing, root) {
+            Ok(safe) => {
+                let mut resolved = safe.as_path().to_path_buf();
+                resolved.extend(missing.iter().rev());
+                resolved.push(file_name);
+                return Ok(resolved);
+            }
+            Err(SafePathError::NotFound) => {
+                // A link that leads nowhere: what a write made through it
+                // would land on is not known to be inside.
+                if std::fs::symlink_metadata(existing).is_ok() {
+                    return Err(outside());
+                }
+                match (existing.parent(), existing.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        missing.push(name.to_os_string());
+                        existing = parent;
+                    }
+                    // A `..` past a part that is not there, or nothing
+                    // there at all: nowhere that can be shown to be inside.
+                    _ => return Err(outside()),
+                }
+            }
+            Err(e) => return Err(e.into_response()),
         }
     }
+}
+
+/// Where a write of the light show `path` lands, held to the songs root:
+/// [`light_show_in_songs_root`], and, the file being a link, which the
+/// write follows, what it leads to inside the songs root too (403
+/// otherwise). A link that leads nowhere is refused: the write would make
+/// its target, wherever that is. Both the name written and the file a
+/// link leads to must be `.light` files (400 otherwise): a show is never
+/// written over a song's config or anything else.
+#[allow(clippy::result_large_err)]
+fn light_show_to_write(
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, SafePathError};
+
+    let not_a_show = || {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only write .light files"})),
+        )
+            .into_response()
+    };
+    let is_show = crate::songs::FileKind::is_lighting;
+    let path = light_show_in_songs_root(root, path)?;
+    if !is_show(&path) {
+        return Err(not_a_show());
+    }
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        let target = SafePath::resolve(&path, root).map_err(|e| match e {
+            SafePathError::NotFound => SafePathError::OutsideRoot.into_response(),
+            e => e.into_response(),
+        })?;
+        if !is_show(target.as_path()) {
+            return Err(not_a_show());
+        }
+    }
+    Ok(path)
 }
 
 /// Refuses a light show path, resolved as the handler resolves it, that is
@@ -348,11 +422,11 @@ fn resolve_lighting_path(
 /// identity ([`crate::util::is_within_dir`]), so no spelling (`..`, a
 /// symlink, another case) gets around it.
 async fn refuse_venue_or_type_file(
-    state: &WebUiState,
+    config_path: &std::path::Path,
     path: &std::path::Path,
     name: &str,
 ) -> Result<(), lighting_writes::Answer> {
-    let config_path = state.config_path.clone();
+    let config_path = config_path.to_path_buf();
     let project = crate::util::project_dir_of(&config_path);
     let (path, name) = (path.to_path_buf(), name.to_string());
     let refused = tokio::task::spawn_blocking(move || {
@@ -382,42 +456,36 @@ async fn refuse_venue_or_type_file(
 }
 
 /// PUT /api/lighting/:name — validates and atomically writes a lighting DSL
-/// file: a song's light show, never a file in the venues or fixture types
-/// directory ([`refuse_venue_or_type_file`]).
+/// file: a song's light show ([`save_light_show`]).
 pub(super) async fn put_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    let verified_path = match resolve_lighting_path(&state, &name) {
-        Ok(path) => path,
+    // A new file goes in a folder already there, as the editor saves it.
+    let songs_root = state.songs_path();
+    let root = match VerifiedRoot::new(&songs_root) {
+        Ok(root) => root,
         Err(e) => return e.into_response(),
     };
-    if let Err(refused) = refuse_venue_or_type_file(&state, &verified_path, &name).await {
-        return refused.into_response();
-    }
+    let verified_path = match light_show_in_songs_root(&root, &songs_root.join(&name)) {
+        Ok(path) if path.parent().is_some_and(std::path::Path::is_dir) => path,
+        Ok(_) => return lighting_file_not_found(&name),
+        Err(e) => return e,
+    };
 
     // Held from reading the song's tempo: a song save changing it reloads
     // the songs under this lock.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    // Validate against the tempo the owning song loads this file with. A show
-    // inheriting its song's tempo is valid content that a tempo-less parse
-    // rejects, so writing it through the UI would fail for no real reason.
     let tempo = song_tempo_for_path(&state, &verified_path);
-    if let Err(errors) = config_io::validate_light_show(
-        &body,
-        Some(&verified_path),
-        Some(&state.songs_path()),
+    match save_light_show(
+        &state.config_path,
+        &root,
+        &verified_path,
+        &name,
+        body,
         tempo.as_ref(),
-    ) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-    }
-
-    let vp = verified_path;
-    let body_owned = body;
-    match super::helpers::spawn_blocking_io("write lighting file", move || {
-        config_io::staged_write(&vp, &body_owned)
-    })
+    )
     .await
     {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
@@ -425,55 +493,130 @@ pub(super) async fn put_lighting_file(
     }
 }
 
-/// DELETE /api/lighting/:name — deletes a song's `.light` file from disk:
-/// never one in the venues or fixture types directory
-/// ([`refuse_venue_or_type_file`]).
+/// Writes a song's light show `body` to `path` (shown as `name`), by the
+/// one rule of the web UI's light show save and MCP's
+/// `write_song_lighting` and `patch_song_lighting`: inside `songs_root`
+/// ([`light_show_to_write`]); never a file in the venues or fixture
+/// types directory ([`refuse_venue_or_type_file`]); parsed first (400 with
+/// its `errors`, each `Invalid light show DSL: ...`, as the venue and
+/// fixture type saves say it) against `tempo`, the tempo its
+/// song loads it with (a show inheriting its song's tempo is valid content
+/// that a tempo-less parse rejects), its `include`s resolved where it is
+/// written and kept inside `root`; its directory made only then. The
+/// caller holds [`super::songs_api::SONG_WRITES`].
+pub(crate) async fn save_light_show(
+    config_path: &std::path::Path,
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+    name: &str,
+    body: String,
+    tempo: Option<&crate::tempo::TempoMap>,
+) -> Result<(), axum::response::Response> {
+    // The venues and fixture types refusal first: it says what to do
+    // instead, where the songs-root one, for those directories outside the
+    // songs root, says only no.
+    refuse_venue_or_type_file(config_path, path, name)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let path = &light_show_to_write(root, path)?;
+    if let Err(errors) =
+        config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
+    {
+        let errors: Vec<String> = errors
+            .into_iter()
+            .map(|e| format!("Invalid light show DSL: {e}"))
+            .collect();
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+    }
+
+    let vp = path.to_path_buf();
+    super::helpers::spawn_blocking_io("write lighting file", move || {
+        if let Some(parent) = vp.parent() {
+            crate::util::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        config_io::staged_write(&vp, &body)
+    })
+    .await
+}
+
+/// DELETE /api/lighting/:name — deletes a song's `.light` file from disk,
+/// by the one rule of MCP's `delete_song_lighting` too
+/// ([`check_light_show_delete`]): a link is removed, never what it leads
+/// to.
 pub(super) async fn delete_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
-
-    let root = match VerifiedRoot::new(&state.songs_path()) {
-        Ok(r) => r,
+    let songs_root = state.songs_path();
+    let root = match VerifiedRoot::new(&songs_root) {
+        Ok(root) => root,
         Err(e) => return e.into_response(),
     };
-    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lighting file not found: {}", name)})),
-            )
-                .into_response();
-        }
-    };
-
-    if crate::songs::FileKind::of(safe.as_path()) != crate::songs::FileKind::Lighting {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete .light files"})),
-        )
-            .into_response();
-    }
-
-    if let Err(refused) = refuse_venue_or_type_file(&state, safe.as_path(), &name).await {
-        return refused.into_response();
-    }
-
-    // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
-    let path = safe.as_path().to_path_buf();
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    match super::helpers::spawn_blocking_io("delete lighting file", move || {
-        std::fs::remove_file(&path)
-    })
-    .await
-    {
+    let path =
+        match check_light_show_delete(&state.config_path, &root, &songs_root.join(&name), &name)
+            .await
+        {
+            Ok(path) => path,
+            Err(refused) => return refused,
+        };
+    match remove_light_show(&songs_root, &path).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
         Err(e) => e,
     }
+}
+
+/// Whether the file at `path` (shown as `name`) may be deleted as a song's
+/// light show, by the one rule of the web UI's delete and MCP's
+/// `delete_song_lighting`: a `.light` file (400 otherwise), never one in
+/// the venues or fixture types directory ([`refuse_venue_or_type_file`]),
+/// in a folder inside `songs_root` ([`light_show_in_songs_root`]), and
+/// there (404 otherwise). Answers the file to remove: a link itself, not
+/// what it leads to, whose name is the one checked.
+pub(crate) async fn check_light_show_delete(
+    config_path: &std::path::Path,
+    root: &VerifiedRoot,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    // The name checked is the one removed: the resolved path keeps it.
+    if !crate::songs::FileKind::is_lighting(path) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only delete .light files"})),
+        )
+            .into_response());
+    }
+    // As a save: the venues and fixture types refusal, which says what to
+    // do instead, before the songs root's. Of where the file is, its
+    // folder: a link there is removed, not what it leads to, so where it
+    // leads does not matter.
+    let folder = path.parent().unwrap_or(path);
+    refuse_venue_or_type_file(config_path, folder, name)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let path = light_show_in_songs_root(root, path)?;
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Err(lighting_file_not_found(name));
+    }
+    Ok(path)
+}
+
+/// Removes a song's light show file, [`check_light_show_delete`] first,
+/// off the async runtime: the file itself, a link and not what it leads
+/// to, held to `songs_root` again ([`light_show_in_songs_root`]), as it
+/// is checked some time before.
+pub(crate) async fn remove_light_show(
+    songs_root: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), axum::response::Response> {
+    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
+    // codeql[rust/path-injection] the folder is verified via SafePath::resolve against the songs root.
+    let path = light_show_in_songs_root(&root, path)?;
+    super::helpers::spawn_blocking_io("delete lighting file", move || std::fs::remove_file(&path))
+        .await
 }
 
 /// A `?song=` on an endpoint that otherwise works on bare DSL, naming the song
@@ -502,10 +645,17 @@ pub(super) async fn validate_lighting(
         .and_then(|name| state.player.songs().get(name).ok());
     let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
     let path = match query.file.as_deref() {
-        Some(file) => match resolve_lighting_path(&state, file) {
-            Ok(path) => Some(path),
-            Err(e) => return e.into_response(),
-        },
+        Some(file) => {
+            let songs_root = state.songs_path();
+            let root = match VerifiedRoot::new(&songs_root) {
+                Ok(root) => root,
+                Err(e) => return e.into_response(),
+            };
+            match light_show_in_songs_root(&root, &songs_root.join(file)) {
+                Ok(path) => Some(path),
+                Err(e) => return e,
+            }
+        }
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
     match config_io::validate_light_show(
@@ -1623,12 +1773,21 @@ fn song_tempo_for_path(
     state: &WebUiState,
     path: &std::path::Path,
 ) -> Option<crate::tempo::TempoMap> {
-    let song = state
-        .player
-        .songs()
-        .list()
-        .into_iter()
-        .find(|song| path.starts_with(song.base_path()))?;
+    // Both sides resolved: `path` is, and a song's folder need not be (one
+    // built from a path through a linked songs folder). The plain
+    // comparison first, so the folders are canonicalized only when no
+    // song's matches as written.
+    let songs = state.player.songs().list();
+    let song = songs
+        .iter()
+        .find(|song| path.starts_with(song.base_path()))
+        .or_else(|| {
+            songs.iter().find(|song| {
+                song.base_path()
+                    .canonicalize()
+                    .is_ok_and(|base| path.starts_with(base))
+            })
+        })?;
     song.lighting_tempo_map()
 }
 
@@ -3549,6 +3708,173 @@ show "test" {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].path, "Show.LIGHT");
         assert_eq!(results[0].name, "Show");
+    }
+
+    /// A request to the lighting endpoints, its status and body.
+    async fn lighting_request(
+        state: &WebUiState,
+        method: &str,
+        uri: &str,
+        body: &str,
+    ) -> (StatusCode, String) {
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        (response.status(), response_body(response).await)
+    }
+
+    /// A light show that is a link is deleted as the link: what it leads
+    /// to, another song's config or show, is left.
+    #[tokio::test]
+    async fn delete_lighting_file_removes_a_link_not_its_target() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
+        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
+        std::fs::write(songs.join("a/lighting/show.light"), "a's show").unwrap();
+        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
+        std::os::unix::fs::symlink("../song.yaml", songs.join("b/lighting/show.light")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../a/lighting/show.light",
+            songs.join("b/lighting/a.light"),
+        )
+        .unwrap();
+
+        for file in ["show.light", "a.light"] {
+            let uri = format!("/lighting/b%2Flighting%2F{file}");
+            let (status, body) = lighting_request(&state, "DELETE", &uri, "").await;
+            assert_eq!(status, StatusCode::OK, "{file}: {body}");
+            assert!(
+                std::fs::symlink_metadata(songs.join("b/lighting").join(file)).is_err(),
+                "{file}: the link is gone"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
+            "name: B\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
+            "a's show"
+        );
+    }
+
+    /// Only `.light` files are written as light shows: not a song's config
+    /// by name.
+    #[tokio::test]
+    async fn put_lighting_file_refuses_a_file_that_is_no_show() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("b")).unwrap();
+        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+
+        let (status, body) = lighting_request(&state, "PUT", "/lighting/b%2Fsong.yaml", show).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
+            "name: B\n"
+        );
+    }
+
+    /// A bar/beat show is checked against its song's tempo when the song's
+    /// folder is spelled through a link (the songs folder reached through
+    /// one): the show's path, resolved, and the song's folder are compared
+    /// resolved. The loader resolves the folders it loads, so this is a
+    /// song built from an unresolved path.
+    #[tokio::test]
+    async fn put_lighting_file_finds_the_songs_tempo_through_a_linked_folder() {
+        let outer = tempfile::tempdir().unwrap();
+        let real = outer.path().join("real");
+        std::fs::create_dir_all(real.join("t/lighting")).unwrap();
+        std::fs::write(
+            real.join("t/song.yaml"),
+            "name: T\ntracks: []\ntempo:\n  bpm: 120\n  time_signature: 4/4\n",
+        )
+        .unwrap();
+        let link = outer.path().join("songs-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let config = crate::config::Song::deserialize(&link.join("t/song.yaml")).unwrap();
+        let song = crate::songs::Song::new(&link.join("t"), &config).unwrap();
+        assert!(song.lighting_tempo_map().is_some());
+        let songs = crate::songs::Songs::new(std::collections::HashMap::from([(
+            "T".to_string(),
+            std::sync::Arc::new(song),
+        )]));
+        let (state, _dir) = test_state_with_registry(std::sync::Arc::new(songs));
+        {
+            let mut sources = state.player.song_sources().unwrap_or_default();
+            sources.songs = link;
+            state.player.set_song_sources(sources);
+        }
+        let show =
+            "show \"bars\" {\n    @1/1\n    lights: static color: \"red\", duration: 1beat\n}\n";
+
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/t%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// A light show that is a link leading nowhere is not written: the
+    /// write would make its target, outside the songs folder.
+    #[tokio::test]
+    async fn put_lighting_file_refuses_a_link_leading_nowhere() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("x.light");
+        std::fs::create_dir_all(songs.join("foo/lighting")).unwrap();
+        std::os::unix::fs::symlink(&target, songs.join("foo/lighting/show.light")).unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/foo%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!target.exists(), "written outside");
+    }
+
+    /// A light show saved through a link has its `include`s resolved
+    /// where the song loader resolves them: beside the link, not beside
+    /// what it leads to.
+    #[tokio::test]
+    async fn put_lighting_file_resolves_includes_beside_a_link() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
+        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
+        let shared = "sequence \"wash\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        std::fs::write(songs.join("a/lighting/common.light"), shared).unwrap();
+        std::fs::write(songs.join("a/lighting/show.light"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "../../a/lighting/show.light",
+            songs.join("b/lighting/show.light"),
+        )
+        .unwrap();
+        let show =
+            "include \"common.light\"\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
+
+        // Beside B's link there is no common.light: the loader would fail.
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/b%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
+            ""
+        );
+        // Saved as A's, it is found.
+        let (status, body) =
+            lighting_request(&state, "PUT", "/lighting/a%2Flighting%2Fshow.light", show).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     /// The editor deletes a `Show.LIGHT` as it does a `show.light`; a file

@@ -95,6 +95,12 @@ impl FileKind {
             FileKind::Other
         }
     }
+
+    /// Whether `path` is named as a light show file: `.light`, in any case
+    /// ([`FileKind::of`]).
+    pub fn is_lighting(path: &Path) -> bool {
+        FileKind::of(path) == FileKind::Lighting
+    }
 }
 
 #[cfg(test)]
@@ -122,6 +128,9 @@ mod tests {
         assert_eq!(FileKind::of(Path::new("a.light")), FileKind::Lighting);
         assert_eq!(FileKind::of(Path::new("a.LIGHT")), FileKind::Lighting);
         assert_eq!(FileKind::of(Path::new("a.Light")), FileKind::Lighting);
+        assert!(FileKind::is_lighting(Path::new("dir/a.LIGHT")));
+        assert!(!FileKind::is_lighting(Path::new("a.light.yaml")));
+        assert!(!FileKind::is_lighting(Path::new("light")));
         for name in [
             "a.txt",
             "a.yaml",
