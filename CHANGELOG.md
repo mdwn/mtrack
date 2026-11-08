@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.0] - 2026-11-07
+## [0.18.0] - 2026-11-08
 
 Upgrade notes: what an existing setup can notice. Each is described in full below.
 
@@ -1167,6 +1167,9 @@ Upgrade notes: what an existing setup can notice. Each is described in full belo
   a frame later, where the output thread used to send the missed frames back to back.
   So after a stall, a channel no fixture patches, which the universe dims itself, carries on its
   dim from where it was rather than catching up in a burst.
+- **Log lines are no longer labelled as the OSC driver's**: the OSC driver entered its log span
+  across awaits, so other work on the same thread (stop, seek, loop breaks, a config save's
+  hardware reload) was logged as "OSC Driver: ...". Each line now carries its own task's label.
 
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as
