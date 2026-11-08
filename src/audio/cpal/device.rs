@@ -411,8 +411,14 @@ fn is_hw_node(device_name: &str) -> bool {
     pcm_id(device_name).starts_with("hw:")
 }
 
-/// The card whose `hw` node a device may take its width from: any node naming
-/// a card that is not the raw `hw` node itself.
+/// The card whose `hw` node a device may take its width from: any ALSA node
+/// naming a card that is not the raw `hw` node itself, nor an `hdmi:` node.
+///
+/// ALSA only: another host's device id can hold colons too (a CoreAudio UID),
+/// and parsing a "card" out of it cost two full walks on every open and a
+/// warning about hardware that was never there to ask. `hdmi:CARD=X,DEV=n`
+/// numbers HDMI outputs, not `hw` subdevices, so its `DEV` would pair it with
+/// the wrong `hw` node; it reports its own width honestly anyway.
 ///
 /// Not only [`is_virtual_node`]'s plugins. ALSA's route nodes -- `front:`,
 /// `surround40:`, `surround71:` -- are left off that list because most report
@@ -423,7 +429,39 @@ fn is_hw_node(device_name: &str) -> bool {
 /// listing ([`resolve_virtual_channel_counts`]) and the open
 /// ([`Device::find_cpal_device`]): an honest report stays, the clamp does not.
 fn width_source_card(device_name: &str) -> Option<String> {
-    card_token(device_name).filter(|_| !is_hw_node(device_name))
+    let (host, pcm_id) = device_name.split_once(':')?;
+    if host != "alsa" || is_hw_node(device_name) || pcm_id.starts_with("hdmi:") {
+        return None;
+    }
+    card_token(device_name)
+}
+
+/// Why a node opening at its own report has no known width, where that is
+/// worth a log line.
+#[derive(Debug, PartialEq, Eq)]
+enum UnresolvedWidth {
+    /// It names no card (a desktop's `alsa:default`): nothing to ask, every
+    /// startup, so that is how it is rather than a fault.
+    NoCard,
+    /// It names a card, but the hardware's width could not be read (busy or
+    /// absent).
+    Unread,
+}
+
+/// Whether opening `name` at its `reported` width, with `channels_known` as
+/// resolved, is one of the [`UnresolvedWidth`] cases. Only a node that could
+/// borrow a width -- a plugin, or an ALSA node [`width_source_card`] pairs with
+/// a card -- reporting cpal's clamp: a 64-channel device on another host is
+/// taken at its word, as before.
+fn unresolved_width(name: &str, channels_known: bool, reported: u16) -> Option<UnresolvedWidth> {
+    if channels_known || reported < CPAL_CHANNEL_CLAMP {
+        return None;
+    }
+    match width_source_card(name) {
+        Some(_) => Some(UnresolvedWidth::Unread),
+        None if is_virtual_node(name) => Some(UnresolvedWidth::NoCard),
+        None => None,
+    }
 }
 
 /// The card identity inside a device name, used to pair a plug node with the
@@ -801,7 +839,7 @@ fn resolve_virtual_channel_counts(
         // the same card and subdevice with a width of their own -- `front` is
         // two channels on an eight-channel HDA card -- and whichever of them
         // came last in the walk used to win the subdevice.
-        if info.virtual_node || !info.channels_known || !is_hw_node(&info.name) {
+        if !info.channels_known || !is_hw_node(&info.name) {
             continue;
         }
         let Some(card) = card_token(&info.name) else {
@@ -833,14 +871,10 @@ fn resolve_virtual_channel_counts(
         // card alone handed `plughw:CARD=PCH,DEV=3` the analog node's 2 channels
         // and marked it known — a confidently wrong number, which is the one
         // outcome this whole labelling exists to avoid.
-        let queried = if info.name.starts_with("alsa:") {
-            let key = (card.clone(), dev_index(&info.name).unwrap_or(0));
-            *asked
-                .entry(key)
-                .or_insert_with_key(|(card, dev)| hw_channels(card, *dev))
-        } else {
-            None
-        };
+        let key = (card.clone(), dev_index(&info.name).unwrap_or(0));
+        let queried = *asked
+            .entry(key)
+            .or_insert_with_key(|(card, dev)| hw_channels(card, *dev));
         let resolved = queried.or_else(|| match dev_index(&info.name) {
             Some(dev) => by_subdevice.get(&(card, dev)).copied(),
             None => lowest_subdevice.get(&card).map(|(_, channels)| *channels),
@@ -1475,26 +1509,24 @@ impl Device {
                 device = %resolved.name,
                 channels,
                 reported,
-                "Opening a virtual node at the width of the hardware behind it"
+                "Opening this node at the width of the hardware behind it"
             );
-        } else if !is_hw_node(name) && !channels_known && reported >= CPAL_CHANNEL_CLAMP {
-            // A node naming no card (a desktop's `alsa:default`) has no
-            // hardware to ask, every startup: that is how it is, not a fault.
-            if card_token(name).is_some() {
-                warn!(
+        } else {
+            match unresolved_width(name, channels_known, reported) {
+                Some(UnresolvedWidth::Unread) => warn!(
                     device = %resolved.name,
                     channels,
-                    "Could not read the channel count of the hardware behind this virtual \
-                     node (busy or absent); opening it at cpal's clamped width, and track \
+                    "Could not read the channel count of the hardware behind this node \
+                     (busy or absent); opening it at cpal's clamped width, and track \
                      mappings are not checked against the hardware"
-                );
-            } else {
-                info!(
+                ),
+                Some(UnresolvedWidth::NoCard) => info!(
                     device = %resolved.name,
                     channels,
-                    "This virtual node names no card, so its hardware's channel count is \
+                    "This node names no card, so its hardware's channel count is \
                      unknown; opening it at cpal's clamped width"
-                );
+                ),
+                None => {}
             }
         }
         let mut device = Device::placeholder(resolved, channels)?;
@@ -2412,6 +2444,54 @@ mod test {
                 .map(|info| (info.max_channels, info.channels_known))
                 .collect();
             assert_eq!(widths, vec![(8, true), (8, true), (4, true), (8, true)]);
+        }
+
+        /// A CoreAudio UID holds colons, but it is no ALSA card: a 64-channel
+        /// device on another host borrows nothing, is not probed, and opens
+        /// without a warning, as on main. `hdmi:` numbers HDMI outputs, not
+        /// `hw` subdevices, so it never takes `hw:X,0`'s width either.
+        #[test]
+        fn only_alsa_card_nodes_borrow_a_width() {
+            let uid = "coreaudio:AppleUSBAudioEngine:Audinate:Dante VS:1:2";
+            assert!(card_token(uid).is_some(), "the UID parses as a card");
+            assert_eq!(width_source_card(uid), None);
+            assert_eq!(unresolved_width(uid, false, CPAL_CHANNEL_CLAMP), None);
+            assert_eq!(width_source_card("alsa:hdmi:CARD=vc4hdmi0,DEV=0"), None);
+
+            let mut infos = vec![
+                info("alsa:hw:CARD=Audinate,DEV=0", 8),
+                AudioDeviceInfo {
+                    host_name: "CoreAudio".to_string(),
+                    ..info(uid, CPAL_CHANNEL_CLAMP)
+                },
+                info("alsa:hw:CARD=vc4hdmi0,DEV=0", 8),
+                info("alsa:hdmi:CARD=vc4hdmi0,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            let mut asked = 0;
+            resolve_virtual_channel_counts(&mut infos, |_, _| {
+                asked += 1;
+                Some(2)
+            });
+            assert_eq!(asked, 0);
+            assert_eq!(infos[1].max_channels, CPAL_CHANNEL_CLAMP);
+            assert!(!infos[1].channels_known);
+            assert_eq!(infos[3].max_channels, CPAL_CHANNEL_CLAMP);
+
+            // Who still logs at the clamp: a card node ALSA could not read
+            // warns, a card-less plugin is noted, and nothing else.
+            assert_eq!(
+                unresolved_width("alsa:surround71:CARD=MAT,DEV=0", false, CPAL_CHANNEL_CLAMP),
+                Some(UnresolvedWidth::Unread)
+            );
+            assert_eq!(
+                unresolved_width("alsa:default", false, CPAL_CHANNEL_CLAMP),
+                Some(UnresolvedWidth::NoCard)
+            );
+            assert_eq!(unresolved_width("alsa:default", false, 32), None);
+            assert_eq!(
+                unresolved_width("alsa:hw:CARD=MAT,DEV=0", false, CPAL_CHANNEL_CLAMP),
+                None
+            );
         }
 
         /// The ALSA count caps a dmix node as the listed one does, and one
