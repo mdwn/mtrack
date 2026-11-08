@@ -106,6 +106,11 @@ pub fn callback_period(buffer_frames: Option<u32>, sample_rate: u32) -> Option<D
     ))
 }
 
+/// [`callback_period`] in milliseconds, as the logs give it.
+pub fn callback_period_ms(buffer_frames: Option<u32>, sample_rate: u32) -> Option<f64> {
+    callback_period(buffer_frames, sample_rate).map(|period| period.as_secs_f64() * 1000.0)
+}
+
 /// How recently non-silent audio must have been written to count as signalling.
 ///
 /// Wider than [`LIVENESS_WINDOW`] because real music has quiet passages: a fade,
@@ -425,6 +430,13 @@ impl UnderrunWatch {
         Self::default()
     }
 
+    /// Starts a fresh window at the next [`observe`](Self::observe), for a
+    /// rebuilt stream: the outage between streams, and the underruns counted
+    /// on the way down, belong to no window.
+    pub fn restart_window(&mut self) {
+        self.window = None;
+    }
+
     /// Takes the underrun count since the device opened, as of `now`, and says
     /// whether to warn. Call it at any steady interval well under
     /// [`UNDERRUN_WINDOW`]; a window closes at the first call past its end.
@@ -576,6 +588,23 @@ mod test {
         assert_eq!(first.in_window, 120);
         assert_eq!(first.total, 240);
         assert!((first.per_second() - 12.0).abs() < 1e-9);
+    }
+
+    /// Underruns counted across a rebuild do not land in, or stretch, a window:
+    /// a window restarted at the new stream sees only what that stream does.
+    #[test]
+    fn a_rebuild_restarts_the_window() {
+        let mut watch = UnderrunWatch::new();
+        let start = Instant::now();
+        // One underrunning window, then a 15s outage counting 40 underruns.
+        assert_eq!(watch.observe(start, 0), None);
+        assert_eq!(watch.observe(start + Duration::from_secs(10), 5), None);
+        watch.restart_window();
+        let back = start + Duration::from_secs(25);
+        assert_eq!(watch.observe(back, 45), None);
+        // A clean window after it: nothing, where the stretched window would
+        // have counted the outage's 40 and warned.
+        assert_eq!(watch.observe(back + Duration::from_secs(10), 45), None);
     }
 
     #[test]

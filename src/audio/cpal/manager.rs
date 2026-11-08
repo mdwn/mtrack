@@ -36,7 +36,7 @@ const FLAP_WARN_INTERVAL: Duration = Duration::from_secs(10);
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer, PreparedSource};
 
 use crate::audio::health::{
-    callback_period, OutputHealth, OutputHealthSnapshot, SustainedUnderruns, UnderrunWatch,
+    callback_period_ms, OutputHealth, OutputHealthSnapshot, SustainedUnderruns, UnderrunWatch,
 };
 
 use super::stream::{OutputDescription, OutputStreamFactory};
@@ -220,6 +220,9 @@ impl OutputManager {
                 match stream_result {
                     Ok(stream) => {
                         backoff = REBUILD_BACKOFF_START;
+                        // A new stream's window starts with it, so a rebuild's
+                        // outage cannot stretch one into a warning.
+                        underruns.restart_window();
                         let built_at = std::time::Instant::now();
                         if first_run {
                             info!(
@@ -371,9 +374,7 @@ impl OutputManager {
 /// The clock follows delivered audio, so a device underrunning this often also
 /// runs songs slow; the period is the thing to change.
 fn warn_sustained_underruns(output: &OutputDescription, sustained: &SustainedUnderruns) {
-    let period_ms = output.period_frames.and_then(|frames| {
-        callback_period(Some(frames), output.sample_rate).map(|p| p.as_secs_f64() * 1000.0)
-    });
+    let period_ms = callback_period_ms(output.period_frames, output.sample_rate);
     warn!(
         device = %output.device,
         underruns = sustained.in_window,
@@ -384,9 +385,9 @@ fn warn_sustained_underruns(output: &OutputDescription, sustained: &SustainedUnd
             .period_frames
             .map_or("backend default".to_string(), |frames| frames.to_string()),
         period_ms = period_ms.map_or("unknown".to_string(), |ms| format!("{ms:.1}")),
+        advice = output.period_setting.advice(),
         "Audio output is underrunning: the device is being starved, which glitches \
-         the audio and slows playback. Raise audio.buffer_size, or set \
-         audio.stream_buffer_size to a larger period"
+         the audio and slows playback"
     );
 }
 

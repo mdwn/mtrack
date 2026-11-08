@@ -38,7 +38,7 @@ use crate::playsync::CancelHandle;
 use crate::songs::Song;
 
 use super::manager::OutputManager;
-use super::stream::CpalOutputStreamFactory;
+use super::stream::{CpalOutputStreamFactory, PeriodSetting};
 
 mod loop_scheduler;
 
@@ -1308,11 +1308,10 @@ impl Device {
                 // as the callback deadline it actually is. `min` reads as a
                 // recommendation, so the number behind it should not need
                 // arithmetic to interpret.
-                let period_ms = crate::audio::health::callback_period(
+                let period_ms = crate::audio::health::callback_period_ms(
                     Some(s),
                     device.target_format.sample_rate,
                 )
-                .map(|p| p.as_secs_f64() * 1000.0)
                 .unwrap_or(0.0);
                 info!(
                     stream_buffer_size = s,
@@ -1329,6 +1328,13 @@ impl Device {
             device.name.clone(),
             device.target_format.clone(),
             output_buffer_size,
+            match config.stream_buffer_size() {
+                None => PeriodSetting::BufferSize,
+                Some(StreamBufferSize::Fixed(_)) => PeriodSetting::Fixed,
+                Some(StreamBufferSize::Default) => PeriodSetting::BackendDefault,
+                Some(StreamBufferSize::Min) if min_size.is_some() => PeriodSetting::Min,
+                Some(StreamBufferSize::Min) => PeriodSetting::MinFallback,
+            },
         ));
         output_manager.start_output_thread(factory)?;
 
