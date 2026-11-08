@@ -151,6 +151,10 @@ struct HardwareState {
     /// not a failure, it is a wait. Cleared by a reload, so fixing the config
     /// and reloading clears the report along with the cause.
     init_errors: HashMap<String, String>,
+    /// Problems found at startup in a subsystem that did come up, keyed by
+    /// name: reported beside `connected` rather than as a failure. Cleared by
+    /// a reload, as `init_errors` is.
+    init_warnings: HashMap<String, String>,
 }
 
 /// Alias for the shared state sampler sender stored on Player.
@@ -667,6 +671,7 @@ impl Player {
             profile_file: None,
             hostname: None,
             init_errors: HashMap::new(),
+            init_warnings: HashMap::new(),
         };
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);

@@ -1483,6 +1483,10 @@ impl AudioDevice for Device {
                 || wanted.eq_ignore_ascii_case(self.name.trim()))
     }
 
+    fn channels(&self) -> Option<u16> {
+        self.channels_known.then_some(self.max_channels)
+    }
+
     fn set_metronome_defaults(&self, defaults: Option<config::MetronomeDefaults>) {
         *self.metronome_defaults.lock() = defaults;
     }

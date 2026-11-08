@@ -221,6 +221,39 @@ impl ConfigChange {
     }
 }
 
+/// What to say when a profile maps tracks past the channels its audio device
+/// has, or `None` if every mapping fits.
+///
+/// Checked once the device is open and its real width known, so the mistake
+/// is in the journal and on the status page at startup; playback still
+/// refuses a song mapped past the device, as a backstop.
+fn mappings_past_channels(
+    mappings: &HashMap<String, Vec<u16>>,
+    channels: u16,
+    device: &str,
+) -> Option<String> {
+    let mut past: Vec<String> = mappings
+        .iter()
+        .filter_map(|(track, outputs)| {
+            let over: Vec<String> = outputs
+                .iter()
+                .filter(|&&output| output > channels)
+                .map(u16::to_string)
+                .collect();
+            (!over.is_empty()).then(|| format!("{track} -> {}", over.join(", ")))
+        })
+        .collect();
+    if past.is_empty() {
+        return None;
+    }
+    past.sort();
+    Some(format!(
+        "audio device {device} has {channels} channels, but the profile maps tracks past \
+         them ({}); songs using those tracks will not play",
+        past.join("; ")
+    ))
+}
+
 /// How often an unchanged init failure is repeated in the log.
 const FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -357,10 +390,25 @@ impl Player {
                                     device = audio_config.audio().device(),
                                     "Audio device initialized"
                                 );
+                                let mappings = audio_config.track_mappings_hash();
+                                // Said now, not at the first song: playback
+                                // refuses such a song, and nobody should learn
+                                // that on stage. The device is kept.
+                                let overflow = device.channels().and_then(|channels| {
+                                    mappings_past_channels(
+                                        &mappings,
+                                        channels,
+                                        audio_config.audio().device(),
+                                    )
+                                });
+                                if let Some(why) = &overflow {
+                                    error!("{why}");
+                                }
                                 Ok((
                                     device.clone(),
-                                    audio_config.track_mappings_hash(),
+                                    mappings,
                                     audio_config.audio().clone(),
+                                    overflow,
                                 ))
                             }
                             Err(e) => Err(e),
@@ -400,7 +448,7 @@ impl Player {
 
         // Write Phase 1 results to hardware state.
         let (device, mappings, resolved_audio) = match audio_result {
-            Some((device, mappings, resolved_audio)) => {
+            Some((device, mappings, resolved_audio, overflow)) => {
                 let clock_source = match device.sample_counter().zip(device.sample_rate()) {
                     Some((counter, rate)) => ClockSource::Audio {
                         sample_counter: counter,
@@ -427,6 +475,9 @@ impl Player {
 
                 let installed = install_if_current(&self.hardware, &cancel, |hw| {
                     hw.device = Some(device.clone());
+                    if let Some(why) = overflow {
+                        hw.init_warnings.insert("audio".to_string(), why);
+                    }
                     hw.mappings = Some(Arc::new(mappings.clone()));
                     hw.track_gains = Some(track_gains);
                     hw.clock_source = clock_source;
@@ -913,6 +964,7 @@ impl Player {
                 profile_file: None,
                 hostname: None,
                 init_errors: HashMap::new(),
+                init_warnings: HashMap::new(),
             };
         }
         self.init_done_tx.send_modify(|v| *v = false);
@@ -1077,7 +1129,7 @@ impl Player {
                     return SubsystemStatus {
                         status: "connected".to_string(),
                         name,
-                        error: None,
+                        error: hw.init_warnings.get(subsystem).cloned(),
                     };
                 }
                 // Checked before `init_done`, because a subsystem that gave up is
@@ -1534,6 +1586,20 @@ mod test {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn mappings_past_the_device_are_named() {
+        let mut mappings = HashMap::new();
+        mappings.insert("click".to_string(), vec![1]);
+        mappings.insert("bass".to_string(), vec![8, 9]);
+        mappings.insert("keys".to_string(), vec![12]);
+        assert_eq!(mappings_past_channels(&mappings, 12, "dev"), None);
+        let why = mappings_past_channels(&mappings, 8, "alsa:plughw:CARD=Headphones,DEV=0")
+            .expect("bass and keys are past 8");
+        assert!(why.contains("has 8 channels"), "{why}");
+        assert!(why.contains("bass -> 9; keys -> 12"), "{why}");
+        assert!(!why.contains("click"), "{why}");
+    }
+
     /// A failure nobody has classified. Stands in for MIDI and DMX, whose
     /// errors are all retryable today.
     struct Transient;
@@ -1579,6 +1645,7 @@ mod test {
             profile_file: None,
             hostname: None,
             init_errors: std::collections::HashMap::new(),
+            init_warnings: std::collections::HashMap::new(),
         })
     }
 
