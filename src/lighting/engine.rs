@@ -2247,15 +2247,18 @@ impl<'a> Replay<'a> {
         }
         // While tracing, the frame here goes to the wire only where what
         // fires can stop a byte being written: a layer command (a clear, a
-        // master) or a stopped sequence. An effect starting stops nothing:
-        // every byte written before it is still written after, until a
-        // traced end, cue or sample. That holds for a move taking a head
-        // from another too: it writes the same pan and tilt from the same
-        // instant, and pose memory, which it starts from, moves on without
-        // a frame.
-        let stops = steps
-            .iter()
-            .any(|step| matches!(step, Step::Command(_) | Step::Stop(_)));
+        // master), a stopped sequence, or a move, which may take heads from
+        // another (`take_heads`). An effect starting stops nothing: every
+        // byte written before it is still written after, until a traced
+        // end, cue or sample. A move taking a head writes the same pan and
+        // tilt from the same instant, so its frame is a margin rather than
+        // a need today; it is kept so that skipping plain starts does not
+        // rest on pose memory moving on without a frame for every future
+        // move or pose rule, and it costs one frame per move start.
+        let stops = steps.iter().any(|step| match step {
+            Step::Start(effect) => matches!(effect.effect_type, EffectType::Move { .. }),
+            Step::Command(_) | Step::Stop(_) => true,
+        });
         self.trace_until(time, stops);
         for step in steps {
             if let Err(e) = self.engine.apply_step(step) {
