@@ -52,6 +52,20 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
+
+    /// What the output thread's diagnostics name this output by.
+    fn describe(&self) -> OutputDescription;
+}
+
+/// The device and period an output stream is built for, for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputDescription {
+    /// The device name, as configured.
+    pub(crate) device: String,
+    /// The stream's period in frames, or `None` where the backend chose it.
+    pub(crate) period_frames: Option<u32>,
+    /// The stream's sample rate.
+    pub(crate) sample_rate: u32,
 }
 
 /// Wraps a `cpal::Stream` so it satisfies `OutputStream`.
@@ -115,6 +129,17 @@ impl CpalOutputStreamFactory {
 }
 
 impl OutputStreamFactory for CpalOutputStreamFactory {
+    fn describe(&self) -> OutputDescription {
+        OutputDescription {
+            device: self.device_name.clone(),
+            period_frames: match self.config.buffer_size {
+                cpal::BufferSize::Fixed(frames) => Some(frames),
+                cpal::BufferSize::Default => None,
+            },
+            sample_rate: self.target_format.sample_rate,
+        }
+    }
+
     /// Builds a stream, re-resolving the device by name if the handle we hold
     /// turns out to be dead.
     ///
@@ -518,6 +543,14 @@ pub(super) mod test {
     }
 
     impl OutputStreamFactory for MockOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            OutputDescription {
+                device: "mock".to_string(),
+                period_frames: Some(512),
+                sample_rate: 44100,
+            }
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -537,6 +570,14 @@ pub(super) mod test {
     pub(in crate::audio::cpal) struct FailingOutputStreamFactory;
 
     impl OutputStreamFactory for FailingOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            OutputDescription {
+                device: "mock".to_string(),
+                period_frames: Some(512),
+                sample_rate: 44100,
+            }
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -611,6 +652,14 @@ pub(super) mod test {
     }
 
     impl OutputStreamFactory for ErrorCapturingFactory {
+        fn describe(&self) -> OutputDescription {
+            OutputDescription {
+                device: "mock".to_string(),
+                period_frames: Some(512),
+                sample_rate: 44100,
+            }
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,

@@ -150,6 +150,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+- **A warning when audio keeps underrunning**: the output callback counted buffer underruns
+  (`host_info.audio_output.underruns`, and the status page) but never said so, so the journal was
+  silent about a device underrunning twelve times a second -- which, as the clock follows
+  delivered audio, also runs songs slow. The output thread now warns when underruns are
+  sustained: at least 3 in each of two consecutive 10-second windows. It names the device, the
+  count and rate in the last window, the total, and the period in frames and milliseconds, and
+  suggests raising `audio.buffer_size` or setting `audio.stream_buffer_size`. At most one warning
+  a minute, and none for an isolated underrun or a single burst. The health verdict is unchanged.
+
 ### Changed
 
 - **One file name rule for venues and fixture types** (`lighting::files::stem`): the name is
