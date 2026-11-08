@@ -754,6 +754,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they all reach the journal, including those logged while the web UI refreshes the device list.
   Log lines also carry ANSI colour only when stdout is a terminal (and `NO_COLOR` is unset): the
   escape codes went into every journal line, which the journal then stored as binary data.
+- **Legacy config warnings once per process**: the warnings about legacy top-level config fields
+  -- `status_events` (legacy; used only when the matched profile has none), and
+  `audio`/`audio_device`, `midi`/`midi_device`, `dmx`, `trigger`, `track_mappings`,
+  `sample_triggers` and `controller`/`controllers` ignored beside `profiles`, and inline
+  `profiles` ignored for `profiles_dir` -- were logged again every time the web UI or the API
+  read the config. Each is now logged the first time and not again until the next start.
+
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
   fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
   red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state

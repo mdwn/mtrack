@@ -29,6 +29,29 @@ use std::path::{Path, PathBuf};
 use super::error::ConfigError;
 use tracing::{info, warn};
 
+/// The legacy-status-events warning, named so a test can look for it.
+const LEGACY_STATUS_EVENTS: &str = "top-level 'status_events' is legacy; it is only used when \
+     the matched profile has none. Move it into the profile";
+
+/// Messages [`warn_once`] has already logged.
+static WARNED: parking_lot::Mutex<std::collections::BTreeSet<&'static str>> =
+    parking_lot::Mutex::new(std::collections::BTreeSet::new());
+
+/// Logs a config warning the first time this process sees it, and not again.
+///
+/// The config is read again on every web UI and API request that needs it, so
+/// a warning logged per read repeats for as long as the config stays as it is
+/// -- eleven times in an evening's soak, burying the lines around it. One per
+/// process says it; the config is fixed by editing it, and the next start
+/// says it again if it was not. Returns whether it logged.
+fn warn_once(message: &'static str) -> bool {
+    let first = WARNED.lock().insert(message);
+    if first {
+        warn!("{message}");
+    }
+    first
+}
+
 fn default_active_playlist() -> String {
     "playlist".to_string()
 }
@@ -385,7 +408,7 @@ impl Player {
         if !dir_profiles.is_empty() {
             // Directory profiles win — replace any inline profiles entirely.
             if self.profiles.is_some() {
-                warn!("inline 'profiles' ignored; using profiles_dir");
+                warn_once("inline 'profiles' ignored; using profiles_dir");
             }
             self.profiles = Some(dir_profiles);
         }
@@ -400,30 +423,30 @@ impl Player {
         if self.profiles.is_some() {
             // Warn about legacy fields that will be ignored.
             if self.audio.is_some() || self.audio_device.is_some() {
-                warn!("top-level 'audio'/'audio_device' ignored when 'profiles' is present");
+                warn_once("top-level 'audio'/'audio_device' ignored when 'profiles' is present");
             }
             if self.midi.is_some() || self.midi_device.is_some() {
-                warn!("top-level 'midi'/'midi_device' ignored when 'profiles' is present");
+                warn_once("top-level 'midi'/'midi_device' ignored when 'profiles' is present");
             }
             if self.dmx.is_some() {
-                warn!("top-level 'dmx' ignored when 'profiles' is present");
+                warn_once("top-level 'dmx' ignored when 'profiles' is present");
             }
             if self.trigger.is_some() {
-                warn!("top-level 'trigger' ignored when 'profiles' is present");
+                warn_once("top-level 'trigger' ignored when 'profiles' is present");
             }
             if self.track_mappings.is_some() {
-                warn!("top-level 'track_mappings' ignored when 'profiles' is present");
+                warn_once("top-level 'track_mappings' ignored when 'profiles' is present");
             }
             if !self.sample_triggers.is_empty() {
-                warn!("top-level 'sample_triggers' ignored when 'profiles' is present");
+                warn_once("top-level 'sample_triggers' ignored when 'profiles' is present");
             }
             if self.controller.is_some() || self.controllers.is_some() {
-                warn!("top-level 'controller'/'controllers' ignored when 'profiles' is present");
+                warn_once(
+                    "top-level 'controller'/'controllers' ignored when 'profiles' is present",
+                );
             }
             if self.status_events.is_some() {
-                warn!(
-                    "top-level 'status_events' is legacy; it is only used when the matched profile has none. Move it into the profile"
-                );
+                warn_once(LEGACY_STATUS_EVENTS);
             }
             return;
         }
@@ -861,6 +884,54 @@ mod tests {
         let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
         temp.write_all(yaml.as_bytes()).unwrap();
         Player::deserialize(temp.path()).expect("Failed to deserialize")
+    }
+
+    #[test]
+    fn warn_once_logs_a_message_the_first_time_only() {
+        assert!(warn_once("test-only: warn_once first sight"));
+        assert!(!warn_once("test-only: warn_once first sight"));
+        assert!(warn_once("test-only: warn_once another message"));
+    }
+
+    /// The config is re-read on every API request that needs it; the legacy
+    /// `status_events` warning must not come back with each read.
+    #[test]
+    fn legacy_status_events_warning_is_not_repeated_per_read() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let yaml = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                    off_events: []\n  idling_events: []\n  playing_events: []\n";
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..3 {
+                let player = Player::deserialize_from_str(yaml).expect("config parses");
+                assert!(player.status_events().is_some());
+            }
+        });
+
+        let out = String::from_utf8(capture.0.lock().clone()).unwrap();
+        // Another test may have been first to read a legacy config in this
+        // process, so this thread sees the warning once or not at all.
+        assert!(
+            out.matches("top-level 'status_events' is legacy").count() <= 1,
+            "{out}"
+        );
+        assert!(WARNED.lock().contains(LEGACY_STATUS_EVENTS));
     }
 
     #[test]
