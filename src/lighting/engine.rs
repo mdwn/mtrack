@@ -691,6 +691,12 @@ impl EffectEngine {
     /// gobo or zoom an effect over before the start point left on the rig
     /// is still there. For an offline evaluation, which has no rig of its
     /// own; live, the rig already holds what it was sent.
+    ///
+    /// The frame before an end is the effect at its end: a setting still
+    /// moving then (a gobo or zoom fading down to its end, a head mid-move
+    /// at a cut) reads where it got to. Live, the last frame lands up to a
+    /// frame period earlier -- about 23 ms on a Pi, longer under load -- so
+    /// the rig can hold it one frame short of that.
     pub(crate) fn trace_wire(&mut self) {
         self.tracing_wire = true;
     }

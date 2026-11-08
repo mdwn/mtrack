@@ -86,7 +86,12 @@ pub fn generic(name: &str, universe: u16, address: u16, channels: &[&str]) -> Fi
 /// and `mover` sent by a `move`, a second `move` taking it over part way,
 /// and then, after it arrives, the whole rig cleared, so the head holds a
 /// pose nothing remembers. Channels that change over time too: a `cycle`
-/// of colours, and a setting fading up under an `add` blend.
+/// of colours, and a setting fading up under an `add` blend. Last, a
+/// setting set for 100 ms between two of the 250 ms instants a test
+/// samples at, with no other cue in its life, so only the frame just
+/// before its end sends its byte. A static that draws no channel is left
+/// out. A setting is any channel that is not a level or colour
+/// (`fades_to_dark`).
 ///
 /// A setting fades up only, never down: one fading down to its effect's
 /// end is still moving at the end, which a frame lands on only by chance
@@ -108,7 +113,7 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> Str
         .flat_map(|(fixture, names)| {
             names
                 .iter()
-                .filter(|n| matches!(**n, "gobo" | "zoom" | "focus"))
+                .filter(|n| !crate::lighting::channels::fades_to_dark(n))
                 .map(move |n| (*fixture, *n))
         })
         .collect();
@@ -171,20 +176,14 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> Str
                 }
             }
             if params.is_empty() {
-                // Its first channel the sequence does not hold.
-                let name = names
-                    .iter()
-                    .find(|name| held != Some((fixture, **name)))
-                    .unwrap_or(&names[0]);
-                params.push(format!("{name}: 100%"));
+                continue;
             }
             let layer = layers[next(3) as usize];
             let mut length = 200 + next(1500);
             if next(3) == 0 {
                 let settings = params.iter().any(|p| {
-                    ["gobo", "zoom", "focus", "strobe"]
-                        .iter()
-                        .any(|s| p.starts_with(s))
+                    let name = p.split(':').next().unwrap_or_default();
+                    !crate::lighting::channels::fades_to_dark(name)
                 });
                 let (up, down) = (next(400), next(400));
                 if settings {
@@ -244,9 +243,24 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> Str
         }
         at += 100 + next(900);
     }
+    // A setting set briefly, alone on the rig (a clear first), between two
+    // of the 250 ms instants a test samples at and with no other cue in its
+    // life: no frame but the one just before its end sends its byte, which
+    // the rig holds after.
+    let mut after = at;
+    if let Some((fixture, channel)) = setting {
+        let brief = at.div_ceil(250) * 250 + 20;
+        out.push_str(&format!(
+            "    @{}.{:03}\n    clear()\n    {fixture}: static, {channel}: {}%, duration: 100ms\n",
+            brief / 1000,
+            brief % 1000,
+            1 + next(100),
+        ));
+        after = brief + 150;
+    }
     if !cleared {
         // After the last cue, and after the move arrives.
-        let at = clear_after.map_or(at, |arrives| at.max(arrives + 100));
+        let at = clear_after.map_or(after, |arrives| after.max(arrives + 100));
         out.push_str(&format!(
             "    @{}.{:03}\n    clear()\n",
             at / 1000,

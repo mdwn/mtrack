@@ -767,7 +767,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Live state after a seek holds what was last sent before the seek, as the universe does, which is
   not always what playing through to that time would leave (a gobo set only by an effect the seek
   jumped over reads as before the seek); `evaluate_show` at that time gives the play-through
-  answer. A mover a clear released from pose memory is drawn where its held pan and tilt point,
+  answer. A setting still moving when its effect ends or a cue cuts it (a zoom fading down, a head
+  mid-move) evaluates where it got to at that instant; live, the last frame lands up to a frame
+  earlier (about 23 ms on a Pi, longer under load), so the rig can hold it one frame short of
+  that. A mover a clear released from pose memory is drawn where its held pan and tilt point,
   not at rest, and a fixture patched on a universe the profile has no output for reads 0 on every
   channel, as nothing reaches it.
   DMX output is unchanged: the live output and the state now share one record of what each

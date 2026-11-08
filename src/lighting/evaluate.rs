@@ -28,6 +28,10 @@
 //! The replay sends the rig the frames playing through would have (see
 //! `EffectEngine::trace_wire`), so a channel an effect over before T left set
 //! -- a gobo, a zoom -- reads as the rig holds it, as it does live.
+//! A setting still moving when its effect ends or a cue cuts it reads where
+//! it got to then; live, the last frame before lands up to one frame period
+//! earlier (about 23 ms on a Pi, longer under load), so the rig can hold it
+//! one live frame short of the evaluation.
 
 use std::collections::HashMap;
 use std::time::Duration;
