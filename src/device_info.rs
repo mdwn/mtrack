@@ -19,7 +19,7 @@ use serde::Serialize;
 
 /// Serializable info about an audio device for the web UI.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct AudioDeviceInfo {
     pub name: String,
     pub max_channels: u16,
