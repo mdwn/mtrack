@@ -215,36 +215,30 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
 }
 
 /// Finds a cpal input device by name, searching all available hosts.
-pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
-    use ::cpal::traits::{DeviceTrait, HostTrait};
+///
+/// Walks under [`cpal::silence_enumeration`], like the output walks, so it
+/// takes turns with them and ALSA's chatter about the devices it passes stays
+/// off stderr. So it must not be called with that guard already held.
+pub fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
+    cpal::find_input_device(name)
+        .map_err(|e| AudioError::Playback(e.to_string()))?
+        .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
+}
 
-    for host_id in ::cpal::available_hosts() {
-        let host =
-            ::cpal::host_from_id(host_id).map_err(|e| AudioError::Playback(e.to_string()))?;
-        let devices = match host.input_devices() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(
-                    host = host_id.name(),
-                    error = %e,
-                    "Failed to list input devices for host"
-                );
-                continue;
-            }
-        };
+/// Lists the devices that capture audio, input-only ones included.
+pub fn list_input_device_info() -> Result<Vec<cpal::InputDeviceInfo>, AudioError> {
+    cpal::list_input_device_info().map_err(|e| AudioError::Playback(e.to_string()))
+}
 
-        for device in devices {
-            let device_id = match device.id() {
-                Ok(id) => id.to_string(),
-                Err(_) => continue,
-            };
-            if device_id.trim() == name.trim() {
-                return Ok(device);
-            }
-        }
-    }
-
-    Err(AudioError::DeviceNotFound(name.to_string()))
+/// Finds a cpal output device by name, searching all available hosts.
+///
+/// The same scan the player uses to open its output, holding no other device
+/// open. Takes [`cpal::silence_enumeration`] itself, so it must not be called
+/// with that guard already held.
+pub fn find_output_device(name: &str) -> Result<::cpal::Device, AudioError> {
+    cpal::find_output_device(name)
+        .map_err(|e| AudioError::Playback(e.to_string()))?
+        .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
 }
 
 /// Lists audio devices as simple info structs for the web UI.
