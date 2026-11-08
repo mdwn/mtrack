@@ -33,23 +33,51 @@ use tracing::{info, warn};
 const LEGACY_STATUS_EVENTS: &str = "top-level 'status_events' is legacy; it is only used when \
      the matched profile has none. Move it into the profile";
 
-/// Messages [`warn_once`] has already logged.
-static WARNED: parking_lot::Mutex<std::collections::BTreeSet<&'static str>> =
-    parking_lot::Mutex::new(std::collections::BTreeSet::new());
-
-/// Logs a config warning the first time this process sees it, and not again.
+/// Config warnings already given, so that each is given once.
 ///
 /// The config is read again on every web UI and API request that needs it, so
 /// a warning logged per read repeats for as long as the config stays as it is
-/// -- eleven times in an evening's soak, burying the lines around it. One per
-/// process says it; the config is fixed by editing it, and the next start
-/// says it again if it was not. Returns whether it logged.
-fn warn_once(message: &'static str) -> bool {
-    let first = WARNED.lock().insert(message);
-    if first {
-        warn!("{message}");
+/// -- eleven times in an evening's soak, burying the lines around it.
+struct Warned(parking_lot::Mutex<std::collections::BTreeSet<&'static str>>);
+
+impl Warned {
+    const fn new() -> Self {
+        Self(parking_lot::Mutex::new(std::collections::BTreeSet::new()))
     }
-    first
+
+    /// Logs `message` unless it was already given. Returns whether it logged.
+    fn warn(&self, message: &'static str) -> bool {
+        let first = self.0.lock().insert(message);
+        if first {
+            warn!("{message}");
+        }
+        first
+    }
+
+    fn forget(&self) {
+        self.0.lock().clear();
+    }
+}
+
+static WARNED: Warned = Warned::new();
+
+/// Whether [`Player::normalize_with`] gives its warnings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Warnings {
+    Give,
+    Withhold,
+}
+
+/// Logs a config warning the first time it applies, and not again until a new
+/// config is saved (see [`forget_config_warnings`]).
+fn warn_once(message: &'static str) {
+    WARNED.warn(message);
+}
+
+/// Lets the config warnings be given again. Called when a new config is
+/// saved: one that puts a legacy field back after it was fixed says so.
+pub(crate) fn forget_config_warnings() {
+    WARNED.forget();
 }
 
 fn default_active_playlist() -> String {
@@ -306,12 +334,16 @@ impl Player {
 
     /// Deserializes a YAML string directly into a player configuration struct.
     /// Does not load profiles_dir (no filesystem context). Runs normalize().
+    ///
+    /// This reads drafts -- a config the web UI is validating, or checking
+    /// before it saves -- not the config the player runs, so the legacy-field
+    /// warnings are not given: they belong to the config that is loaded.
     pub fn deserialize_from_str(yaml: &str) -> Result<Player, ConfigError> {
         let mut player = Config::builder()
             .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
             .build()?
             .try_deserialize::<Player>()?;
-        player.normalize();
+        player.normalize_with(Warnings::Withhold);
         Ok(player)
     }
 
@@ -420,8 +452,19 @@ impl Player {
     /// Normalizes legacy configuration fields into profiles.
     /// After normalization, `profiles` is the source of truth.
     fn normalize(&mut self) {
+        self.normalize_with(Warnings::Give);
+    }
+
+    /// [`Self::normalize`], saying what it ignores or only when `warnings`
+    /// says to.
+    fn normalize_with(&mut self, warnings: Warnings) {
         if self.profiles.is_some() {
             // Warn about legacy fields that will be ignored.
+            let warn_once = |message: &'static str| {
+                if warnings == Warnings::Give {
+                    warn_once(message)
+                }
+            };
             if self.audio.is_some() || self.audio_device.is_some() {
                 warn_once("top-level 'audio'/'audio_device' ignored when 'profiles' is present");
             }
@@ -887,51 +930,41 @@ mod tests {
     }
 
     #[test]
-    fn warn_once_logs_a_message_the_first_time_only() {
-        assert!(warn_once("test-only: warn_once first sight"));
-        assert!(!warn_once("test-only: warn_once first sight"));
-        assert!(warn_once("test-only: warn_once another message"));
+    fn a_warning_is_given_once_until_forgotten() {
+        let warned = Warned::new();
+        assert!(warned.warn("first sight"));
+        assert!(!warned.warn("first sight"));
+        assert!(warned.warn("another message"));
+        warned.forget();
+        assert!(warned.warn("first sight"));
     }
 
-    /// The config is re-read on every API request that needs it; the legacy
-    /// `status_events` warning must not come back with each read.
+    const LEGACY_YAML: &str = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                               off_events: []\n  idling_events: []\n  playing_events: []\n";
+
+    /// A draft being validated is not the running config: reading one gives
+    /// no warning, so it cannot use up the one the loaded config gives.
     #[test]
-    fn legacy_status_events_warning_is_not_repeated_per_read() {
-        #[derive(Clone, Default)]
-        struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
-        impl Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
+    fn a_draft_gives_no_legacy_warning() {
+        let (layer, lines) = crate::tui::logging::capture_layer(10);
+        {
+            use tracing_subscriber::layer::SubscriberExt;
+            let subscriber = tracing_subscriber::Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let player = Player::deserialize_from_str(LEGACY_YAML).expect("config parses");
+            assert!(player.status_events().is_some());
         }
+        assert!(lines.lock().is_empty(), "{:?}", lines.lock());
+    }
 
-        let yaml = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
-                    off_events: []\n  idling_events: []\n  playing_events: []\n";
-        let capture = Capture::default();
-        let writer = capture.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            for _ in 0..3 {
-                let player = Player::deserialize_from_str(yaml).expect("config parses");
-                assert!(player.status_events().is_some());
-            }
-        });
-
-        let out = String::from_utf8(capture.0.lock().clone()).unwrap();
-        // Another test may have been first to read a legacy config in this
-        // process, so this thread sees the warning once or not at all.
-        assert!(
-            out.matches("top-level 'status_events' is legacy").count() <= 1,
-            "{out}"
-        );
-        assert!(WARNED.lock().contains(LEGACY_STATUS_EVENTS));
+    /// The loaded config warns through the one place that says it once.
+    #[test]
+    fn the_loaded_config_gives_the_legacy_warning_through_warn_once() {
+        let player = player_from_yaml(LEGACY_YAML);
+        assert!(player.status_events().is_some());
+        // Given now or by an earlier test in this process; either way it is
+        // remembered, so the next read does not say it again.
+        assert!(WARNED.0.lock().contains(LEGACY_STATUS_EVENTS));
     }
 
     #[test]

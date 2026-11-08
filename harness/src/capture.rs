@@ -230,8 +230,7 @@ pub fn record_from(
 /// mtrack's own `find_input_device` is `pub(crate)`, so this repeats the
 /// lookup rather than reaching into the crate.
 fn find_input_device(name: &str) -> Result<cpal::Device, Box<dyn std::error::Error>> {
-    let _stdout = shh::stdout();
-    let _stderr = shh::stderr();
+    let _walk = mtrack::audio::cpal::silence_enumeration();
 
     for host_id in cpal::available_hosts() {
         let Ok(host) = cpal::host_from_id(host_id) else {
@@ -456,8 +455,7 @@ where
 
 /// Finds a cpal output device by the name mtrack would use.
 fn find_output_device(name: &str) -> Result<cpal::Device, Box<dyn std::error::Error>> {
-    let _stdout = shh::stdout();
-    let _stderr = shh::stderr();
+    let _walk = mtrack::audio::cpal::silence_enumeration();
 
     for host_id in cpal::available_hosts() {
         let Ok(host) = cpal::host_from_id(host_id) else {

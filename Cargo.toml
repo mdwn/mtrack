@@ -102,7 +102,6 @@ serde = { version = "1.0", features = ["derive"] }
 yaml-rust2 = "0.11"
 # One stem for a name typed composed or decomposed (`lighting::files::stem`).
 unicode-normalization = "0.1.26"
-shh = "1.0.1"
 spin_sleep = "1.3.3"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = [
@@ -153,6 +152,11 @@ futures-util = "0.3"
 tempfile = "3.26.0"
 quick-xml = "0.41.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+
+# ALSA's thread-local error handler, to quiet device enumeration (already in
+# the tree through cpal).
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa-sys = "0.4"
 
 [dev-dependencies]
 criterion = "0.7"

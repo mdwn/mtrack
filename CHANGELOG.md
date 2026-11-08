@@ -745,21 +745,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Startup log lines lost under systemd**: audio device enumeration silences ALSA by swapping the
-  process's stdout and stderr for a pipe, and any line logged by another thread in that window went
-  into the pipe and was discarded. Started under systemd with olad already running, the DMX engine
-  comes up while the audio device is opening, so "DMX engine initialized", "Effects loop started",
-  olad's "no output port patched" warning, "Web UI listening" and "mtrack is running" never reached
-  the journal. Log lines now go to a copy of stdout taken at startup, which nothing redirects, so
-  they all reach the journal, including those logged while the web UI refreshes the device list.
-  Log lines also carry ANSI colour only when stdout is a terminal (and `NO_COLOR` is unset): the
-  escape codes went into every journal line, which the journal then stored as binary data.
-- **Legacy config warnings once per process**: the warnings about legacy top-level config fields
+- **Startup log lines lost under systemd**: audio device enumeration silenced ALSA by swapping the
+  whole process's stdout and stderr for a pipe, and whatever any other thread wrote in that window
+  went into the pipe and was discarded. Started under systemd with olad already running, the DMX
+  engine comes up while the audio device is opening, so "DMX engine initialized", "Effects loop
+  started", olad's "no output port patched" warning, "Web UI listening" and "mtrack is running"
+  never reached the journal; a web UI device refresh lost other threads' lines the same way,
+  panics and real ALSA errors (a MIDI port failing to open) among them. Enumeration now quiets only
+  ALSA's own error reports, and only on the thread that walks the devices; stdout and stderr are
+  never touched.
+- **Log lines go to stderr**: headless log lines were written to stdout, mixed into the output of
+  commands such as `mtrack devices` that scripts read. They now go to stderr, which the journal
+  takes the same way. They carry ANSI colour only when stderr is a terminal and `NO_COLOR` is
+  unset: under systemd the escape codes went into every journal line, which the journal then
+  stored as binary data.
+- **Legacy config warnings once per config**: the warnings about legacy top-level config fields
   -- `status_events` (legacy; used only when the matched profile has none), and
   `audio`/`audio_device`, `midi`/`midi_device`, `dmx`, `trigger`, `track_mappings`,
   `sample_triggers` and `controller`/`controllers` ignored beside `profiles`, and inline
   `profiles` ignored for `profiles_dir` -- were logged again every time the web UI or the API
-  read the config. Each is now logged the first time and not again until the next start.
+  read the config. Each is now logged once, and again only after a new config is saved, so a
+  saved config that brings a legacy field back says so. A draft checked with the web UI's
+  validate, or before a save, gives none of them.
 
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
   fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's

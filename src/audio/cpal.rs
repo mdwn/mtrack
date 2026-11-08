@@ -24,7 +24,4 @@ type CondvarNotify = Arc<(Mutex<bool>, Condvar)>;
 
 // Re-export public types so external callers see the same paths as before.
 pub use device::list_device_info;
-pub use device::{AudioDeviceInfo, Device, SupportedFormat};
-// Tests elsewhere that swap fd 1 must not race a device walk doing the same.
-#[cfg(test)]
-pub(crate) use device::ENUMERATION_LOCK;
+pub use device::{silence_enumeration, AudioDeviceInfo, Device, Silenced, SupportedFormat};

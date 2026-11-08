@@ -373,9 +373,8 @@ fn probe_audio_outputs(skips: &mut Vec<Skip>) -> Vec<AudioOutput> {
 /// Lists input devices directly from cpal. mtrack's listing filters to devices
 /// with output configs, so input-only interfaces would otherwise be invisible.
 fn probe_audio_inputs() -> Vec<AudioInput> {
-    // Device enumeration on ALSA writes directly to the process's stderr.
-    let _stdout = shh::stdout();
-    let _stderr = shh::stderr();
+    // Device enumeration on ALSA reports what it cannot open on stderr.
+    let _walk = mtrack::audio::cpal::silence_enumeration();
 
     let mut inputs = Vec::new();
     for host_id in cpal::available_hosts() {

@@ -373,6 +373,18 @@ impl ConfigStore {
     /// Only changed profiles are rewritten. Rewriting all of them would drop
     /// the comments from files that had nothing to do with the edit.
     fn persist(&self, config: &Player, profiles_before: &[String]) -> Result<(), ConfigError> {
+        self.persist_files(config, profiles_before)?;
+        // A new config gives its own warnings, even ones the last one gave.
+        super::player::forget_config_warnings();
+        Ok(())
+    }
+
+    /// The writes behind [`Self::persist`].
+    fn persist_files(
+        &self,
+        config: &Player,
+        profiles_before: &[String],
+    ) -> Result<(), ConfigError> {
         let Some(dir) = self.directory_profiles(config) else {
             let yaml = to_yaml_string(config)
                 .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
@@ -847,6 +859,9 @@ impl DiskWrite<'_> {
         // a read and the swap would be overwritten in memory by the older
         // copy, and the next persist would write that copy back over its file.
         let path = self.store.path.clone();
+        // Written to disk under this lock: a new config, which gives its own
+        // warnings even where the last one gave them.
+        super::player::forget_config_warnings();
         let config = tokio::task::spawn_blocking(move || Player::deserialize(&path))
             .await
             .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
