@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::channels::{dmx_byte, fine_name, mirror_name};
+use crate::lighting::channels::{fine_name, mirror_name, CMY_OF_RGB};
 use crate::lighting::effects::{is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
@@ -439,14 +439,18 @@ async fn sampler_loop_cancellable(
 }
 
 /// Converts fixture states into sorted `FixtureSnapshot` values with DMX 0-255 channel values.
+/// Each channel shows the byte it goes out as ([`wire_byte`]) where
+/// `registry` knows the fixture's channel.
 pub(crate) fn compute_fixture_snapshots(
     states: &HashMap<String, FixtureState>,
     has_dimmer_map: &HashMap<String, bool>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) -> Vec<FixtureSnapshot> {
     let mut snapshots: Vec<FixtureSnapshot> = states
         .iter()
         .map(|(name, state)| {
             let has_dedicated_dimmer = has_dimmer_map.get(name).copied().unwrap_or(false);
+            let info = registry.get(name);
             let mut channels = HashMap::new();
 
             for (channel_name, channel_state) in &state.channels {
@@ -459,7 +463,7 @@ pub(crate) fn compute_fixture_snapshots(
                     channel_state,
                     has_dedicated_dimmer,
                 );
-                channels.insert(channel_name.clone(), dmx_byte(value * 255.0));
+                channels.insert(channel_name.clone(), wire_byte(info, channel_name, value));
             }
 
             FixtureSnapshot {
@@ -487,13 +491,74 @@ pub(crate) fn fixture_snapshots_with_cells(
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
     rates: StrobeRates,
 ) -> Vec<FixtureSnapshot> {
-    let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
+    let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map, registry);
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    attach_cmy_flags(&mut fixtures, states, registry);
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
     attach_mirrors(&mut fixtures, registry);
     attach_strobe_rates(&mut fixtures, registry, rates);
     fixtures
+}
+
+/// The byte a snapshot shows for `channel` at `value` (0 to 1): the
+/// coarse byte it goes out as on the fixture's channel (a 16-bit
+/// channel's high byte, [`coarse_byte`](crate::lighting::effects::coarse_byte)),
+/// or an 8-bit channel's byte for a name the fixture has no channel by.
+fn wire_byte(
+    info: Option<&crate::lighting::effects::FixtureInfo>,
+    channel: &str,
+    value: f64,
+) -> u8 {
+    crate::lighting::effects::coarse_byte(
+        info.and_then(|info| info.channel_defs.get(channel)),
+        value,
+    )
+}
+
+/// A CMY fixture's colour as the head is sent it (#661): the engine keeps
+/// colour in red, green and blue, which such a fixture has no channels
+/// for, and sends each driven primary as the flag that removes it
+/// ([`FixtureState::cmy_flags`], the one conversion). The snapshot says
+/// the same: the flags at what the head is sent, written over any a
+/// `static` named directly, and no red, green or blue. So every reading of
+/// the snapshot -- whether the rig is dark, the colour a stage view draws
+/// -- judges the fixture by what it emits.
+fn attach_cmy_flags(
+    snapshots: &mut [FixtureSnapshot],
+    states: &HashMap<String, FixtureState>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    for snapshot in snapshots.iter_mut() {
+        let Some(info) = registry.get(&snapshot.name) else {
+            continue;
+        };
+        if !crate::lighting::effects::has_cmy(&info.channel_defs) {
+            continue;
+        }
+        for (rgb, _) in CMY_OF_RGB {
+            snapshot.channels.remove(rgb);
+        }
+        if let Some(state) = states.get(&snapshot.name) {
+            for (cmy, value) in state.cmy_flags(&info.channel_defs, info.has_dimmer()) {
+                snapshot
+                    .channels
+                    .insert(cmy.to_string(), wire_byte(Some(info), cmy, value));
+            }
+        }
+        // A flag nothing drives is left open on the wire: with any flag
+        // in the snapshot, the ones it lacks read open, so the fixture is
+        // judged subtractively as the head is (`red: 100%` alone, or
+        // `cyan: 0%` alone, is open white, not dark).
+        if CMY_OF_RGB
+            .iter()
+            .any(|(_, cmy)| snapshot.channels.contains_key(*cmy))
+        {
+            for (_, cmy) in CMY_OF_RGB {
+                snapshot.channels.entry(cmy.to_string()).or_insert(0);
+            }
+        }
+    }
 }
 
 /// Reads each fixture's strobe byte back into the rate it means through
@@ -643,10 +708,16 @@ pub(crate) fn attach_cell_snapshots(
             let own = states.get(&crate::lighting::effects::cell_fixture_name(
                 parent, &cell.name,
             ));
+            // Each cell channel at the coarse byte it goes out as on the
+            // cell's own channel, as the DMX output resolves it.
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
-                .map(|(name, value)| (name, dmx_byte(value * 255.0)))
+                .map(|(name, value)| {
+                    let byte =
+                        crate::lighting::effects::coarse_byte(Some(&cell.channels[&name]), value);
+                    (name, byte)
+                })
                 .collect();
             cells.insert(cell.name.clone(), values);
         }
@@ -732,7 +803,7 @@ mod tests {
         states.insert("test_fixture".to_string(), fixture_state);
 
         let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].name, "test_fixture");
@@ -760,7 +831,7 @@ mod tests {
         states.insert("fixture_with_dimmer".to_string(), fixture_state);
 
         let has_dimmer = HashMap::from([("fixture_with_dimmer".to_string(), true)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
         // Red should remain 255 (not reduced by multiplier when fixture has dedicated dimmer)
@@ -783,7 +854,7 @@ mod tests {
         states.insert("test_fixture".to_string(), fixture_state);
 
         let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
         assert!(snapshots[0].channels.contains_key("red"));
@@ -797,7 +868,7 @@ mod tests {
         states.insert("alpha".to_string(), FixtureState::new());
         states.insert("middle".to_string(), FixtureState::new());
 
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new(), &HashMap::new());
 
         assert_eq!(snapshots[0].name, "alpha");
         assert_eq!(snapshots[1].name, "middle");
@@ -807,7 +878,7 @@ mod tests {
     #[test]
     fn test_compute_fixture_snapshots_empty() {
         let states = HashMap::new();
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new(), &HashMap::new());
         assert!(snapshots.is_empty());
     }
 
@@ -822,7 +893,7 @@ mod tests {
         states.insert("dark_fixture".to_string(), fixture_state);
 
         let has_dimmer = HashMap::new();
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 0);
     }
@@ -839,7 +910,7 @@ mod tests {
 
         // has_dimmer_map doesn't contain this fixture - should default to false
         let has_dimmer = HashMap::from([("other_fixture".to_string(), true)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 128);
     }
@@ -1239,7 +1310,7 @@ mod tests {
         // filtered out before this point).
         let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
         let bar_only: HashMap<String, FixtureState> = HashMap::from([("Bar".to_string(), bed)]);
-        let mut snapshots = compute_fixture_snapshots(&bar_only, &has_dimmer);
+        let mut snapshots = compute_fixture_snapshots(&bar_only, &has_dimmer, &HashMap::new());
         let channels_before = snapshots[0].channels.clone();
 
         attach_cell_snapshots(&mut snapshots, &states, &registry);
@@ -1253,6 +1324,43 @@ mod tests {
         assert_eq!(*bar_snapshot.cells["1"].get("red").unwrap(), 255);
         assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 0);
         assert_eq!(*bar_snapshot.cells["3"].get("red").unwrap(), 255);
+    }
+
+    /// A cell's snapshot is the bytes the head is sent: a 16-bit cell
+    /// channel shows its coarse byte on the wire, the 16-bit value's high
+    /// byte.
+    #[test]
+    fn a_cell_snapshot_is_what_the_head_is_sent() {
+        use crate::lighting::effects::{EffectInstance, EffectType};
+        let mut info = bar("Bar");
+        // Cell 2's red is 16-bit, its fine byte at 11.
+        info.cells[1].channels.get_mut("red").unwrap().fine = Some(11);
+        let red_2 = info.cells[1].channels["red"].offset;
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(info);
+        engine
+            .start_effect(EffectInstance::new(
+                "cell".to_string(),
+                EffectType::Static {
+                    parameters: HashMap::from([("red".to_string(), 0.3)]),
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["Bar/2".to_string()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        let sent: HashMap<u16, u8> = engine
+            .update(std::time::Duration::from_millis(10), None)
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("Bar".to_string(), true)]));
+        let cell = &snapshot.fixtures[0].cells["2"];
+        assert_eq!(cell.get("red"), sent.get(&red_2));
+        assert_eq!(cell["red"], 76, "0.3 of 65535 is 0x4CCD: coarse 76");
     }
 
     #[test]
@@ -1272,7 +1380,7 @@ mod tests {
         let states = HashMap::from([("Bar".to_string(), bed.clone())]);
 
         let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
-        let mut snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let mut snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
         let before = snapshots.clone();
 
         attach_cell_snapshots(&mut snapshots, &states, &registry);
@@ -1457,5 +1565,70 @@ mod tests {
         );
         assert!(is_level_channel("red#2") && !is_level_channel("pan#2"));
         assert!(!is_level_channel("zoom#2") && !is_level_channel("gobo"));
+    }
+
+    /// A CMY fixture's snapshot is the bytes the head is sent (#661): its
+    /// colour driven through red, green and blue reads as the flags the
+    /// engine writes, over a `static` naming a flag directly, and the
+    /// stage views and `is_dark` judge it by those.
+    #[test]
+    fn a_cmy_snapshot_is_what_the_head_is_sent() {
+        use crate::lighting::effects::{EffectInstance, EffectType};
+        let channels: HashMap<String, u16> =
+            [("dimmer", 1), ("cyan", 2), ("magenta", 3), ("yellow", 4)]
+                .into_iter()
+                .map(|(n, o)| (n.to_string(), o))
+                .collect();
+        let mut info = FixtureInfo::new("f".to_string(), 1, 1, "T".to_string(), channels, None);
+        // A 16-bit dimmer, its fine byte at 5: the snapshot shows the
+        // coarse byte on the wire, the high byte of the 16-bit value.
+        info.channel_defs.get_mut("dimmer").unwrap().fine = Some(5);
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(info);
+        let stat = |id: &str, parameters: &[(&str, f64)]| {
+            EffectInstance::new(
+                id.to_string(),
+                EffectType::Static {
+                    parameters: parameters
+                        .iter()
+                        .map(|&(n, v)| (n.to_string(), v))
+                        .collect(),
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["f".to_string()],
+                None,
+                None,
+                None,
+            )
+        };
+        engine
+            .start_effect(stat(
+                "white",
+                &[
+                    ("dimmer", 0.3),
+                    ("cyan", 0.0),
+                    ("magenta", 0.0),
+                    ("yellow", 0.0),
+                ],
+            ))
+            .unwrap();
+        engine.start_effect(stat("red", &[("red", 0.25)])).unwrap();
+        let sent: HashMap<u16, u8> = engine
+            .update(std::time::Duration::from_millis(10), None)
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("f".to_string(), true)]));
+        let f = &snapshot.fixtures[0];
+        for (name, address) in [("dimmer", 1), ("cyan", 2), ("magenta", 3), ("yellow", 4)] {
+            assert_eq!(f.channels.get(name), sent.get(&address), "{name}");
+        }
+        assert_eq!(f.channels["cyan"], 191, "red at a quarter: cyan at three");
+        assert_eq!(
+            f.channels["dimmer"], 76,
+            "0.3 of 65535 is 0x4CCD: coarse 76"
+        );
+        assert!(!f.channels.contains_key("red"), "{:?}", f.channels);
     }
 }
