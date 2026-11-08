@@ -249,6 +249,12 @@ fn is_virtual_node(device_name: &str) -> bool {
         .any(|prefix| pcm_id.starts_with(prefix))
 }
 
+/// Whether a device name is a raw ALSA hardware node (`hw:...`): the one node
+/// whose channel count is the card's own.
+fn is_hw_node(device_name: &str) -> bool {
+    pcm_id(device_name).starts_with("hw:")
+}
+
 /// The card identity inside a device name, used to pair a plug node with the
 /// hardware node behind it.
 ///
@@ -524,7 +530,12 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
     let mut lowest_subdevice: HashMap<String, (u16, u16)> = HashMap::new();
 
     for info in infos.iter() {
-        if info.virtual_node || !info.channels_known {
+        // Only the raw `hw:` node is the hardware. `front:`, `surround71:` and
+        // the like are not plugins by [`is_virtual_node`]'s list, but they name
+        // the same card and subdevice with a width of their own -- `front` is
+        // two channels on an eight-channel HDA card -- and whichever of them
+        // came last in the walk used to win the subdevice.
+        if info.virtual_node || !info.channels_known || !is_hw_node(&info.name) {
             continue;
         }
         let Some(card) = card_token(&info.name) else {
@@ -560,7 +571,7 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
         // No sibling for that subdevice means no honest answer, so it stays
         // unknown rather than falling back to a different subdevice's count.
         if let Some(channels) = resolved {
-            info.max_channels = channels;
+            info.max_channels = info.max_channels.min(channels);
             info.channels_known = true;
         }
     }
@@ -578,6 +589,13 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
 const AVAILABLE_HINT_TTL: Duration = Duration::from_secs(10);
 
 /// The last built hint and when it was built.
+        //
+        // The node's own report caps it. A plug node reports cpal's clamp, so
+        // the hardware's count is the answer; a `dmix` node reports the width
+        // its slave was configured at -- `dmix:CARD=Headphones,DEV=0` is two
+        // channels in front of an eight-channel `hw` node -- and opens at that
+        // and nothing wider. Taking the sibling's count outright opened it at
+        // eight, which ALSA refused.
 static AVAILABLE_HINT_CACHE: parking_lot::Mutex<Option<(std::time::Instant, String)>> =
     parking_lot::Mutex::new(None);
 
@@ -2059,6 +2077,39 @@ mod test {
             assert_eq!(pcm_id("alsa:hw:CARD=MAT,DEV=0"), "hw:CARD=MAT,DEV=0");
             assert_eq!(pcm_id("alsa:default"), "default");
             // A bare PCM id with no host prefix is left alone.
+        /// The harness Pi's `dmix:CARD=Headphones,DEV=0` reports two channels
+        /// in front of an eight-channel `hw` node. It was opened at eight,
+        /// borrowed from the sibling, and ALSA refused the hw_params: no audio.
+        /// It opens at its own two, and lists them.
+        #[test]
+        fn dmix_node_keeps_its_own_narrower_width() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=Headphones,DEV=0", 8),
+                info("alsa:dmix:CARD=Headphones,DEV=0", 2),
+                info("alsa:plughw:CARD=Headphones,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            assert_eq!(infos[1].max_channels, 2);
+            assert!(infos[1].channels_known);
+            assert_eq!(open_channel_count(Some(&infos[1]), 2), 2);
+            // The plug node beside it still takes the hardware's eight.
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
+        /// `front:` names the same card and subdevice as `hw:` with a width of
+        /// its own, and is not the hardware.
+        #[test]
+        fn only_the_hw_node_is_a_sibling() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=PCH,DEV=0", 8),
+                info("alsa:front:CARD=PCH,DEV=0", 2),
+                info("alsa:plughw:CARD=PCH,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
             assert_eq!(pcm_id("default"), "default");
 
             assert!(is_virtual_node("alsa:default"));
