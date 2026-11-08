@@ -154,9 +154,11 @@ quick-xml = "0.41.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 # ALSA's thread-local error handler, to quiet device enumeration (already in
-# the tree through cpal).
+# the tree through cpal). libc looks up alsa-lib 1.2.15's log API at runtime,
+# since alsa-sys does not bind it and older alsa-lib does not have it.
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa-sys = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.7"

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use mtrack::calibrate::CaptureBuffer;
 use parking_lot::Mutex;
 
@@ -174,7 +174,7 @@ pub fn record_from(
     duration: Duration,
 ) -> Result<Capture, Box<dyn std::error::Error>> {
     {
-        let device = find_input_device(&input.name)?;
+        let device = mtrack::audio::find_input_device(&input.name)?;
         let default_config = device.default_input_config()?;
         let channels = device
             .supported_input_configs()
@@ -225,33 +225,6 @@ pub fn record_from(
     }
 }
 
-/// Finds a cpal input device by the name mtrack would use.
-///
-/// mtrack's own `find_input_device` is `pub(crate)`, so this repeats the
-/// lookup rather than reaching into the crate.
-fn find_input_device(name: &str) -> Result<cpal::Device, Box<dyn std::error::Error>> {
-    let _walk = mtrack::audio::cpal::silence_enumeration();
-
-    for host_id in cpal::available_hosts() {
-        let Ok(host) = cpal::host_from_id(host_id) else {
-            continue;
-        };
-        let Ok(devices) = host.input_devices() else {
-            continue;
-        };
-        for device in devices {
-            if device
-                .id()
-                .map(|id| id.to_string().trim() == name.trim())
-                .unwrap_or(false)
-            {
-                return Ok(device);
-            }
-        }
-    }
-    Err(format!("input device '{name}' not found").into())
-}
-
 /// Plays a distinct tone per output channel on `out` while recording every
 /// input channel of `input`, and reports which output arrives on which input.
 ///
@@ -263,7 +236,7 @@ pub fn probe_pair(
     input: &crate::capabilities::AudioInput,
     tones: &[f32],
 ) -> Result<Vec<(u16, u16)>, Box<dyn std::error::Error>> {
-    let device = find_output_device(&out.name)?;
+    let device = mtrack::audio::find_output_device(&out.name)?;
     let default_config = device.default_output_config()?;
     let sample_rate = default_config.sample_rate();
     let out_channels = out.max_channels.min(tones.len() as u16);
@@ -451,30 +424,6 @@ where
         |e| eprintln!("loopback probe output error: {e}"),
         None,
     )?)
-}
-
-/// Finds a cpal output device by the name mtrack would use.
-fn find_output_device(name: &str) -> Result<cpal::Device, Box<dyn std::error::Error>> {
-    let _walk = mtrack::audio::cpal::silence_enumeration();
-
-    for host_id in cpal::available_hosts() {
-        let Ok(host) = cpal::host_from_id(host_id) else {
-            continue;
-        };
-        let Ok(devices) = host.output_devices() else {
-            continue;
-        };
-        for device in devices {
-            if device
-                .id()
-                .map(|id| id.to_string().trim() == name.trim())
-                .unwrap_or(false)
-            {
-                return Ok(device);
-            }
-        }
-    }
-    Err(format!("output device '{name}' not found").into())
 }
 
 /// Waits for a condition, polling until a deadline.

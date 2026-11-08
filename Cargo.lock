@@ -2280,6 +2280,7 @@ dependencies = [
  "http-body-util",
  "indexmap",
  "jiff",
+ "libc",
  "midir",
  "midly",
  "notify",

@@ -23,5 +23,5 @@ pub(crate) mod stream;
 type CondvarNotify = Arc<(Mutex<bool>, Condvar)>;
 
 // Re-export public types so external callers see the same paths as before.
-pub use device::list_device_info;
+pub use device::{find_output_device, list_device_info};
 pub use device::{silence_enumeration, AudioDeviceInfo, Device, Silenced, SupportedFormat};

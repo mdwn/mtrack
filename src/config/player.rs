@@ -69,15 +69,33 @@ enum Warnings {
 }
 
 /// Logs a config warning the first time it applies, and not again until a new
-/// config is saved (see [`forget_config_warnings`]).
+/// config is written as raw YAML (see [`forget_config_warnings`]).
 fn warn_once(message: &'static str) {
     WARNED.warn(message);
 }
 
-/// Lets the config warnings be given again. Called when a new config is
-/// saved: one that puts a legacy field back after it was fixed says so.
+/// Lets the config warnings be given again. Called when a config written as
+/// raw YAML is read back: one that puts a legacy field back after it was fixed
+/// says so. Typed edits (a playlist switch, a gain) do not call it, since they
+/// cannot bring a legacy field back.
 pub(crate) fn forget_config_warnings() {
     WARNED.forget();
+    #[cfg(test)]
+    FORGOTTEN_ON_THIS_THREAD.with(|n| n.set(n.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread has called [`forget_config_warnings`]. The
+    /// warnings themselves are process-wide and shared by tests running in
+    /// parallel, so a test asks this instead.
+    static FORGOTTEN_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// See [`FORGOTTEN_ON_THIS_THREAD`].
+#[cfg(test)]
+pub(crate) fn config_warnings_forgotten_on_this_thread() -> usize {
+    FORGOTTEN_ON_THIS_THREAD.with(std::cell::Cell::get)
 }
 
 fn default_active_playlist() -> String {

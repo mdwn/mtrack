@@ -752,8 +752,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   started", olad's "no output port patched" warning, "Web UI listening" and "mtrack is running"
   never reached the journal; a web UI device refresh lost other threads' lines the same way,
   panics and real ALSA errors (a MIDI port failing to open) among them. Enumeration now quiets only
-  ALSA's own error reports, and only on the thread that walks the devices; stdout and stderr are
-  never touched.
+  ALSA's own error reports (and, on alsa-lib 1.2.15 or later, its log messages), and only on the
+  thread that walks the devices; stdout and stderr are never touched. Input device lookups (the
+  trigger engine and calibration) are now quieted and serialised with the output walks too.
 - **Log lines go to stderr**: headless log lines were written to stdout, mixed into the output of
   commands such as `mtrack devices` that scripts read. They now go to stderr, which the journal
   takes the same way. They carry ANSI colour only when stderr is a terminal and `NO_COLOR` is
@@ -764,8 +765,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `audio`/`audio_device`, `midi`/`midi_device`, `dmx`, `trigger`, `track_mappings`,
   `sample_triggers` and `controller`/`controllers` ignored beside `profiles`, and inline
   `profiles` ignored for `profiles_dir` -- were logged again every time the web UI or the API
-  read the config. Each is now logged once, and again only after a new config is saved, so a
-  saved config that brings a legacy field back says so. A draft checked with the web UI's
+  read the config. Each is now logged once, and again only after the config is saved as raw YAML,
+  so a saved config that brings a legacy field back says so. Typed edits such as a playlist switch
+  or a gain change cannot bring one back and do not repeat them. A draft checked with the web UI's
   validate, or before a save, gives none of them.
 
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a

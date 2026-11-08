@@ -149,12 +149,16 @@ static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// see [`alsa_quiet`]. The silence is declared first, so it is lifted *before*
 /// the lock is released.
 ///
-/// Never call this while a guard is already alive on the same thread: the walks
-/// that use it are siblings rather than nested, and `parking_lot::Mutex` is not
-/// reentrant. The guard must be dropped on the thread that took it.
+/// Must not be nested: calling this while a guard from it is still alive on the
+/// same thread deadlocks, because `parking_lot::Mutex` is not reentrant. (The
+/// ALSA silence underneath, `AlsaErrorsSilenced`, nests correctly on its own;
+/// it is the lock that does not.) The walks that use it are siblings, and none
+/// calls another. The guard must be dropped on the thread that took it.
 ///
-/// Public for the hardware harness, which walks cpal's devices itself and must
-/// take turns with the player's walks the same way.
+/// The lock is per process. The hardware harness runs the player as a child
+/// process, so this does not make the harness take turns with the player's
+/// walks; it serialises the harness's own walks against each other and
+/// silences their chatter, which is why it is public.
 pub fn silence_enumeration() -> Silenced {
     let lock = ENUMERATION_LOCK.lock();
     Silenced {
@@ -182,6 +186,15 @@ pub struct Silenced {
 /// (`snd_lib_error_set_local` is thread-local), and the one it replaced is put
 /// back when the walk ends.
 ///
+/// alsa-lib 1.2.15 added a logging API beside it (`snd_lib_log`), whose own
+/// thread-local handler (`snd_lib_log_set_local`) takes precedence over the
+/// error handler and also carries the warning, info and debug priorities the
+/// error handler never sees. alsa-sys 0.4 does not bind it, and the rig runs
+/// alsa-lib 1.2.8 and 1.2.14, which do not have it, so it is looked up at
+/// runtime: where the running alsa-lib has it, a local log handler is installed
+/// and restored alongside the error handler; where it does not, only the error
+/// handler is, and that is all those versions report through.
+///
 /// This used to swap the whole process's stdout and stderr for a pipe (`shh`)
 /// instead. Whatever any other thread wrote in that window went into the pipe
 /// and was lost: at startup, everything the DMX engine and the web server
@@ -189,8 +202,9 @@ pub struct Silenced {
 /// ALSA errors (a MIDI port failing to open) during a web UI device refresh.
 #[cfg(target_os = "linux")]
 mod alsa_quiet {
-    use std::ffi::{c_char, c_int};
+    use std::ffi::{c_char, c_int, c_void};
     use std::marker::PhantomData;
+    use std::sync::OnceLock;
 
     /// The handler `snd_lib_error_set_local` takes.
     pub(super) type Handler = unsafe extern "C" fn(
@@ -202,10 +216,50 @@ mod alsa_quiet {
         arg: *mut alsa_sys::__va_list_tag,
     );
 
-    /// While alive, ALSA errors raised on this thread go to a handler of ours
-    /// rather than stderr.
+    /// The handler `snd_lib_log_set_local` takes (`snd_lib_log_handler_t`,
+    /// alsa-lib 1.2.15+).
+    pub(super) type LogHandler = unsafe extern "C" fn(
+        prio: c_int,
+        interface: c_int,
+        file: *const c_char,
+        line: c_int,
+        func: *const c_char,
+        err: c_int,
+        fmt: *const c_char,
+        arg: *mut alsa_sys::__va_list_tag,
+    );
+
+    /// `snd_lib_log_set_local`: sets this thread's log handler and returns the
+    /// one it replaced.
+    type SetLocalLog = unsafe extern "C" fn(Option<LogHandler>) -> Option<LogHandler>;
+
+    /// `snd_lib_log_set_local` from the running alsa-lib, if it has one.
+    pub(super) fn set_local_log() -> Option<SetLocalLog> {
+        static SET_LOCAL_LOG: OnceLock<Option<SetLocalLog>> = OnceLock::new();
+        *SET_LOCAL_LOG.get_or_init(|| {
+            // SAFETY: a symbol lookup in the objects already loaded; libasound
+            // is among them, since alsa-sys links it.
+            let symbol =
+                unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"snd_lib_log_set_local".as_ptr()) };
+            if symbol.is_null() {
+                None
+            } else {
+                // SAFETY: the symbol is alsa-lib's `snd_lib_log_set_local`,
+                // whose C signature `SetLocalLog` mirrors.
+                Some(unsafe { std::mem::transmute::<*mut c_void, SetLocalLog>(symbol) })
+            }
+        })
+    }
+
+    /// While alive, ALSA errors (and, on alsa-lib 1.2.15+, log messages of any
+    /// priority) raised on this thread go to handlers of ours rather than
+    /// stderr.
+    ///
+    /// Nests correctly on its own: each guard restores what it replaced.
     pub(super) struct AlsaErrorsSilenced {
         previous: alsa_sys::snd_local_error_handler_t,
+        /// The log handler replaced, when the running alsa-lib has one.
+        previous_log: Option<(SetLocalLog, Option<LogHandler>)>,
         /// The handler is per thread, so the guard must be dropped on the
         /// thread that made it.
         _not_send: PhantomData<*const ()>,
@@ -213,16 +267,18 @@ mod alsa_quiet {
 
     impl AlsaErrorsSilenced {
         pub(super) fn install() -> Self {
-            Self::with_handler(discard)
+            Self::with_handlers(discard, discard_log)
         }
 
-        pub(super) fn with_handler(handler: Handler) -> Self {
-            // SAFETY: sets this thread's handler and returns the one it
-            // replaced; the handler is a plain function that touches nothing
+        pub(super) fn with_handlers(handler: Handler, log_handler: LogHandler) -> Self {
+            // SAFETY: each sets this thread's handler and returns the one it
+            // replaced; the handlers are plain functions that touch nothing
             // ALSA owns.
             let previous = unsafe { alsa_sys::snd_lib_error_set_local(Some(handler)) };
+            let previous_log = set_local_log().map(|set| (set, unsafe { set(Some(log_handler)) }));
             Self {
                 previous,
+                previous_log,
                 _not_send: PhantomData,
             }
         }
@@ -232,6 +288,9 @@ mod alsa_quiet {
         fn drop(&mut self) {
             // SAFETY: as above; puts back what was installed before.
             unsafe {
+                if let Some((set, previous_log)) = self.previous_log {
+                    set(previous_log);
+                }
                 alsa_sys::snd_lib_error_set_local(self.previous);
             }
         }
@@ -240,6 +299,20 @@ mod alsa_quiet {
     /// Says nothing. The arguments are never read, so the `va_list` is never
     /// walked.
     unsafe extern "C" fn discard(
+        _file: *const c_char,
+        _line: c_int,
+        _func: *const c_char,
+        _err: c_int,
+        _fmt: *const c_char,
+        _arg: *mut alsa_sys::__va_list_tag,
+    ) {
+    }
+
+    /// Says nothing, for the log API. As with [`discard`], the `va_list` is
+    /// never walked.
+    unsafe extern "C" fn discard_log(
+        _prio: c_int,
+        _interface: c_int,
         _file: *const c_char,
         _line: c_int,
         _func: *const c_char,
@@ -472,6 +545,13 @@ pub(super) fn resolve_output_device(
         ControlFlow::Break(())
     })?;
     Ok(found)
+}
+
+/// The cpal output device called `name`, if there is one: [`resolve_output_device`]
+/// without the configurations, for callers outside the player that open the
+/// device themselves (the hardware harness).
+pub fn find_output_device(name: &str) -> Result<Option<cpal::Device>, Box<dyn Error>> {
+    Ok(resolve_output_device(name)?.map(|resolved| resolved.device))
 }
 
 /// Every host's devices, visited one at a time in host then device order:
@@ -2114,7 +2194,7 @@ mod test {
         use std::cell::Cell;
         use std::ffi::{c_char, c_int};
 
-        use super::super::alsa_quiet::AlsaErrorsSilenced;
+        use super::super::alsa_quiet::{set_local_log, AlsaErrorsSilenced, LogHandler};
 
         thread_local! {
             static RAISED: Cell<usize> = const { Cell::new(0) };
@@ -2129,6 +2209,32 @@ mod test {
             _arg: *mut alsa_sys::__va_list_tag,
         ) {
             RAISED.with(|r| r.set(r.get() + 1));
+        }
+
+        /// Counts too: on alsa-lib 1.2.15+ the log handler takes precedence
+        /// over the error handler, so the missing PCM is reported here.
+        #[allow(clippy::too_many_arguments)]
+        unsafe extern "C" fn count_log(
+            _prio: c_int,
+            _interface: c_int,
+            _file: *const c_char,
+            _line: c_int,
+            _func: *const c_char,
+            _err: c_int,
+            _fmt: *const c_char,
+            _arg: *mut alsa_sys::__va_list_tag,
+        ) {
+            RAISED.with(|r| r.set(r.get() + 1));
+        }
+
+        /// This thread's current log handler, where the running alsa-lib has
+        /// the log API; read the same way as [`current_handler`].
+        fn current_log_handler() -> Option<Option<LogHandler>> {
+            set_local_log().map(|set| unsafe {
+                let current = set(None);
+                set(current);
+                current
+            })
         }
 
         /// This thread's current handler, read by swapping in nothing and
@@ -2162,7 +2268,7 @@ mod test {
         fn the_walking_threads_alsa_errors_go_to_the_handler() {
             RAISED.with(|r| r.set(0));
             {
-                let _silenced = AlsaErrorsSilenced::with_handler(count);
+                let _silenced = AlsaErrorsSilenced::with_handlers(count, count_log);
                 open_missing_pcm();
             }
             assert!(
@@ -2180,25 +2286,37 @@ mod test {
         /// The guard puts back whatever handler it replaced, nested or not.
         #[test]
         fn the_previous_handler_is_restored() {
+            let log_ptr = || current_log_handler().map(|h| h.map(|f| f as usize));
             assert!(current_handler().is_none());
+            let log_before = log_ptr();
+            assert!(log_before.is_none_or(|h| h.is_none()));
             {
-                let _outer = AlsaErrorsSilenced::with_handler(count);
+                let _outer = AlsaErrorsSilenced::with_handlers(count, count_log);
                 let outer = current_handler().map(|f| f as usize);
                 assert_eq!(outer, Some(count as *const () as usize));
+                let outer_log = log_ptr();
+                if let Some(h) = outer_log {
+                    assert_eq!(h, Some(count_log as *const () as usize));
+                }
                 {
                     let _inner = AlsaErrorsSilenced::install();
                     assert_ne!(current_handler().map(|f| f as usize), outer);
+                    if outer_log.is_some() {
+                        assert_ne!(log_ptr(), outer_log);
+                    }
                 }
                 assert_eq!(current_handler().map(|f| f as usize), outer);
+                assert_eq!(log_ptr(), outer_log);
             }
             assert!(current_handler().is_none());
+            assert_eq!(log_ptr(), log_before);
         }
 
         /// The handler is this thread's alone: another thread's ALSA errors
         /// are not swallowed by a walk in progress here.
         #[test]
         fn other_threads_keep_their_handler() {
-            let _silenced = AlsaErrorsSilenced::with_handler(count);
+            let _silenced = AlsaErrorsSilenced::with_handlers(count, count_log);
             let elsewhere = std::thread::spawn(|| current_handler().is_none())
                 .join()
                 .unwrap();

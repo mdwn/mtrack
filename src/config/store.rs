@@ -372,19 +372,14 @@ impl ConfigStore {
     ///
     /// Only changed profiles are rewritten. Rewriting all of them would drop
     /// the comments from files that had nothing to do with the edit.
+    ///
+    /// Leaves the config warnings remembered. Every write here is a typed
+    /// change to a config already loaded, which cannot bring back a legacy
+    /// top-level field, so it has nothing new to warn about; forgetting here
+    /// made every playlist switch repeat every legacy warning. A legacy field
+    /// comes back only through raw YAML, which is read back through
+    /// [`DiskWrite::read_back`], and that forgets.
     fn persist(&self, config: &Player, profiles_before: &[String]) -> Result<(), ConfigError> {
-        self.persist_files(config, profiles_before)?;
-        // A new config gives its own warnings, even ones the last one gave.
-        super::player::forget_config_warnings();
-        Ok(())
-    }
-
-    /// The writes behind [`Self::persist`].
-    fn persist_files(
-        &self,
-        config: &Player,
-        profiles_before: &[String],
-    ) -> Result<(), ConfigError> {
         let Some(dir) = self.directory_profiles(config) else {
             let yaml = to_yaml_string(config)
                 .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
@@ -1326,6 +1321,48 @@ profiles:
             before,
             "the checksum moved"
         );
+    }
+
+    /// A playlist switch is a typed write and cannot bring back a legacy
+    /// field, so it leaves the legacy warnings remembered: forgetting them made
+    /// every switch repeat every one. A raw-YAML save can bring one back, and
+    /// is read back with them forgotten, so the field it restores is warned
+    /// about again.
+    ///
+    /// Counted on this thread (a current-thread runtime): the remembered
+    /// warnings themselves are shared with every test running alongside.
+    #[tokio::test]
+    async fn a_playlist_switch_does_not_rewarn_and_a_raw_yaml_save_does() {
+        use crate::config::player::config_warnings_forgotten_on_this_thread as forgotten;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mtrack.yaml");
+        let legacy = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                      off_events: []\n  idling_events: []\n  playing_events: []\n";
+        std::fs::write(&path, legacy).unwrap();
+        let store = ConfigStore::new(Player::deserialize(&path).unwrap(), path.clone());
+
+        let before = forgotten();
+        store
+            .set_active_playlist("alternate".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            forgotten(),
+            before,
+            "a playlist switch let every legacy warning be given again"
+        );
+
+        // The operator's raw-YAML save, putting the legacy field back.
+        let disk_write = store.lock_for_disk_write().await;
+        crate::webui::config_io::staged_write(&path, legacy).unwrap();
+        disk_write.reload().await.unwrap();
+        assert_eq!(
+            forgotten(),
+            before + 1,
+            "a raw-YAML save that brings back a legacy field was not warned about again"
+        );
+        assert!(store.read_config().await.status_events().is_some());
     }
 
     /// Switching playlist happens constantly during a show and goes through a

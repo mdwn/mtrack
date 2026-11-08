@@ -215,8 +215,14 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
 }
 
 /// Finds a cpal input device by name, searching all available hosts.
-pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
+///
+/// Walks under [`cpal::silence_enumeration`], like the output walks, so it
+/// takes turns with them and ALSA's chatter about the devices it passes stays
+/// off stderr. So it must not be called with that guard already held.
+pub fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
     use ::cpal::traits::{DeviceTrait, HostTrait};
+
+    let _silenced = cpal::silence_enumeration();
 
     for host_id in ::cpal::available_hosts() {
         let host =
@@ -245,6 +251,17 @@ pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError
     }
 
     Err(AudioError::DeviceNotFound(name.to_string()))
+}
+
+/// Finds a cpal output device by name, searching all available hosts.
+///
+/// The same scan the player uses to open its output, holding no other device
+/// open. Takes [`cpal::silence_enumeration`] itself, so it must not be called
+/// with that guard already held.
+pub fn find_output_device(name: &str) -> Result<::cpal::Device, AudioError> {
+    cpal::find_output_device(name)
+        .map_err(|e| AudioError::Playback(e.to_string()))?
+        .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
 }
 
 /// Lists audio devices as simple info structs for the web UI.
