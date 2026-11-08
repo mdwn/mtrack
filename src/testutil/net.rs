@@ -12,30 +12,33 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! Ports nothing listens on, from binding one the OS picks and letting it
-//! go: something else may take it before the test does, which in-process
-//! tests can live with.
+//! A loopback TCP port nothing listens on, held for as long as a test needs
+//! it: bound, so no other test or server can take it, and never listening,
+//! so a connection to it is refused. A port picked by binding one and letting
+//! it go could be taken by something else before the test used it (#668); a
+//! server under test binds port 0 instead, and says which port it got.
 
-/// A loopback TCP port nothing listens on.
-pub fn free_tcp_port() -> u16 {
-    free_tcp_port_on(std::net::Ipv4Addr::LOCALHOST)
+/// A loopback TCP port that refuses connections until this is dropped.
+pub struct ClosedPort {
+    /// Bound, not listening: what holds the port.
+    _socket: tokio::net::TcpSocket,
+    port: u16,
 }
 
-/// A TCP port nothing listens on at `ip`: for a server binding every
-/// interface (`Ipv4Addr::UNSPECIFIED`), a port free on all of them.
-pub fn free_tcp_port_on(ip: std::net::Ipv4Addr) -> u16 {
-    std::net::TcpListener::bind((ip, 0))
-        .expect("bind")
-        .local_addr()
-        .expect("local_addr")
-        .port()
-}
+impl ClosedPort {
+    pub fn bind() -> ClosedPort {
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind((std::net::Ipv4Addr::LOCALHOST, 0).into())
+            .expect("bind");
+        let port = socket.local_addr().expect("local_addr").port();
+        ClosedPort {
+            _socket: socket,
+            port,
+        }
+    }
 
-/// A loopback UDP port nothing is bound to.
-pub fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("local_addr")
-        .port()
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }

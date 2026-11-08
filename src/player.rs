@@ -1819,7 +1819,7 @@ mod test {
     /// as the clock starts; one started some other way (an auto play) may
     /// not have gone in yet when `is_playing` turns true.
     async fn elapsed_eventually(player: &Arc<Player>) -> Result<Duration, Box<dyn Error>> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         loop {
             if let Some(elapsed) = player.elapsed().await? {
                 return Ok(elapsed);
@@ -1973,7 +1973,7 @@ mod test {
         // A real transport transition must wake the receiver.
         player.switch_to_playlist("all_songs").await.unwrap();
         player.refresh_transport_state().await;
-        let result = tokio::time::timeout(Duration::from_secs(2), rx.changed()).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(result.is_ok(), "transport channel did not emit on switch");
         assert_eq!(rx.borrow().playlist_name, "all_songs");
         Ok(())
@@ -3267,7 +3267,7 @@ mod test {
         // A hardware reload cancels the round: its reporting stops, rather
         // than going on beside the next round's.
         round.cancel();
-        tokio::time::timeout(Duration::from_secs(2), reporting)
+        tokio::time::timeout(crate::testutil::PATIENCE, reporting)
             .await
             .expect("the status loop outlived its init round")?;
         Ok(())
@@ -3298,7 +3298,7 @@ mod test {
         tokio::time::sleep(Duration::from_millis(100)).await;
         round.cancel();
         drop(join);
-        tokio::time::timeout(Duration::from_secs(2), reporting)
+        tokio::time::timeout(crate::testutil::PATIENCE, reporting)
             .await
             .expect("the status loop outlived its init round")?;
         assert_eq!(midi.get_emitted_event(), None, "emitted for a round gone");
@@ -5096,7 +5096,7 @@ mod test {
 
     /// Waits until the playlist sits on `name` with a song playing.
     async fn playing_eventually(player: &Arc<Player>, name: &str) -> Result<(), Box<dyn Error>> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         loop {
             let current = player
                 .get_playlist()
@@ -5890,7 +5890,7 @@ mod test {
             player.play().await?;
             let _ = player.seek_to(Duration::ZERO).await;
             // Let every cleanup run.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
             while player.join.lock().await.is_some() && std::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -6092,7 +6092,7 @@ mod test {
         elapsed_eventually(&player).await?;
         let b = player.join.lock().await.as_ref().unwrap().cancel.clone();
         player.next().await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         let mut stopped = false;
         while std::time::Instant::now() < deadline {
             let mut join = player.join.lock().await;
@@ -6496,7 +6496,7 @@ mod test {
         // As long as `eventually` below allows: a restarted controller can
         // take a while to start watching on a loaded runner.
         assert!(
-            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            rx.recv_timeout(crate::testutil::PATIENCE).is_ok(),
             "nothing watches the player's MIDI device"
         );
         eventually(

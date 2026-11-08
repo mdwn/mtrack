@@ -175,7 +175,7 @@ fn create_engine_inner(
     #[cfg(not(test))]
     if ola_connected {
         patch_check::warn_unpatched_universes(
-            config.ola_http_port(),
+            engine.olad().clone(),
             config
                 .universes()
                 .iter()
