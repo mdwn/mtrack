@@ -411,6 +411,21 @@ fn is_hw_node(device_name: &str) -> bool {
     pcm_id(device_name).starts_with("hw:")
 }
 
+/// The card whose `hw` node a device may take its width from: any node naming
+/// a card that is not the raw `hw` node itself.
+///
+/// Not only [`is_virtual_node`]'s plugins. ALSA's route nodes -- `front:`,
+/// `surround40:`, `surround71:` -- are left off that list because most report
+/// a width of their own (`front` is two channels on an eight-channel HDA card),
+/// but `surround71` on a USB card is a plug/route chain that accepts any
+/// channel count, so it reports cpal's clamp like any plug node. Whether its
+/// count is borrowed is then decided by `channels_known`, the same for the
+/// listing ([`resolve_virtual_channel_counts`]) and the open
+/// ([`Device::find_cpal_device`]): an honest report stays, the clamp does not.
+fn width_source_card(device_name: &str) -> Option<String> {
+    card_token(device_name).filter(|_| !is_hw_node(device_name))
+}
+
 /// The card identity inside a device name, used to pair a plug node with the
 /// hardware node behind it.
 ///
@@ -744,6 +759,10 @@ fn open_channel_count(listed: Option<&AudioDeviceInfo>, reported: u16) -> u16 {
 
 /// Fills in plug nodes' channel counts from the hardware behind them.
 ///
+/// "Plug node" here is any node [`width_source_card`] pairs with a card whose
+/// count is not known: the plugins, and a route node such as `surround71:`
+/// that reported cpal's clamp.
+///
 /// Asking a plug node directly only ever yields [`CPAL_CHANNEL_CLAMP`], because
 /// it accepts any channel count -- but `plughw:CARD=MAT` plays out of the same
 /// eight outputs as `hw:CARD=MAT,DEV=0`, which reports honestly. So take the
@@ -802,10 +821,12 @@ fn resolve_virtual_channel_counts(
 
     let mut asked: HashMap<(String, u16), Option<u16>> = HashMap::new();
     for info in infos.iter_mut() {
-        if info.channels_known || !info.virtual_node {
+        // Unknown and not the hardware itself: every plugin node, and a route
+        // node (`surround71:`) that reported cpal's clamp.
+        if info.channels_known {
             continue;
         }
-        let Some(card) = card_token(&info.name) else {
+        let Some(card) = width_source_card(&info.name) else {
             continue;
         };
         // A plug node that names a subdevice routes to *that* one. Looking up by
@@ -1431,7 +1452,7 @@ impl Device {
         sample_rate: Option<u32>,
     ) -> Result<Option<Device>, Box<dyn Error>> {
         let virtual_node = is_virtual_node(name);
-        let listed = match card_token(name).filter(|_| virtual_node) {
+        let listed = match width_source_card(name) {
             Some(card) => {
                 match listed_virtual_node(name, &card, &mut SystemProbe { sample_rate })? {
                     Some(info) => Some(info),
@@ -1456,7 +1477,7 @@ impl Device {
                 reported,
                 "Opening a virtual node at the width of the hardware behind it"
             );
-        } else if virtual_node && !channels_known && reported >= CPAL_CHANNEL_CLAMP {
+        } else if !is_hw_node(name) && !channels_known && reported >= CPAL_CHANNEL_CLAMP {
             // A node naming no card (a desktop's `alsa:default`) has no
             // hardware to ask, every startup: that is how it is, not a fault.
             if card_token(name).is_some() {
@@ -2347,6 +2368,50 @@ mod test {
                 open_channel_count(Some(&plug), CPAL_CHANNEL_CLAMP),
                 CPAL_CHANNEL_CLAMP
             );
+        }
+
+        /// The harness Pi's `surround71:CARD=MAT,DEV=0` is a route node, not on
+        /// the plugin list, that accepts any channel count, so cpal reports its
+        /// clamp. It listed as `64+` and would have opened at 64; it takes the
+        /// card's eight, listed and opened alike, while `front` and
+        /// `surround40` keep their own honest report and the `hw` node is not
+        /// rewritten.
+        #[test]
+        fn route_node_at_the_clamp_takes_its_cards_width() {
+            let listing = vec![
+                info("alsa:hw:CARD=MAT,DEV=0", 8),
+                info("alsa:front:CARD=MAT,DEV=0", 8),
+                info("alsa:surround40:CARD=MAT,DEV=0", 4),
+                info("alsa:surround71:CARD=MAT,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            assert!(!listing[3].virtual_node);
+            assert!(!listing[3].channels_known);
+            assert_eq!(
+                width_source_card("alsa:surround71:CARD=MAT,DEV=0").as_deref(),
+                Some("MAT")
+            );
+            assert_eq!(width_source_card("alsa:hw:CARD=MAT,DEV=0"), None);
+            assert_eq!(width_source_card("alsa:default"), None);
+
+            // The open path: ALSA's hw_params answer.
+            let mut probe = fake(listing.clone(), &[("MAT", 0, 8)]);
+            let route = listed_virtual_node("alsa:surround71:CARD=MAT,DEV=0", "MAT", &mut probe)
+                .unwrap()
+                .expect("listed");
+            assert_eq!(route.max_channels, 8);
+            assert!(route.channels_known);
+            assert_eq!(route.channels_display(), "8");
+            assert_eq!(open_channel_count(Some(&route), CPAL_CHANNEL_CLAMP), 8);
+            assert_eq!(probe.hw_queries, 1);
+
+            // The listing path, with ALSA busy: the listed `hw` sibling.
+            let mut infos = listing;
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
+            let widths: Vec<(u16, bool)> = infos
+                .iter()
+                .map(|info| (info.max_channels, info.channels_known))
+                .collect();
+            assert_eq!(widths, vec![(8, true), (8, true), (4, true), (8, true)]);
         }
 
         /// The ALSA count caps a dmix node as the listed one does, and one
