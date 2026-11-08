@@ -6754,6 +6754,146 @@ mod test {
             Ok(())
         }
 
+        /// Frame `k` of an exact 44 Hz grid from the song's start.
+        fn grid(k: u64) -> Duration {
+            Duration::from_nanos(k * 1_000_000_000 / 44)
+        }
+
+        /// DMX 1 and 2 on universe 5 after each effects-loop frame from
+        /// grid frame `from` to `to` (inclusive), MIDI DMX playing `events`
+        /// from `from` as a playback does: from its start, or a seek.
+        fn midi_dmx_frames(
+            events: &[crate::midi::playback::TimedMidiEvent],
+            from: u64,
+            to: u64,
+        ) -> Result<Vec<(f64, f64)>, Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            patch_wash_red(&engine);
+            {
+                let mut store = engine.midi_dmx_store.write();
+                store.register_slot(5, 2, "wash", "green");
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    std::collections::HashMap::from([
+                        ("red".to_string(), 1),
+                        ("green".to_string(), 2),
+                    ]),
+                    None,
+                ),
+            );
+            engine.start_playback_lighting(
+                grid(from),
+                crate::dmx::engine::timeline::MidiDmxStart::Install(vec![
+                    crate::dmx::engine::MidiDmxPlayback {
+                        precomputed: crate::midi::playback::PrecomputedMidi::from_events(
+                            events.to_vec(),
+                        ),
+                        cursor: 0,
+                        universe_id: 5,
+                        midi_channels: HashSet::new(),
+                        start_dim_rate: 1.0,
+                    },
+                ]),
+            );
+            let universe = engine.get_universe(5).unwrap();
+            Ok((from..=to)
+                .map(|k| {
+                    engine.update_song_time(grid(k));
+                    engine.effects_loop_tick();
+                    (universe.get_target_value(0), universe.get_target_value(1))
+                })
+                .collect())
+        }
+
+        /// Dims up and down on DMX 1 and 2, with an instant CC, a note
+        /// right on a frame and one a microsecond after one.
+        fn dimming_show() -> Vec<crate::midi::playback::TimedMidiEvent> {
+            use crate::midi::playback::TimedMidiEvent;
+            let at = |nanos: u64, message| TimedMidiEvent {
+                time: Duration::from_nanos(nanos),
+                channel: 0,
+                message,
+            };
+            let note = |key: u8, vel: u8| midly::MidiMessage::NoteOn {
+                key: key.into(),
+                vel: vel.into(),
+            };
+            let cc = |controller: u8, value: u8| midly::MidiMessage::Controller {
+                controller: controller.into(),
+                value: value.into(),
+            };
+            vec![
+                // Dims over 1 s.
+                at(0, midly::MidiMessage::ProgramChange { program: 1.into() }),
+                at(0, note(1, 40)),
+                at(100_000_000, note(0, 100)),
+                at(500_000_000, cc(1, 60)),
+                at(700_000_000, note(0, 10)),
+                // Frame 40, to the nanosecond.
+                at(grid(40).as_nanos() as u64, note(1, 127)),
+                at(grid(55).as_nanos() as u64 + 1_000, note(0, 127)),
+                at(1_600_000_000, cc(0, 5)),
+                at(1_700_000_000, note(1, 0)),
+            ]
+        }
+
+        #[test]
+        fn a_seek_into_a_midi_dmx_dim_sends_the_frames_the_live_run_sent(
+        ) -> Result<(), Box<dyn Error>> {
+            // A seek restored a dim at the level the live run had reached
+            // by the seek frame, and the first frame's tick took it a step
+            // further: every frame of the dim went out one frame early
+            // (a byte to 24 ahead on the rig's shows). From every frame of
+            // a show of dims, the seek's frames are the play-through's.
+            let events = dimming_show();
+            let end = 90;
+            let play = midi_dmx_frames(&events, 0, end)?;
+            assert!(
+                play.windows(2).filter(|w| w[0] != w[1]).count() > 40,
+                "the show dims: {play:?}"
+            );
+            for at in 1..end {
+                let seek = midi_dmx_frames(&events, at, end)?;
+                for (j, frame) in seek.iter().enumerate() {
+                    let k = at as usize + j;
+                    assert_eq!(
+                        *frame, play[k],
+                        "seek to frame {at}: frame {k} is not the play-through's"
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn a_midi_dmx_write_due_in_the_seek_frame_goes_out_when_the_live_run_sent_it(
+        ) -> Result<(), Box<dyn Error>> {
+            // A note or CC due between the frame before the seek and the
+            // seek frame was replayed as already sent: its value went out
+            // a frame before the live run's. The live run dispatches it in
+            // that frame, after the tick: a CC lands the frame after, a dim
+            // starts stepping then.
+            let events = dimming_show();
+            let play = midi_dmx_frames(&events, 0, 80)?;
+            // The CC at 500 ms is due in frame 22 (500.0 ms); the dim to 10
+            // at 700 ms in frame 31 (704.5 ms); the note right on frame 40.
+            for at in [22u64, 31, 40] {
+                let seek = midi_dmx_frames(&events, at, at + 3)?;
+                assert_eq!(seek, play[at as usize..=at as usize + 3], "seek to {at}");
+            }
+            // The CC on DMX 2 (120) goes out the frame after the one it is
+            // due in, a seek's first frame or not.
+            let seek = midi_dmx_frames(&events, 22, 23)?;
+            assert_ne!(seek[0].1, 120.0, "{seek:?}");
+            assert_eq!(seek[1].1, 120.0, "{seek:?}");
+            Ok(())
+        }
+
         #[test]
         fn a_midi_dmx_only_song_plays_its_show() -> Result<(), Box<dyn Error>> {
             // A song with no DSL show returned from its setup without

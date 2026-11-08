@@ -29,16 +29,29 @@ pub(super) struct MidiDmxChannelState {
 }
 
 /// Where a MIDI DMX playback starting at `from` (delayed song time) picks
-/// up: at the first event, starting at 0 -- inside the playback delay too,
-/// where the live loop holds them back -- else past every event up to and
-/// including `from`, which [`replay_midi_dmx`] puts back, as the live loop
-/// would have dispatched them by then.
+/// up: past every event a frame before the one at `from` dispatched, which
+/// [`replay_midi_dmx`] puts back. One due by `from` but not a frame before
+/// is left to the first frame, which dispatches it as the live run's frame
+/// at `from` did: a CC still not out, a dim not yet stepped. From 0 (inside
+/// the playback delay too, where the live loop holds them back), at the
+/// first event.
 pub(super) fn midi_dmx_cursor(events: &[TimedMidiEvent], from: Duration) -> usize {
-    if from.is_zero() {
-        0
-    } else {
-        events.partition_point(|e| e.time <= from)
+    events.partition_point(|e| frames_before(from, e.time) > 0)
+}
+
+/// How many frames before the one at `until` the live loop, ticking at
+/// [`TARGET_HZ`] on to `until`, dispatched an event at `time` in: 0 for
+/// the frame at `until` itself (or later). A frame period is not a whole
+/// number of nanoseconds, so a time within a nanosecond of a frame counts
+/// as on it -- an event at 0 as the first frame's, whatever `until`.
+fn frames_before(until: Duration, time: Duration) -> u64 {
+    if time > until {
+        return 0;
     }
+    let nanos = (until - time).as_nanos() + 1;
+    // TARGET_HZ is a whole 44.
+    let frames = nanos * (TARGET_HZ as u128) / 1_000_000_000;
+    u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
 /// The DMX channels the notes and CCs among `events` write.
@@ -54,32 +67,42 @@ fn midi_dmx_channels(events: &[TimedMidiEvent], midi_channels: &HashSet<u8>) -> 
         .collect()
 }
 
-/// A channel as the last write left it, `since` the time of that write.
+/// A channel as the last write left it, dispatched `frames` frames before
+/// the one a playback starts at.
 struct Written {
     from: f64,
     target: f64,
     rate: f64,
-    since: Duration,
+    frames: u64,
 }
 
 impl Written {
-    /// Where the channel has got to at `time`, dimming as the store and the
-    /// universe do: `rate` a tick, at TARGET_HZ, up to the target.
-    fn at(&self, time: Duration) -> f64 {
-        let ticks = time.saturating_sub(self.since).as_secs_f64() * TARGET_HZ;
-        dimmed_at(self.from, self.target, self.rate, ticks)
+    /// Where the channel has got to by the frame `frames` before the start,
+    /// once its tick is in: as the store and the universe step it, `rate` a
+    /// tick up to the target, ticking every frame after the write's.
+    fn at(&self, frames: u64) -> f64 {
+        dimmed_at(
+            self.from,
+            self.target,
+            self.rate,
+            self.frames.saturating_sub(frames) as f64,
+        )
     }
 }
 
-/// The state the MIDI DMX events up to `until` leave each DMX channel in,
-/// replayed without their timing: a playback starting part way through a
-/// song skips them, and since nothing holds a channel no frame writes
-/// (#581), a look a MIDI show set once and held stayed dark after a seek
-/// (#583). Notes and CCs land with their values, a dim at the level it has
-/// reached by `until` and still on its way if it has not finished.
-/// `dim_rate` is the dim rate (ticks for a full transition) the replay
-/// starts from; also returns the one the events leave, for the playback to
-/// carry on with.
+/// The state the MIDI DMX events a frame before the one at `until`
+/// dispatched leave each DMX channel in, replayed without their timing: a
+/// playback starting part way through a song skips them, and since nothing
+/// holds a channel no frame writes (#581), a look a MIDI show set once and
+/// held stayed dark after a seek (#583). Notes and CCs land with their
+/// values, a dim at the level it has reached and still on its way if it
+/// has not finished. The level is the one the frame before `until` left:
+/// the first frame ticks it on, then dispatches what is due at `until`
+/// (see [`midi_dmx_cursor`]), so it sends the bytes the live run's frame at
+/// `until` sent -- restored at `until`'s level, the tick took every dim one
+/// step past it. `dim_rate` is the dim rate (ticks for a full transition)
+/// the replay starts from; also returns the one the events leave, for the
+/// playback to carry on with.
 pub(super) fn replay_midi_dmx(
     events: &[TimedMidiEvent],
     midi_channels: &HashSet<u8>,
@@ -88,7 +111,11 @@ pub(super) fn replay_midi_dmx(
     mut dim_rate: f64,
 ) -> (BTreeMap<u16, MidiDmxChannelState>, f64) {
     let mut channels: BTreeMap<u16, Written> = BTreeMap::new();
-    for event in events.iter().take_while(|e| e.time <= until) {
+    for event in events {
+        let frames = frames_before(until, event.time);
+        if frames == 0 {
+            break;
+        }
         if !midi_channels.is_empty() && !midi_channels.contains(&event.channel) {
             continue;
         }
@@ -102,7 +129,8 @@ pub(super) fn replay_midi_dmx(
                 }
                 MidiDmxAction::Unrecognized => continue,
             };
-        let from = channels.get(&channel).map_or(0.0, |w| w.at(event.time));
+        // Ticked each frame up to and including the one this went out in.
+        let from = channels.get(&channel).map_or(0.0, |w| w.at(frames));
         let target = f64::from(value);
         let rate = if dim {
             crate::dmx::universe::dim_rate(from, target, dim_rate)
@@ -115,14 +143,14 @@ pub(super) fn replay_midi_dmx(
                 from,
                 target,
                 rate,
-                since: event.time,
+                frames,
             },
         );
     }
     let states = channels
         .into_iter()
         .map(|(channel, written)| {
-            let current = written.at(until);
+            let current = written.at(1);
             let rate = if (current - written.target).abs() > f64::EPSILON {
                 written.rate
             } else {
@@ -327,15 +355,25 @@ mod tests {
         assert_eq!(dimming, 1.0, "the rate it started from");
     }
 
+    /// Where a restored channel is once the first frame's tick is in.
+    fn ticked(state: MidiDmxChannelState) -> f64 {
+        crate::dmx::universe::dim_step(state.current, state.target, state.rate)
+    }
+
     #[test]
     fn a_dim_under_way_comes_back_part_way_and_still_moving() {
         // Dim over 2 s (program 2 at a 1 s modifier), up from 0 to 200 at
-        // 1 s; at 2 s it is half way there.
+        // 1 s; at 2 s it is half way there -- once the first frame ticks:
+        // the replay leaves it where the frame before left it.
         let events = [at(0, 0, program(2)), at(1_000, 0, note(0, 100))];
         let (states, dimming) =
             replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(2), 1.0, 1.0);
         let state = states[&1];
-        assert!((state.current - 100.0).abs() < 1e-6, "{state:?}");
+        assert!((ticked(state) - 100.0).abs() < 1e-6, "{state:?}");
+        assert!(
+            (state.current - 200.0 * 43.0 / 88.0).abs() < 1e-6,
+            "{state:?}"
+        );
         assert_eq!(state.target, 200.0);
         assert!((state.rate - 200.0 / (2.0 * TARGET_HZ)).abs() < 1e-9);
         assert_eq!(dimming, 2.0 * TARGET_HZ);
@@ -364,7 +402,39 @@ mod tests {
         ];
         let (states, _) =
             replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(2), 1.0, 1.0);
-        assert!((states[&1].current - 50.0).abs() < 1e-6, "{:?}", states[&1]);
+        assert!((ticked(states[&1]) - 50.0).abs() < 1e-6, "{:?}", states[&1]);
+    }
+
+    #[test]
+    fn a_write_due_in_the_first_frame_is_left_to_it() {
+        // Due after the frame before 1 s (at 977.27 ms): the first frame
+        // dispatches it, as the live run's frame at 1 s did.
+        let events = [
+            at(0, 0, cc(0, 10)),
+            at(977, 0, cc(0, 20)),
+            at(978, 0, cc(0, 30)),
+            at(1_000, 0, cc(0, 40)),
+        ];
+        let until = Duration::from_secs(1);
+        assert_eq!(midi_dmx_cursor(&events, until), 2);
+        let (states, _) = replay_midi_dmx(&events, &HashSet::new(), until, 1.0, 1.0);
+        assert_eq!(states[&1].current, 40.0, "the CC at 977 ms, doubled");
+        assert_eq!(midi_dmx_cursor(&events, Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn frames_count_back_from_the_start_frame() {
+        let frame = |k: u64| Duration::from_nanos(k * 1_000_000_000 / 44);
+        // On a frame, to the nanosecond the grid has it: that frame's.
+        for k in [0, 1, 7, 43, 44, 1_000, 123_457] {
+            assert_eq!(frames_before(frame(k), Duration::ZERO), k, "{k}");
+            assert_eq!(frames_before(frame(k + 5), frame(k)), 5, "{k}");
+            assert_eq!(
+                frames_before(frame(k + 5), frame(k) + Duration::from_nanos(2)),
+                4
+            );
+        }
+        assert_eq!(frames_before(frame(3), frame(4)), 0, "after the start");
     }
 
     #[test]

@@ -1036,6 +1036,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until the clock starts, and runs on from there. A start turned down (a lighting show that does
   not validate) leaves no position, as before.
 
+- **A seek into MIDI DMX sends the frame the live run sent, not the next one**: a seek put a dim
+  back at the level the live run had reached by the seek frame, and the first frame then stepped it
+  once more, so for the rest of the dim every frame went out as the live run's next one (up to 24
+  bytes ahead; 126 frames in 13 of 90 seeks into the rig's shows, against their own play-through).
+  A note or CC due in the seek frame itself went out a frame early too. The replay now leaves each
+  channel where the frame before the seek left it, and the first frame dispatches what is due in it
+  as the live run's did, so a seek's frames are the play-through's from the first one. The same
+  holds where a section loop goes back or a crossfading pass joins late.
+
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as
   `from + rate × ticks`, which rounds differently: a dim from 0 to 35 over 44 ticks was 17 live at
