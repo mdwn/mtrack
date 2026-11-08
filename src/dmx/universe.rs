@@ -523,7 +523,7 @@ mod test {
         universe.restore_channel_data(2, 100.0, 200.0, 1.0);
         let mut frame = Vec::new();
         for _ in 0..50 {
-            let message = receiver.recv_timeout(Duration::from_secs(2))?;
+            let message = receiver.recv_timeout(crate::testutil::PATIENCE)?;
             frame = message.buffer.as_slice()[0..2].to_vec();
             if frame[0] == 254 && frame[1] > 100 {
                 break;
@@ -571,7 +571,7 @@ mod test {
         universe.update_effect_commands(vec![(1, 50), (3, 7)]);
         let next = |want: &dyn Fn(&[u8]) -> bool| -> Result<Vec<u8>, Box<dyn Error>> {
             loop {
-                let message = receiver.recv_timeout(Duration::from_secs(2))?;
+                let message = receiver.recv_timeout(crate::testutil::PATIENCE)?;
                 let frame = message.buffer.as_slice()[0..4].to_vec();
                 if want(&frame) {
                     return Ok(frame);

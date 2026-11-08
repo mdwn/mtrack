@@ -1184,7 +1184,7 @@ metronome: {}
         let (tx, mut rx) = broadcast::channel(16);
         let handle = tokio::spawn(playback_poller(player.clone(), tx));
         let mut next = async || -> serde_json::Value {
-            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
                 .await
                 .expect("timed out waiting for playback message")
                 .expect("recv error");
@@ -1215,7 +1215,7 @@ metronome: {}
 
         let handle = tokio::spawn(playback_poller(player, tx));
 
-        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for playback message")
             .expect("recv error");
@@ -1394,7 +1394,7 @@ metronome: {}
         });
         state_tx.send(snapshot).unwrap();
 
-        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for state message")
             .expect("recv error");
@@ -1442,7 +1442,7 @@ metronome: {}
         });
         state_tx.send(snapshot).unwrap();
 
-        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for state message")
             .expect("recv error");
@@ -1469,7 +1469,7 @@ metronome: {}
         // Drop the sender — poller should exit
         drop(state_tx);
 
-        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, handle).await;
         assert!(result.is_ok(), "poller should have exited");
     }
 
@@ -1487,7 +1487,7 @@ metronome: {}
 
         let handle = tokio::spawn(waveform_poller(player, tx, cache));
 
-        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for waveform message")
             .expect("recv error");
@@ -1509,7 +1509,7 @@ metronome: {}
 
         let handle = tokio::spawn(waveform_poller(player, tx, cache.clone()));
 
-        let msg = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for waveform message")
             .expect("recv error");
@@ -1561,7 +1561,7 @@ metronome: {}
         let (tx, mut rx) = broadcast::channel(16);
         let handle = tokio::spawn(log_poller(tx));
 
-        let msg = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for log message")
             .expect("recv error");
@@ -1594,7 +1594,10 @@ metronome: {}
             let mut buf = buffer.lock();
             buf.push_back("INFO test: first line".to_string());
         }
-        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
+            .await
+            .expect("timed out waiting for the first line")
+            .expect("recv error");
 
         // Don't push any new lines — next tick should skip (line 167)
         // Wait for another tick — it should produce no message
@@ -2139,7 +2142,7 @@ metronome: {}
             .await
             .unwrap();
 
-        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
             .await
             .expect("timed out waiting for config_changed message")
             .expect("recv error");
@@ -2158,7 +2161,7 @@ metronome: {}
         let handle = tokio::spawn(config_watcher(player, tx));
 
         // Should complete quickly since there's no store.
-        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, handle).await;
         assert!(result.is_ok(), "config_watcher should exit when no store");
     }
 }

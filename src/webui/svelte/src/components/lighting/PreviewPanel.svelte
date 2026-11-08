@@ -37,6 +37,7 @@
   } from "../../lib/lighting/preview";
   import { playbackStore } from "../../lib/ws/stores";
   import { rules } from "../../lib/rules";
+  import { latestLoad } from "../../lib/util/latest";
 
   interface Props {
     /** Song to open on, from the address. */
@@ -76,7 +77,7 @@
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** Answers arriving after a newer request went out are stale. */
-  let sequence = 0;
+  const evaluations = latestLoad();
 
   onMount(async () => {
     try {
@@ -102,18 +103,19 @@
 
   onDestroy(() => {
     clearTimeout(timer);
-    sequence++;
+    // Any answer still to come is for a panel no longer here.
+    evaluations();
     onfeed(null);
   });
 
   async function evaluateNow() {
     clearTimeout(timer);
     if (!songName) return;
-    const mine = ++sequence;
+    const current = evaluations();
     busy = true;
     try {
       const result = await evaluatePreview(songName, [time]);
-      if (mine !== sequence) return;
+      if (!current()) return;
       const at = result.evaluations[0];
       onmoment?.(songName, time);
       evaluation = at ?? null;
@@ -130,7 +132,7 @@
           : null,
       );
     } catch (e) {
-      if (mine !== sequence) return;
+      if (!current()) return;
       evaluation = null;
       untouched = [];
       error =
@@ -141,7 +143,7 @@
             : String(e);
       onfeed(null);
     } finally {
-      if (mine === sequence) busy = false;
+      if (current()) busy = false;
     }
   }
 
