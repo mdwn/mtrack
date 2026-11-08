@@ -2265,6 +2265,7 @@ dependencies = [
 name = "mtrack"
 version = "0.17.2"
 dependencies = [
+ "alsa",
  "alsa-sys",
  "axum",
  "clap",

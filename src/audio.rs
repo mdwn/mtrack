@@ -210,6 +210,14 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         health::LIVENESS_WINDOW
     }
 
+    /// The device's real channel count, where it is known: `None` for a device
+    /// that cannot say, or whose figure is a plugin's or cpal's clamp rather
+    /// than the hardware's. Used at startup to say a profile maps tracks past
+    /// the device; playback still checks against the width it opened at.
+    fn channels(&self) -> Option<u16> {
+        None
+    }
+
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError>;
 }

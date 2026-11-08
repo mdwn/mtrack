@@ -150,6 +150,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+- **A warning when audio keeps underrunning**: the output callback counted buffer underruns
+  (`host_info.audio_output.underruns`, and the status page) but never said so, so the journal was
+  silent about a device underrunning twelve times a second -- which, as the clock follows
+  delivered audio, also runs songs slow. The output thread now warns when underruns are
+  sustained: at least 3 in each of two consecutive 10-second windows. It names the device, the
+  count and rate in the last window, the total, and the period in frames and milliseconds, and
+  names the setting to change: `audio.buffer_size` (or setting `audio.stream_buffer_size`) where
+  `stream_buffer_size` is unset, `stream_buffer_size` where it is a frame count or `default` --
+  `buffer_size` does not set the period then -- and, for `min`, whether the device's minimum or
+  the `buffer_size` fallback is in force. At most one warning a minute, and none for an isolated
+  underrun, a single burst, or the underruns around a stream rebuild. The health verdict is
+  unchanged.
+
 ### Changed
 
 - **One file name rule for venues and fixture types** (`lighting::files::stem`): the name is
@@ -744,6 +757,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
+
+- **A plug node opens at the width of the hardware behind it**: `alsa:plughw:CARD=Headphones,DEV=0`
+  (and any plug node) was opened at cpal's clamped 64 channels, because opening took the node's
+  own report while only the device listing looked up the hardware sibling's real count. The mixer
+  filled 64 channels on every callback for ALSA's plug layer to drop all but the hardware's 8.
+  Opening now takes the listing's count, by the same rule: the plug node opens at 8, as
+  `/proc/asound/card0/pcm0p/sub0/hw_params` already showed. The count is read from the `hw` node's
+  own hw_params through ALSA, before the plug node is held, so it holds where cpal cannot list
+  the raw node at all: `alsa:plughw:CARD=WING` opens at the WING's real width (cpal knows none of
+  its `S24_3LE` formats). Where ALSA cannot say (the `hw` node busy, `default` naming no card),
+  the `hw` node in cpal's listing stands in, and failing that the node opens at its own report,
+  as before, with a warning naming it. A node narrower than its hardware keeps its own width:
+  `alsa:dmix:CARD=Headphones,DEV=0` lists and opens at its 2 channels, not the `hw` node's 8.
+  Only the raw `hw` node counts as the hardware: `front:` and the `surround` nodes, which name the
+  same card with widths of their own, no longer stand in for it. Finding a plug node probes only
+  its own card, and nothing until its name is listed, so waiting for a device at boot does not
+  query every device twice a second. A song mapping a track past the real count -- channel 9 on
+  that node -- fails to play with "9 channels requested for song …, audio device … only has 8",
+  where it played with the track going nowhere; and the player now says so at startup, logging an
+  error naming the tracks and channels and showing it on the status page beside the connected
+  audio device, which it keeps.
 
 - **Startup log lines lost under systemd**: audio device enumeration silenced ALSA by swapping the
   whole process's stdout and stderr for a pipe, and whatever any other thread wrote in that window

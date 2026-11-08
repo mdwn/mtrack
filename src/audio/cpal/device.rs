@@ -27,7 +27,7 @@ use std::{
 use std::ops::ControlFlow;
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use tracing::{debug, error, info, span, Level};
+use tracing::{debug, error, info, span, warn, Level};
 
 use crate::audio::format::{SampleFormat, TargetFormat};
 use crate::audio::mixer::ActiveSource as MixerActiveSource;
@@ -38,7 +38,7 @@ use crate::playsync::CancelHandle;
 use crate::songs::Song;
 
 use super::manager::OutputManager;
-use super::stream::CpalOutputStreamFactory;
+use super::stream::{CpalOutputStreamFactory, PeriodSetting};
 
 mod loop_scheduler;
 
@@ -112,18 +112,22 @@ fn validate_channel_count(
     Ok(())
 }
 
-/// Resolves the output buffer size for the CPAL stream based on the config setting.
-/// Returns `None` for default (let CPAL decide), or `Some(size)` for a fixed frame count.
+/// Resolves the output buffer size for the CPAL stream based on the config setting:
+/// `None` for default (let CPAL decide), or `Some(size)` for a fixed frame count,
+/// with the setting that chose it, which the underrun warning's advice names.
 fn resolve_buffer_size(
     stream_buffer_size: Option<StreamBufferSize>,
     fallback_buffer_size: u32,
     min_supported: Option<u32>,
-) -> Option<u32> {
+) -> (Option<u32>, PeriodSetting) {
     match stream_buffer_size {
-        None => Some(fallback_buffer_size),
-        Some(StreamBufferSize::Default) => None,
-        Some(StreamBufferSize::Min) => min_supported.or(Some(fallback_buffer_size)),
-        Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
+        None => (Some(fallback_buffer_size), PeriodSetting::BufferSize),
+        Some(StreamBufferSize::Default) => (None, PeriodSetting::BackendDefault),
+        Some(StreamBufferSize::Min) => match min_supported {
+            Some(min) => (Some(min), PeriodSetting::Min),
+            None => (Some(fallback_buffer_size), PeriodSetting::MinFallback),
+        },
+        Some(StreamBufferSize::Fixed(n)) => (Some(n as u32), PeriodSetting::Fixed),
     }
 }
 
@@ -401,6 +405,12 @@ fn is_virtual_node(device_name: &str) -> bool {
         .any(|prefix| pcm_id.starts_with(prefix))
 }
 
+/// Whether a device name is a raw ALSA hardware node (`hw:...`): the one node
+/// whose channel count is the card's own.
+fn is_hw_node(device_name: &str) -> bool {
+    pcm_id(device_name).starts_with("hw:")
+}
+
 /// The card identity inside a device name, used to pair a plug node with the
 /// hardware node behind it.
 ///
@@ -666,47 +676,70 @@ fn walk_devices(
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
     let mut infos: Vec<AudioDeviceInfo> = Vec::new();
     walk_output_devices(|host_id, device, name| {
-        let Some(output_configs) = output_configs(&device) else {
-            return ControlFlow::Continue(());
-        };
-        let max_channels = max_output_channels(&output_configs);
-
-        let mut sample_rates = std::collections::BTreeSet::new();
-        let mut formats = std::collections::BTreeSet::new();
-
-        for cfg in output_configs {
-            let min_rate = cfg.min_sample_rate();
-            let max_rate = cfg.max_sample_rate();
-            for &rate in STANDARD_SAMPLE_RATES {
-                if rate >= min_rate && rate <= max_rate {
-                    sample_rates.insert(rate);
-                }
-            }
-
-            let mapped = map_cpal_format(cfg.sample_format());
-            formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
+        if let Some(output_configs) = output_configs(&device) {
+            infos.push(device_info(host_id, name, &output_configs));
         }
-        let virtual_node = is_virtual_node(&name);
-        infos.push(AudioDeviceInfo {
-            name,
-            max_channels,
-            host_name: host_id.name().to_string(),
-            supported_sample_rates: sample_rates.into_iter().collect(),
-            supported_formats: formats
-                .into_iter()
-                .map(|(sample_format, bits_per_sample)| SupportedFormat {
-                    sample_format,
-                    bits_per_sample,
-                })
-                .collect(),
-            virtual_node,
-            channels_known: channels_are_known(virtual_node, max_channels),
-        });
         ControlFlow::Continue(())
     })?;
-    resolve_virtual_channel_counts(&mut infos);
+    resolve_virtual_channel_counts_on_system(&mut infos, None);
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(infos)
+}
+
+/// One device's entry, from the output configurations it reports, before
+/// [`resolve_virtual_channel_counts`] has looked for a hardware sibling.
+fn device_info(
+    host_id: cpal::HostId,
+    name: String,
+    output_configs: &[cpal::SupportedStreamConfigRange],
+) -> AudioDeviceInfo {
+    let max_channels = max_output_channels(output_configs);
+
+    let mut sample_rates = std::collections::BTreeSet::new();
+    let mut formats = std::collections::BTreeSet::new();
+
+    for cfg in output_configs {
+        let min_rate = cfg.min_sample_rate();
+        let max_rate = cfg.max_sample_rate();
+        for &rate in STANDARD_SAMPLE_RATES {
+            if rate >= min_rate && rate <= max_rate {
+                sample_rates.insert(rate);
+            }
+        }
+
+        let mapped = map_cpal_format(cfg.sample_format());
+        formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
+    }
+    let virtual_node = is_virtual_node(&name);
+    AudioDeviceInfo {
+        name,
+        max_channels,
+        host_name: host_id.name().to_string(),
+        supported_sample_rates: sample_rates.into_iter().collect(),
+        supported_formats: formats
+            .into_iter()
+            .map(|(sample_format, bits_per_sample)| SupportedFormat {
+                sample_format,
+                bits_per_sample,
+            })
+            .collect(),
+        virtual_node,
+        channels_known: channels_are_known(virtual_node, max_channels),
+    }
+}
+
+/// The channel count a device is opened with: the listing's, once
+/// [`resolve_virtual_channel_counts`] has looked for a hardware sibling, where
+/// that is known, and otherwise the device's own report.
+///
+/// A plug node's own report is cpal's clamp, so opening it at that width had
+/// the mixer fill 64 channels on every callback for ALSA's plug layer to drop
+/// all but the hardware's eight.
+fn open_channel_count(listed: Option<&AudioDeviceInfo>, reported: u16) -> u16 {
+    match listed {
+        Some(info) if info.channels_known => info.max_channels,
+        _ => reported,
+    }
 }
 
 /// Fills in plug nodes' channel counts from the hardware behind them.
@@ -723,7 +756,17 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
 /// count stays marked unknown rather than being guessed at. cpal exposes channel
 /// counts only inside `SupportedStreamConfigRange`, so a device it cannot
 /// format-match yields no channel information to borrow.
-fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
+///
+/// `hw_channels` is asked first, for `(card, subdevice)`: what the raw `hw`
+/// node offers by ALSA's own hw_params ([`alsa_hw_channels`] on a real system).
+/// That answers where cpal cannot -- the WING's raw node, whose formats cpal
+/// does not know -- and a hardware node at cpal's clamp. `None` (busy, absent,
+/// not ALSA) falls back to the listed sibling, then to unknown. Each
+/// `(card, subdevice)` is asked at most once.
+fn resolve_virtual_channel_counts(
+    infos: &mut [AudioDeviceInfo],
+    mut hw_channels: impl FnMut(&str, u16) -> Option<u16>,
+) {
     // (card, subdevice) -> real channel count, because subdevices on one card
     // are not interchangeable. An Intel HDA card exposes `hw:CARD=PCH,DEV=0`
     // (analog, 2ch) beside `hw:CARD=PCH,DEV=3` (HDMI, 8ch), and every
@@ -734,7 +777,12 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
     let mut lowest_subdevice: HashMap<String, (u16, u16)> = HashMap::new();
 
     for info in infos.iter() {
-        if info.virtual_node || !info.channels_known {
+        // Only the raw `hw:` node is the hardware. `front:`, `surround71:` and
+        // the like are not plugins by [`is_virtual_node`]'s list, but they name
+        // the same card and subdevice with a width of their own -- `front` is
+        // two channels on an eight-channel HDA card -- and whichever of them
+        // came last in the walk used to win the subdevice.
+        if info.virtual_node || !info.channels_known || !is_hw_node(&info.name) {
             continue;
         }
         let Some(card) = card_token(&info.name) else {
@@ -752,6 +800,7 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
             .or_insert((dev, info.max_channels));
     }
 
+    let mut asked: HashMap<(String, u16), Option<u16>> = HashMap::new();
     for info in infos.iter_mut() {
         if info.channels_known || !info.virtual_node {
             continue;
@@ -763,17 +812,175 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
         // card alone handed `plughw:CARD=PCH,DEV=3` the analog node's 2 channels
         // and marked it known — a confidently wrong number, which is the one
         // outcome this whole labelling exists to avoid.
-        let resolved = match dev_index(&info.name) {
+        let queried = if info.name.starts_with("alsa:") {
+            let key = (card.clone(), dev_index(&info.name).unwrap_or(0));
+            *asked
+                .entry(key)
+                .or_insert_with_key(|(card, dev)| hw_channels(card, *dev))
+        } else {
+            None
+        };
+        let resolved = queried.or_else(|| match dev_index(&info.name) {
             Some(dev) => by_subdevice.get(&(card, dev)).copied(),
             None => lowest_subdevice.get(&card).map(|(_, channels)| *channels),
-        };
+        });
         // No sibling for that subdevice means no honest answer, so it stays
         // unknown rather than falling back to a different subdevice's count.
+        //
+        // The node's own report caps it. A plug node reports cpal's clamp, so
+        // the hardware's count is the answer; a `dmix` node reports the width
+        // its slave was configured at -- `dmix:CARD=Headphones,DEV=0` is two
+        // channels in front of an eight-channel `hw` node -- and opens at that
+        // and nothing wider. Taking the sibling's count outright opened it at
+        // eight, which ALSA refused.
         if let Some(channels) = resolved {
-            info.max_channels = channels;
+            info.max_channels = info.max_channels.min(channels);
             info.channels_known = true;
         }
     }
+}
+
+/// [`resolve_virtual_channel_counts`] against this machine's ALSA, at
+/// `sample_rate` where one is configured.
+///
+/// Must run while the virtual node is not held: ALSA will not hand out the
+/// `hw` node's hw_params while a plug in front of it has it open.
+fn resolve_virtual_channel_counts_on_system(
+    infos: &mut [AudioDeviceInfo],
+    sample_rate: Option<u32>,
+) {
+    resolve_virtual_channel_counts(infos, |card, dev| alsa_hw_channels(card, dev, sample_rate));
+}
+
+/// The most channels `hw:CARD=<card>,DEV=<dev>` offers for playback, from
+/// ALSA's hw_params, at `sample_rate` where the node accepts it.
+///
+/// The one channel count that does not depend on cpal knowing the node's
+/// formats: a Behringer WING's raw node is `S24_3LE` only, which cpal cannot
+/// use, so it never lists and its plug node had nothing to borrow from. Opened
+/// non-blocking and closed at once; a node that is busy (EBUSY: something is
+/// playing through it), absent, or refuses is `None`, never a guess.
+#[cfg(target_os = "linux")]
+fn alsa_hw_channels(card: &str, dev: u16, sample_rate: Option<u32>) -> Option<u16> {
+    let node = format!("hw:CARD={card},DEV={dev}");
+    let query = || -> Result<u32, alsa::Error> {
+        let pcm = alsa::PCM::new(&node, alsa::Direction::Playback, true)?;
+        let params = alsa::pcm::HwParams::any(&pcm)?;
+        if let Some(rate) = sample_rate {
+            // Narrows the space where the rate is offered; where it is not,
+            // the node's overall maximum is still the honest answer.
+            let _ = params.set_rate(rate, alsa::ValueOr::Nearest);
+        }
+        params.get_channels_max()
+    };
+    let result = {
+        // alsa-lib reports a failed open through its error handler; quiet on
+        // this thread, and serialised with the walks.
+        let _silenced = silence_enumeration();
+        query()
+    };
+    match result {
+        Ok(channels) => {
+            debug!(node = %node, channels, "Read hardware channel count from ALSA");
+            Some(u16::try_from(channels).unwrap_or(u16::MAX))
+        }
+        Err(e) => {
+            debug!(node = %node, err = %e, "Could not read hardware channel count from ALSA");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn alsa_hw_channels(_card: &str, _dev: u16, _sample_rate: Option<u32>) -> Option<u16> {
+    None
+}
+
+/// What finding a virtual node's width needs from the system, so that the
+/// order and the cost of it can be tested.
+trait NodeProbe {
+    /// Whether a device of this name is listed at all. Name only: nothing is
+    /// asked of any device, so a device still missing costs no probing.
+    fn exists(&mut self, name: &str) -> Result<bool, Box<dyn Error>>;
+    /// The listing entries of `name` and of the raw `hw` nodes on `card`,
+    /// probed and released; no other device is asked anything.
+    fn card_nodes(
+        &mut self,
+        name: &str,
+        card: &str,
+    ) -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>>;
+    /// See [`alsa_hw_channels`].
+    fn hw_channels(&mut self, card: &str, dev: u16) -> Option<u16>;
+}
+
+/// Whether `device_id` is one of the nodes [`NodeProbe::card_nodes`] probes
+/// for `name`: the node itself, or a raw `hw` node on its `card`.
+fn is_card_node(device_id: &str, name: &str, card: &str) -> bool {
+    device_id.trim() == name.trim()
+        || (is_hw_node(device_id) && card_token(device_id).as_deref() == Some(card))
+}
+
+/// [`NodeProbe`] on this machine.
+struct SystemProbe {
+    sample_rate: Option<u32>,
+}
+
+impl NodeProbe for SystemProbe {
+    fn exists(&mut self, name: &str) -> Result<bool, Box<dyn Error>> {
+        let mut exists = false;
+        walk_output_devices(|_, _, device_id| {
+            if device_id.trim() == name.trim() {
+                exists = true;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        })?;
+        Ok(exists)
+    }
+
+    fn card_nodes(
+        &mut self,
+        name: &str,
+        card: &str,
+    ) -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
+        let mut infos = Vec::new();
+        walk_output_devices(|host_id, device, device_id| {
+            if is_card_node(&device_id, name, card) {
+                if let Some(configs) = output_configs(&device) {
+                    infos.push(device_info(host_id, device_id, &configs));
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        Ok(infos)
+    }
+
+    fn hw_channels(&mut self, card: &str, dev: u16) -> Option<u16> {
+        alsa_hw_channels(card, dev, self.sample_rate)
+    }
+}
+
+/// A virtual node's listing entry, its width resolved against only its own
+/// card: `None` if no such device is listed.
+///
+/// Name first, and nothing probed until the name exists: `retry_until_ready`
+/// asks for a missing device twice a second, at boot until the WING appears,
+/// and a full listing calls `supported_output_configs()` on every device of
+/// every host. Then only the node and its card's `hw` nodes are probed, and
+/// ALSA asked for the `hw` node's width, all before the node is held.
+fn listed_virtual_node(
+    name: &str,
+    card: &str,
+    probe: &mut impl NodeProbe,
+) -> Result<Option<AudioDeviceInfo>, Box<dyn Error>> {
+    if !probe.exists(name)? {
+        return Ok(None);
+    }
+    let mut infos = probe.card_nodes(name, card)?;
+    resolve_virtual_channel_counts(&mut infos, |card, dev| probe.hw_channels(card, dev));
+    Ok(infos
+        .into_iter()
+        .find(|info| info.name.trim() == name.trim()))
 }
 
 /// How long a built hint is reused before being rebuilt.
@@ -856,6 +1063,10 @@ pub struct Device {
     /// `None` when the backend was left to choose and did not say, which is what
     /// `BufferSize::Default` gives. Used only to size the liveness window.
     output_buffer_size: Option<u32>,
+    /// Whether `max_channels` is the real width behind the device -- hardware
+    /// reporting under cpal's clamp, or a virtual node whose hardware was
+    /// read -- rather than a plugin's or cpal's figure.
+    channels_known: bool,
     /// Player-wide metronome defaults, set at hardware init.
     metronome_defaults: parking_lot::Mutex<Option<config::MetronomeDefaults>>,
 }
@@ -1137,9 +1348,27 @@ impl Device {
         // Now build. The manager here is a placeholder that `get` replaces, so
         // it holds nothing anyone depends on -- it just must not exist while the
         // enumeration above is still running.
+        //
+        // The listing's channel counts, resolved the same way, from the
+        // configurations read above rather than another walk.
+        let mut infos: Vec<AudioDeviceInfo> = found
+            .iter()
+            .map(|resolved| device_info(resolved.host_id, resolved.name.clone(), &resolved.configs))
+            .collect();
+        // The walk above holds every device, so ALSA's answer here is often
+        // "busy" and the cpal siblings stand in; `get` opens through
+        // `find_cpal_device`, which asks before holding anything.
+        resolve_virtual_channel_counts_on_system(&mut infos, None);
         let mut devices = found
             .into_iter()
-            .map(Device::placeholder)
+            .zip(&infos)
+            .map(|(resolved, info)| {
+                let reported = max_output_channels(&resolved.configs);
+                let mut device =
+                    Device::placeholder(resolved, open_channel_count(Some(info), reported))?;
+                device.channels_known = info.channels_known;
+                Ok::<_, Box<dyn Error>>(device)
+            })
             .collect::<Result<Vec<Device>, _>>()?;
         devices.sort_by_key(|device| device.name.to_string());
         Ok(devices)
@@ -1148,8 +1377,12 @@ impl Device {
     /// A `Device` for a resolved output device, with a placeholder format
     /// and output manager that `get` replaces: what a listing holds, and
     /// what a find hands to `get`.
-    fn placeholder(resolved: ResolvedOutputDevice) -> Result<Device, Box<dyn Error>> {
-        let max_channels = max_output_channels(&resolved.configs);
+    ///
+    /// `max_channels` is the width it is opened at, from [`open_channel_count`].
+    fn placeholder(
+        resolved: ResolvedOutputDevice,
+        max_channels: u16,
+    ) -> Result<Device, Box<dyn Error>> {
         let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
         let output_manager = Arc::new(OutputManager::new(
             max_channels,
@@ -1166,26 +1399,86 @@ impl Device {
             audio_config: config::Audio::new("default"),
             metronome_defaults: parking_lot::Mutex::new(None),
             output_buffer_size: None,
+            channels_known: false,
         })
     }
 
     /// Whether a device of this name can be located for opening.
     ///
-    /// The cheap half of [`Device::get`]: it resolves the device the same way
-    /// but starts no output thread, so it can be asked about every advertised
-    /// device without disturbing a rig.
+    /// The cheap half of [`Device::get`]: it starts no output thread, so it can
+    /// be asked about every advertised device without disturbing a rig. It is
+    /// not the whole of [`Device::find_cpal_device`]: it matches the name and
+    /// asks only that device for output configurations, and does not resolve
+    /// a virtual node's width (no hardware sibling, no ALSA query). A name it
+    /// finds, `find_cpal_device` finds too.
     pub fn is_findable(name: &str) -> bool {
-        matches!(Device::find_cpal_device(name), Ok(Some(_)))
+        matches!(resolve_output_device(name), Ok(Some(_)))
     }
 
-    /// Finds one output device by name and wraps it in a `Device`.
+    /// Finds one output device by name and wraps it in a `Device`, at the width
+    /// it is opened with.
     ///
     /// See [`resolve_output_device`] for why this scans rather than searching
     /// `list_cpal_devices()`.
-    fn find_cpal_device(name: &str) -> Result<Option<Device>, Box<dyn Error>> {
-        resolve_output_device(name)?
-            .map(Device::placeholder)
-            .transpose()
+    ///
+    /// A virtual node naming a card takes its width from
+    /// [`listed_virtual_node`], which reads it from the hardware behind the
+    /// node before the node is held -- ALSA will not describe the hardware
+    /// while a plug in front of it is open. A node it does not find is not
+    /// there to open either.
+    fn find_cpal_device(
+        name: &str,
+        sample_rate: Option<u32>,
+    ) -> Result<Option<Device>, Box<dyn Error>> {
+        let virtual_node = is_virtual_node(name);
+        let listed = match card_token(name).filter(|_| virtual_node) {
+            Some(card) => {
+                match listed_virtual_node(name, &card, &mut SystemProbe { sample_rate })? {
+                    Some(info) => Some(info),
+                    None => return Ok(None),
+                }
+            }
+            None => None,
+        };
+        let Some(resolved) = resolve_output_device(name)? else {
+            return Ok(None);
+        };
+        let reported = max_output_channels(&resolved.configs);
+        let channels = open_channel_count(listed.as_ref(), reported);
+        let channels_known = match &listed {
+            Some(info) => info.channels_known,
+            None => channels_are_known(virtual_node, reported),
+        };
+        if channels != reported {
+            info!(
+                device = %resolved.name,
+                channels,
+                reported,
+                "Opening a virtual node at the width of the hardware behind it"
+            );
+        } else if virtual_node && !channels_known && reported >= CPAL_CHANNEL_CLAMP {
+            // A node naming no card (a desktop's `alsa:default`) has no
+            // hardware to ask, every startup: that is how it is, not a fault.
+            if card_token(name).is_some() {
+                warn!(
+                    device = %resolved.name,
+                    channels,
+                    "Could not read the channel count of the hardware behind this virtual \
+                     node (busy or absent); opening it at cpal's clamped width, and track \
+                     mappings are not checked against the hardware"
+                );
+            } else {
+                info!(
+                    device = %resolved.name,
+                    channels,
+                    "This virtual node names no card, so its hardware's channel count is \
+                     unknown; opening it at cpal's clamped width"
+                );
+            }
+        }
+        let mut device = Device::placeholder(resolved, channels)?;
+        device.channels_known = channels_known;
+        Ok(Some(device))
     }
 
     /// Gets the given cpal device.
@@ -1203,7 +1496,7 @@ impl Device {
         );
         // Enumeration failing is neither of the two cases below: nothing is
         // known about the device yet, so it stays retryable.
-        let found = Device::find_cpal_device(&name)
+        let found = Device::find_cpal_device(&name, Some(config.sample_rate()))
             .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
         match found {
             Some(device) => {
@@ -1254,34 +1547,27 @@ impl Device {
         // Resolve stream buffer size for CPAL (default / min / fixed)
         let min_size =
             min_supported_buffer_size(&device.device, &device.target_format, device.max_channels);
-        let output_buffer_size = resolve_buffer_size(
+        let (output_buffer_size, period_setting) = resolve_buffer_size(
             config.stream_buffer_size(),
             config.buffer_size() as u32,
             min_size,
         );
-        if let (Some(StreamBufferSize::Min), Some(s)) =
-            (config.stream_buffer_size(), output_buffer_size)
-        {
-            if min_size.is_some() {
-                // Report the period in milliseconds as well as frames. "12
-                // frames" is what the MAT's minimum resolves to on the test rig
-                // and it means nothing on its own; "0.2ms" is immediately legible
-                // as the callback deadline it actually is. `min` reads as a
-                // recommendation, so the number behind it should not need
-                // arithmetic to interpret.
-                let period_ms = crate::audio::health::callback_period(
-                    Some(s),
-                    device.target_format.sample_rate,
-                )
-                .map(|p| p.as_secs_f64() * 1000.0)
-                .unwrap_or(0.0);
-                info!(
-                    stream_buffer_size = s,
-                    period_ms = format!("{period_ms:.2}"),
-                    "Using minimum supported stream buffer size — lowest latency, \
-                     and the least tolerance for scheduling jitter"
-                );
-            }
+        if let (PeriodSetting::Min, Some(s)) = (period_setting, output_buffer_size) {
+            // Report the period in milliseconds as well as frames. "12
+            // frames" is what the MAT's minimum resolves to on the test rig
+            // and it means nothing on its own; "0.2ms" is immediately legible
+            // as the callback deadline it actually is. `min` reads as a
+            // recommendation, so the number behind it should not need
+            // arithmetic to interpret.
+            let period_ms =
+                crate::audio::health::callback_period_ms(Some(s), device.target_format.sample_rate)
+                    .unwrap_or(0.0);
+            info!(
+                stream_buffer_size = s,
+                period_ms = format!("{period_ms:.2}"),
+                "Using minimum supported stream buffer size — lowest latency, \
+                 and the least tolerance for scheduling jitter"
+            );
         }
 
         // Start the output thread with resolved buffer size
@@ -1290,6 +1576,7 @@ impl Device {
             device.name.clone(),
             device.target_format.clone(),
             output_buffer_size,
+            period_setting,
         ));
         output_manager.start_output_thread(factory)?;
 
@@ -1442,6 +1729,10 @@ impl AudioDevice for Device {
         !wanted.is_empty()
             && (wanted.eq_ignore_ascii_case(self.audio_config.device().trim())
                 || wanted.eq_ignore_ascii_case(self.name.trim()))
+    }
+
+    fn channels(&self) -> Option<u16> {
+        self.channels_known.then_some(self.max_channels)
     }
 
     fn set_metronome_defaults(&self, defaults: Option<config::MetronomeDefaults>) {
@@ -1944,6 +2235,140 @@ mod test {
     mod virtual_node_tests {
         use super::*;
 
+        /// No ALSA to ask, as for a node cpal lists from another host.
+        fn no_alsa(_card: &str, _dev: u16) -> Option<u16> {
+            None
+        }
+
+        /// A [`NodeProbe`] over a fixed listing, counting what it is asked.
+        struct FakeProbe {
+            listing: Vec<AudioDeviceInfo>,
+            hw: HashMap<(String, u16), u16>,
+            card_walks: usize,
+            hw_queries: usize,
+        }
+
+        impl NodeProbe for FakeProbe {
+            fn exists(&mut self, name: &str) -> Result<bool, Box<dyn Error>> {
+                Ok(self.listing.iter().any(|info| info.name == name))
+            }
+            fn card_nodes(
+                &mut self,
+                name: &str,
+                card: &str,
+            ) -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
+                self.card_walks += 1;
+                Ok(self
+                    .listing
+                    .iter()
+                    .filter(|info| is_card_node(&info.name, name, card))
+                    .cloned()
+                    .collect())
+            }
+            fn hw_channels(&mut self, card: &str, dev: u16) -> Option<u16> {
+                self.hw_queries += 1;
+                self.hw.get(&(card.to_string(), dev)).copied()
+            }
+        }
+
+        fn fake(listing: Vec<AudioDeviceInfo>, hw: &[(&str, u16, u16)]) -> FakeProbe {
+            FakeProbe {
+                listing,
+                hw: hw
+                    .iter()
+                    .map(|(card, dev, channels)| ((card.to_string(), *dev), *channels))
+                    .collect(),
+                card_walks: 0,
+                hw_queries: 0,
+            }
+        }
+
+        /// The band rig at boot: retried twice a second until the WING
+        /// appears. A missing name costs the name check and nothing else.
+        #[test]
+        fn a_missing_device_is_not_probed() {
+            let mut probe = fake(
+                vec![info("alsa:hw:CARD=Headphones,DEV=0", 8)],
+                &[("WING", 0, 48)],
+            );
+            let found =
+                listed_virtual_node("alsa:plughw:CARD=WING,DEV=0", "WING", &mut probe).unwrap();
+            assert!(found.is_none());
+            assert_eq!(probe.card_walks, 0);
+            assert_eq!(probe.hw_queries, 0);
+        }
+
+        /// The WING: its raw node never lists (cpal knows none of its
+        /// formats), so cpal has nothing to borrow; ALSA's hw_params say 48.
+        #[test]
+        fn plug_node_takes_the_width_alsa_reads_from_its_hardware() {
+            let mut probe = fake(
+                vec![
+                    info("alsa:plughw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP),
+                    info("alsa:hw:CARD=Headphones,DEV=0", 8),
+                ],
+                &[("WING", 0, 48)],
+            );
+            let plug = listed_virtual_node("alsa:plughw:CARD=WING,DEV=0", "WING", &mut probe)
+                .unwrap()
+                .expect("listed");
+            assert_eq!(plug.max_channels, 48);
+            assert!(plug.channels_known);
+            assert_eq!(open_channel_count(Some(&plug), CPAL_CHANNEL_CLAMP), 48);
+            assert_eq!(probe.card_walks, 1);
+            assert_eq!(probe.hw_queries, 1);
+        }
+
+        /// ALSA busy or refusing: the cpal sibling stands in, and with none
+        /// the node stays unknown at its own report.
+        #[test]
+        fn a_failed_alsa_query_falls_back_to_the_listed_sibling() {
+            let mut probe = fake(
+                vec![
+                    info("alsa:hw:CARD=MAT,DEV=0", 8),
+                    info("alsa:plughw:CARD=MAT,DEV=0", CPAL_CHANNEL_CLAMP),
+                ],
+                &[],
+            );
+            let plug = listed_virtual_node("alsa:plughw:CARD=MAT,DEV=0", "MAT", &mut probe)
+                .unwrap()
+                .expect("listed");
+            assert_eq!(plug.max_channels, 8);
+
+            let mut probe = fake(
+                vec![info("alsa:plughw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP)],
+                &[],
+            );
+            let plug = listed_virtual_node("alsa:plughw:CARD=WING,DEV=0", "WING", &mut probe)
+                .unwrap()
+                .expect("listed");
+            assert!(!plug.channels_known);
+            assert_eq!(
+                open_channel_count(Some(&plug), CPAL_CHANNEL_CLAMP),
+                CPAL_CHANNEL_CLAMP
+            );
+        }
+
+        /// The ALSA count caps a dmix node as the listed one does, and one
+        /// query serves every node on the card.
+        #[test]
+        fn alsa_count_caps_dmix_and_is_asked_once_per_subdevice() {
+            let mut infos = vec![
+                info("alsa:dmix:CARD=Headphones,DEV=0", 2),
+                info("alsa:plughw:CARD=Headphones,DEV=0", CPAL_CHANNEL_CLAMP),
+                info("alsa:sysdefault:CARD=Headphones", CPAL_CHANNEL_CLAMP),
+            ];
+            let mut asked = 0;
+            resolve_virtual_channel_counts(&mut infos, |_, _| {
+                asked += 1;
+                Some(8)
+            });
+            assert_eq!(asked, 1);
+            assert_eq!(infos[0].max_channels, 2);
+            assert_eq!(infos[1].max_channels, 8);
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
         fn info(name: &str, max_channels: u16) -> AudioDeviceInfo {
             AudioDeviceInfo {
                 name: name.to_string(),
@@ -2006,6 +2431,87 @@ mod test {
             assert_eq!(dev_index("alsa:default"), None);
         }
 
+        /// The harness Pi: `plughw:CARD=Headphones,DEV=0` reports cpal's clamp,
+        /// and was opened at it -- 64 channels mixed for ALSA to drop all but
+        /// the eight the hardware node behind it reports. It opens at eight, and
+        /// a song mapped past them fails rather than going nowhere.
+        #[test]
+        fn plug_node_opens_at_the_width_of_its_hardware() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=Headphones,DEV=0", 8),
+                info("alsa:plughw:CARD=Headphones,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
+            let width = open_channel_count(Some(&infos[1]), CPAL_CHANNEL_CLAMP);
+            assert_eq!(width, 8);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("click".to_string(), vec![8]);
+            assert!(validate_channel_count(&mappings, width, "s", "plug").is_ok());
+            mappings.insert("bass".to_string(), vec![9]);
+            let err = validate_channel_count(&mappings, width, "s", "plug")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("9 channels requested"), "{err}");
+            assert!(err.contains("only has 8"), "{err}");
+        }
+
+        /// No hardware sibling to ask -- a WING's raw node never lists, and
+        /// `default` names no card -- so the width stays what the node reports.
+        #[test]
+        fn plug_node_with_no_sibling_opens_at_its_own_report() {
+            let mut infos = vec![
+                info("alsa:plughw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP),
+                info("alsa:default", 32),
+            ];
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
+            assert_eq!(
+                open_channel_count(Some(&infos[0]), CPAL_CHANNEL_CLAMP),
+                CPAL_CHANNEL_CLAMP
+            );
+            assert_eq!(open_channel_count(Some(&infos[1]), 32), 32);
+        }
+
+        /// The harness Pi's `dmix:CARD=Headphones,DEV=0` reports two channels
+        /// in front of an eight-channel `hw` node. It was opened at eight,
+        /// borrowed from the sibling, and ALSA refused the hw_params: no audio.
+        /// It opens at its own two, and lists them.
+        #[test]
+        fn dmix_node_keeps_its_own_narrower_width() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=Headphones,DEV=0", 8),
+                info("alsa:dmix:CARD=Headphones,DEV=0", 2),
+                info("alsa:plughw:CARD=Headphones,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
+
+            assert_eq!(infos[1].max_channels, 2);
+            assert!(infos[1].channels_known);
+            assert_eq!(open_channel_count(Some(&infos[1]), 2), 2);
+            // The plug node beside it still takes the hardware's eight.
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
+        /// `front:` names the same card and subdevice as `hw:` with a width of
+        /// its own, and is not the hardware.
+        #[test]
+        fn only_the_hw_node_is_a_sibling() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=PCH,DEV=0", 8),
+                info("alsa:front:CARD=PCH,DEV=0", 2),
+                info("alsa:plughw:CARD=PCH,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
+        #[test]
+        fn hardware_opens_at_its_own_report() {
+            let hw = info("alsa:hw:CARD=MAT,DEV=0", 8);
+            assert_eq!(open_channel_count(Some(&hw), 8), 8);
+            assert_eq!(open_channel_count(None, 8), 8);
+        }
+
         /// The case that motivated this: `plughw:CARD=MAT` claims cpal's clamped
         /// 32, while the hardware it routes to reports its real 8.
         #[test]
@@ -2014,7 +2520,7 @@ mod test {
                 info("alsa:hw:CARD=MAT,DEV=0", 8),
                 info("alsa:plughw:CARD=MAT", CPAL_CHANNEL_CLAMP),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             let plug = &infos[1];
             assert_eq!(plug.max_channels, 8);
@@ -2039,7 +2545,7 @@ mod test {
                 info("alsa:plughw:CARD=PCH,DEV=3", CPAL_CHANNEL_CLAMP),
                 info("alsa:plughw:CARD=PCH,DEV=0", CPAL_CHANNEL_CLAMP),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             assert_eq!(infos[2].max_channels, 8, "DEV=3 plug node routes to HDMI");
             assert!(infos[2].channels_known);
@@ -2057,7 +2563,7 @@ mod test {
                 info("alsa:hw:CARD=PCH,DEV=0", 2),
                 info("alsa:plughw:CARD=PCH,DEV=7", CPAL_CHANNEL_CLAMP),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             assert!(
                 !infos[1].channels_known,
@@ -2072,7 +2578,7 @@ mod test {
                 info("alsa:hw:CARD=MAT,DEV=0", 8),
                 info("alsa:plughw:CARD=MAT", CPAL_CHANNEL_CLAMP),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             assert_eq!(infos[2].max_channels, 8);
         }
@@ -2083,7 +2589,7 @@ mod test {
         #[test]
         fn plug_node_without_hardware_sibling_stays_unknown() {
             let mut infos = vec![info("alsa:plughw:CARD=WING", CPAL_CHANNEL_CLAMP)];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             let plug = &infos[0];
             assert!(!plug.channels_known);
@@ -2098,7 +2604,7 @@ mod test {
                 info("alsa:default", CPAL_CHANNEL_CLAMP),
                 info("alsa:pulse", CPAL_CHANNEL_CLAMP),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             assert_eq!(infos[1].channels_display(), "virtual");
             assert_eq!(infos[2].channels_display(), "virtual");
@@ -2150,7 +2656,7 @@ mod test {
                 info("alsa:hw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP),
                 info("alsa:plughw:CARD=WING", 8),
             ];
-            resolve_virtual_channel_counts(&mut infos);
+            resolve_virtual_channel_counts(&mut infos, no_alsa);
 
             // The hardware entry is left alone: only plug nodes are resolved.
             assert_eq!(infos[0].max_channels, CPAL_CHANNEL_CLAMP);
@@ -2598,15 +3104,21 @@ mod test {
 
         #[test]
         fn none_returns_fallback() {
-            assert_eq!(resolve_buffer_size(None, 256, None), Some(256));
-            assert_eq!(resolve_buffer_size(None, 512, Some(64)), Some(512));
+            assert_eq!(
+                resolve_buffer_size(None, 256, None),
+                (Some(256), PeriodSetting::BufferSize)
+            );
+            assert_eq!(
+                resolve_buffer_size(None, 512, Some(64)),
+                (Some(512), PeriodSetting::BufferSize)
+            );
         }
 
         #[test]
         fn default_returns_none() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Default), 256, None),
-                None
+                (None, PeriodSetting::BackendDefault)
             );
         }
 
@@ -2614,7 +3126,7 @@ mod test {
         fn min_returns_min_supported_when_available() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Min), 256, Some(64)),
-                Some(64)
+                (Some(64), PeriodSetting::Min)
             );
         }
 
@@ -2622,7 +3134,7 @@ mod test {
         fn min_falls_back_when_no_min_supported() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Min), 256, None),
-                Some(256)
+                (Some(256), PeriodSetting::MinFallback)
             );
         }
 
@@ -2630,7 +3142,7 @@ mod test {
         fn fixed_returns_specified_value() {
             assert_eq!(
                 resolve_buffer_size(Some(StreamBufferSize::Fixed(128)), 256, Some(64)),
-                Some(128)
+                (Some(128), PeriodSetting::Fixed)
             );
         }
     }

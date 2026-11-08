@@ -228,6 +228,44 @@ test.describe("Status Page", () => {
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
+  /** Audio that came up with a profile mapping tracks past the device's
+   * channels stays connected and carries the reason; the operator needs the
+   * way to the profile as much as for a failure. A clean connected row has no
+   * link. */
+  test("a connected subsystem with a startup problem offers Fix", async ({
+    page,
+  }) => {
+    const audioRow = page
+      .locator(".subsystem-row")
+      .filter({ hasText: "Audio" });
+    await expect(audioRow).toContainText("Connected");
+    await expect(audioRow.locator(".subsystem-link")).toHaveCount(0);
+
+    await page.goto("/#/");
+    await page.route("**/api/status", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      body.hardware.audio = {
+        ...body.hardware.audio,
+        status: "connected",
+        error:
+          "audio device alsa:plughw:CARD=Headphones,DEV=0 has 8 channels, but the profile maps tracks past them (bass -> 9); songs using those tracks will not play",
+      };
+      await route.fulfill({ json: body });
+    });
+
+    await page.goto("/#/status");
+    await expect(audioRow).toContainText("Connected");
+    await expect(page.locator(".subsystem-error")).toContainText(
+      "maps tracks past them",
+    );
+    await expect(
+      audioRow.getByRole("link", { name: "Fix Audio" }),
+    ).toBeVisible();
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
   /** A rig whose audio gave up must not read as healthy anywhere. `init_done`
    * now fires on a degraded rig, so the nav indicator no longer has the
    * "still initializing" amber to hide behind. */

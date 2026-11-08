@@ -216,7 +216,9 @@
         <div class="subsystem-list">
           {#each subsystems as sub (sub.key)}
             {@const s = data.hardware[sub.key]}
-            {@const needsConfig = s.status !== "connected"}
+            <!-- A connected row can still carry a startup problem (audio mapped past
+                 the device's channels): the fix is in the profile all the same. -->
+            {@const needsConfig = s.status !== "connected" || !!s.error}
             {@const isAudio = sub.key === "audio"}
             {@const dotColor = isAudio
               ? audioDotColor(s)
