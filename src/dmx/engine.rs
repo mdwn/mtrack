@@ -343,8 +343,8 @@ impl Engine {
 
         let handle = thread::spawn(move || {
             info!("Effects loop started.");
-            let mut last_update = std::time::Instant::now();
-            let target_frame_time = Duration::from_secs_f64(1.0 / 44.0); // 44Hz
+            // On deadlines at TARGET_HZ: see FrameClock.
+            let mut clock = super::universe::FrameClock::new(std::time::Instant::now());
 
             // This loop runs continuously at 44Hz to process effects.
             // It exits when the Engine is dropped (weak upgrade fails).
@@ -355,10 +355,7 @@ impl Engine {
                     break;
                 };
 
-                let now = std::time::Instant::now();
-                let dt = now.duration_since(last_update);
-
-                if dt >= target_frame_time {
+                if std::time::Instant::now() >= clock.due() {
                     // Wrap the frame work in catch_unwind to prevent a panic from
                     // killing the effects loop thread, which would permanently freeze
                     // all lighting and block DMX playback cleanup.
@@ -388,13 +385,17 @@ impl Engine {
                     }
 
                     heartbeat.fetch_add(1, Ordering::Relaxed);
-                    last_update = now;
+                    clock.ran(std::time::Instant::now());
                 }
 
                 // Drop the Arc before sleeping to minimize time we hold the strong reference
                 drop(engine);
 
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(
+                    clock
+                        .due()
+                        .saturating_duration_since(std::time::Instant::now()),
+                );
             }
 
             info!("Effects loop exited.");
@@ -1043,6 +1044,29 @@ mod test {
         )?;
         let cancel_handle = engine.cancel_handle.clone();
         Ok((Arc::new(engine), cancel_handle))
+    }
+
+    /// As [`create_engine`], with the universes' threads stopped and
+    /// joined: nothing steps a channel the universe dims, or sends it.
+    fn create_engine_without_universe_threads() -> Result<Arc<Engine>, Box<dyn Error>> {
+        let ola_client = OlaClientFactory::create_mock_client();
+        let mut engine = Engine::new(
+            &config::Dmx::new(
+                None,
+                None,
+                None,
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            ),
+            None,
+            None,
+            ola_client,
+        )?;
+        engine.cancel_handle.cancel();
+        for handle in engine.join_handles.drain(..) {
+            handle.join().expect("a universe thread panicked");
+        }
+        Ok(Arc::new(engine))
     }
 
     #[test]
@@ -6751,6 +6775,197 @@ mod test {
             assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 0);
             assert_eq!(engine.get_universe(5).unwrap().dim_rate(), 1.0);
             engine.midi_dmx_playbacks.lock().clear();
+            Ok(())
+        }
+
+        use crate::dmx::universe::frame_time as grid;
+
+        /// DMX 1 and 2 on universe 5 after each effects-loop frame from
+        /// grid frame `from` to `to` (inclusive), MIDI DMX playing `events`
+        /// from `from` as a playback does: from its start, or a seek.
+        fn midi_dmx_frames(
+            events: &[crate::midi::playback::TimedMidiEvent],
+            from: u64,
+            to: u64,
+        ) -> Result<Vec<(f64, f64)>, Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            patch_wash_red(&engine);
+            {
+                let mut store = engine.midi_dmx_store.write();
+                store.register_slot(5, 2, "wash", "green");
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    std::collections::HashMap::from([
+                        ("red".to_string(), 1),
+                        ("green".to_string(), 2),
+                    ]),
+                    None,
+                ),
+            );
+            engine.start_playback_lighting(
+                grid(from),
+                crate::dmx::engine::timeline::MidiDmxStart::Install(vec![
+                    crate::dmx::engine::MidiDmxPlayback {
+                        precomputed: crate::midi::playback::PrecomputedMidi::from_events(
+                            events.to_vec(),
+                        ),
+                        cursor: 0,
+                        universe_id: 5,
+                        midi_channels: HashSet::new(),
+                        start_dim_rate: 1.0,
+                    },
+                ]),
+            );
+            let universe = engine.get_universe(5).unwrap();
+            Ok((from..=to)
+                .map(|k| {
+                    engine.update_song_time(grid(k));
+                    engine.effects_loop_tick();
+                    (universe.get_target_value(0), universe.get_target_value(1))
+                })
+                .collect())
+        }
+
+        /// Dims up and down on DMX 1 and 2, with an instant CC, a note
+        /// right on a frame and one a microsecond after one.
+        fn dimming_show() -> Vec<crate::midi::playback::TimedMidiEvent> {
+            use crate::midi::playback::TimedMidiEvent;
+            let at = |nanos: u64, message| TimedMidiEvent {
+                time: Duration::from_nanos(nanos),
+                channel: 0,
+                message,
+            };
+            let note = |key: u8, vel: u8| midly::MidiMessage::NoteOn {
+                key: key.into(),
+                vel: vel.into(),
+            };
+            let cc = |controller: u8, value: u8| midly::MidiMessage::Controller {
+                controller: controller.into(),
+                value: value.into(),
+            };
+            vec![
+                // Dims over 1 s.
+                at(0, midly::MidiMessage::ProgramChange { program: 1.into() }),
+                at(0, note(1, 40)),
+                at(100_000_000, note(0, 100)),
+                at(500_000_000, cc(1, 60)),
+                at(700_000_000, note(0, 10)),
+                // Frame 40, to the nanosecond.
+                at(grid(40).as_nanos() as u64, note(1, 127)),
+                at(grid(55).as_nanos() as u64 + 1_000, note(0, 127)),
+                at(1_600_000_000, cc(0, 5)),
+                at(1_700_000_000, note(1, 0)),
+            ]
+        }
+
+        #[test]
+        fn a_seek_into_a_midi_dmx_dim_sends_the_frames_the_live_run_sent(
+        ) -> Result<(), Box<dyn Error>> {
+            // A seek restored a dim at the level the live run had reached
+            // by the seek frame, and the first frame's tick took it a step
+            // further: every frame of the dim went out one frame early
+            // (a byte to 24 ahead on the rig's shows). From every frame of
+            // a show of dims, the seek's frames are the play-through's.
+            let events = dimming_show();
+            let end = 90;
+            let play = midi_dmx_frames(&events, 0, end)?;
+            assert!(
+                play.windows(2).filter(|w| w[0] != w[1]).count() > 40,
+                "the show dims: {play:?}"
+            );
+            for at in 1..end {
+                let seek = midi_dmx_frames(&events, at, end)?;
+                for (j, frame) in seek.iter().enumerate() {
+                    let k = at as usize + j;
+                    assert_eq!(
+                        *frame, play[k],
+                        "seek to frame {at}: frame {k} is not the play-through's"
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_puts_a_universe_dimmed_channel_at_the_seek_frames_level(
+        ) -> Result<(), Box<dyn Error>> {
+            // A channel no fixture patches goes straight to the universe,
+            // whose own thread dims it: the effects loop's tick does not
+            // step it, so it goes back at the level of the seek frame
+            // itself, not the frame before as a store channel does.
+            // The universe's thread stopped: nothing steps the channel on.
+            let engine = create_engine_without_universe_threads()?;
+            patch_wash_red(&engine);
+            let note = |ms: u64, key: u8, vel: u8| crate::midi::playback::TimedMidiEvent {
+                time: Duration::from_millis(ms),
+                channel: 0,
+                message: midly::MidiMessage::NoteOn {
+                    key: key.into(),
+                    vel: vel.into(),
+                },
+            };
+            let events = vec![
+                crate::midi::playback::TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 0,
+                    message: midly::MidiMessage::ProgramChange { program: 1.into() },
+                },
+                // DMX 1 (the store's) and DMX 2 (the universe's), 0 to 200
+                // over 44 ticks from 100 ms.
+                note(100, 0, 100),
+                note(100, 1, 100),
+            ];
+            engine.start_playback_lighting(
+                grid(30),
+                crate::dmx::engine::timeline::MidiDmxStart::Install(vec![
+                    crate::dmx::engine::MidiDmxPlayback {
+                        precomputed: crate::midi::playback::PrecomputedMidi::from_events(events),
+                        cursor: 0,
+                        universe_id: 5,
+                        midi_channels: HashSet::new(),
+                        start_dim_rate: 1.0,
+                    },
+                ]),
+            );
+            // Dispatched in frame 5 (113.6 ms), 25 frames before frame 30.
+            let level = |steps: f64| crate::lighting::channels::dmx_byte(200.0 * steps / 44.0);
+            let lit = engine.get_universe(5).unwrap().lit_channels();
+            assert!(lit.contains(&(2, level(25.0))), "{lit:?}");
+            let store: Vec<_> = engine.midi_dmx_store.read().iter_active().collect();
+            assert_eq!(store.len(), 1);
+            assert!(
+                (store[0].1 * 255.0 - 200.0 * 24.0 / 44.0).abs() < 1e-6,
+                "the store's a frame back, for the tick: {store:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_midi_dmx_write_due_in_the_seek_frame_goes_out_when_the_live_run_sent_it(
+        ) -> Result<(), Box<dyn Error>> {
+            // A note or CC due between the frame before the seek and the
+            // seek frame was replayed as already sent: its value went out
+            // a frame before the live run's. The live run dispatches it in
+            // that frame, after the tick: a CC lands the frame after, a dim
+            // starts stepping then.
+            let events = dimming_show();
+            let play = midi_dmx_frames(&events, 0, 80)?;
+            // The CC at 500 ms is due in frame 22 (500.0 ms); the dim to 10
+            // at 700 ms in frame 31 (704.5 ms); the note right on frame 40.
+            for at in [22u64, 31, 40] {
+                let seek = midi_dmx_frames(&events, at, at + 3)?;
+                assert_eq!(seek, play[at as usize..=at as usize + 3], "seek to {at}");
+            }
+            // The CC on DMX 2 (120) goes out the frame after the one it is
+            // due in, a seek's first frame or not.
+            let seek = midi_dmx_frames(&events, 22, 23)?;
+            assert_ne!(seek[0].1, 120.0, "{seek:?}");
+            assert_eq!(seek[1].1, 120.0, "{seek:?}");
             Ok(())
         }
 
