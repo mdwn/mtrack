@@ -79,8 +79,9 @@ impl FrameClock {
             self.start = now;
             self.frame = 1;
         } else if self.frame >= FRAMES_PER_SECOND * 3_600 {
-            // An hour of frames: counted from the last deadline instead, a
-            // whole second on, so the count never grows without end.
+            // An hour of frames: counted from that hour's last deadline
+            // instead, an hour on from the start, so the count never grows
+            // without end. The next deadline is the same instant.
             self.start += frame_time(self.frame);
             self.frame = 0;
         }
@@ -476,6 +477,22 @@ mod frame_clock_test {
             );
             assert!(frames.abs_diff(FRAMES_PER_SECOND * secs) <= 1, "{frames}");
         }
+    }
+
+    #[test]
+    fn the_hourly_recount_neither_skips_nor_doubles_a_frame() {
+        // Run on time past the hour the count starts again at: every
+        // deadline is exactly one frame after the last, the boundary too.
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start);
+        let frames = FRAMES_PER_SECOND * 3_601;
+        let mut due = clock.due();
+        for k in 1..=frames {
+            let next = clock.ran(due);
+            assert_eq!(next, start + frame_time(k), "frame {k}");
+            due = next;
+        }
+        assert_eq!(due, start + Duration::from_secs(3_601));
     }
 
     #[test]

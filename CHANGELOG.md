@@ -1052,6 +1052,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   patched fixture took 2 to 4% longer than its time. It, and each universe's output thread, now
   runs on deadlines a 44th of a second apart; one fallen more than a frame behind (a stall) goes on
   a frame later, where the output thread used to send the missed frames back to back.
+  So after a stall, a channel no fixture patches, which the universe dims itself, carries on its
+  dim from where it was rather than catching up in a burst.
 
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as

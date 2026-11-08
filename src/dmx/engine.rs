@@ -1046,6 +1046,29 @@ mod test {
         Ok((Arc::new(engine), cancel_handle))
     }
 
+    /// As [`create_engine`], with the universes' threads stopped and
+    /// joined: nothing steps a channel the universe dims, or sends it.
+    fn create_engine_without_universe_threads() -> Result<Arc<Engine>, Box<dyn Error>> {
+        let ola_client = OlaClientFactory::create_mock_client();
+        let mut engine = Engine::new(
+            &config::Dmx::new(
+                None,
+                None,
+                None,
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            ),
+            None,
+            None,
+            ola_client,
+        )?;
+        engine.cancel_handle.cancel();
+        for handle in engine.join_handles.drain(..) {
+            handle.join().expect("a universe thread panicked");
+        }
+        Ok(Arc::new(engine))
+    }
+
     #[test]
     fn test_handle_midi_event_by_id() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
@@ -6875,10 +6898,8 @@ mod test {
             // whose own thread dims it: the effects loop's tick does not
             // step it, so it goes back at the level of the seek frame
             // itself, not the frame before as a store channel does.
-            let (engine, cancel_handle) = create_engine()?;
             // The universe's thread stopped: nothing steps the channel on.
-            cancel_handle.cancel();
-            std::thread::sleep(Duration::from_millis(100));
+            let engine = create_engine_without_universe_threads()?;
             patch_wash_red(&engine);
             let note = |ms: u64, key: u8, vel: u8| crate::midi::playback::TimedMidiEvent {
                 time: Duration::from_millis(ms),

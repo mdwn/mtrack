@@ -230,18 +230,18 @@ impl Engine {
         for playback in playbacks.iter_mut() {
             let events = playback.precomputed.events();
             let cursor = midi_dmx_cursor(events, from);
-            let (states, dim_rate) = {
-                let store = self.midi_dmx_store.read();
-                replay_midi_dmx(
-                    &events[..cursor],
-                    &playback.midi_channels,
-                    from,
-                    self.dimming_speed_modifier,
-                    playback.start_dim_rate,
-                    &|channel| store.lookup(playback.universe_id, channel).is_some(),
-                )
-            };
-            self.restore_midi_dmx(playback.universe_id, &states, dim_rate);
+            // One look at the store for the replay and the restore: which
+            // channels it holds is the same for both.
+            let store = self.midi_dmx_store.read();
+            let (states, dim_rate) = replay_midi_dmx(
+                &events[..cursor],
+                &playback.midi_channels,
+                from,
+                self.dimming_speed_modifier,
+                playback.start_dim_rate,
+                &|channel| store.lookup(playback.universe_id, channel).is_some(),
+            );
+            self.restore_midi_dmx(&store, playback.universe_id, &states, dim_rate);
             // The clear before this let go of the store's channels; one
             // straight on the universe holds whatever it was last sent, so
             // one the events write but had not by `from` goes back to 0 too
@@ -252,7 +252,6 @@ impl Engine {
                 .get(&playback.universe_id)
                 .filter(|_| zero_unset)
             {
-                let store = self.midi_dmx_store.read();
                 for channel in midi_dmx_channels(events, &playback.midi_channels) {
                     if !states.contains_key(&channel)
                         && store.lookup(playback.universe_id, channel).is_none()
@@ -273,6 +272,7 @@ impl Engine {
         for playback in playbacks.iter_mut() {
             playback.cursor = 0;
             self.restore_midi_dmx(
+                &self.midi_dmx_store.read(),
                 playback.universe_id,
                 &BTreeMap::new(),
                 playback.start_dim_rate,
@@ -284,6 +284,7 @@ impl Engine {
     /// [`replay_midi_dmx`] found them.
     fn restore_midi_dmx(
         &self,
+        store: &crate::dmx::midi_dmx_store::MidiDmxStore,
         universe_id: u16,
         states: &BTreeMap<u16, MidiDmxChannelState>,
         dim_rate: f64,
@@ -292,7 +293,6 @@ impl Engine {
         if let Some(universe) = universe {
             universe.set_dim_rate(dim_rate);
         }
-        let store = self.midi_dmx_store.read();
         store.set_dim_rate(universe_id, dim_rate);
         for (&channel, state) in states {
             if store.lookup(universe_id, channel).is_some() {
