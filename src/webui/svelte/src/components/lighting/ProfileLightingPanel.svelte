@@ -18,7 +18,7 @@
   import { t } from "svelte-i18n";
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
-  import { fetchVenues, VENUES_TIMEOUT_MS } from "../../lib/api/config";
+  import { fetchVenues } from "../../lib/api/config";
   import { latestLoad } from "../../lib/util/latest";
 
   interface Props {
@@ -44,10 +44,7 @@
   async function loadVenues(dir: string) {
     const current = venuesLoad();
     try {
-      const list = await fetchVenues(
-        dir || undefined,
-        AbortSignal.timeout(VENUES_TIMEOUT_MS),
-      );
+      const list = await fetchVenues(dir || undefined);
       // A list for a directory since changed answered late: not this one.
       if (current()) venues = list.venues;
     } catch {

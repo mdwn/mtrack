@@ -712,22 +712,22 @@ export async function fetchLightingFit(): Promise<FitReport> {
   ]);
 }
 
+/** How long a venue list is waited for before it is given up on (a
+ *  `TimeoutError`): a server that never answers would leave a field
+ *  disabled, or a spinner turning, for good. */
+const VENUES_TIMEOUT_MS = 10_000;
+
 /** Venues that parsed, plus the files that did not.
  *
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
- *  quietly missing. */
-/** How long a venue list is waited for before the page gives up on it: a
- *  server that never answers would leave a field disabled, or a spinner
- *  turning, for good. */
-export const VENUES_TIMEOUT_MS = 10_000;
-
-export async function fetchVenues(
-  dir?: string,
-  signal?: AbortSignal,
-): Promise<VenueList> {
+ *  quietly missing. Gives up after `VENUES_TIMEOUT_MS`. */
+export async function fetchVenues(dir?: string): Promise<VenueList> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await get(`/lighting/venues${params}`, signal);
+  const res = await get(
+    `/lighting/venues${params}`,
+    AbortSignal.timeout(VENUES_TIMEOUT_MS),
+  );
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
   return res.json();
 }

@@ -26,9 +26,12 @@ export function latestLoad(): () => () => boolean {
 
 /** A load awaited by callers that read what it loaded, repeated as its
  *  inputs change. `load` applies its answer only while `current()` holds
- *  (see [`latestLoad`]); a call resolves once the newest load started by
- *  then has finished, so a caller whose own answer went stale still finds
- *  the newest one applied, not nothing. */
+ *  (see [`latestLoad`]).
+ *
+ *  A call settles once the newest load started by then has settled, so a
+ *  caller whose own answer went stale still finds the newest one applied,
+ *  not nothing: it resolves if that newest load resolved, and rejects with
+ *  its error if it rejected. A stale load's rejection is never seen. */
 export function newestLoad(
   load: (current: () => boolean) => Promise<void>,
 ): () => Promise<void> {
@@ -37,10 +40,18 @@ export function newestLoad(
   return async () => {
     let waited = load(start());
     newest = waited;
-    await waited;
-    while (waited !== newest) {
+    for (;;) {
+      let failed: { error: unknown } | undefined;
+      try {
+        await waited;
+      } catch (error) {
+        failed = { error };
+      }
+      if (waited === newest) {
+        if (failed) throw failed.error;
+        return;
+      }
       waited = newest;
-      await waited;
     }
   };
 }

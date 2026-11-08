@@ -1594,7 +1594,10 @@ metronome: {}
             let mut buf = buffer.lock();
             buf.push_back("INFO test: first line".to_string());
         }
-        let _ = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv()).await;
+        tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
+            .await
+            .expect("timed out waiting for the first line")
+            .expect("recv error");
 
         // Don't push any new lines — next tick should skip (line 167)
         // Wait for another tick — it should produce no message

@@ -47,7 +47,6 @@
     fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchVenues,
-    VENUES_TIMEOUT_MS,
     saveVenue,
     deleteVenue,
   } from "../../lib/api/config";
@@ -191,10 +190,7 @@
     venueError = "";
     venueFileErrors = [];
     try {
-      const result = await fetchVenues(
-        venueDir || undefined,
-        AbortSignal.timeout(VENUES_TIMEOUT_MS),
-      );
+      const result = await fetchVenues(venueDir || undefined);
       if (!current()) return;
       venues = result.venues;
       venueVersions = result.versions ?? {};

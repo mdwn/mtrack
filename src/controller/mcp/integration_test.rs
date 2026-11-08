@@ -2839,10 +2839,10 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
         }),
     ];
 
-    // Opened before the change, so the server holds it when the
-    // notification goes out.
-    // The show goes dark at 13s, and its notification may wait out the 10s
-    // coalescing window set above: 23s, and the test patience past that.
+    // Opened before the change, so the server holds it when the notification
+    // goes out. The show goes dark at 13s, and its notification may wait out
+    // the 10s coalescing window set above: 23s, and the test patience past
+    // that.
     let listening = Duration::from_secs(23) + PATIENCE;
     let events = open_event_stream(&client, &url, &session, listening).await;
     let listener = tokio::spawn(wait_for_event_sequence(events, listening, predicates));
