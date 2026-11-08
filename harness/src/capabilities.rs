@@ -24,8 +24,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait};
-
 /// An audio device with output channels, as mtrack itself sees it.
 #[derive(Debug, Clone)]
 pub struct AudioOutput {
@@ -35,8 +33,7 @@ pub struct AudioOutput {
     pub sample_rates: Vec<u32>,
 }
 
-/// An audio device with input channels. mtrack's own device listing only
-/// enumerates outputs, so these are gathered from cpal directly.
+/// An audio device with input channels, from mtrack's input listing.
 #[derive(Debug, Clone)]
 pub struct AudioInput {
     pub name: String,
@@ -156,7 +153,7 @@ impl Capabilities {
         let mut skips = Vec::new();
 
         let all_audio_out = probe_audio_outputs(&mut skips);
-        let all_audio_in = probe_audio_inputs();
+        let all_audio_in = probe_audio_inputs(&mut skips);
         let all_midi = probe_midi(&mut skips);
 
         let mut audio_out = select_audio_output(&all_audio_out, &mut skips);
@@ -370,38 +367,27 @@ fn probe_audio_outputs(skips: &mut Vec<Skip>) -> Vec<AudioOutput> {
     }
 }
 
-/// Lists input devices directly from cpal. mtrack's listing filters to devices
-/// with output configs, so input-only interfaces would otherwise be invisible.
-fn probe_audio_inputs() -> Vec<AudioInput> {
-    // Device enumeration on ALSA writes directly to the process's stderr.
-    let _stdout = shh::stdout();
-    let _stderr = shh::stderr();
-
-    let mut inputs = Vec::new();
-    for host_id in cpal::available_hosts() {
-        let Ok(host) = cpal::host_from_id(host_id) else {
-            continue;
-        };
-        let Ok(devices) = host.input_devices() else {
-            continue;
-        };
-        for device in devices {
-            let Ok(id) = device.id() else { continue };
-            let max_channels = device
-                .supported_input_configs()
-                .map(|configs| configs.map(|c| c.channels()).max().unwrap_or(0))
-                .unwrap_or(0);
-            if max_channels == 0 {
-                continue;
-            }
-            inputs.push(AudioInput {
-                name: id.to_string(),
-                max_channels,
-                host: host_id.name().to_string(),
+/// Lists input devices through mtrack's input listing. mtrack's output listing
+/// filters to devices with output configs, so input-only interfaces appear only
+/// here.
+fn probe_audio_inputs(skips: &mut Vec<Skip>) -> Vec<AudioInput> {
+    match mtrack::audio::list_input_device_info() {
+        Ok(infos) => infos
+            .into_iter()
+            .map(|i| AudioInput {
+                name: i.name,
+                max_channels: i.max_channels,
+                host: i.host_name,
+            })
+            .collect(),
+        Err(e) => {
+            skips.push(Skip {
+                area: "audio",
+                reason: format!("could not list audio input devices: {e}"),
             });
+            Vec::new()
         }
     }
-    inputs
 }
 
 /// Lists MIDI devices through mtrack's own enumeration.

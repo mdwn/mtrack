@@ -102,7 +102,6 @@ serde = { version = "1.0", features = ["derive"] }
 yaml-rust2 = "0.11"
 # One stem for a name typed composed or decomposed (`lighting::files::stem`).
 unicode-normalization = "0.1.26"
-shh = "1.0.1"
 spin_sleep = "1.3.3"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = [
@@ -154,11 +153,16 @@ tempfile = "3.26.0"
 quick-xml = "0.41.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
-# Linux only: a plug node's width from the hw node's hw_params, which cpal
-# cannot read where it knows none of the node's formats (the WING). The
-# version cpal already pulls in.
+# ALSA's thread-local error handler, to quiet device enumeration (already in
+# the tree through cpal). libc looks up alsa-lib 1.2.15's log API at runtime,
+# since alsa-sys does not bind it and older alsa-lib does not have it. `alsa`
+# reads a plug node's width from the hw node's hw_params, which cpal cannot
+# where it knows none of the node's formats (the WING); the version cpal
+# already pulls in.
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11.0"
+alsa-sys = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.7"

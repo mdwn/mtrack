@@ -779,6 +779,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error naming the tracks and channels and showing it on the status page beside the connected
   audio device, which it keeps.
 
+- **Startup log lines lost under systemd**: audio device enumeration silenced ALSA by swapping the
+  whole process's stdout and stderr for a pipe, and whatever any other thread wrote in that window
+  went into the pipe and was discarded. Started under systemd with olad already running, the DMX
+  engine comes up while the audio device is opening, so "DMX engine initialized", "Effects loop
+  started", olad's "no output port patched" warning, "Web UI listening" and "mtrack is running"
+  never reached the journal; a web UI device refresh lost other threads' lines the same way,
+  panics and real ALSA errors (a MIDI port failing to open) among them. Enumeration now quiets only
+  ALSA's own error reports (and, on alsa-lib 1.2.15 or later, its log messages), and only on the
+  thread that walks the devices; stdout and stderr are never touched. Input device lookups (the
+  trigger engine and calibration) are now quieted and serialised with the output walks too.
+- **Log lines go to stderr**: headless log lines were written to stdout, mixed into the output of
+  commands such as `mtrack devices` that scripts read. They now go to stderr, which the journal
+  takes the same way. They carry ANSI colour only when stderr is a terminal and `NO_COLOR` is
+  unset: under systemd the escape codes went into every journal line, which the journal then
+  stored as binary data.
+- **Legacy config warnings once per config**: the warnings about legacy top-level config fields
+  -- `status_events` (legacy; used only when the matched profile has none), and
+  `audio`/`audio_device`, `midi`/`midi_device`, `dmx`, `trigger`, `track_mappings`,
+  `sample_triggers` and `controller`/`controllers` ignored beside `profiles`, and inline
+  `profiles` ignored for `profiles_dir` -- were logged again every time the web UI or the API
+  read the config. Each is now logged once, and again only after the config is saved as raw YAML,
+  so a saved config that brings a legacy field back says so. Typed edits such as a playlist switch
+  or a gain change cannot bring one back and do not repeat them. A draft checked with the web UI's
+  validate, or before a save, gives none of them.
+
 - **MCP's song, playlist and song light show tools write by the web UI's rules** (#675):
   `write_song`, `patch_song`, `write_playlist`, `patch_playlist`, `write_song_lighting`,
   `patch_song_lighting` and `delete_song_lighting` wrote and deleted files directly, each with
