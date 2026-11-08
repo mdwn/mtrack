@@ -144,7 +144,7 @@ const STANDARD_SAMPLE_RATES: &[u32] = &[
 ///
 /// The window is wider than it looks: the output thread re-resolves a device
 /// during stream recovery, so this is a lock rather than a hope.
-static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+pub(crate) static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Silences ALSA's enumeration chatter for as long as the returned guard lives.
 ///

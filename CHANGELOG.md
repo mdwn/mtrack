@@ -745,6 +745,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Startup log lines lost under systemd**: audio device enumeration silences ALSA by swapping the
+  process's stdout and stderr for a pipe, and any line logged by another thread in that window went
+  into the pipe and was discarded. Started under systemd with olad already running, the DMX engine
+  comes up while the audio device is opening, so "DMX engine initialized", "Effects loop started",
+  olad's "no output port patched" warning, "Web UI listening" and "mtrack is running" never reached
+  the journal. Log lines now go to a copy of stdout taken at startup, which nothing redirects, so
+  they all reach the journal, including those logged while the web UI refreshes the device list.
+  Log lines also carry ANSI colour only when stdout is a terminal (and `NO_COLOR` is unset): the
+  escape codes went into every journal line, which the journal then stored as binary data.
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
   fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
   red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state

@@ -34,12 +34,17 @@ async fn main() {
             .with(tui_layer)
             .init();
     } else {
-        // Headless: log to stderr AND capture in ring buffer for web UI log streaming
+        // Headless: log to stdout AND capture in ring buffer for web UI log
+        // streaming. Stdout through a copy of fd 1 taken now, before audio
+        // device enumeration can swap fd 1 out from under it (see
+        // `mtrack::logging`).
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
         let tui_layer = tui::logging::init_tui_logging(1000);
-        let fmt_layer = tracing_subscriber::fmt::layer();
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(mtrack::logging::stdout_wants_colour())
+            .with_writer(mtrack::logging::stdout_writer());
         tracing_subscriber::registry()
             .with(filter)
             .with(fmt_layer)
