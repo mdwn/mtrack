@@ -15,9 +15,12 @@
 mod layers;
 pub(crate) mod processing;
 mod validation;
+mod wire;
 
 #[cfg(test)]
 mod tests;
+
+pub use wire::Wire;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -252,6 +255,14 @@ pub struct EffectEngine {
     /// A `StopScope::Nothing` scratch's use of the pose memory it started
     /// from.
     pose_reads: Option<PoseReads>,
+    /// The bytes the rig holds ([`Wire`]): what the frames sent through
+    /// [`Self::send`] left there. A fresh engine swapped in for this one
+    /// (a loop pass, a break) takes it over, as the universes do not
+    /// change.
+    wire: Wire,
+    /// Whether a start from history sends the frames playing through it
+    /// would have to the wire ([`Self::trace_wire`]).
+    tracing_wire: bool,
 }
 
 impl Default for EffectEngine {
@@ -284,6 +295,8 @@ impl EffectEngine {
             ends: None,
             scope: StopScope::Nothing,
             pose_reads: None,
+            wire: Wire::default(),
+            tracing_wire: false,
         }
     }
 
@@ -454,6 +467,7 @@ impl EffectEngine {
             goals: self.goals.clone(),
             // The effects loop's stall diagnostics watch this one counter.
             update_subphase: self.update_subphase.clone(),
+            wire: self.wire.clone(),
             ..EffectEngine::new()
         }
     }
@@ -646,6 +660,60 @@ impl EffectEngine {
     /// The frame this engine last rendered.
     pub fn last_commands(&self) -> &[DmxCommand] {
         self.cache.get_cached()
+    }
+
+    /// The bytes the rig holds, as the frames sent through [`Self::send`]
+    /// left them.
+    pub fn wire(&self) -> &Wire {
+        &self.wire
+    }
+
+    /// Sends `frame` -- what goes out to the universes, this engine's own
+    /// or one crossed with others -- onto the wire ([`Wire::send`]), the
+    /// patched levels and colours the last frame wrote and this one does
+    /// not going to 0. Answers those, to send after the frame.
+    pub fn send(&mut self, frame: &[DmxCommand]) -> Vec<DmxCommand> {
+        let levels = self.level_channels();
+        self.wire.send(frame, &levels)
+    }
+
+    /// From now on a start from history (see [`Self::start_from`]) sends
+    /// the wire the frames playing the history through would have: one
+    /// just before each effect in it ends and one at each cue time, so a
+    /// gobo or zoom an effect over before the start point left on the rig
+    /// is still there. For an offline evaluation, which has no rig of its
+    /// own; live, the rig already holds what it was sent.
+    pub(crate) fn trace_wire(&mut self) {
+        self.tracing_wire = true;
+    }
+
+    /// Renders the frame at `song_time` and sends it to the wire, leaving
+    /// pose memory as the history being replayed has it.
+    fn send_replayed_frame(&mut self, song_time: Duration) {
+        let (poses, goals) = (self.poses.clone(), self.goals.clone());
+        if self.update(Duration::ZERO, Some(song_time)).is_ok() {
+            let frame = self.cache.get_cached().to_vec();
+            self.send(&frame);
+        }
+        self.poses = poses;
+        self.goals = goals;
+    }
+
+    /// When each effect running now ends, from now on, up to `time`, in
+    /// order: the instants a replay to `time` sends a frame just before.
+    fn ends_until(&self, time: Duration) -> Vec<Duration> {
+        let now = self.now();
+        let from = now.song.unwrap_or_default();
+        let mut ends: Vec<Duration> = self
+            .active_effects
+            .values()
+            .filter(|effect| effect.start_time.is_some())
+            .filter_map(|effect| self.layer_state.clock(effect.layer).end_of(effect, now))
+            .filter(|&end| end > from && end <= time)
+            .collect();
+        ends.sort();
+        ends.dedup();
+        ends
     }
 
     /// The pose memory: where each mover was last driven to.
@@ -2133,11 +2201,7 @@ impl<'a> Replay<'a> {
         if steps.peek().is_none() {
             return;
         }
-        self.engine.current_time = self
-            .now
-            .checked_sub(self.to.saturating_sub(time))
-            .unwrap_or(self.now);
-        self.engine.advance(time);
+        self.trace_until(time);
         for step in steps {
             if let Err(e) = self.engine.apply_step(step) {
                 self.errors.push(e);
@@ -2146,10 +2210,43 @@ impl<'a> Replay<'a> {
     }
 
     /// Moves the time on to the start point, and leaves the engine there.
-    pub(crate) fn finish(self) -> Vec<EffectError> {
-        self.engine.current_time = self.now;
-        self.engine.advance(self.to);
+    pub(crate) fn finish(mut self) -> Vec<EffectError> {
+        self.trace_until(self.to);
         self.engine.cache.invalidate();
         self.errors
     }
+
+    /// Moves the time on to `time` (see [`EffectEngine::advance`]), the
+    /// engine's instant with it.
+    fn move_to(&mut self, time: Duration) {
+        self.engine.current_time = self
+            .now
+            .checked_sub(self.to.saturating_sub(time))
+            .unwrap_or(self.now);
+        self.engine.advance(time);
+    }
+
+    /// Moves the time on to `time`; while the engine traces the wire
+    /// ([`EffectEngine::trace_wire`]), sending it the frame just before each
+    /// effect ending on the way goes, and the frame at `time` before what
+    /// fires there.
+    fn trace_until(&mut self, time: Duration) {
+        if self.engine.tracing_wire {
+            for end in self.engine.ends_until(time) {
+                let from = self.engine.last_song_time.unwrap_or_default();
+                let before = end.saturating_sub(JUST_BEFORE).max(from);
+                self.move_to(before);
+                self.engine.send_replayed_frame(before);
+                self.move_to(end);
+            }
+        }
+        self.move_to(time);
+        if self.engine.tracing_wire {
+            self.engine.send_replayed_frame(time);
+        }
+    }
 }
+
+/// How long before an effect ends a traced replay renders its last frame
+/// (see [`Replay::trace_until`]): within the live frame before its end.
+const JUST_BEFORE: Duration = Duration::from_micros(1);

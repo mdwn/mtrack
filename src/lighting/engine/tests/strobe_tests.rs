@@ -1202,6 +1202,7 @@ fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
             engine.shown_fixture_states(),
             &HashMap::new(),
             registry,
+            engine.wire(),
             rates,
         )
         .into_iter()

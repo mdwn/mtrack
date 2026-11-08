@@ -21,6 +21,9 @@
 //! Each requested time is evaluated independently against a fresh engine, by
 //! the same start the seek path uses: replay the cue history up to T through
 //! the engine, then render one frame and snapshot it as a live engine is.
+//! The replay sends the rig the frames playing through would have (see
+//! `EffectEngine::trace_wire`), so a channel an effect over before T left set
+//! -- a gobo, a zoom -- reads as the rig holds it, as it does live.
 //! Nothing accumulates between samples, so evaluating `[10.0, 200.0]` costs the
 //! same as `[200.0, 10.0]` and neither perturbs the other.
 
@@ -130,6 +133,10 @@ where
             for fixture in fixtures {
                 engine.register_fixture(fixture.clone());
             }
+            // The rig as playing the show through from its start leaves it:
+            // what each frame up to `time` sent, a gobo an effect over
+            // before then left set still set.
+            engine.trace_wire();
 
             // Start from everything before `time`, then fire the cues
             // landing exactly on it. `start_at` stops short of `time` by
@@ -141,7 +148,10 @@ where
 
             // Render a single frame at `time`. A zero delta keeps the engine's
             // clock exactly where the history left it.
-            let _ = engine.update(Duration::ZERO, Some(time));
+            if engine.update(Duration::ZERO, Some(time)).is_ok() {
+                let frame = engine.last_commands().to_vec();
+                engine.send(&frame);
+            }
             snapshot(&engine, time)
         })
         .collect()
@@ -399,6 +409,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         engine.shown_fixture_states(),
         &has_dimmer,
         registry,
+        engine.wire(),
         crate::state::StrobeRates::Instant,
     );
     fill_dark_fixtures(&mut fixtures, registry.values());
@@ -888,10 +899,6 @@ show "T" {
         for fixture in fixtures {
             engine.register_fixture(fixture.clone());
         }
-        let has_dimmer: HashMap<String, bool> = fixtures
-            .iter()
-            .map(|f| (f.name.clone(), f.has_dimmer()))
-            .collect();
 
         timeline.start();
         let last = times.iter().copied().max().unwrap_or(Duration::ZERO);
@@ -901,16 +908,14 @@ show "T" {
         loop {
             let update = timeline.update(now);
             apply_timeline_update(&mut engine, update, &mut |e| e);
-            let _ = engine.update(step, Some(now));
+            if engine.update(step, Some(now)).is_ok() {
+                // Out to the rig, as the live output sends it.
+                let frame = engine.last_commands().to_vec();
+                engine.send(&frame);
+            }
 
             if times.contains(&now) {
-                let mut snap = crate::state::compute_fixture_snapshots(
-                    &engine.get_fixture_states(),
-                    &has_dimmer,
-                    engine.get_fixture_registry(),
-                );
-                fill_dark_fixtures(&mut snap, fixtures.iter());
-                sampled.push((now, snap));
+                sampled.push((now, snapshot(&engine, now).fixtures));
             }
             if now >= last {
                 break;
@@ -984,6 +989,142 @@ show "T" {
                     "at {:?}, fixture `{}`: played-through {:?} but evaluated {:?}",
                     time, want.name, want.channels, got.channels
                 );
+            }
+        }
+    }
+
+    /// A CMY wash (dimmer, cyan, magenta, yellow, gobo, zoom at 1-6) and
+    /// an RGB par (red, green, blue, dimmer, focus, strobe at 7-12).
+    fn wire_rig() -> Vec<FixtureInfo> {
+        use crate::testutil::lighting::generic;
+        vec![
+            generic(
+                "wash",
+                1,
+                1,
+                &["dimmer", "cyan", "magenta", "yellow", "gobo", "zoom"],
+            ),
+            generic(
+                "par",
+                1,
+                7,
+                &["red", "green", "blue", "dimmer", "focus", "strobe"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_setting_an_ended_effect_left_reads_as_the_rig_holds_it() {
+        // An effect that ends leaves a gobo, a zoom, a focus as it set them:
+        // the universe holds a byte until it is sent another. Its levels and
+        // colours go to 0 as it ends (#581): the CMY head's magenta and
+        // yellow open, so `red: 100%` alone shows white, as it is sent.
+        let source = r#"
+show "T" {
+    @0.000
+    wash: static, dimmer: 100%, red: 100%, green: 0%, blue: 0%, gobo: 50%, zoom: 40%, duration: 5s
+    par: static, dimmer: 100%, red: 100%, green: 50%, blue: 0%, focus: 30%, strobe: 50%, duration: 5s
+    @5.000
+    wash: static, dimmer: 100%, red: 100%, duration: 10s
+    par: static, dimmer: 100%, red: 100%, duration: 10s
+    @8.000
+    clear(layer: background)
+}
+"#;
+        let at = |t: f64| -> HashMap<String, HashMap<String, u8>> {
+            eval(source, &wire_rig(), &[t])[0]
+                .fixtures
+                .iter()
+                .map(|f| (f.name.clone(), f.channels.clone()))
+                .collect()
+        };
+        let first = at(1.0);
+        assert_eq!(
+            (
+                first["wash"]["magenta"],
+                first["wash"]["yellow"],
+                first["wash"]["gobo"]
+            ),
+            (255, 255, 128)
+        );
+        let later = at(6.0);
+        let (wash, par) = (&later["wash"], &later["par"]);
+        assert_eq!(
+            (
+                wash["cyan"],
+                wash["magenta"],
+                wash["yellow"],
+                wash["dimmer"]
+            ),
+            (0, 0, 0, 255),
+            "open white, as the head is sent"
+        );
+        assert_eq!((wash["gobo"], wash["zoom"]), (128, 102), "held");
+        assert!(!wash.contains_key("red"));
+        assert_eq!((par["red"], par["green"], par["focus"]), (255, 0, 77));
+        assert_eq!(par["strobe"], 0, "a strobe nobody drives is sent off");
+        // Cleared: every level dark, the settings still where they were.
+        let cleared = at(9.0);
+        assert_eq!(cleared["wash"]["dimmer"], 0);
+        assert_eq!(
+            (cleared["wash"]["gobo"], cleared["par"]["focus"]),
+            (128, 77)
+        );
+    }
+
+    #[test]
+    fn a_colour_under_a_dimmer_never_sent_reads_dark() {
+        // The head's dimmer channel holds 0 when nothing ever sent it a
+        // byte: a colour alone puts no light out, and the state says so
+        // rather than taking the dimmer it left out as open.
+        let fixtures = wire_rig();
+        let source = "show \"T\" {\n    @0.000\n    par: static, red: 100%, duration: 5s\n}\n";
+        let evaluation = &eval(source, &fixtures, &[1.0])[0];
+        let par = evaluation
+            .fixtures
+            .iter()
+            .find(|f| f.name == "par")
+            .unwrap();
+        assert_eq!((par.channels["red"], par.channels["dimmer"]), (255, 0));
+        assert_eq!(evaluation.is_dark(), Some(true));
+    }
+
+    #[test]
+    fn made_up_shows_evaluate_as_played_through_on_every_channel() {
+        // The evaluation's rig is the one playing the show through leaves:
+        // every channel of every fixture, the ones ended effects left set
+        // included.
+        const MADE_UP: [(&str, &[&str]); 2] = [
+            (
+                "wash",
+                &["dimmer", "red", "green", "blue", "gobo", "zoom", "cyan"],
+            ),
+            (
+                "par",
+                &["dimmer", "red", "green", "blue", "focus", "strobe"],
+            ),
+        ];
+        let fixtures = wire_rig();
+        let times: Vec<Duration> = (0..=36).map(|n| Duration::from_millis(n * 250)).collect();
+        for seed in 1..=12 {
+            let source = crate::testutil::lighting::made_up_show(seed, &MADE_UP);
+            let stepped = play_through(&source, &fixtures, &times);
+            let evaluated = evaluate_show(
+                shows(&source),
+                &fixtures,
+                &HashMap::new(),
+                None,
+                &times,
+                |e| e,
+            );
+            for (i, time) in times.iter().enumerate() {
+                let want: Vec<_> = stepped[i].iter().map(|f| (&f.name, &f.channels)).collect();
+                let got: Vec<_> = evaluated[i]
+                    .fixtures
+                    .iter()
+                    .map(|f| (&f.name, &f.channels))
+                    .collect();
+                assert_eq!(want, got, "seed {seed} at {time:?}\n{source}");
             }
         }
     }

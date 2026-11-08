@@ -56,6 +56,70 @@ pub fn rgb(name: &str, address: u16) -> FixtureInfo {
     )
 }
 
+/// A fixture in `universe` at `address` with `channels`, each on the next
+/// channel from its first.
+pub fn generic(name: &str, universe: u16, address: u16, channels: &[&str]) -> FixtureInfo {
+    let channels: HashMap<String, u16> = channels
+        .iter()
+        .zip(1..)
+        .map(|(c, offset)| (c.to_string(), offset))
+        .collect();
+    FixtureInfo::new(
+        name.to_string(),
+        universe,
+        address,
+        "Generic".to_string(),
+        channels,
+        None,
+    )
+}
+
+/// A made-up show, the same for the same `seed`: eight cues over about
+/// four seconds, each firing one to three statics -- on a random fixture
+/// of `fixtures` (its name and the channels a static may set), random
+/// channels of it at random levels, a random layer, a random length --
+/// and now and then a clear of a layer first.
+pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])]) -> String {
+    let mut state = seed;
+    let mut next = |n: u64| {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) % n
+    };
+    let layers = ["background", "midground", "foreground"];
+    let mut out = String::from("show \"made up\" {\n");
+    let mut at = 0u64;
+    for _ in 0..8 {
+        out.push_str(&format!("    @{}.{:03}\n", at / 1000, at % 1000));
+        if next(6) == 0 {
+            let layer = layers[next(3) as usize];
+            out.push_str(&format!("    clear(layer: {layer})\n"));
+        }
+        for _ in 0..=next(2) {
+            let (fixture, names) = fixtures[next(fixtures.len() as u64) as usize];
+            let mut params: Vec<String> = Vec::new();
+            for name in names {
+                if next(2) == 0 {
+                    params.push(format!("{name}: {}%", next(101)));
+                }
+            }
+            if params.is_empty() {
+                params.push(format!("{}: 100%", names[0]));
+            }
+            let layer = layers[next(3) as usize];
+            let length = 200 + next(1500);
+            out.push_str(&format!(
+                "    {fixture}: static, {}, layer: {layer}, duration: {length}ms\n",
+                params.join(", "),
+            ));
+        }
+        at += 100 + next(900);
+    }
+    out.push_str("}\n");
+    out
+}
+
 /// A mover in universe 1 at `address`, hung 3 m up facing straight down:
 /// 16-bit pan over ±270° (channels 1-2), tilt over ±135° (3-4), dimmer (5).
 pub fn mover(name: &str, address: u16) -> FixtureInfo {

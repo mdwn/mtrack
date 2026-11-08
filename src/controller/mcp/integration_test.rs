@@ -1686,10 +1686,10 @@ async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
 
     let source = r#"show "Offline" {
     @00:00.000
-    all_lights: static color: "blue", duration: 4s
+    all_lights: static color: "blue", dimmer: 100%, duration: 4s
 
     @00:10.000
-    all_lights: static color: "red", duration: 4s
+    all_lights: static color: "red", dimmer: 100%, duration: 4s
 }
 "#;
 
@@ -1858,7 +1858,7 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     )?;
 
     // A long green bed, so the reading is stable however far playback has got.
-    let show = "show \"Which\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 120s\n}\n";
+    let show = "show \"Which\" {\n    @00:00.000\n    all_lights: static color: \"green\", dimmer: 100%, duration: 120s\n}\n";
     let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
     std::fs::write(song_lighting_dir.join("main_show.light"), show)?;
     // The song registers this show too. Keep its cue clear of the window under
@@ -2786,8 +2786,8 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
         // entire lit period then passes unreported. Subscribing only once the
         // rig is settled and lit removes it from the picture.
         "show \"Lit\" {\n    @00:00.000\n    \
-         all_lights: static color: \"green\", duration: 10s, layer: background\n    \
-         all_lights: static color: \"blue\", duration: 11s, layer: foreground\n}\n",
+         all_lights: static color: \"green\", dimmer: 100%, duration: 10s, layer: background\n    \
+         all_lights: static color: \"blue\", dimmer: 100%, duration: 11s, layer: foreground\n}\n",
     )?;
     std::fs::write(
         song_lighting_dir.join("outro.light"),

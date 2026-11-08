@@ -216,6 +216,8 @@ fn shown_bytes(
         states,
         &has_dimmer,
         registry,
+        // The states alone: what the view would show of them.
+        &Default::default(),
         crate::state::StrobeRates::Live,
     ) {
         let info = &registry[&snapshot.name];
