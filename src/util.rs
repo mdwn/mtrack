@@ -426,11 +426,10 @@ fn write_locked(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Wri
     match result {
         // A file this write made is taken away again, with its staged copy.
         Err(failure) if mode == WriteMode::CreateNew && failure.touched => {
-            let gone = match std::fs::remove_file(path) {
+            let gone = match remove_with_staged(path) {
                 Ok(()) => true,
                 Err(e) => e.kind() == std::io::ErrorKind::NotFound,
             };
-            let _ = std::fs::remove_file(staged_path(path));
             Err(WriteFailure {
                 error: failure.error,
                 touched: !gone,
@@ -482,10 +481,7 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
         // Flushing the file is not enough on its own: without syncing the
         // directory too, the sidecar's *name* may not survive a crash, and
         // an unnamed file is no use to recover from.
-        if let Some(parent) = parent_of(path) {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
+        sync_parent_dir(path)
     };
 
     // Lock before truncating, not as part of the open: opening with
@@ -512,6 +508,16 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
         Ok(destination)
     };
 
+    // Whether this write gives the destination its name: always a new
+    // file's; a create-or-replace's only when nothing had the name before
+    // the claim. Only then is the directory synced after the rewrite.
+    let names_it = match mode {
+        WriteMode::CreateNew => true,
+        WriteMode::CreateOrReplace => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        WriteMode::ReplaceExisting => false,
+    };
     // Until the truncation the destination is as it was, so a failure up to
     // then takes the sidecar with it: left, it would claim a write that never
     // touched the destination may not have completed (#578).
@@ -535,6 +541,14 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
     // it stays, for whoever puts the destination back or for a person to
     // recover from.
     rewrite().map_err(touched)?;
+    // A destination this write made has a name only once its directory is
+    // synced: until then a crash may keep the staged copy's removal below
+    // and lose the new name, and the content with it. Best effort, as the
+    // destination itself is written: a failure keeps the staged copy. A
+    // destination already named needs no sync: its rewrite is in place.
+    if names_it && sync_parent_dir(path).is_err() {
+        return Ok(());
+    }
 
     // The destination is durable, so the staged copy has served its purpose.
     // It is removed (a second try if the first fails); one that stays even
@@ -556,9 +570,37 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
 pub fn remove_written(path: &Path) -> std::io::Result<()> {
     let writer_lock = writer_lock(path);
     let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    remove_with_staged(path)
+}
+
+/// Removes `path`, then its staged copy, best effort: the one step of
+/// taking away a file a write made ([`remove_written`], and a failed
+/// [`WriteMode::CreateNew`] write's own cleanup). The caller holds the
+/// file's writer lock. Answers the file's removal.
+fn remove_with_staged(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    let removed = match next_fault() {
+        Fault::Removal => Err(std::io::Error::other("injected removal failure")),
+        _ => std::fs::remove_file(path),
+    };
+    #[cfg(not(test))]
     let removed = std::fs::remove_file(path);
     let _ = std::fs::remove_file(staged_path(path));
     removed
+}
+
+/// Syncs the directory `path` is in, so a name made or removed there
+/// survives a crash: a file's own sync covers its content, not its name.
+/// Unix only: elsewhere a directory cannot be opened to sync, and this
+/// does nothing.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = parent_of(path) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// What [`restore_file`] did.
@@ -580,7 +622,10 @@ pub enum Original {
     /// In a new file of its own beside it (named), which no later write
     /// writes over: `<file>.mtrack-original`, `-2`, `-3`….
     Kept(String),
-    /// Only in the restore's staged copy (named), which is left.
+    /// Only in the restore's staged copy (named), which is left, and which
+    /// the next write of the file from this process writes over: it must
+    /// be copied elsewhere first. Only when the original could be neither
+    /// linked, written out nor moved to a name of its own.
     Staged(String),
     /// Nowhere: it could not be written (why).
     Lost(std::io::Error),
@@ -591,8 +636,11 @@ pub enum Original {
 /// before anything holding it is let go: the restore's staged copy (which
 /// holds `was`, synced, once the restore got past truncating) is linked
 /// to a new `<file>.mtrack-original`, taking no space; failing that, `was`
-/// is written to one; and only once one holds it is the staged copy
-/// removed. If neither can be made, the staged copy stays, named.
+/// is written to one; and only once one holds it, its name synced, is the
+/// staged copy removed. Failing both (no links on the filesystem, and no
+/// space), the staged copy is renamed to one, which needs neither: no
+/// later write uses that name. Only if that fails too does the staged copy
+/// stay, named.
 pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
     let writer_lock = writer_lock(path);
     let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -605,18 +653,29 @@ pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
     let original = if failure.touched {
         match link_original(path, &staged).or_else(|_| write_original(path, was)) {
             Ok(name) => {
-                let _ = std::fs::remove_file(&staged);
+                // The original's name is durable before the staged copy,
+                // the other file holding it, goes.
+                if sync_parent_dir(path).is_ok() && std::fs::remove_file(&staged).is_ok() {
+                    let _ = sync_parent_dir(path);
+                }
                 Original::Kept(name)
             }
-            Err(_) => Original::Staged(
-                staged
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            ),
+            Err(_) => match rename_original(path, &staged) {
+                Ok(name) => {
+                    let _ = sync_parent_dir(path);
+                    Original::Kept(name)
+                }
+                Err(_) => Original::Staged(
+                    staged
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+            },
         }
     } else {
         match write_original(path, was) {
+            // Written through `write_file_tracked`, which syncs the name.
             Ok(name) => Original::Kept(name),
             Err(e) => Original::Lost(e),
         }
@@ -627,18 +686,43 @@ pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
     }
 }
 
-/// The names a file's kept original may take, in turn.
-fn original_names(path: &Path) -> impl Iterator<Item = (String, PathBuf)> + '_ {
+/// The names a file kept beside `path` may take, in turn, with the name
+/// alone: `<file><suffix>`, then `<file><suffix>-2`, `-3`…, appended to
+/// the whole file name. A kept original's (`.mtrack-original`) and `mtrack
+/// migrate`'s backups' (`.bak`).
+pub fn kept_names<'a>(
+    path: &'a Path,
+    suffix: &'a str,
+) -> impl Iterator<Item = (String, PathBuf)> + 'a {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     (1u32..).map(move |n| {
         let candidate = if n == 1 {
-            format!("{name}{ORIGINAL_SUFFIX}")
+            format!("{name}{suffix}")
         } else {
-            format!("{name}{ORIGINAL_SUFFIX}-{n}")
+            format!("{name}{suffix}-{n}")
         };
         let file = path.with_file_name(&candidate);
         (candidate, file)
     })
+}
+
+/// Makes a file at the first free one of `path`'s [`kept_names`] with
+/// `make`, which makes it new and answers `AlreadyExists` for a name
+/// taken, so nothing there is written over: the next name is tried.
+/// Answers the name made and its path.
+pub fn make_first_free(
+    path: &Path,
+    suffix: &str,
+    mut make: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<(String, PathBuf)> {
+    for (name, file) in kept_names(path, suffix) {
+        match make(&file) {
+            Ok(()) => return Ok((name, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only with the integers")
 }
 
 /// Links `staged` to the first free original name of `path`; its name.
@@ -647,33 +731,47 @@ fn link_original(path: &Path, staged: &Path) -> std::io::Result<String> {
     if next_fault() == Fault::Link {
         return Err(std::io::Error::other("injected link failure"));
     }
-    for (name, file) in original_names(path) {
-        match std::fs::hard_link(staged, &file) {
-            Ok(()) => return Ok(name),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
+    make_first_free(path, ORIGINAL_SUFFIX, |file| {
+        std::fs::hard_link(staged, file)
+    })
+    .map(|(name, _)| name)
+}
+
+/// Moves `staged` to the first free original name of `path`; its name.
+/// A rename replaces what is at its target, so a name is taken only when
+/// nothing is there. That is checked before the rename, not by it: the
+/// file's writer lock, which the caller holds, keeps this process's other
+/// writers out between the two, but it is this process's alone, so another
+/// process making that name in between is written over. Only a last
+/// resort, when the original can be neither linked nor written out, runs
+/// this.
+fn rename_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    if next_fault() == Fault::Rename {
+        return Err(std::io::Error::other("injected rename failure"));
     }
-    unreachable!("the names run out only with the integers")
+    make_first_free(
+        path,
+        ORIGINAL_SUFFIX,
+        |file| match std::fs::symlink_metadata(file) {
+            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(staged, file),
+            Err(e) => Err(e),
+        },
+    )
+    .map(|(name, _)| name)
 }
 
 /// Writes `was` to the first free original name of `path`, made new; its
 /// name.
 fn write_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
-    for (name, file) in original_names(path) {
-        match write_file_tracked(&file, was, WriteMode::CreateNew) {
-            Ok(()) => return Ok(name),
-            Err(f) if f.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(f) => return Err(f.error),
-        }
-    }
-    unreachable!("the names run out only with the integers")
+    make_first_free(path, ORIGINAL_SUFFIX, |file| write_new_file(file, was)).map(|(name, _)| name)
 }
 
 /// A failure a test injects into [`write_file_tracked`] (and so every
-/// [`write_file`] and [`write_new_file`]) on its thread, or into
-/// [`restore_file`]'s link of the original, one per step in turn
-/// ([`inject_faults`]).
+/// [`write_file`] and [`write_new_file`]) on its thread, into
+/// [`restore_file`]'s link or rename of the original, or into the removal
+/// of a file a write made, one per step in turn ([`inject_faults`]).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -688,6 +786,11 @@ pub enum Fault {
     SidecarRemoval,
     /// The link of a kept original fails, as on a filesystem without them.
     Link,
+    /// The rename of a restore's staged copy to a kept original fails.
+    Rename,
+    /// The removal of a file a write made fails ([`remove_written`], and a
+    /// failed new file's cleanup).
+    Removal,
 }
 
 /// The faults the next writes (and links) on this thread meet, in order;
@@ -1672,6 +1775,31 @@ mod ownership_test {
         assert!(result.is_err());
         assert!(!staged_path(&dest).exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "before");
+    }
+
+    /// #685: a new file whose write fails past its truncation is taken
+    /// away with its staged copy, by the one removal step; one whose
+    /// removal fails too is reported touched, and its staged copy goes.
+    #[test]
+    fn a_failed_new_file_is_removed_with_its_staged_copy_or_reported_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("new.yaml");
+
+        super::inject_faults(&[super::Fault::AfterTruncating]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(!failure.touched);
+        assert!(!dest.exists());
+        assert!(!staged_path(&dest).exists());
+
+        super::inject_faults(&[super::Fault::AfterTruncating, super::Fault::Removal]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(failure.touched, "left, so the writer can say so");
+        assert!(dest.exists());
+        assert!(!staged_path(&dest).exists());
+        remove_written(&dest).unwrap();
+        assert!(!dest.exists());
     }
 
     #[test]
