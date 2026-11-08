@@ -754,6 +754,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A plug node opens at the width of the hardware behind it**: `alsa:plughw:CARD=Headphones,DEV=0`
+  (and any plug node) was opened at cpal's clamped 64 channels, because opening took the node's
+  own report while only the device listing looked up the hardware sibling's real count. The mixer
+  filled 64 channels on every callback for ALSA's plug layer to drop all but the hardware's 8.
+  Opening now takes the listing's count, by the same rule: the plug node opens at 8, as
+  `/proc/asound/card0/pcm0p/sub0/hw_params` already showed. A song mapping a track past the real
+  count -- channel 9 on that node -- now fails to play with "9 channels requested for song …,
+  audio device … only has 8", where it played with the track going nowhere. A plug node with no
+  hardware sibling in the listing (a WING's raw node never lists; `default` names no card) opens
+  at its own report, as before.
+
 - **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
   fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
   red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state

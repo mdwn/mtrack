@@ -433,47 +433,70 @@ fn walk_output_devices(
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
     let mut infos: Vec<AudioDeviceInfo> = Vec::new();
     walk_output_devices(|host_id, device, name| {
-        let Some(output_configs) = output_configs(&device) else {
-            return ControlFlow::Continue(());
-        };
-        let max_channels = max_output_channels(&output_configs);
-
-        let mut sample_rates = std::collections::BTreeSet::new();
-        let mut formats = std::collections::BTreeSet::new();
-
-        for cfg in output_configs {
-            let min_rate = cfg.min_sample_rate();
-            let max_rate = cfg.max_sample_rate();
-            for &rate in STANDARD_SAMPLE_RATES {
-                if rate >= min_rate && rate <= max_rate {
-                    sample_rates.insert(rate);
-                }
-            }
-
-            let mapped = map_cpal_format(cfg.sample_format());
-            formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
+        if let Some(output_configs) = output_configs(&device) {
+            infos.push(device_info(host_id, name, &output_configs));
         }
-        let virtual_node = is_virtual_node(&name);
-        infos.push(AudioDeviceInfo {
-            name,
-            max_channels,
-            host_name: host_id.name().to_string(),
-            supported_sample_rates: sample_rates.into_iter().collect(),
-            supported_formats: formats
-                .into_iter()
-                .map(|(sample_format, bits_per_sample)| SupportedFormat {
-                    sample_format,
-                    bits_per_sample,
-                })
-                .collect(),
-            virtual_node,
-            channels_known: channels_are_known(virtual_node, max_channels),
-        });
         ControlFlow::Continue(())
     })?;
     resolve_virtual_channel_counts(&mut infos);
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(infos)
+}
+
+/// One device's entry, from the output configurations it reports, before
+/// [`resolve_virtual_channel_counts`] has looked for a hardware sibling.
+fn device_info(
+    host_id: cpal::HostId,
+    name: String,
+    output_configs: &[cpal::SupportedStreamConfigRange],
+) -> AudioDeviceInfo {
+    let max_channels = max_output_channels(output_configs);
+
+    let mut sample_rates = std::collections::BTreeSet::new();
+    let mut formats = std::collections::BTreeSet::new();
+
+    for cfg in output_configs {
+        let min_rate = cfg.min_sample_rate();
+        let max_rate = cfg.max_sample_rate();
+        for &rate in STANDARD_SAMPLE_RATES {
+            if rate >= min_rate && rate <= max_rate {
+                sample_rates.insert(rate);
+            }
+        }
+
+        let mapped = map_cpal_format(cfg.sample_format());
+        formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
+    }
+    let virtual_node = is_virtual_node(&name);
+    AudioDeviceInfo {
+        name,
+        max_channels,
+        host_name: host_id.name().to_string(),
+        supported_sample_rates: sample_rates.into_iter().collect(),
+        supported_formats: formats
+            .into_iter()
+            .map(|(sample_format, bits_per_sample)| SupportedFormat {
+                sample_format,
+                bits_per_sample,
+            })
+            .collect(),
+        virtual_node,
+        channels_known: channels_are_known(virtual_node, max_channels),
+    }
+}
+
+/// The channel count a device is opened with: the listing's, once
+/// [`resolve_virtual_channel_counts`] has looked for a hardware sibling, where
+/// that is known, and otherwise the device's own report.
+///
+/// A plug node's own report is cpal's clamp, so opening it at that width had
+/// the mixer fill 64 channels on every callback for ALSA's plug layer to drop
+/// all but the hardware's eight.
+fn open_channel_count(listed: Option<&AudioDeviceInfo>, reported: u16) -> u16 {
+    match listed {
+        Some(info) if info.channels_known => info.max_channels,
+        _ => reported,
+    }
 }
 
 /// Fills in plug nodes' channel counts from the hardware behind them.
@@ -904,9 +927,21 @@ impl Device {
         // Now build. The manager here is a placeholder that `get` replaces, so
         // it holds nothing anyone depends on -- it just must not exist while the
         // enumeration above is still running.
+        //
+        // The listing's channel counts, resolved the same way, from the
+        // configurations read above rather than another walk.
+        let mut infos: Vec<AudioDeviceInfo> = found
+            .iter()
+            .map(|resolved| device_info(resolved.host_id, resolved.name.clone(), &resolved.configs))
+            .collect();
+        resolve_virtual_channel_counts(&mut infos);
         let mut devices = found
             .into_iter()
-            .map(Device::placeholder)
+            .zip(&infos)
+            .map(|(resolved, info)| {
+                let reported = max_output_channels(&resolved.configs);
+                Device::placeholder(resolved, open_channel_count(Some(info), reported))
+            })
             .collect::<Result<Vec<Device>, _>>()?;
         devices.sort_by_key(|device| device.name.to_string());
         Ok(devices)
@@ -915,8 +950,12 @@ impl Device {
     /// A `Device` for a resolved output device, with a placeholder format
     /// and output manager that `get` replaces: what a listing holds, and
     /// what a find hands to `get`.
-    fn placeholder(resolved: ResolvedOutputDevice) -> Result<Device, Box<dyn Error>> {
-        let max_channels = max_output_channels(&resolved.configs);
+    ///
+    /// `max_channels` is the width it is opened at, from [`open_channel_count`].
+    fn placeholder(
+        resolved: ResolvedOutputDevice,
+        max_channels: u16,
+    ) -> Result<Device, Box<dyn Error>> {
         let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
         let output_manager = Arc::new(OutputManager::new(
             max_channels,
@@ -942,17 +981,45 @@ impl Device {
     /// but starts no output thread, so it can be asked about every advertised
     /// device without disturbing a rig.
     pub fn is_findable(name: &str) -> bool {
-        matches!(Device::find_cpal_device(name), Ok(Some(_)))
+        matches!(resolve_output_device(name), Ok(Some(_)))
     }
 
     /// Finds one output device by name and wraps it in a `Device`.
     ///
     /// See [`resolve_output_device`] for why this scans rather than searching
     /// `list_cpal_devices()`.
+    ///
+    /// A plug node's width comes from the listing, which is the one place a
+    /// hardware sibling is consulted ([`resolve_virtual_channel_counts`]). It is
+    /// listed first, holding no handles, because ALSA will not describe the
+    /// hardware node while the plug node in front of it is held. A plug node the
+    /// listing does not have is not there to open either.
     fn find_cpal_device(name: &str) -> Result<Option<Device>, Box<dyn Error>> {
-        resolve_output_device(name)?
-            .map(Device::placeholder)
-            .transpose()
+        let listed = if is_virtual_node(name) {
+            let found = list_device_info()?
+                .into_iter()
+                .find(|info| info.name.trim() == name.trim());
+            if found.is_none() {
+                return Ok(None);
+            }
+            found
+        } else {
+            None
+        };
+        let Some(resolved) = resolve_output_device(name)? else {
+            return Ok(None);
+        };
+        let reported = max_output_channels(&resolved.configs);
+        let channels = open_channel_count(listed.as_ref(), reported);
+        if channels != reported {
+            info!(
+                device = %resolved.name,
+                channels,
+                reported,
+                "Opening a plug node at the width of the hardware behind it"
+            );
+        }
+        Device::placeholder(resolved, channels).map(Some)
     }
 
     /// Gets the given cpal device.
@@ -1771,6 +1838,54 @@ mod test {
             assert_eq!(dev_index("alsa:hw:0,1"), Some(1));
             assert_eq!(dev_index("alsa:plughw:CARD=MAT"), None);
             assert_eq!(dev_index("alsa:default"), None);
+        }
+
+        /// The harness Pi: `plughw:CARD=Headphones,DEV=0` reports cpal's clamp,
+        /// and was opened at it -- 64 channels mixed for ALSA to drop all but
+        /// the eight the hardware node behind it reports. It opens at eight, and
+        /// a song mapped past them fails rather than going nowhere.
+        #[test]
+        fn plug_node_opens_at_the_width_of_its_hardware() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=Headphones,DEV=0", 8),
+                info("alsa:plughw:CARD=Headphones,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+            let width = open_channel_count(Some(&infos[1]), CPAL_CHANNEL_CLAMP);
+            assert_eq!(width, 8);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("click".to_string(), vec![8]);
+            assert!(validate_channel_count(&mappings, width, "s", "plug").is_ok());
+            mappings.insert("bass".to_string(), vec![9]);
+            let err = validate_channel_count(&mappings, width, "s", "plug")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("9 channels requested"), "{err}");
+            assert!(err.contains("only has 8"), "{err}");
+        }
+
+        /// No hardware sibling to ask -- a WING's raw node never lists, and
+        /// `default` names no card -- so the width stays what the node reports.
+        #[test]
+        fn plug_node_with_no_sibling_opens_at_its_own_report() {
+            let mut infos = vec![
+                info("alsa:plughw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP),
+                info("alsa:default", 32),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+            assert_eq!(
+                open_channel_count(Some(&infos[0]), CPAL_CHANNEL_CLAMP),
+                CPAL_CHANNEL_CLAMP
+            );
+            assert_eq!(open_channel_count(Some(&infos[1]), 32), 32);
+        }
+
+        #[test]
+        fn hardware_opens_at_its_own_report() {
+            let hw = info("alsa:hw:CARD=MAT,DEV=0", 8);
+            assert_eq!(open_channel_count(Some(&hw), 8), 8);
+            assert_eq!(open_channel_count(None, 8), 8);
         }
 
         /// The case that motivated this: `plughw:CARD=MAT` claims cpal's clamped
