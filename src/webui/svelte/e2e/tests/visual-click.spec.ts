@@ -65,6 +65,37 @@ test.describe("Visual click", () => {
     await expect(dots.nth(2)).toHaveClass(/beat-dot--active/);
   });
 
+  test("a beat stays lit at every position inside it", async ({ page }) => {
+    // A click-analysed grid (the first beat a little after 0, an uneven
+    // spacing). At these positions the grid's answer, turned back into a
+    // time, rounds to just after the time asked about; the dot went out as
+    // if the first beat had not struck yet. Only in the first bar: later
+    // the times are too coarse for the rounding to show.
+    const first = 0.03584862271015954;
+    const spacing = 0.5324803734083954;
+    const beats = Array.from({ length: 8 }, (_, i) => first + spacing * i);
+    const grid = { beats, measure_starts: [0, 4] };
+    const dots = page.locator(".beat-dot");
+    for (const [elapsed_ms, beat] of [
+      [40, 0],
+      [131, 0],
+      [600, 1],
+      [1200, 2],
+    ]) {
+      await sendWs(page, wsId, playbackState({ beat_grid: grid, elapsed_ms }));
+      await expect(dots.nth(beat)).toHaveClass(/beat-dot--active/);
+    }
+
+    // Before the first beat nothing is lit.
+    await sendWs(
+      page,
+      wsId,
+      playbackState({ beat_grid: grid, elapsed_ms: 20 }),
+    );
+    await expect(dots).toHaveCount(4);
+    await expect(page.locator(".beat-dot--active")).toHaveCount(0);
+  });
+
   test("downbeat dot is marked as accent", async ({ page }) => {
     await sendWs(
       page,
