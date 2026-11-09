@@ -5,7 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.18.0] - 2026-11-08
+
+Upgrade notes: what an existing setup can notice. Each is described in full below.
+
+- **Tempo ramps and time signatures.** A tempo ramp now lasts exactly the beats it is written
+  over, so a song or show with a ramp has everything after the ramp move: the click, the beat
+  clock, the beat grid and `@bar/beat` cues. A time signature change written mid-bar governs from
+  the next bar, and tempo changes resolve in time order however they are positioned, so a show
+  mixing `@time` and `@bar/beat` changes may move too. Check the timing of such shows.
+- **Light shows that no longer load.** A `tempo {}` block with `bpm: 0`, a ramp of no length, a
+  time signature of `0/4` or `3/0` or a denominator over 64, or a change timed before its
+  `start`; a unit written twice (`5msms`); and an effect the fixture cannot do (a `static` naming
+  a colour on a fixture without colour channels, a `dimmer` or a `pulse` on one with neither a
+  dimmer nor colour channels) are now refused. Run `validate_lighting` or `mtrack verify-light-show` over your shows first.
+- **Light show output.** A level rounds to its nearest DMX byte, so an 8-bit channel can go out one
+  count higher (`dimmer: 50%` is 128, was 127). A level or colour no effect drives any more goes to
+  0, so a song whose first cue comes after its start starts from dark; a position or setting
+  holds. Same-time effects on one layer stack in the order the show starts them, which is file
+  order: `sequence "b"` then `sequence "a"` at one cue now puts `a` on top, where the sequence
+  names decided.
+- **Fixture state reports the bytes on the wire** (MCP `get_fixture_state` and `evaluate_show`,
+  the web UI's stage views and preview, the TUI): settings an ended effect left (gobo, zoom), a CMY
+  head's cyan, magenta and yellow rather than red, green and blue, and a 16-bit channel's coarse
+  byte. A fixture is dark when it emits no light: on a fixture with a dimmer channel, a
+  colour-only static (`static color: "blue"`, no `dimmer`) now reads dark (`dark: true`, drawn
+  dark), as the rig shows it. Give it `dimmer: 100%`.
+- **Lighting files.**
+  - The web UI and MCP create a new venue as `<stem>.venue` and a new fixture type as
+    `<stem>.fixture`, where they wrote `.light`; the stem keeps `-` and non-ASCII letters and
+    collapses other runs ("Wash (Front)" is `wash_front`).
+  - A venue or fixture type whose file also holds anything else, whose name is declared in two
+    places, or whose file does not parse is read-only to the web UI, MCP, the importers and the
+    fixture settings (409, `read_only`). Edit such a file by hand.
+  - A `.light` venue or type is moved to its own `.venue` or `.fixture` beside it when an edit
+    needs the newer format, its fixture settings are saved, or an MVR import merges into it.
+  - GDTF and MVR imports, and a library fixture's first settings save, refuse a name whose file is
+    taken or that another type or venue declares, where they wrote a `_2` file or patched a shared
+    file.
+- **MCP.**
+  - Tools refuse arguments they do not take, instead of ignoring them.
+  - `write_venue`, `patch_venue`, `delete_venue`, `write_fixture_type`, `patch_fixture_type` and
+    `delete_fixture_type` take the venue's or type's `name` (and `from` to rename) where they took
+    a file name, and `source` must declare that one name. `list_venue_files` and
+    `list_fixture_type_files` list nested files with each name's owner.
+  - `write_song`, `patch_song`, `write_playlist`, `patch_playlist`, `write_song_lighting`,
+    `patch_song_lighting` and `delete_song_lighting` follow the web UI's rules and give its
+    messages; a failed write says `could not write <file>: <reason>`.
+  - The lighting tools use the directories of the profile this host runs, not the first profile's.
+  - A write while the player is locked is refused, and a caller's mistake (a stale checksum, a
+    refused seek) is `invalid_params`, not `internal_error`.
+- **HTTP API.**
+  - `PUT` and `DELETE /api/lighting/{path}` refuse a path in the venues or fixture types directory
+    (400), write `.light` files only (a `.light` link to another kind of file can no longer be
+    written), and delete a link, not what it leads to.
+  - A config or profile save during playback is saved and answers 200 with `applied: false`, its
+    hardware reload waiting until the player is idle, where it answered 409.
+  - `PUT /api/config/{audio,midi,dmx,controllers}` answers `{"error": "Validation error: ..."}`
+    where it answered `{"errors": [...]}`; `GET /api/lighting/venues/{name}/patch` names overlap
+    fields `first`, `second`, `first_gang` and `second_gang`.
+  - The lighting endpoints default to this host's profile's lighting directories.
+- **Lock mode holds over gRPC and MCP** as well as the web UI. mtrack starts locked, so unlock it
+  from the web UI before changing config with the `mtrack` CLI or MCP.
+- **CLI.**
+  - `mtrack import-gdtf`, `import-mvr` and `export-mvr` use the directories the project's
+    `mtrack.yaml` gives this host's profile, unless `--fixture-types-dir`/`--venues-dir` are
+    given.
+  - `mtrack migrate` backs up every file it overwrites as `<file>.bak` (`.bak-2` and on when
+    taken; a `mtrack.yml` as `mtrack.yml.bak`, not `mtrack.yaml.bak`), and writes the retired
+    inline fixtures to the venue `inline_migrated` in `lighting/venues/inline_migrated.venue`
+    (was `.light`).
+  - `mtrack songs --init` no longer writes a `song.yaml` into folders without audio, MIDI or a
+    song config, nor over an existing config, and finds nested song folders.
+  - gRPC `next`/`previous` (and `mtrack next`/`previous`) answer with the song the player is on
+    instead of failing while a song plays or at the end of the list. `mtrack verify --check`
+    refuses an unknown category.
+- **Logging.** Log lines go to stderr, not stdout, with ANSI colour only when stderr is a terminal
+  and `NO_COLOR` is unset. The legacy-config warnings are logged once per config, not on every
+  read.
+- **Audio.**
+  - A plug device, or `default`/`sysdefault` naming a card, opens at the hardware's real channel
+    count (8 on a Pi's headphones, where it opened at 64).
+  - A song mapping a track past that count is reported at startup (logged, and on the status
+    page) and refused when played, where it played with the track going nowhere.
+  - A new warning names sustained buffer underruns and the setting to raise.
+- **MIDI.** The beat clock now runs for songs with a `tempo:` block or only a click track, loops
+  with a looping song, follows section loops, and sends a Song Position Pointer when playback
+  starts part way in. A second MIDI controller is refused by config validation. A trigger's
+  velocity is held to 1-127 (`fixed_velocity: 0` plays at 1, `200` at 127).
+- **Config.**
+  - `midi.midi_to_dmx` is gone. A profile that still has it loads, the key ignored, and the next
+    web UI save drops it.
+  - New optional keys: `midi.beat_clock_seams`, `dmx.lighting.ambient`, a playlist's `ambient:`,
+    playlist entries as maps (`song:` with `auto_play`, `fade_out`, `fade_in`, `ambient`), a
+    song's `loop_crossfade` and `loop_crossfade_cut`, MIDI controller `ambient_on`, `ambient_off`,
+    `ambient_auto` and `cancel_auto_play`, and status events' `auto_play_events`.
+  - `playback_delay` is read by the one duration parser: decimals and summed units (`1m30s`) are
+    taken, and a bad value says `playback_delay '<text>' is not a valid duration`.
+  - With both `set.yaml` and `set.yml` in the playlists directory, `set.yaml` is read (with a
+    warning), where `set.yml` was. The web UI no longer loads an unconfigured `playlist.yaml`
+    beside the config, and MCP's playlist tools use `--playlist`.
+  - Every read of the lighting section (the web UI's groups, `verify-light-show --config`, MCP)
+    uses the profile this host runs, not the first profile.
 
 ### Added
 
@@ -32,17 +133,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it is another. The status (dashboard, MCP `status`, gRPC `Status`) gives the ambient
   light's `source`: `profile`, `playlist` or `entry`. In the web UI's playlist editor, each entry's
   transitions panel holds what happens before its song (the auto play gap, ambient light, fade in)
-  and after it (fade out), and its button sums up what the entry sets.
+  and after it (fade out), and its button sums up what the entry sets. A playlist save while stopped that changes the
+  gap's ambient light crosses into the new light.
 
 - **Section loops in every song**: a section now loops the same way whether the song does not
-  loop, loops plainly, or loops with a `loop_crossfade`; `loop_section` used to refuse a song
-  with a crossfade, and reactive looping offered none of its sections. An armed section always
+  loop, loops plainly, or loops with a `loop_crossfade` (`loop_section` and reactive looping take
+  a crossfading song's sections too). An armed section always
   takes precedence over the song's own loop: one reaching into the crossfade, or ending on the
   song's end, goes round on its own 10 ms seam, and the whole-song crossfade does not start
   early under it. Once it is broken, the song goes round as a whole again; broken inside the
   crossfade, its next pass comes in half a second on, where a pass begun on time would be by then,
   over what is left of the crossfade, so the click stays on the song's grid. Playback started or
-  sought inside the crossfade does the same. In reactive looping, a section that lies inside the
+  sought inside the crossfade does the same. The lights go with the audio: a pass begun late
+  starts from its state at the join point and crosses over the overlap left, and a section going
+  round while the previous pass still crosses out plays that pass's lights out to the end of the
+  crossfade, as its audio and notes do. In reactive looping, a section that lies inside the
   crossfade is offered while the outgoing pass plays it; taken up, it loops the next time playback
   reaches it, the song's pass held off for it.
 
@@ -67,17 +172,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lights go to dark over the ambient `fade_out` as ambient light comes in without waiting. Next
   on the last entry (or Previous on the first) while it loops ends the song the same way instead
   of restarting it. The dashboard shows "… is fading out — Stop again to cut", and the MCP
-  `status` tool reports it as `ending`.
+  `status` tool reports it as `ending`. A pause during the ending stops the song, as a second Stop
+  does. The dashboard keeps Next on the last entry (and Previous on the first) enabled while such
+  a song plays, the next-up line reading "Next ends the loop: fades out over 2 measures", and the
+  playback feed's `next` carries `ends_loop` and the `fade_out`; with no `fade_out`, where the
+  press would only cut, they stay off.
 - **Ambient mode: Auto / On / Off**: On brings ambient light up now and holds it over any song,
   crossing back to the song's show where it has got to when set back to Auto; Off fades ambient
-  out to dark, and a song that ends or is stopped while Off fades to dark too. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC
+  out to dark, and a song that ends or is stopped while Off fades to dark too: whatever the rig
+  still holds lit that nothing writes any more (a show's last frame, MIDI DMX) fades out over the
+  ambient `fade_out`, between songs and in an auto play's gap too. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC
   (`/mtrack/ambient/on|off|auto`), a MIDI controller (`ambient_on`, `ambient_off`,
   `ambient_auto`) or MCP (`set_ambient_mode`); it shows in `status` and the playback feed.
 - **Auto-play controls**: a song waiting to auto play can be called off without stopping
   anything else, from gRPC (`CancelAutoPlay`), OSC (`/mtrack/auto_play/cancel`), a MIDI
   controller (`cancel_auto_play`) or MCP (`cancel_auto_play`). gRPC `Status` reports the wait,
   and status events can show it on a controller (`auto_play_events`). Stop on the dashboard is
-  now enabled during the wait, as its hint says.
+  enabled during the wait.
 - **Fades in the playlist editor**: each song's fade out and fade in (length, curve, tracks that
   don't fade, lights) are edited under a per-song Transitions panel; the playlist API returns
   and accepts `fades` and refuses ones the player would not load, including an `exclude` naming
@@ -93,7 +204,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto play (#40)**: a playlist entry's `auto_play: true` starts its song by itself when the
   playlist reaches it -- the song before it ending, or Next/Previous while stopped -- and
   `auto_play: 2s` waits that long first, holding the last song's lights as a segue. Play, Stop,
-  navigation or a playlist switch during the gap calls it off. The MCP `status` tool reports a
+  navigation or a playlist switch during the gap calls it off, as does a playlist save that
+  removes the waiting song or its `auto_play`; a config save during the gap is made, and its
+  hardware reload waits for the song. The MCP `status` tool reports a
   song waiting out its gap as `auto_play` (`song`, `starts_in_seconds`).
 - **Ambient light between songs**: `dmx.lighting.ambient` names a `.light` show the rig plays
   while no song is -- at startup, and once a song ends or is stopped, after an optional `delay`
@@ -111,8 +224,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `loop_crossfade_cut`); a fade-out's lights cross into the next song's show over its `lights`
   (the length by default). Only the looping song's own sources fade, each from the gain it has
   (no jump mid-crossfade); a fade outlasting the pass carries on into as many more passes as
-  it takes, crossing them over the song's `loop_crossfade`. Stop and seek cut
-  it. Playlist entries can now be maps (`song:` with its settings) as well as names, and the
+  it takes, crossing them over the song's `loop_crossfade`. The fade runs over
+  what the looping song was doing: a crossover carries on crossing, and a section jump already
+  scheduled is made. Next during a `loop_crossfade` fades the blend out, the older pass carrying
+  on inside the fade, its cues still firing, until its own crossfade ends. The fade's lights
+  cross out over everything after it at their own length, the oldest outermost, the next song
+  looping or ending by itself included. Stop and seek cut the fade's audio, and a Stop, pause or
+  seek takes its lights the rest of the way out over the ambient `fade_out`. A fade lasts at most
+  the song it plays under, counted on the grid it counts on (a `fade_out` the next entry's song,
+  a `fade_in` its own): the playlist editor, the API and MCP refuse a longer one, and one already
+  in a file is cut short to that song with a warning. Playlist entries can now be maps (`song:` with its settings) as well as names, and the
   playlist editor keeps them when it saves.
 - **Long crossfades for looping songs**: `loop_crossfade: 2measures` (or `6s`, `500ms`,
   `8beats`) in `song.yaml` makes each pass of a looping song start that long before the last
@@ -122,8 +243,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where one pass drives none, strobe/gobo and other discrete channels switch at the midpoint);
   MIDI from both passes plays through the overlap. Tracks listed in `loop_crossfade_cut`, such
   as a click, switch over at the midpoint instead of fading. Beats and measures count back from
-  the end of the song on its beat grid, and the crossfade can be at most half the song. A song
-  looping this way cannot also loop a section. The song editor has fields for both.
+  the end of the song on its beat grid, and the crossfade can be at most half the song. The web UI's stage views and MCP
+  `get_fixture_state` show the blend the rig gets, here and in a loop break's fade, through the
+  frame the outgoing pass ends in. The song editor has fields for both.
 - **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
   "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
   `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can
@@ -176,23 +298,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is left. It replaces the web UI's rule and the importers' rule, which differed. Files already there load and are found by what they declare, as before; only the
   name a new file is given changes:
   - A new fixture type saved in the web UI (`PUT /api/lighting/fixture-types/<name>`) and a new
-    venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: "Wash (Front)" is
-    written as `wash_front.light` (or `.fixture`, `.venue`), where it was `wash__front_.light`.
-    A name of nothing but punctuation ("///") is written as `untitled.light`, where it was
-    `___.light`. A name too long for a file name is cut to fit, with room for `.fixture`,
+    venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: the type "Wash (Front)" is
+    written as `wash_front.fixture` (a venue, `wash_front.venue`; see below), where it was
+    `wash__front_.light`. A name of nothing but punctuation ("///") is written as
+    `untitled.fixture` (or `untitled.venue`), where it was `___.light`. A name too long for a file name is cut to fit, with room for `.fixture`,
     where the save failed.
   - A GDTF imported under a pinned name (`mtrack import-gdtf --name`, the web UI's GDTF import,
     MCP `import_gdtf`) and a record the Fixture settings save writes for a library fixture keep
     `-` and letters outside ASCII: "Astera-PixelBrick" is written as
     `astera-pixelbrick.fixture`, where it was `astera_pixelbrick.fixture`, and "Café Par" as
     `café_par.fixture`, where it was `caf_par.fixture`. A name of nothing but other characters
-    ("///") gives `untitled.fixture`, where it gave `fixture.fixture`. A file already at that
-    name still gets a `_2` suffix, now after the new stem (`astera-pixelbrick_2.fixture`); a
-    suffixed name is not cut, so one at the length cap can still be too long to write.
+    ("///") gives `untitled.fixture`, where it gave `fixture.fixture`. A name whose file is
+    taken is refused, where it got a `_2` suffix (see the importers' entry below).
   - A venue seeded from an MVR (`mtrack import-mvr --write`, the web UI's MVR import, MCP
     `import_mvr`) is written as `built-in.venue` for "built-in", where it was `built_in.venue`.
-    A re-import that finds no venue of that name checks `built-in.venue` and `built-in.light`
-    for another venue in the way, where it checked `built_in.venue` and `built_in.light`.
   - An MVR export keeps its own file name: the venue "built-in" still exports as
     `lighting/export/built_in.mvr`.
 - **The web UI writes only venue and fixture type files it can prove are one thing's**
@@ -677,12 +796,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as a reference's `loop:` is: `repeats: 0` says "Loop count must be at least 1" and
   `repeats: 2.5` "Invalid loop count: '2.5'. Expected 'once', 'loop', 'pingpong', 'random',
   or a number".
-- **A tempo change positioned in time before `start:` is applied at the start**: the beat
-  grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
-  times tempo-aware effect rates ran it from its own time, so a ramp written before the start
-  was part way through (or over) by bar 1. It starts at bar 1 now, with the rest (start 2 s,
-  120 bpm, a 4-beat ramp to 60 at 0.5 s: 120 at 2 s, where it read 86.25; 75 at 4 s, where it
-  read 60).
 - **A ramp written at the same instant as a snap ramps from the snapped tempo**: tempo-aware
   effect rates during such a ramp now ramp from the snapped tempo, as the beat grid already did
   (the tempo lookup used to read the tempo a nanosecond before the change and ramp from there).
@@ -709,7 +822,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A config change while a song plays is saved, and applied once the player is idle, on every
   surface**: the web UI's config and profile saves answered 409 while a song played or was
-  paused, or an auto play waited, while the same change over gRPC or MCP was saved and its
+  paused, while the same change over gRPC or MCP was saved and its
   hardware reload deferred. All three now save it and defer the reload, and the reply says so:
   `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
   `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
@@ -772,7 +885,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than dropping out. An evaluation (MCP `evaluate_show`, the web UI's preview) reads the
   rig playing the show through from its start leaves at that time: what each effect ended before
   it last sent, a strobe nobody drives any more sent off. Levels and colours read as before, and
-  a CMY head's flags read as the wire holds them (open once nothing drives them, as since #661).
+  a CMY head's flags read as the wire holds them (open once nothing drives them).
   A dimmer channel nothing has ever sent a byte reads 0, as the universe holds it, where the
   state used to leave it out and so judged the fixture by its colour alone: on a fixture with a
   dimmer channel, `static color: "blue"` with no `dimmer` now reads dark (MCP `dark: true`, drawn
@@ -970,9 +1083,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`dark: true`) and drawn dark in the web UI's stage views, while the head passes green and blue.
   The fixture's state (the live stream, MCP `evaluate_show` and `get_fixture_state`, the web UI and
   TUI views) now holds what the head is sent: `cyan: 255, magenta: 0, yellow: 0` and no `red`,
-  `green` or `blue`, so it is lit and drawn cyan. One conversion (`FixtureState::cmy_flags`) feeds
-  both the DMX output, unchanged, and the state. A flag nothing drives is open on the wire, and the
-  state now says so once any flag is in it: `static dimmer: 100%, red: 100%` alone, or
+  `green` or `blue`, so it is lit and drawn cyan. The DMX output is unchanged, and the state reads
+  the flags from the bytes the head is sent (see the fixture state entry above). A flag nothing
+  drives is open on the wire, and the state says so: `static dimmer: 100%, red: 100%` alone, or
   `static dimmer: 100%, cyan: 0%` alone, reads as open white (`cyan: 0, magenta: 0, yellow: 0`),
   not dark. A fixture with both red, green and blue and cyan, magenta and yellow mixes
   additively, as before: each channel is its own emitter.
@@ -1063,6 +1176,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a frame later, where the output thread used to send the missed frames back to back.
   So after a stall, a channel no fixture patches, which the universe dims itself, carries on its
   dim from where it was rather than catching up in a burst.
+- **Log lines are no longer labelled as the OSC driver's**: the OSC driver entered its log span
+  across awaits, so other work on the same thread (stop, seek, loop breaks, a config save's
+  hardware reload) was logged as "OSC Driver: ...". Each line now carries its own task's label.
 
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as
@@ -1464,19 +1580,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   show's `tempo` block (or the song's tempo), and the diff's `@measure/beat` positions now report
   where each cue lands on that map. A second file's own block placed its cues' positions, so the
   diff said a cue was where that file put it, not where it plays.
-- **A light show added in the song editor lands in the song's folder, and the song keeps
-  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
-  was written beside the song folders, and named an added file with the folder, which
-  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
-  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
-  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
-  removal takes the entry out. New files are saved before the config, so the reload the
-  config save starts finds them; the song's other files after it, so a tempo saved with them
-  is the one they are checked against; removed files are deleted last, once the config no
-  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
-  path in it, or one the song already has, is refused. A song already broken this way loads
-  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
-  is in the song's folder.
 - **A sequence written past a tempo change is placed by the beats it spans**: a sequence's
   cues, and its pass, are counted in beats on the map it was written against, through the
   tempo changes there, and laid down by that count where it is used. They were counted at the
@@ -1508,12 +1611,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and saving that file put its show back on the rig. It stops with the song now, as it already
   did when the stage went dark between songs, and an edit it took in just before the song
   changed reloads nothing.
-- **Ambient Off over a dark stage takes out what was lit since**: setting the mode Off again,
-  with the stage already dark between songs and no ambient up, left lit what nothing writes
-  (MIDI DMX on an unpatched channel, say); going idle while Off already took it out. Both do now.
-- **The web UI shows a loop crossfade's last frame as it goes out**: in the frame a crossfading
-  loop's pass ended, the visualizer and `get_fixture_state` showed the new pass alone -- a mover
-  only the old pass drove dropped from the view -- while the rig got the blend.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status
@@ -1595,18 +1692,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comes in at its own time, and a time-positioned signature change after one governs from the bar
   its position falls in. The bar and beat a time is reported at (the lint, show diffs and
   analysis, the MCP tools) are counted the same way, through ramps and mid-bar signature changes.
-- **A crossfading song's pass begun late crosses the lights over with the audio**: a start, seek
-  or section break inside a looping song's `loop_crossfade` begins the next pass part way in,
-  where one begun on time would be by then. The audio, notes and beat clock did; the lights
-  started that pass from the top and read its song time as time into the crossfade, so they
-  began already part way crossed (or cut straight over), the outgoing pass ahead of the audio's,
-  and fired every cue (and every MIDI DMX event) before the join point in one frame. They now
-  start the pass from its state at the join point and cross over the overlap left, as the audio
-  does, `dmx.playback_delay` after it like the rest of the lights.
-- **A section going round during a crossfade keeps the outgoing lights**: a short section in a
-  crossfading song that went round while the previous pass was still crossing out cut that
-  pass's lights at once, while its audio and notes played on to the end of the crossfade. The
-  lights now play it out too.
 - **Song starts no longer spin two cores**: the MIDI and lighting threads busy-waited for the
   other subsystems to be ready at every start and seek, taking CPU from the audio and lighting
   preparation they were waiting for, most noticeably on a Raspberry Pi. They now sleep until
@@ -1621,14 +1706,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gain changes still save to the profile. Since mtrack starts locked, unlock it from the web UI
   before changing config over the gRPC CLI or MCP. When the web UI cannot start, the player runs
   unlocked, since nothing else could release the lock.
-- **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
-  source's own envelope, so a break part way through a `loop_crossfade` held both passes where
-  they stood and then cut the outgoing one dead where its crossfade would have ended, and a break
-  in the last moments before a section's jump (or a pass's start) dropped the jump the notes and
-  lights had already made, cutting the audio at the section's end. The fade now runs over what
-  the playback was doing: a crossover carries on crossing, a jump already scheduled is made, and
-  no new one is scheduled once the break has begun.
-
 - **A seek no longer blips or cuts other sounds**: a seek faded every sound in the mixer, a
   triggered sample or notification included, and a loop's next pass or section's next time round
   scheduled to start a moment later survived it and played a 5 ms blip once its start came. It
@@ -1641,10 +1718,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Editing the show of a song with no audio moves its loop point**: a looping song with lights
   but no audio went round at the length its show had when it started, whatever the show was
   edited to while it played; it now follows the edit.
-
-- **Ambient light no longer flashes dark as its show starts again**: under load, a frame could
-  render a moment after the show's time was moved on, past the show's end before it started
-  again, and go dark for a frame. The frame now renders where the show's time was moved to.
 
 - **Notes held across a section's loop point**: a section's jump lets go of the notes it cuts,
   which were left hanging.
@@ -1848,32 +1921,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing writes any more now goes to 0 at once -- ganged sections and fine bytes too -- and a
   position or setting (pan, gobo, a mode) holds where it was. So a song whose first cue comes after
   its start now starts from dark, as the web UI showed, rather than holding the last song's look.
-- **Ambient Off takes a show that has finished to dark too (#573)**: with ambient Off, a show whose
-  effects had all ended by the time its song did -- at the very end or earlier -- left their last
-  frame on the rig, since nothing writes a channel no effect drives and the engine darkened had
-  nothing left to fade. Going dark now fades out whatever the rig still holds lit that nothing
-  writes any more, and what MIDI DMX holds, over the ambient `fade_out` -- including what ambient
-  at full had left as it was, once ambient goes. Setting Off between songs takes the last song's
-  frame dark too, while ambient is still waiting out its delay or has no show to play, and so does
-  the gap before a song that auto plays: in Off, the song before no longer holds its lights through
-  it. MIDI DMX on patched channels is no longer wiped each time an ambient show loops.
-- **A loop break's fade no longer leaves lights stuck on, or ends early**: a Stop, pause or seek
-  while the looping song still faded out under the next one dropped its fade, and so did the next
-  song looping with a `loop_crossfade`. Whatever only the looping song lit then held where the
-  fade had got to until a later song lit it. With ambient Off, the next song ending by itself
-  instead cut the fade short at ambient's `fade_out`, and a Stop left that song lit. A loop
-  break's fade now crosses out over everything after it at its own length, the oldest outermost;
-  a Stop, pause or seek hurries it the rest of the way out over the ambient `fade_out`.
-- **Next during a loop crossfade fades the blend out, without a jump (#560)**: a loop break
-  started its fade from the newer loop pass alone, dropping the older pass mid-crossfade, so the
-  lights stepped once (74 of 255 on the rig) before fading. The older pass now carries on inside
-  the break's fade, crossing into the newer one as before -- its cues still firing -- until its
-  own crossfade ends. The web UI and `get_fixture_state` show the same.
-- **The web UI and `get_fixture_state` show a crossfade as it goes out (#555)**: during a loop
-  crossfade or a loop break's fade, the rig gets a blend of the two shows, but the web UI's
-  lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
-  until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
-  the same rules as the DMX.
 - **An edit to the active playlist keeps the song playing current (#576)**: saving a playlist
   kept the position's index and pointed it at whatever entry then sat there, so status, Stop,
   Next and the loop ending all acted on another song: a song moved under a playing one got the
@@ -1890,13 +1937,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starting. The player now stops on the song the break was going to, with no paused position, and
   a Stop at any point after keeps it from starting; so does a Stop as an auto play's gap runs
   out. A seek in that moment still calls the break off and seeks in the looping song.
-- **A playlist fade can't outlast the song it plays under (#577)**: a `fade_out` in measures or
-  beats had no bound, so `1000000measures` saved and gave a 33-day ending, the prelude playing on
-  at full level under the next song. A fade now lasts at most the song it plays under, counted on
-  the grid it counts on: a `fade_out` the next entry's song (its own at the end of the list), a
-  `fade_in` its own, as a `loop_crossfade` is bound by its song. The playlist editor, the API and
-  MCP `write_playlist` refuse a longer one; one already in a file is cut short to that song, with
-  a warning, rather than the playlist being dropped.
 - **Playlist saves refuse what the player would not load, and take turns (#578)**: a save naming
   a song the player does not have was accepted, and the playlist then vanished, the player falling
   back to all songs if it was the active one. `auto_play` or `fades` lists of another length than
@@ -1912,7 +1952,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A raw config save takes effect, or changes nothing (#578)**: `PUT /api/config` (the config
   editor's raw save) wrote the file but left the running config and hardware on the old one, so
   the next settings change wrote the old config back over the save. It now reloads the config and
-  the hardware, as a profile save does, and like one is refused during playback. A save the
+  the hardware, as a profile save does; during playback the save is made and the reload waits until the
+  player is idle (see "A config change while a song plays" under Changed). A save the
   player cannot load (a broken profile in its `profiles_dir`, say) puts the file back as it was
   and reports that it was not saved.
 - **A config save raced by a play applies when the song stops (#578)**: a song started between a
@@ -1921,24 +1962,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reload now waits for the player to go idle, and for a song still fading out (a looping song's
   ending, or after a loop break) to be out, and runs then. A paused song is not idle: it is a
   show in progress that must resume at once, so the reload waits for it to be stopped or moved
-  off, and the web UI's config and profile saves are refused with 409 while it is paused. A
+  off. A
   position cued by a seek while stopped is not a pause, and holds neither. A config change's
   reply over MCP, gRPC or the web UI says which: `applied` is false while the reload waits, with
   a `message` saying why.
-- **A config save no longer drops a waiting auto play (#578)**: a save while an `auto_play` entry
-  waited out its gap reloaded the hardware, and when the gap ended the song failed to start
-  ("Hardware is still initializing") and was not retried. The gap now counts as playing: the web
-  UI's config and profile saves are refused with 409, and a reload from elsewhere waits for the
-  song.
-- **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
-  entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
-  turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.
-  They now stay on while such a song plays, the next-up line reads "Next ends the loop: fades
-  out over 2 measures" rather than "End of playlist", and Previous's tooltip says the same on
-  the first entry. With no `fade_out`, where the press would only cut, they stay off. Previous
-  also stays on for a song an edit took off the list before the first entry, which it moves onto,
-  and breaks such a looping song's loop onto that entry rather than ending it. The playback
-  feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
 - **A stop forgets the section loop**: a section loop armed and then stopped stayed armed, so the
   next playback (the same song from the top, or another song after Next) looped that section, at
   the old song's bounds, once it got there, and the status showed it looping. A section loop, and
@@ -1955,22 +1982,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duration (`1e30`, say) panicked and took the OSC receive loop with it, so OSC went deaf until
   mtrack restarted. It is now turned down as an invalid seek, and the MCP tools that take a time
   turn it down as invalid too, rather than failing the request.
-- **A playlist save calls off an auto play it took away**: a save during an `auto_play` gap that
-  removed the waiting song, or took its `auto_play` off, left the wait running, and when the gap
-  ended the song the playlist was then on started by itself. The wait is now called off, and the
-  lights go to ambient as when it is cancelled; one the save left as it was waits on.
 - **The last song, taken off the list while it plays, ends after the last entry**: when it ended,
   the playlist settled on the entry now last and read that as having moved on to it, so that
   entry's `auto_play` started a song already played, and the gap played its ambient light rather
   than the playlist's. It now ends as the last entry ending does.
-- **A playlist save while stopped brings up its ambient light**: a save that changed the ambient
-  light of the gap the player was stopped in (the playlist's, or the waiting entry's) kept the
-  old light up, and the status the old settings' source, until the next stop or navigation. It now
-  crosses into the new light, as a navigation onto another entry does. A song playing or paused
-  holds its lights as before.
-- **A pause during a looping song's ending stops it**: a pause while a looping song faded out over
-  its `fade_out` kept its position, so the song was ending and paused at once, and the next Play
-  resumed a song the operator had ended. A pause there now stops, as a second stop does.
 - **Playing a song by name announces it**: playing a song by name (from the web UI, MCP's
   `play_song_from`, or gRPC) moved the playlist to it without emitting the song-change MIDI event
   or telling song-change notifiers (a Morningstar controller, say), which went on showing the song
