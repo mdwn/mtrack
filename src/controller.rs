@@ -21,6 +21,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+pub mod ble;
 pub(crate) mod grpc;
 mod mcp;
 mod midi;

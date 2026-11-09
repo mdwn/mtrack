@@ -27,14 +27,15 @@ use crate::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
         CancelAutoPlayResponse, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
-        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
-        GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
-        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
-        PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest,
-        SeekResponse, SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse,
-        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song,
-        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
-        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetPlaylistRequest,
+        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest,
+        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
+        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PlaylistEntry,
+        PreviousRequest, PreviousResponse, RemoveProfileRequest, SectionAckRequest,
+        SectionAckResponse, SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
+        SetAmbientModeResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
+        SetTrackMuteResponse, Song, StatusRequest, StatusResponse, StopRequest, StopResponse,
+        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
         SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
         UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
         UpdateProfileRequest, FILE_DESCRIPTOR_SET,
@@ -768,6 +769,52 @@ impl PlayerService for PlayerServer {
             .collect();
         Ok(Response::new(GetTrackGainsResponse { gains }))
     }
+
+    async fn list_playlists(
+        &self,
+        _: Request<ListPlaylistsRequest>,
+    ) -> Result<Response<ListPlaylistsResponse>, Status> {
+        Ok(Response::new(ListPlaylistsResponse {
+            names: self.player.list_playlists(),
+            active: self.player.get_playlist().name().to_string(),
+        }))
+    }
+
+    async fn get_playlist(
+        &self,
+        request: Request<GetPlaylistRequest>,
+    ) -> Result<Response<GetPlaylistResponse>, Status> {
+        let name = request.into_inner().name;
+        let playlist = if name.is_empty() {
+            self.player.get_playlist()
+        } else {
+            self.player
+                .playlists_snapshot()
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| Status::not_found(format!("Playlist '{name}' not found")))?
+        };
+        let entries = playlist
+            .songs()
+            .iter()
+            .map(|song_name| {
+                let duration = playlist
+                    .get_song(song_name)
+                    .map(|song| prost_types::Duration::try_from(song.length()))
+                    .transpose()
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                Ok(PlaylistEntry {
+                    song_name: song_name.clone(),
+                    duration,
+                })
+            })
+            .collect::<Result<Vec<_>, Status>>()?;
+        Ok(Response::new(GetPlaylistResponse {
+            name: playlist.name().to_string(),
+            entries,
+            position: playlist.entry().map(|index| index as u32),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -781,9 +828,9 @@ mod test {
         controller::{grpc::Driver, Driver as _},
         playlist,
         proto::player::v1::{
-            player_service_client::PlayerServiceClient, LoopSectionRequest, NextRequest,
-            PlayRequest, PreviousRequest, StatusRequest, StopRequest, StopSectionLoopRequest,
-            SwitchToPlaylistRequest,
+            player_service_client::PlayerServiceClient, GetPlaylistRequest, ListPlaylistsRequest,
+            LoopSectionRequest, NextRequest, PlayRequest, PreviousRequest, StatusRequest,
+            StopRequest, StopSectionLoopRequest, SwitchToPlaylistRequest,
         },
         songs,
         testutil::eventually,
@@ -1086,6 +1133,78 @@ mod test {
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert!(status.message().contains("not playing"));
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_list_playlists() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, _device) = setup_grpc().await?;
+
+        let listed = client.list_playlists(ListPlaylistsRequest {}).await?;
+        let listed = listed.into_inner();
+        assert_eq!(listed.names, player.list_playlists());
+        assert_eq!(listed.names, ["all_songs", "playlist"]);
+        assert_eq!(listed.active, "playlist");
+
+        client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "all_songs".to_string(),
+            })
+            .await?;
+        let listed = client.list_playlists(ListPlaylistsRequest {}).await?;
+        assert_eq!(listed.into_inner().active, "all_songs");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_get_playlist() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, _device) = setup_grpc().await?;
+
+        // An empty name is the active playlist.
+        let active = client
+            .get_playlist(GetPlaylistRequest {
+                name: String::new(),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(active.name, "playlist");
+        let songs: Vec<&str> = active
+            .entries
+            .iter()
+            .map(|e| e.song_name.as_str())
+            .collect();
+        assert_eq!(songs, *player.get_playlist().songs());
+        assert!(active.entries.iter().all(|e| e.duration.is_some()));
+        assert_eq!(active.position, Some(0));
+
+        // Moving the playlist moves the position.
+        client.next(NextRequest {}).await?;
+        let moved = client
+            .get_playlist(GetPlaylistRequest {
+                name: "playlist".to_string(),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(moved.position, Some(1));
+
+        // A playlist by name, whether or not it is active.
+        let all = client
+            .get_playlist(GetPlaylistRequest {
+                name: "all_songs".to_string(),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(all.name, "all_songs");
+        assert_eq!(all.entries.len(), 10);
+        assert_eq!(all.position, Some(0));
+
+        let status = client
+            .get_playlist(GetPlaylistRequest {
+                name: "nonexistent".to_string(),
+            })
+            .await
+            .expect_err("an unknown playlist is not found");
+        assert_eq!(status.code(), tonic::Code::NotFound);
         Ok(())
     }
 

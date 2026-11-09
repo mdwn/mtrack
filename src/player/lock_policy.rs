@@ -108,6 +108,8 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "SetAmbientMode"),
     (Grpc, "CancelAutoPlay"),
     (Grpc, "GetTrackGains"),
+    (Grpc, "ListPlaylists"),
+    (Grpc, "GetPlaylist"),
     // Web: the lock toggle, validation, playlist activation (a playback
     // control, not an edit), the controller restart, and the pure reads that
     // happen to be POSTs (a preview evaluation and the upload inspectors,

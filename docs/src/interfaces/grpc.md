@@ -42,7 +42,7 @@ The [command-line reference](../reference/cli.md) lists these alongside the othe
 
 ## RPCs
 
-The service has 29 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
+The service has 31 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
 empty cell means the RPC is available to gRPC clients only.
 
 | RPC | Purpose | CLI |
@@ -57,6 +57,8 @@ empty cell means the RPC is available to gRPC clients only.
 | `Stop` | Stops the playing song. | `stop` |
 | `SwitchToPlaylist` | Switches the active playlist. | `switch-to-playlist` |
 | `Status` | Returns the player's current status: the playlist and song, whether it plays and how far in, the audio output's health, the [ambient light](../lighting/configuration.md#ambient-mode)'s `mode`, `state` and `show` (absent without a DMX engine; when the status's read of the DMX engine did not answer, `available` is false, `reason` says why, and `mode` and `state` are empty), and a song waiting to [auto play](../getting-started/playlists.md#auto-play) (`auto_play`: its `song` and `starts_in`). | `status` |
+| `ListPlaylists` | Lists the playlists' names, sorted, and names the active one (`active`). | |
+| `GetPlaylist` | Returns a playlist's entries (`song_name` and `duration`) and `position`, the index of the entry it is on (absent while the song playing is one an edit took off the list). An empty `name` is the active playlist; an unknown one is `NOT_FOUND`. | |
 | `GetCues` | Lists the cues in the current song's lighting timeline. | `cues` |
 | `GetActiveEffects` | Returns the running lighting effects as a formatted string. | `active-effects` |
 | `StopSamples` | Stops all triggered samples that are playing. | |

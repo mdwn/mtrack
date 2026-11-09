@@ -44,6 +44,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
         .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
 
+    // The Bluetooth envelope: messages only, no service.
+    tonic_prost_build::configure()
+        .build_client(false)
+        .build_server(false)
+        .compile_protos(&["src/proto/ble/v1/ble.proto"], &["src/proto"])?;
+
     // Embed git hash.
     let git_hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -60,6 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Re-run when the proto definition changes.
     println!("cargo:rerun-if-changed=src/proto/player/v1/player.proto");
+    println!("cargo:rerun-if-changed=src/proto/ble/v1/ble.proto");
 
     // Re-run when git HEAD changes.
     println!("cargo:rerun-if-changed=.git/HEAD");

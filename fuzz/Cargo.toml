@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+prost = "0.14"
 
 [dependencies.mtrack]
 path = ".."
@@ -37,6 +38,13 @@ bench = false
 [[bin]]
 name = "mvr_scene"
 path = "fuzz_targets/mvr_scene.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ble_frames"
+path = "fuzz_targets/ble_frames.rs"
 test = false
 doc = false
 bench = false
