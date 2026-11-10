@@ -35,6 +35,10 @@ systemctl enable mtrack.service
 # through the router's DHCP table.
 systemctl enable avahi-daemon.service
 
+# Bluetooth ships unblocked: Raspberry Pi OS blocks every radio by default and
+# the Bluetooth controller needs the adapter. See the unit for the whole story.
+systemctl enable mtrack-unblock-bluetooth.service
+
 # olad is deliberately NOT enabled here. The ola package ships a SysV init
 # script and no systemd unit, so there is nothing for `systemctl enable` to act
 # on at build time and the call would fail the build; its postinst has already

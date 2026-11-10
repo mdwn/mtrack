@@ -135,6 +135,9 @@ mod file_kind;
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
+/// The Bluetooth API's payloads.
+#[path = "../../../src/webui/wire/bluetooth.rs"]
+pub mod wire_bluetooth;
 /// The config API's payloads.
 #[path = "../../../src/webui/wire/config.rs"]
 pub mod wire_config;

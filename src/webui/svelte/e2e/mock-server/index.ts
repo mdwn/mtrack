@@ -287,6 +287,67 @@ app.post("/api/controllers/restart", (_req, res) => {
   res.json({ status: "restarted", controllers: STATUS.controllers });
 });
 
+// --- Bluetooth ---
+
+// The Bluetooth controller's pairing, kept per test: a test names its own
+// state with the `x-mock-session` header (the default session is shared by
+// every test that sends none), so tests running side by side do not see
+// each other's window or phones.
+interface BluetoothSim {
+  openUntil: number;
+  phones: { address: string; name: string | null; connected: boolean }[];
+}
+const bluetoothSims = new Map<string, BluetoothSim>();
+
+function bluetoothSim(req: express.Request): BluetoothSim {
+  const key = String(req.header("x-mock-session") ?? "");
+  let sim = bluetoothSims.get(key);
+  if (!sim) {
+    sim = {
+      openUntil: 0,
+      phones: [
+        { address: "AA:BB:CC:DD:EE:01", name: "Pixel", connected: true },
+        { address: "AA:BB:CC:DD:EE:02", name: null, connected: false },
+      ],
+    };
+    bluetoothSims.set(key, sim);
+  }
+  return sim;
+}
+
+function bluetoothBody(sim: BluetoothSim) {
+  const left = Math.max(0, Math.ceil((sim.openUntil - Date.now()) / 1000));
+  return {
+    configured: true,
+    running: true,
+    error: null,
+    pairing: { open: left > 0, seconds_left: left },
+    devices: sim.phones,
+  };
+}
+
+app.get("/api/bluetooth", (req, res) => {
+  res.json(bluetoothBody(bluetoothSim(req)));
+});
+
+app.post("/api/bluetooth/pairing", (req, res) => {
+  const sim = bluetoothSim(req);
+  const seconds = Math.min(600, Math.max(10, Number(req.body?.seconds ?? 120)));
+  sim.openUntil = req.body?.open ? Date.now() + seconds * 1000 : 0;
+  res.json(bluetoothBody(sim));
+});
+
+app.delete("/api/bluetooth/devices/:address", (req, res) => {
+  const sim = bluetoothSim(req);
+  const before = sim.phones.length;
+  sim.phones = sim.phones.filter((p) => p.address !== req.params.address);
+  if (sim.phones.length === before) {
+    res.status(404).json({ error: "Not a phone paired with this player" });
+    return;
+  }
+  res.json(bluetoothBody(sim));
+});
+
 // --- Lock ---
 
 app.get("/api/lock", (_req, res) => {

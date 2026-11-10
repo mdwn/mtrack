@@ -619,10 +619,12 @@ Opening a profile shows its settings in tabs:
   the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
   venues and groups are edited in the [Lighting area](../lighting/web-ui.md)
 - **Triggers** — Audio and MIDI trigger inputs with [calibration](#calibrating-a-trigger-input)
-- **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
-  supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with
-  optional section_ack, stop_section_loop, ambient_on, ambient_off, ambient_auto and
-  cancel_auto_play events, plus Morningstar preset naming integration
+- **Controllers** — gRPC, OSC, MIDI, and Bluetooth controller configuration. The MIDI controller
+  section supports full editing of event mappings (play, prev, next, stop, all_songs, playlist)
+  with optional section_ack, stop_section_loop, ambient_on, ambient_off, ambient_auto and
+  cancel_auto_play events, plus Morningstar preset naming integration. The Bluetooth card sets
+  the advertised name and, once the configuration is saved, opens the pairing window and lists
+  and forgets paired phones ([Bluetooth Control](bluetooth.md#pairing-a-phone-from-the-web-ui))
 - **Notifications** — Custom audio files for loop armed, break requested, loop exited, and
   section entering events, plus per-section-name overrides
 - **Status Events** — MIDI events emitted on player state changes (off/idling/playing) for
@@ -796,4 +798,5 @@ HTTP 423 (Locked). These always work: read endpoints, playback control, the lock
 playlist activation, the config and lighting validation endpoints, controller restart, and
 the lighting endpoints that only compute or inspect and write nothing (preview evaluation and
 MVR inspection). Releasing a fixture test also works, since it only returns the lights to the
-show.
+show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they
+change who may control the player.

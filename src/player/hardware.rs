@@ -1328,6 +1328,13 @@ impl Player {
             .bound_addr(index)
     }
 
+    /// Makes `controller` the player's, for a test of what reaches the
+    /// running controllers.
+    #[cfg(test)]
+    pub(crate) fn install_controller(&self, controller: crate::controller::Controller) {
+        *self.controller.lock() = Some(controller);
+    }
+
     /// The tasks of the running controllers.
     #[cfg(test)]
     pub(crate) fn controller_tasks(&self) -> Vec<tokio::task::AbortHandle> {

@@ -1,0 +1,42 @@
+# Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Raspberry Pi OS rfkills every radio until told otherwise
+# (raspberrypi-sys-mods' /etc/modprobe.d/rfkill_default.conf, rfkill
+# default_state=0), so that wifi does not radiate before a country is set.
+# That includes Bluetooth, which has no country to wait for and which the
+# player's Bluetooth controller needs. pi-gen unblocks the on-board adapters
+# by seeding systemd-rfkill state files under the device paths it knows, and
+# an adapter udev names any other way comes up blocked; systemd-rfkill then
+# saves that, so it stays blocked on every later boot.
+#
+# This unblocks Bluetooth, and only Bluetooth, once: the first time a
+# Bluetooth adapter appears, which is what starts bluetooth.target.
+# systemd-rfkill saves the unblocked state and restores it on later boots.
+# It runs once so that an owner who blocks Bluetooth afterwards is not
+# overruled at the next boot. Wifi is left as Raspberry Pi OS leaves it.
+
+[Unit]
+Description=Unblock Bluetooth once (Raspberry Pi OS blocks every radio by default)
+Documentation=https://github.com/mdwn/mtrack
+After=systemd-rfkill.service
+ConditionPathExists=/dev/rfkill
+ConditionPathExists=!/var/lib/misc/mtrack-bluetooth-unblocked
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+ExecStartPost=/usr/bin/touch /var/lib/misc/mtrack-bluetooth-unblocked
+
+[Install]
+WantedBy=bluetooth.target

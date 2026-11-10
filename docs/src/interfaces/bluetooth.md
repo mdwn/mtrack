@@ -26,11 +26,14 @@ There is one Bluetooth adapter, so a configuration with a second `ble` controlle
 The controller needs:
 
 - **A Bluetooth adapter, powered and not soft-blocked.** mtrack does not unblock the radio for
-  you. If the adapter is blocked, the controller fails with a message that says so, the rest of
-  the player starts as usual, and the controller shows as an error in the web UI's status. Check
-  with `rfkill list bluetooth`, unblock it with `sudo rfkill unblock bluetooth`, then restart the
-  controllers.
-- **`bluetoothd` (BlueZ) running.** Without it the controller fails the same way. BlueZ ships
+  you. While the adapter is blocked or missing, the rest of the player runs as usual, the web
+  UI's Bluetooth card says why Bluetooth is not running, and the controller tries again every
+  few seconds, so it starts by itself once the adapter is there. Check with
+  `rfkill list bluetooth` and unblock it with `sudo rfkill unblock bluetooth`. The
+  [Raspberry Pi image](../getting-started/raspberry-pi.md) unblocks Bluetooth once, the first
+  time it boots with an adapter, because Raspberry Pi OS otherwise blocks every radio until a
+  wifi country is set.
+- **`bluetoothd` (BlueZ) running.** Without it the controller waits the same way. BlueZ ships
   with Raspberry Pi OS and most desktop distributions.
 - **A build with Bluetooth support.** Release builds for Linux have it. A build without it (macOS,
   or built with `--no-default-features`) reports "this build has no Bluetooth support" for a
@@ -58,17 +61,38 @@ closed by default.
 - **Unpaired devices are dropped.** While the window is closed, a device that connects without
   being paired is disconnected after two seconds. While the window is open it is left alone, and
   when the window closes, any device still connected without having paired is dropped.
+- **A device you trust in BlueZ is left alone.** Phones are paired through the pairing window.
+  Other Bluetooth devices can share the adapter, a BLE MIDI pedal you paired with `bluetoothctl`
+  and marked `trust`, say. BlueZ's *Trusted* flag is the line: a trusted device is never
+  disconnected by the rules above, does not count as a paired phone (so it does not stop a fresh
+  player opening its first window), and is not listed in the web UI or forgotten from it. The
+  player never marks a device trusted itself.
 
-Pairing a second phone needs the window reopened. The player can do that (the window can be
-opened and closed, and paired phones listed and forgotten, from code that holds the controller's
-`BleHandle`), but until the web UI gains a control for it, the way to pair another phone is:
+### Pairing a phone from the web UI
 
-1. Forget the paired phone on the player: `bluetoothctl remove <address>` (`bluetoothctl devices
-   Paired` lists the addresses).
-2. Restart the controllers (the web UI's *Restart controllers*) or the `mtrack` service. With no
-   phone paired, the window opens for five minutes.
-3. Pair the new phone. The phone that was forgotten pairs again the same way, so pair every phone
-   you want within that window.
+Open **Config**, the profile, then **Controllers**: the Bluetooth card has the pairing controls.
+(The card needs the configuration saved, so that the controller is running.)
+
+1. Click **Pair a phone**. The card says *Pairing open* with the time left; the window stays open
+   for two minutes and closes by itself. **Stop pairing** closes it sooner.
+2. On the phone, connect to the name the player advertises (the card's *Advertised name*, or the
+   hostname). The phone may show a code to confirm.
+3. The phone appears under *Paired phones*, with a *connected* marker while it is connected.
+
+To remove a phone, click **Forget** beside it and confirm; it must then pair again, through the
+window. Opening or closing the window and forgetting a phone change who can control the player,
+so the web UI refuses them while the player is [locked](web-ui.md): unlock it first. The same
+operations are the REST endpoints `GET /api/bluetooth`, `POST /api/bluetooth/pairing`
+(`{"open": true, "seconds": 120}` or `{"open": false}`; the time is kept between 10 and 600
+seconds) and `DELETE /api/bluetooth/devices/{address}`.
+
+### Without a network
+
+A player with no network has no web UI to reach. With no phone paired, the window opens for five
+minutes each time the controller starts (restart the `mtrack` service), so a player whose phones
+are all gone can be claimed again. To get there from a shell, forget the phone in BlueZ with
+`bluetoothctl remove <address>` (`bluetoothctl devices Paired` lists the addresses), then restart
+the service and pair the new phone inside that window.
 
 ## The service
 

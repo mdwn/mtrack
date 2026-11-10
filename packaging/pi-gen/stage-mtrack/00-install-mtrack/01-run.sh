@@ -38,3 +38,8 @@ if [ "${deb_arch}" != "arm64" ]; then
 fi
 
 install -m 644 "${MTRACK_DEB}" "${ROOTFS_DIR}/tmp/mtrack.deb"
+
+# Raspberry Pi OS blocks every radio until told otherwise, Bluetooth too; the
+# unit that unblocks it is explained inside it.
+install -m 644 files/mtrack-unblock-bluetooth.service \
+	"${ROOTFS_DIR}/etc/systemd/system/mtrack-unblock-bluetooth.service"
