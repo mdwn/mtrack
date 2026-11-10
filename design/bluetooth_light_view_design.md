@@ -209,5 +209,5 @@ the same either way.
 2. **One visualization, reused in a web view** (§2). Decided, subject to L0.
 3. **Plot with movers first, 3D after** (§10). Decided.
 4. **Retire the websocket's JSON stage messages later, not now** (§4).
-   Recommended.
-5. **A fifth tab, and ambient moves to it** (§7). Recommended.
+   Decided.
+5. **A fifth tab, and ambient moves to it** (§7). Decided.
