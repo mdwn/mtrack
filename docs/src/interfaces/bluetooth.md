@@ -144,7 +144,7 @@ message Response { uint32 id = 1; uint32 code = 2; string message = 3; bytes pay
 `method` is the bare name of a `PlayerService` method (`Play`, `Seek`, ...) and `payload` is that
 method's request message from [`player.proto`](grpc.md), serialized. The response carries the
 method's response message in `payload`, or, when `code` is not 0, a gRPC status code and message
-and no payload. The player's [lock](../interfaces/web-ui.md) applies exactly as it does to gRPC
+and no payload. The player's [lock](../interfaces/web-ui.md#lock-mode) applies exactly as it does to gRPC
 and the web UI: a locked player refuses what it refuses there.
 
 The calls a phone may make, and no others:
@@ -152,7 +152,16 @@ The calls a phone may make, and no others:
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
-`SetTrackMute`, `SetAmbientMode`.
+`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`.
+
+`SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
+playlist editor does with only the songs: each entry keeps its own settings (fades, auto play,
+ambient). Set `check_expected` and `expected` on a save to refuse it if the playlist was edited
+since the phone read it (`FAILED_PRECONDITION`, "the playlist has changed"). Both are refused
+while the player is locked, and a player starts locked. A phone can lift the lock itself with
+`SetLock` (`locked: false`), which is open while locked, and put it back when it is done. That
+is on purpose: a player with no network, which is what Bluetooth is for, would otherwise never
+be editable from a phone. Anyone paired can do it, as anyone paired can already play and stop.
 
 Anything else, every call that changes the configuration included, is refused with
 `PERMISSION_DENIED`. A response too large for a frame is replaced by a `RESOURCE_EXHAUSTED`
@@ -175,7 +184,8 @@ light's mode and state (`ambient_mode`: `auto`, `on` or `off`; `ambient_state`: 
 `pending`, `off` or `unavailable`; read about twice a second, and absent on a player with no
 DMX engine) and `gains_revision`. That last is a count the player moves whenever any track's gain or mute changes, from any surface; call
 `GetTrackGains` again when it differs from the one you last saw. It wraps, so compare for
-inequality. The message carries no beat grid and no sections; fetch those with the `Status` call when the song changes.
+inequality. `locked` says whether the player is locked, so a phone shows the lock without
+asking, and is pushed when it changes. The message carries no beat grid and no sections; fetch those with the `Status` call when the song changes.
 
 - **Read** returns the latest `Status` as a bare encoded message, not chunked, at most 512
   bytes (a long name is shortened to fit). It uses long reads if the MTU is small.

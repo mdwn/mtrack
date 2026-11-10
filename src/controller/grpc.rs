@@ -11,6 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+mod playlists;
+
 use crate::config::store::ConfigSection;
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
@@ -26,20 +28,21 @@ use crate::{
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
-        CancelAutoPlayResponse, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
-        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetPlaylistRequest,
-        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest,
-        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
-        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
-        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
-        RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
-        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetTrackGainRequest,
-        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StatusRequest,
-        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
-        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
-        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
-        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
-        FILE_DESCRIPTOR_SET,
+        CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
+        GetActiveEffectsRequest, GetActiveEffectsResponse, GetConfigRequest, GetConfigResponse,
+        GetCuesRequest, GetCuesResponse, GetPlaylistRequest, GetPlaylistResponse,
+        GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
+        LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest, NavigateToSongResponse,
+        NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
+        PlaylistEntry, PreviousRequest, PreviousResponse, RemoveProfileRequest,
+        SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
+        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
+        SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
+        SetTrackMuteResponse, Song, StatusRequest, StatusResponse, StopRequest, StopResponse,
+        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -837,27 +840,71 @@ impl PlayerService for PlayerServer {
                 .cloned()
                 .ok_or_else(|| Status::not_found(format!("Playlist '{name}' not found")))?
         };
-        let entries = playlist
-            .songs()
-            .iter()
-            .map(|song_name| {
-                let duration = playlist
-                    .get_song(song_name)
-                    .map(|song| prost_types::Duration::try_from(song.length()))
-                    .transpose()
-                    .map_err(|e| Status::internal(e.to_string()))?;
-                Ok(PlaylistEntry {
-                    song_name: song_name.clone(),
-                    duration,
-                })
-            })
-            .collect::<Result<Vec<_>, Status>>()?;
-        Ok(Response::new(GetPlaylistResponse {
-            name: playlist.name().to_string(),
-            entries,
-            position: playlist.entry().map(|index| index as u32),
+        Ok(Response::new(playlist_response(&playlist)?))
+    }
+
+    async fn save_playlist(
+        &self,
+        request: Request<SavePlaylistRequest>,
+    ) -> Result<Response<GetPlaylistResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.clone();
+        let store = self.require_config_store()?;
+        playlists::save(&self.player, store, req).await?;
+        // As GetPlaylist reports it now, after the reload.
+        let playlist = self
+            .player
+            .playlists_snapshot()
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| Status::not_found(format!("Playlist '{name}' not found")))?;
+        Ok(Response::new(playlist_response(&playlist)?))
+    }
+
+    async fn delete_playlist(
+        &self,
+        request: Request<DeletePlaylistRequest>,
+    ) -> Result<Response<DeletePlaylistResponse>, Status> {
+        let store = self.require_config_store()?;
+        playlists::delete(&self.player, store, &request.into_inner().name).await?;
+        Ok(Response::new(DeletePlaylistResponse {}))
+    }
+
+    async fn set_lock(
+        &self,
+        request: Request<SetLockRequest>,
+    ) -> Result<Response<SetLockResponse>, Status> {
+        // What the web UI's lock toggle does, and all it does.
+        self.player.set_locked(request.into_inner().locked);
+        Ok(Response::new(SetLockResponse {
+            locked: self.player.is_locked(),
         }))
     }
+}
+
+/// A playlist as `GetPlaylist` reports it.
+#[allow(clippy::result_large_err)]
+fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylistResponse, Status> {
+    let entries = playlist
+        .songs()
+        .iter()
+        .map(|song_name| {
+            let duration = playlist
+                .get_song(song_name)
+                .map(|song| prost_types::Duration::try_from(song.length()))
+                .transpose()
+                .map_err(|e| Status::internal(e.to_string()))?;
+            Ok(PlaylistEntry {
+                song_name: song_name.clone(),
+                duration,
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(GetPlaylistResponse {
+        name: playlist.name().to_string(),
+        entries,
+        position: playlist.entry().map(|index| index as u32),
+    })
 }
 
 #[cfg(test)]

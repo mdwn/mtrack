@@ -710,6 +710,7 @@ mod tests {
             gains_revision: None,
             ambient_mode: None,
             ambient_state: None,
+            locked: None,
         }
     }
 

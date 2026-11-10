@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first phone can claim a fresh player. Devices that connect without pairing are dropped,
   except a device you have marked trusted in BlueZ yourself (a BLE MIDI pedal, say), which is
   left alone and not listed. The phone sends the performance calls of the gRPC service
-  (transport, seek, playlists, section loops, track gains and mutes, the ambient mode) and receives a slim status. The adapter must not be
+  (transport, seek, playlists, section loops, track gains and mutes, the ambient mode) and receives a slim status, which says whether the player is locked.
+  It can also make, reorder and delete playlists (songs and their order only; each entry keeps its
+  fades and other settings), and lock and unlock the player to do so, since a player with no
+  network would otherwise never be editable from a phone. The adapter must not be
   soft-blocked (`rfkill unblock bluetooth`); mtrack does not unblock it, and while the radio is blocked or
   missing only this controller waits, retrying until it is there. The Raspberry Pi image unblocks Bluetooth on first boot, which
   Raspberry Pi OS does not (it blocks every radio until a wifi country is set); wifi is left as
@@ -30,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   active one; the second returns a playlist's entries (each song's name and duration) and the
   entry it is on, for the active playlist or one by name. Both are reads, open while the player
   is locked.
+- **`SavePlaylist`, `DeletePlaylist` and `SetLock` gRPC RPCs**: the first sets a playlist's songs
+  and their order (or makes the playlist), keeping each entry's own settings with its song and
+  refusing a save made from a list that has since changed (`check_expected`); the second deletes
+  one; the third locks or unlocks the player. The playlist writes are refused while the player is
+  locked, as the web UI's are; `SetLock` is open while locked.
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the

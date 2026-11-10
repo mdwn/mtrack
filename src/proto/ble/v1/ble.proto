@@ -89,4 +89,8 @@ message Status {
     // "unavailable", as player.v1.AmbientStatus.state gives it. Absent when
     // ambient_mode is.
     optional string ambient_state = 11;
+    // Whether the player is locked, as player.v1.SetLockResponse gives it:
+    // while it is, playlist edits are refused. Absent only from a player too
+    // old to say.
+    optional bool locked = 12;
 }

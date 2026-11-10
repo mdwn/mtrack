@@ -190,9 +190,10 @@ impl Drop for WebUiHandle {
     }
 }
 
-/// Starts the web UI, or, when it cannot start, unlocks the player. Only the
-/// web UI can release the lock, so a player left locked without one would
-/// refuse every gRPC and MCP config write for the whole run.
+/// Starts the web UI, or, when it cannot start, unlocks the player. The
+/// web UI is how the lock is normally released (gRPC's and Bluetooth's
+/// `SetLock` aside), so a player left locked without one would refuse every
+/// gRPC and MCP config write for the whole run.
 pub async fn start_or_unlock(
     webui_state: WebUiState,
     address: String,

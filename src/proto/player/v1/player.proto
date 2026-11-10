@@ -518,6 +518,48 @@ message GetPlaylistResponse {
     optional uint32 position = 3;
 }
 
+// SavePlaylistRequest replaces the songs of a playlist, or makes one.
+message SavePlaylistRequest {
+    // The playlist's name. The player's own all_songs is refused.
+    string name = 1;
+    // The whole list of songs, in order. An existing playlist keeps each
+    // entry's own settings (fades, auto play, ambient) with its song, and
+    // its playlist-level settings.
+    repeated string songs = 2;
+    // The songs the caller last saw, in order. Checked only when
+    // check_expected is set: when the playlist on the player differs, the
+    // save is refused with FAILED_PRECONDITION, as someone else edited it.
+    repeated string expected = 3;
+    // Whether to check expected. A separate flag because an empty expected
+    // cannot be told from an absent one, and an empty playlist is a legal
+    // thing to have seen.
+    bool check_expected = 4;
+    // Refuse with ALREADY_EXISTS when the playlist exists. When unset, a
+    // playlist that does not exist is NOT_FOUND.
+    bool create = 5;
+}
+
+// DeletePlaylistRequest names the playlist to delete.
+message DeletePlaylistRequest {
+    // The playlist's name. The player's own all_songs is refused.
+    string name = 1;
+}
+
+// DeletePlaylistResponse is empty: the playlist is gone.
+message DeletePlaylistResponse {}
+
+// SetLockRequest locks or unlocks the player.
+message SetLockRequest {
+    // True to lock the player, false to unlock it.
+    bool locked = 1;
+}
+
+// SetLockResponse reports the lock as it now stands.
+message SetLockResponse {
+    // Whether the player is locked.
+    bool locked = 1;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -628,4 +670,21 @@ service PlayerService {
     // GetPlaylist returns a playlist's entries and the one it is on. An
     // unknown name is NOT_FOUND.
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
+
+    // SavePlaylist sets a playlist's songs and their order, making the
+    // playlist when create is set, and answers with it as GetPlaylist
+    // would. Refused while the player is locked. A name the player refuses
+    // or a song it does not have is INVALID_ARGUMENT; a playlist that
+    // exists under create is ALREADY_EXISTS, and one that does not, without
+    // it, is NOT_FOUND.
+    rpc SavePlaylist(SavePlaylistRequest) returns (GetPlaylistResponse);
+
+    // DeletePlaylist deletes a playlist's file. Refused while the player
+    // is locked. An unknown name is NOT_FOUND. The active playlist falls
+    // back to all_songs.
+    rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
+
+    // SetLock locks or unlocks the player, as the web UI's lock does. Open
+    // while locked, or nothing could unlock it.
+    rpc SetLock(SetLockRequest) returns (SetLockResponse);
 }
