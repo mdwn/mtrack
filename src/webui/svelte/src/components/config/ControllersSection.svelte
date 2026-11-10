@@ -19,6 +19,7 @@
   import Tooltip from "./Tooltip.svelte";
   import { rules } from "../../lib/rules";
   import MidiEventEditor, { newMidiEvent } from "./MidiEventEditor.svelte";
+  import BluetoothPairing from "./BluetoothPairing.svelte";
 
   interface Props {
     controllers: Controller[];
@@ -277,6 +278,7 @@
               updateField(i, "name", (e.target as HTMLInputElement).value)}
           />
         </div>
+        <BluetoothPairing />
       {:else if ctrl.kind === "osc"}
         <div class="field">
           <label for="ctrl-osc-port-{i}"

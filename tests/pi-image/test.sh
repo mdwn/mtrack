@@ -192,6 +192,19 @@ grep_file "hostname answers as mtrack" etc/hostname '^mtrack$'
 have_link "olad enabled (SysV)" etc/rc2.d/S01olad olad
 
 echo
+echo "== bluetooth =="
+have "rfkill installed" usr/sbin/rfkill
+have "the unblock unit is installed" etc/systemd/system/mtrack-unblock-bluetooth.service
+grep_file "it unblocks bluetooth" etc/systemd/system/mtrack-unblock-bluetooth.service '^ExecStart=/usr/sbin/rfkill unblock bluetooth$'
+if $SUDO grep -qiE '^ExecStart=.*(wlan|wifi)' "$MNT/etc/systemd/system/mtrack-unblock-bluetooth.service" 2>/dev/null; then
+    fail "the unblock unit touches wifi, which stays blocked until a country is set"
+else
+    ok "the unblock unit leaves wifi alone"
+fi
+have_link "the unblock unit is ENABLED" etc/systemd/system/bluetooth.target.wants/mtrack-unblock-bluetooth.service mtrack-unblock-bluetooth.service
+grep_file "rfkill still blocks every radio by default (so the unit is needed)" etc/modprobe.d/rfkill_default.conf 'default_state=0'
+
+echo
 if [ "$failures" -eq 0 ]; then
     echo "All image checks passed."
 else

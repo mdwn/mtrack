@@ -25,6 +25,13 @@
 //! paired, so the first phone can claim a fresh player (trust on first
 //! use), and otherwise only when the owner opens it through a
 //! [`BleHandle`].
+//!
+//! Phones are paired through the window. Other Bluetooth devices may share
+//! the adapter, a BLE MIDI pedal paired with `bluetoothctl` say, and one
+//! the owner has marked trusted in BlueZ is left alone: it is never
+//! disconnected by the policy, does not count as a paired phone for the
+//! first window, and is neither listed nor forgotten here. The player
+//! itself never marks a device trusted.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -50,6 +57,22 @@ pub(crate) struct DeviceInfo {
     pub name: Option<String>,
     pub paired: bool,
     pub connected: bool,
+    /// Marked trusted in BlueZ by the owner: not a phone of this player's.
+    pub trusted: bool,
+}
+
+impl DeviceInfo {
+    /// Whether the player treats the device as a phone it paired: paired,
+    /// and not one the owner took on themselves by trusting it.
+    fn is_phone(&self) -> bool {
+        self.paired && !self.trusted
+    }
+
+    /// Whether the device is connected without having paired, and not
+    /// trusted: the one kind the policy drops while the window is closed.
+    fn is_unpaired_visitor(&self) -> bool {
+        self.connected && !self.paired && !self.trusted
+    }
 }
 
 /// What the policy needs of the radio stack. Errors are the stack's own
@@ -82,6 +105,8 @@ pub struct PairedDevice {
     pub address: String,
     /// The name it gave, when it gave one.
     pub name: Option<String>,
+    /// Whether it is connected now.
+    pub connected: bool,
 }
 
 /// Why a Bluetooth operation did not happen.
@@ -94,6 +119,11 @@ pub enum BleError {
     /// Not a Bluetooth address.
     #[error("{0:?} is not a Bluetooth address")]
     BadAddress(String),
+    /// No paired phone has this address: it is unknown, was never paired,
+    /// or is a device the owner trusts in BlueZ, which is not the
+    /// player's to forget.
+    #[error("{0} is not a phone paired with this player")]
+    NotPaired(String),
     /// The radio stack refused.
     #[error("{0}")]
     Adapter(String),
@@ -138,12 +168,12 @@ impl Pairing {
             grace,
             window: Mutex::new(Window::default()),
         });
-        if devices.iter().any(|d| d.paired) {
+        if devices.iter().any(DeviceInfo::is_phone) {
             pairing.adapter.set_pairable(false).await?;
         } else {
             pairing.open(first_window).await?;
         }
-        for device in devices.iter().filter(|d| d.connected && !d.paired) {
+        for device in devices.iter().filter(|d| d.is_unpaired_visitor()) {
             pairing.police(device.address);
         }
         Ok(pairing)
@@ -232,7 +262,7 @@ impl Pairing {
         let Ok(devices) = self.adapter.devices().await else {
             return;
         };
-        for device in devices.iter().filter(|d| d.connected && !d.paired) {
+        for device in devices.iter().filter(|d| d.is_unpaired_visitor()) {
             self.drop_unpaired(device.address).await;
         }
     }
@@ -257,7 +287,7 @@ impl Pairing {
             };
             if devices
                 .iter()
-                .any(|d| d.address == address && d.connected && !d.paired)
+                .any(|d| d.address == address && d.is_unpaired_visitor())
             {
                 pairing.drop_unpaired(address).await;
             }
@@ -286,17 +316,28 @@ impl Pairing {
             .devices()
             .await?
             .into_iter()
-            .filter(|d| d.paired)
+            .filter(DeviceInfo::is_phone)
             .map(|d| PairedDevice {
                 address: format_address(d.address),
                 name: d.name,
+                connected: d.connected,
             })
             .collect())
     }
 
-    /// Forgets a phone: it is disconnected and must pair again.
-    pub(crate) async fn forget(&self, address: PeerId) -> Result<(), String> {
-        self.adapter.remove(address).await
+    /// Forgets a phone: it is disconnected and must pair again. Only a
+    /// phone [`paired_devices`](Self::paired_devices) lists can be
+    /// forgotten: a device the owner trusts, or one the stack does not
+    /// know, is [`BleError::NotPaired`].
+    pub(crate) async fn forget(&self, address: PeerId) -> Result<(), BleError> {
+        let devices = self.adapter.devices().await.map_err(BleError::Adapter)?;
+        if !devices.iter().any(|d| d.address == address && d.is_phone()) {
+            return Err(BleError::NotPaired(format_address(address)));
+        }
+        self.adapter
+            .remove(address)
+            .await
+            .map_err(BleError::Adapter)
     }
 }
 
@@ -307,12 +348,28 @@ impl Pairing {
 #[derive(Clone, Default)]
 pub struct BleHandle {
     pairing: Arc<Mutex<Option<Arc<Pairing>>>>,
+    /// Why the controller is not running, while it is retrying.
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl BleHandle {
-    /// Points the handle at a running policy.
+    /// Points the handle at a running policy. The controller is running, so
+    /// whatever kept it from running is over.
     pub(crate) fn attach(&self, pairing: Arc<Pairing>) {
         *self.pairing.lock() = Some(pairing);
+        *self.failure.lock() = None;
+    }
+
+    /// Records why the controller is not running.
+    #[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
+    pub(crate) fn failed(&self, why: &str) {
+        *self.failure.lock() = Some(why.to_string());
+    }
+
+    /// Why the controller is not running, when it tried and could not: a
+    /// blocked or missing adapter, say. It keeps retrying.
+    pub fn failure(&self) -> Option<String> {
+        self.failure.lock().clone()
     }
 
     /// Points the handle at nothing, as the controller stops.
@@ -351,31 +408,27 @@ impl BleHandle {
     }
 
     /// Forgets the phone at `address` (`AA:BB:CC:DD:EE:FF`): it is
-    /// disconnected and must pair again, with the window open.
+    /// disconnected and must pair again, with the window open. An address
+    /// that is not a listed phone is [`BleError::NotPaired`].
     pub async fn forget(&self, address: &str) -> Result<(), BleError> {
         let parsed = parse_address(address).ok_or_else(|| BleError::BadAddress(address.into()))?;
-        self.running()?
-            .forget(parsed)
-            .await
-            .map_err(BleError::Adapter)
+        self.running()?.forget(parsed).await
     }
 }
 
+/// A fake radio stack for tests of the policy and of what is built on it.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fake {
     use super::*;
-    use crate::testutil::eventually_async;
-
-    const GRACE: Duration = Duration::from_millis(40);
 
     /// An adapter that remembers what it was asked.
     #[derive(Default)]
-    struct Fake {
-        pairable: Mutex<Vec<bool>>,
-        devices: Mutex<Vec<DeviceInfo>>,
-        disconnected: Mutex<Vec<PeerId>>,
-        removed: Mutex<Vec<PeerId>>,
-        failing: Mutex<bool>,
+    pub(crate) struct Fake {
+        pub(crate) pairable: Mutex<Vec<bool>>,
+        pub(crate) devices: Mutex<Vec<DeviceInfo>>,
+        pub(crate) disconnected: Mutex<Vec<PeerId>>,
+        pub(crate) removed: Mutex<Vec<PeerId>>,
+        pub(crate) failing: Mutex<bool>,
     }
 
     impl AdapterOps for Fake {
@@ -406,23 +459,45 @@ mod tests {
         }
     }
 
-    fn device(n: u8, paired: bool, connected: bool) -> DeviceInfo {
+    /// Device `n`, with the address `00:00:00:00:00:0n` and not trusted.
+    pub(crate) fn device(n: u8, paired: bool, connected: bool) -> DeviceInfo {
         DeviceInfo {
             address: [0, 0, 0, 0, 0, n],
             name: Some(format!("phone {n}")),
             paired,
             connected,
+            trusted: false,
         }
     }
 
-    async fn started(devices: Vec<DeviceInfo>) -> (Arc<Fake>, Arc<Pairing>) {
+    /// Device `n` as the owner trusts it in BlueZ.
+    pub(crate) fn trusted_device(n: u8, connected: bool) -> DeviceInfo {
+        DeviceInfo {
+            name: Some(format!("pedal {n}")),
+            trusted: true,
+            ..device(n, true, connected)
+        }
+    }
+
+    /// A policy over a fake holding `devices`, started with a five minute
+    /// first window.
+    pub(crate) async fn started(devices: Vec<DeviceInfo>) -> (Arc<Fake>, Arc<Pairing>) {
         let fake = Arc::new(Fake::default());
         *fake.devices.lock() = devices;
-        let pairing = Pairing::start(fake.clone(), Duration::from_secs(300), GRACE)
+        let pairing = Pairing::start(fake.clone(), Duration::from_secs(300), super::tests::GRACE)
             .await
             .expect("started");
         (fake, pairing)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::*;
+    use super::*;
+    use crate::testutil::eventually_async;
+
+    pub(super) const GRACE: Duration = Duration::from_millis(40);
 
     async fn gone(fake: &Arc<Fake>, n: u8) -> bool {
         fake.disconnected.lock().contains(&[0, 0, 0, 0, 0, n])
@@ -554,17 +629,70 @@ mod tests {
 
     #[tokio::test]
     async fn the_paired_list_and_forgetting() {
-        let (fake, pairing) = started(vec![device(1, true, false), device(2, false, true)]).await;
+        let (fake, pairing) = started(vec![device(1, true, true), device(2, false, true)]).await;
         assert_eq!(
             pairing.paired_devices().await.unwrap(),
             vec![PairedDevice {
                 address: "00:00:00:00:00:01".into(),
                 name: Some("phone 1".into()),
+                connected: true,
             }]
         );
         pairing.forget([0, 0, 0, 0, 0, 1]).await.unwrap();
         assert_eq!(*fake.removed.lock(), vec![[0, 0, 0, 0, 0, 1]]);
         assert!(pairing.paired_devices().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_trusted_device_is_not_a_paired_phone_for_the_first_window() {
+        // Only the owner's own pedal is paired: the first phone may still
+        // claim the player.
+        let (fake, pairing) = started(vec![trusted_device(1, false)]).await;
+        assert_eq!(*fake.pairable.lock(), vec![true]);
+        assert!(matches!(pairing.state(), PairingState::Open { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_trusted_device_is_never_dropped() {
+        // Connected at start, window closed, and connecting later: neither
+        // the start, the police nor the sweep touches it, even when BlueZ
+        // does not call it paired.
+        let (fake, pairing) = started(vec![device(1, true, false), trusted_device(2, true)]).await;
+        let mut unpaired = trusted_device(3, true);
+        unpaired.paired = false;
+        fake.devices.lock().push(unpaired);
+        pairing.police([0, 0, 0, 0, 0, 3]);
+        pairing.open(Duration::from_secs(300)).await.unwrap();
+        pairing.close().await.unwrap();
+
+        tokio::time::sleep(GRACE * 5).await;
+        assert!(fake.disconnected.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_trusted_device_is_neither_listed_nor_forgotten() {
+        let (fake, pairing) = started(vec![device(1, true, true), trusted_device(2, true)]).await;
+        let listed = pairing.paired_devices().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].address, "00:00:00:00:00:01");
+
+        assert_eq!(
+            pairing.forget([0, 0, 0, 0, 0, 2]).await,
+            Err(BleError::NotPaired("00:00:00:00:00:02".into()))
+        );
+        assert!(fake.removed.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_an_unknown_or_unpaired_address_is_an_error() {
+        let (fake, pairing) = started(vec![device(1, true, false), device(2, false, true)]).await;
+        for n in [2, 9] {
+            assert_eq!(
+                pairing.forget([0, 0, 0, 0, 0, n]).await,
+                Err(BleError::NotPaired(format!("00:00:00:00:00:0{n}")))
+            );
+        }
+        assert!(fake.removed.lock().is_empty());
     }
 
     #[tokio::test]

@@ -53,6 +53,11 @@ name `mtrack` — and use `http://<ip>:8080`. The address always works, with or 
 If nothing answers on either, the Pi is probably not on the network: check the wifi password
 and country in Imager, or try an Ethernet cable.
 
+Bluetooth is a separate matter from wifi. Raspberry Pi OS keeps every radio blocked until a wifi
+country is set, but the image unblocks Bluetooth the first time it boots, so the
+[Bluetooth controller](../interfaces/bluetooth.md) works on a Pi that is on Ethernet, or on no
+network at all. Wifi is left as Raspberry Pi OS leaves it.
+
 ## 3. Set up the player
 
 The Pi is now an ordinary mtrack install, and [Quick Start](quick-start.md) takes it from here:

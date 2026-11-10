@@ -48,6 +48,8 @@ mod session;
 #[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
 mod status;
 
+#[cfg(test)]
+pub(crate) use pairing::fake;
 pub use pairing::{BleError, BleHandle, PairedDevice, PairingState};
 
 /// The UUID of the GATT service a phone looks for. Its characteristics
@@ -61,6 +63,10 @@ pub const RESPONSE_UUID: u128 = 0x6d747261_636b_0003_8000_00805f9b34fb;
 /// The characteristic carrying the player's status: read (a bare encoded
 /// `Status`) and notify (the same, framed).
 pub const STATUS_UUID: u128 = 0x6d747261_636b_0004_8000_00805f9b34fb;
+
+/// How long the controller waits before trying the radio again.
+#[cfg(all(target_os = "linux", feature = "ble"))]
+const RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What a controller configured on a build without Bluetooth says.
 #[cfg(not(all(target_os = "linux", feature = "ble")))]
@@ -103,11 +109,32 @@ impl super::Driver for Driver {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
         #[cfg(all(target_os = "linux", feature = "ble"))]
         {
-            tokio::spawn(gatt::run(
-                self.name.clone(),
-                self.player.clone(),
-                self.handle.clone(),
-            ))
+            let (name, player, handle) =
+                (self.name.clone(), self.player.clone(), self.handle.clone());
+            // The radio is often not there yet when the player starts at
+            // boot, and can be blocked and unblocked while it runs, so a
+            // failure is retried rather than left for the next reload. The
+            // reason is logged when it changes, not on every attempt.
+            tokio::spawn(async move {
+                let mut logged: Option<String> = None;
+                loop {
+                    let Err(e) = gatt::run(name.clone(), player.clone(), handle.clone()).await
+                    else {
+                        return Ok(());
+                    };
+                    let why = e.to_string();
+                    if logged.as_deref() != Some(why.as_str()) {
+                        tracing::warn!(
+                            error = %why,
+                            retry_secs = RETRY.as_secs(),
+                            "Bluetooth controller is not running; it will retry"
+                        );
+                        logged = Some(why.clone());
+                    }
+                    handle.failed(&why);
+                    tokio::time::sleep(RETRY).await;
+                }
+            })
         }
         #[cfg(not(all(target_os = "linux", feature = "ble")))]
         tokio::spawn(async { Err(io::Error::other(NO_BLUETOOTH)) })

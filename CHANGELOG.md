@@ -11,18 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
   network at all. Add `- kind: ble` (optionally with a `name` to advertise, which defaults to the
-  hostname) to a profile's `controllers`. Phones pair once and are trusted from then on: the
-  pairing window is closed unless you open it, except for five minutes after start while no phone
-  is paired, so the first phone can claim a fresh player; devices that connect without pairing are
-  dropped. The phone sends the performance calls of the gRPC service (transport, seek, playlists,
-  section loops) and receives a slim status. The adapter must not be soft-blocked
-  (`rfkill unblock bluetooth`); mtrack does not unblock it, and a blocked or missing radio fails
-  only this controller. The Linux build now needs `libdbus-1` (`libdbus-1-3` for the `.deb`, which
-  declares it; `libdbus-1-dev` to build); a build without the `ble` feature, and macOS, report
-  "this build has no Bluetooth support" for a configured `ble` controller. Until the web UI can
-  open the pairing window, pairing a second phone means forgetting the first with
-  `bluetoothctl remove` and restarting the controllers. See [Bluetooth
-  Control](docs/src/interfaces/bluetooth.md) for the protocol.
+  hostname) to a profile's `controllers`. Phones pair once and are trusted from then on. The
+  pairing window is closed unless you open it: from the Bluetooth card in Config, Controllers
+  (**Pair a phone**, with a countdown, and **Forget** for each paired phone; both refused while
+  the player is locked), or by itself for five minutes after start while no phone is paired, so
+  the first phone can claim a fresh player. Devices that connect without pairing are dropped,
+  except a device you have marked trusted in BlueZ yourself (a BLE MIDI pedal, say), which is
+  left alone and not listed. The phone sends the performance calls of the gRPC service
+  (transport, seek, playlists, section loops) and receives a slim status. The adapter must not be
+  soft-blocked (`rfkill unblock bluetooth`); mtrack does not unblock it, and while the radio is blocked or
+  missing only this controller waits, retrying until it is there. The Raspberry Pi image unblocks Bluetooth on first boot, which
+  Raspberry Pi OS does not (it blocks every radio until a wifi country is set); wifi is left as
+  it was. The Linux build now needs `libdbus-1` (`libdbus-1-3` for the `.deb`, which declares it;
+  `libdbus-1-dev` to build); a build without the `ble` feature, and macOS, report "this build has
+  no Bluetooth support" for a configured `ble` controller. See [Bluetooth
+  Control](docs/src/interfaces/bluetooth.md) for pairing and the protocol.
 - **`ListPlaylists` and `GetPlaylist` gRPC RPCs**: the first names the player's playlists and the
   active one; the second returns a playlist's entries (each song's name and duration) and the
   entry it is on, for the active playlist or one by name. Both are reads, open while the player

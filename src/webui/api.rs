@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+pub(crate) mod bluetooth;
 pub(crate) mod browse;
 pub(crate) mod config_api;
 pub(crate) mod devices;
@@ -184,6 +185,12 @@ pub fn router() -> Router<WebUiState> {
         .route("/status", get(status::get_status))
         .route("/controllers/restart", post(status::restart_controllers))
         .route("/lock", get(status::get_lock).put(status::put_lock))
+        .route("/bluetooth", get(bluetooth::get_bluetooth))
+        .route("/bluetooth/pairing", post(bluetooth::post_pairing))
+        .route(
+            "/bluetooth/devices/{address}",
+            delete(bluetooth::delete_device),
+        )
         .route("/devices/audio", get(devices::get_audio_devices))
         .route(
             "/devices/audio/probe",

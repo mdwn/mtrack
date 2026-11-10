@@ -318,6 +318,16 @@ expect "$(unit_is olad.service is-active)" active \
 code="$(inside curl -sS -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/ || true)"
 expect "$code" 200 "olad answers" "olad does not answer (HTTP $code)"
 expect "$(unit_is ssh.service is-enabled)" enabled "ssh is enabled" "ssh is not enabled"
+# A container has no Bluetooth adapter, so nothing starts the unit that
+# unblocks Bluetooth here. What this proves is that systemd loads it, has it
+# enabled and does not fail it; that it unblocks a radio needs a Pi.
+expect "$(unit_is mtrack-unblock-bluetooth.service is-enabled)" enabled \
+    "the Bluetooth unblock unit is enabled" "the Bluetooth unblock unit is not enabled"
+if [ "$(unit_is mtrack-unblock-bluetooth.service is-failed)" = failed ]; then
+    fail "the Bluetooth unblock unit failed"
+else
+    ok "the Bluetooth unblock unit loads and does not fail"
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then

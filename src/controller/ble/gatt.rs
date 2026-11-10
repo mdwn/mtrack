@@ -124,6 +124,7 @@ impl AdapterOps for Bluez {
                     },
                     paired: device.is_paired().await.unwrap_or(false),
                     connected: device.is_connected().await.unwrap_or(false),
+                    trusted: device.is_trusted().await.unwrap_or(false),
                 });
             }
             Ok(devices)
@@ -380,7 +381,7 @@ pub(super) async fn run(
             AdapterEvent::PropertyChanged(AdapterProperty::Powered(false)) => {
                 return Err(io::Error::other(
                     "Bluetooth adapter was powered off; if it was soft-blocked, \
-                     `rfkill unblock bluetooth`, then restart the controllers",
+                     `rfkill unblock bluetooth`",
                 ));
             }
             AdapterEvent::PropertyChanged(_) => {}
