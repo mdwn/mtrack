@@ -109,11 +109,15 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
             platform: linux
+          # macos-14 runners are gone ("The configuration
+          # 'macos-14-arm64-us-default' is not supported"): the jobs were
+          # cancelled as they started, and the packages, which wait on every
+          # binary, were skipped with them.
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             platform: macos
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             platform: macos
     runs-on: ${{ matrix.os }}
     steps:
