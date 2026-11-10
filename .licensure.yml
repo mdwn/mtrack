@@ -34,6 +34,7 @@ excludes:
   - .*\.md
   - .*\.png
   - .*\.glb
+  - .*\.ttf
   - .*\.svg
   # The phone app's platform projects are the Flutter template's own files
   # (Gradle, Xcode, Kotlin and Swift stubs); only its Dart is ours.

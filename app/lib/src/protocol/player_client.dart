@@ -223,8 +223,11 @@ class PlayerClient {
       return;
     }
     _disposed = true;
+    // A subscription stops delivering the moment it is cancelled; its future
+    // only reports that the stream's own clean-up is done, which nothing here
+    // waits for.
     for (final subscription in _subscriptions) {
-      await subscription.cancel();
+      unawaited(subscription.cancel());
     }
     _subscriptions.clear();
     _failAll(const PlayerException.unavailable('closed'));
@@ -267,6 +270,18 @@ class PlayerClient {
     'Previous',
     player.PreviousRequest(),
     player.PreviousResponse.fromBuffer,
+  );
+
+  /// Makes the playlist entry at [position] current without playing it.
+  /// [songName] is the song the caller believes is there: the player refuses
+  /// with FAILED_PRECONDITION when the entry holds another.
+  Future<player.NavigateToSongResponse> navigateToSong(
+    int position,
+    String songName,
+  ) => call(
+    'NavigateToSong',
+    player.NavigateToSongRequest(position: position, songName: songName),
+    player.NavigateToSongResponse.fromBuffer,
   );
 
   /// Jumps to [position] in the current song.

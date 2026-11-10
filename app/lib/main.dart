@@ -13,46 +13,21 @@
 //
 import 'package:flutter/material.dart';
 
+import 'src/app/session.dart';
+import 'src/ble/ble_link.dart';
+import 'src/platform/preferences_store.dart';
+import 'src/platform/wakelock_screen_wake.dart';
+import 'src/ui/app.dart';
+import 'src/ui/licences.dart';
+
 void main() {
-  runApp(const MtrackApp());
-}
-
-/// The app's root widget.
-class MtrackApp extends StatelessWidget {
-  const MtrackApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'mtrack',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        colorSchemeSeed: Colors.deepOrange,
-        useMaterial3: true,
-      ),
-      home: const _PlaceholderScreen(),
-    );
-  }
-}
-
-/// The screen shown until the connection screens exist.
-class _PlaceholderScreen extends StatelessWidget {
-  const _PlaceholderScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('mtrack', style: textTheme.displayMedium),
-            const SizedBox(height: 8),
-            Text('not connected', style: textTheme.titleMedium),
-          ],
-        ),
-      ),
-    );
-  }
+  WidgetsFlutterBinding.ensureInitialized();
+  registerFontLicences();
+  final session = Session(
+    link: BlePlayerLink(),
+    store: PreferencesPlayerStore(),
+    wake: const WakelockScreenWake(),
+  );
+  session.start();
+  runApp(MtrackApp(session: session));
 }

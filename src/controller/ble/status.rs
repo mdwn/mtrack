@@ -52,6 +52,7 @@ pub(crate) fn from_player(status: &PlayerStatus) -> Result<Status, tonic::Status
         elapsed: elapsed_to_proto(status.elapsed.clone())?,
         position: status.playlist.entry().map(|index| index as u32),
         auto_play: auto_play_to_proto(status.auto_play.clone())?,
+        loop_section: status.active_section.as_ref().map(|s| s.name.clone()),
     })
 }
 
@@ -87,6 +88,7 @@ pub(crate) fn encode_capped(status: &Status) -> Vec<u8> {
             Some(&mut status.playlist_name),
             Some(&mut status.song_name),
             auto_song,
+            status.loop_section.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -172,6 +174,7 @@ mod tests {
             elapsed: secs(elapsed),
             position: Some(1),
             auto_play: None,
+            loop_section: None,
         }
     }
 
@@ -244,6 +247,7 @@ mod tests {
             |s: &mut Status| s.playlist_name = "Other".into(),
             |s: &mut Status| s.position = Some(2),
             |s: &mut Status| s.position = None,
+            |s: &mut Status| s.loop_section = Some("Chorus".into()),
             |s: &mut Status| s.song_duration = secs(1),
             |s: &mut Status| {
                 s.auto_play = Some(crate::proto::player::v1::AutoPlayStatus {
@@ -296,6 +300,7 @@ mod tests {
             song: "c".repeat(5000),
             starts_in: secs(3),
         });
+        status.loop_section = Some("d".repeat(5000));
         let encoded = encode_capped(&status);
         assert!(encoded.len() <= MAX_STATUS_LEN, "{}", encoded.len());
         let decoded = Status::decode(encoded.as_slice()).expect("a valid status");

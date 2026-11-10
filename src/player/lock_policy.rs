@@ -93,6 +93,7 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "SeekToSection"),
     (Grpc, "Previous"),
     (Grpc, "Next"),
+    (Grpc, "NavigateToSong"),
     (Grpc, "Stop"),
     (Grpc, "SwitchToPlaylist"),
     (Grpc, "Status"),

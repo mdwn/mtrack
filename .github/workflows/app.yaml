@@ -34,8 +34,8 @@ env:
 
 jobs:
   # Format, analyze and test the app against the generated protobuf messages.
-  # There is no APK or iOS build here: the radio cannot run in CI, and a build
-  # is slow enough to wait for the screens it would build.
+  # The radio cannot run in CI, so everything the app decides is tested against
+  # fakes; the builds below only show that it still compiles into a package.
   app:
     name: Analyze and test the app
     runs-on: ubuntu-latest
@@ -62,3 +62,58 @@ jobs:
     - name: Test
       working-directory: app
       run: flutter test
+
+  # An installable debug APK, so a phone can try the change from the PR: it is
+  # uploaded as an artifact (Actions run page, Artifacts). Signed with the
+  # debug key, so it is for trying, not for a store.
+  android:
+    name: Build the Android app
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install protoc
+      run: ./scripts/install-protoc.sh
+    - uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '17'
+        # Caches ~/.gradle, keyed on the Gradle files under app/android.
+        cache: gradle
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        channel: stable
+        cache: true
+    - name: Generate protobuf messages
+      run: make gen-app-proto
+    - name: Build the APK
+      working-directory: app
+      run: flutter build apk --debug
+    - uses: actions/upload-artifact@v7
+      with:
+        name: mtrack-remote-debug-apk
+        path: app/build/app/outputs/flutter-apk/app-debug.apk
+        retention-days: 7
+
+  # Checks that the iOS project still builds. Main only: a macOS runner costs
+  # many times what a Linux one does, and PR time is a budget. Unsigned, so
+  # nothing here can be installed on a phone.
+  ios:
+    name: Build the iOS app
+    if: github.event_name == 'push'
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install protoc
+      # The runner's Homebrew protoc is new enough for proto3 optional.
+      run: brew install protobuf
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        channel: stable
+        cache: true
+    - name: Generate protobuf messages
+      run: make gen-app-proto
+    - name: Build without signing
+      working-directory: app
+      run: flutter build ios --no-codesign --debug

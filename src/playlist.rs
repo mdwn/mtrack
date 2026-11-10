@@ -419,6 +419,48 @@ impl Playlist {
         Some(song)
     }
 
+    /// Sets the playlist position to the entry at `index`, so a song listed
+    /// twice can be reached at either entry. `expected`, when given, is the
+    /// song the caller believes is there: another song means the playlist
+    /// changed under the caller, and nothing moves.
+    ///
+    /// The checks and the move happen under one hold of the position, as
+    /// [`Playlist::navigate_to`]'s do. Returns the song and whether the
+    /// position moved: it does not when it is already on that entry and not
+    /// off the list. A paused song an edit took off the list is moved back
+    /// onto it, as `navigate_to` does.
+    pub fn navigate_to_entry(
+        &self,
+        index: usize,
+        expected: Option<&str>,
+    ) -> Result<(Arc<Song>, bool), EntryError> {
+        let name = self.songs.get(index).ok_or(EntryError::OutOfRange {
+            position: index,
+            len: self.songs.len(),
+        })?;
+        if let Some(expected) = expected.filter(|e| !e.is_empty()) {
+            if expected != name {
+                return Err(EntryError::Changed {
+                    position: index,
+                    expected: expected.to_string(),
+                    found: name.clone(),
+                });
+            }
+        }
+        // A playlist is built from songs that loaded, so this guards against
+        // a registry that no longer has the entry's song.
+        let song = self.registry.get(name).map_err(EntryError::Unloadable)?;
+        let mut position = self.position.write();
+        if position.off_list.is_none() && position.index == index {
+            return Ok((song, false));
+        }
+        *position = Cursor {
+            index,
+            off_list: None,
+        };
+        Ok((song, true))
+    }
+
     /// Returns the underlying song registry.
     pub fn registry(&self) -> &Arc<Songs> {
         &self.registry
@@ -434,6 +476,21 @@ impl Playlist {
     pub fn current(&self) -> Option<Arc<Song>> {
         self.song_at(&self.position.read())
     }
+}
+
+/// Why [`Playlist::navigate_to_entry`] did not move.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EntryError {
+    #[error("the playlist has no entry {position} (it has {len})")]
+    OutOfRange { position: usize, len: usize },
+    #[error("the playlist has changed: entry {position} is {found}, not {expected}")]
+    Changed {
+        position: usize,
+        expected: String,
+        found: String,
+    },
+    #[error("{0}")]
+    Unloadable(crate::songs::SongLookupError),
 }
 
 /// Parses a playlist's transitions and checks each entry's `exclude` names
@@ -853,6 +910,79 @@ mod test {
         assert!(song.is_none());
         // Position should not change
         assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn navigate_to_entry_moves_to_an_entry() {
+        let playlist = two_song_playlist(test_registry());
+        let (song, moved) = playlist.navigate_to_entry(1, Some("Song 2")).unwrap();
+        assert_eq!(song.name(), "Song 2");
+        assert!(moved);
+        assert_eq!(playlist.position(), 1);
+        let (_, moved) = playlist.navigate_to_entry(0, None).unwrap();
+        assert!(moved);
+        assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn navigate_to_entry_reaches_either_entry_of_a_repeated_song() {
+        let registry = test_registry();
+        let names = ["Song 1", "Song 2", "Song 1"].map(String::from);
+        let playlist = super::Playlist::new("p", &config::Playlist::new(&names), registry).unwrap();
+        let (song, _) = playlist.navigate_to_entry(2, Some("Song 1")).unwrap();
+        assert_eq!(song.name(), "Song 1");
+        assert_eq!(playlist.position(), 2);
+        assert_eq!(playlist.entry(), Some(2));
+    }
+
+    #[test]
+    fn navigate_to_entry_refuses_what_the_caller_did_not_expect() {
+        let playlist = two_song_playlist(test_registry());
+        let err = playlist.navigate_to_entry(1, Some("Song 1")).err().unwrap();
+        assert!(matches!(
+            err,
+            super::EntryError::Changed { position: 1, .. }
+        ));
+        assert!(err.to_string().contains("playlist has changed"));
+        assert_eq!(playlist.position(), 0);
+        // An empty name expects nothing.
+        assert!(playlist.navigate_to_entry(1, Some("")).is_ok());
+    }
+
+    #[test]
+    fn navigate_to_entry_refuses_an_entry_past_the_end() {
+        let playlist = two_song_playlist(test_registry());
+        let err = playlist.navigate_to_entry(2, None).err().unwrap();
+        assert_eq!(
+            err,
+            super::EntryError::OutOfRange {
+                position: 2,
+                len: 2
+            }
+        );
+        assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn navigate_to_the_entry_it_is_on_does_not_move() {
+        let playlist = two_song_playlist(test_registry());
+        let (_, moved) = playlist.navigate_to_entry(0, Some("Song 1")).unwrap();
+        assert!(!moved);
+    }
+
+    #[test]
+    fn navigate_to_entry_brings_an_off_list_song_back_on() {
+        let registry = test_registry();
+        let playlist = two_song_playlist(registry.clone());
+        let off = registry.get("Song 2").unwrap();
+        *playlist.position.write() = super::Cursor {
+            index: 0,
+            off_list: Some(off),
+        };
+        assert_eq!(playlist.entry(), None);
+        let (_, moved) = playlist.navigate_to_entry(0, None).unwrap();
+        assert!(moved);
+        assert_eq!(playlist.entry(), Some(0));
     }
 
     #[test]

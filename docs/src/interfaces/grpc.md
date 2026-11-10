@@ -42,7 +42,7 @@ The [command-line reference](../reference/cli.md) lists these alongside the othe
 
 ## RPCs
 
-The service has 31 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
+The service has 32 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
 empty cell means the RPC is available to gRPC clients only.
 
 | RPC | Purpose | CLI |
@@ -54,6 +54,7 @@ empty cell means the RPC is available to gRPC clients only.
 | `SeekToSection` | Jumps to the start of a named section of the current song. | `seek <section>` |
 | `Previous` | Moves the playlist to the previous song. | `previous` |
 | `Next` | Moves the playlist to the next song. | `next` |
+| `NavigateToSong` | Makes an entry of the active playlist the current one without playing it. `position` is the entry's index as `GetPlaylist` lists it, so a song listed twice is reached at either; `song_name`, when set, is the song the caller believes is there, and another song there (the playlist changed) is `FAILED_PRECONDITION` with nothing moved. A `position` past the end is `OUT_OF_RANGE`. Like `Next`, it does not move the playlist while a song plays, and answers with the song playing (unlike `Next`, it does not break a section loop). Already being on that entry changes nothing: no pause is called off and no waiting auto-play cancelled. | |
 | `Stop` | Stops the playing song. | `stop` |
 | `SwitchToPlaylist` | Switches the active playlist. | `switch-to-playlist` |
 | `Status` | Returns the player's current status: the playlist and song, whether it plays and how far in, the audio output's health, the [ambient light](../lighting/configuration.md#ambient-mode)'s `mode`, `state` and `show` (absent without a DMX engine; when the status's read of the DMX engine did not answer, `available` is false, `reason` says why, and `mode` and `state` are empty), and a song waiting to [auto play](../getting-started/playlists.md#auto-play) (`auto_play`: its `song` and `starts_in`). | `status` |

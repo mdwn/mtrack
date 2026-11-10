@@ -682,6 +682,7 @@ mod tests {
             }),
             position: None,
             auto_play: None,
+            loop_section: None,
         }
     }
 

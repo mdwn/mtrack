@@ -46,7 +46,7 @@ mod pairing;
 #[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
 mod session;
 #[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
-mod status;
+pub(crate) mod status;
 
 #[cfg(test)]
 pub(crate) use pairing::fake;
