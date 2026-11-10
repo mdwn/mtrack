@@ -42,7 +42,10 @@ const POLL_JITTER: Duration = Duration::from_millis(25);
 /// The status a [`PlayerStatus`] reports to a phone. The conversions are
 /// gRPC's own, so both surfaces read the player's state the same way.
 #[allow(clippy::result_large_err)]
-pub(crate) fn from_player(status: &PlayerStatus) -> Result<Status, tonic::Status> {
+pub(crate) fn from_player(
+    status: &PlayerStatus,
+    gains_revision: u32,
+) -> Result<Status, tonic::Status> {
     let song = status.current_song.as_ref();
     Ok(Status {
         playlist_name: status.playlist.name().to_string(),
@@ -53,6 +56,10 @@ pub(crate) fn from_player(status: &PlayerStatus) -> Result<Status, tonic::Status
         position: status.playlist.entry().map(|index| index as u32),
         auto_play: auto_play_to_proto(status.auto_play.clone())?,
         loop_section: status.active_section.as_ref().map(|s| s.name.clone()),
+        gains_revision: Some(gains_revision),
+        // Not read here: see `poll`.
+        ambient_mode: None,
+        ambient_state: None,
     })
 }
 
@@ -154,8 +161,13 @@ pub(crate) async fn poll(
             _ = ticks.tick() => {}
             () = wanted.notified() => {}
         }
-        // No DMX reads: a phone's status is the transport's.
-        match from_player(&player.transport_status().await) {
+        // No DMX reads: a phone's status is the transport's. The ambient
+        // light's mode and state are behind the DMX engine's ambient lock,
+        // which the effects loop holds while it starts a show; a read waits
+        // up to `STATUS_DMX_READ_TIMEOUT` for it, and this loop would wait
+        // too, late with every status behind it.
+        let gains_revision = player.gains_revision();
+        match from_player(&player.transport_status().await, gains_revision) {
             Ok(status) => publish(status),
             Err(e) => tracing::debug!(error = %e, "Bluetooth status not read"),
         }
@@ -183,6 +195,9 @@ mod tests {
             position: Some(1),
             auto_play: None,
             loop_section: None,
+            gains_revision: Some(0),
+            ambient_mode: None,
+            ambient_state: None,
         }
     }
 
@@ -196,7 +211,7 @@ mod tests {
             .build()
             .expect("player");
         player.await_hardware_ready().await;
-        let mine = from_player(&player.transport_status().await).expect("a status");
+        let mine = from_player(&player.transport_status().await, 0).expect("a status");
         let grpc = crate::controller::grpc::PlayerServer::new(player.clone())
             .status(tonic::Request::new(StatusRequest {}))
             .await
@@ -257,6 +272,9 @@ mod tests {
             |s: &mut Status| s.position = None,
             |s: &mut Status| s.loop_section = Some("Chorus".into()),
             |s: &mut Status| s.song_duration = secs(1),
+            |s: &mut Status| s.gains_revision = Some(1),
+            |s: &mut Status| s.ambient_mode = Some("on".into()),
+            |s: &mut Status| s.ambient_state = Some("playing".into()),
             |s: &mut Status| {
                 s.auto_play = Some(crate::proto::player::v1::AutoPlayStatus {
                     song: "Next".into(),
@@ -316,6 +334,23 @@ mod tests {
             decoded.auto_play.expect("auto play kept").starts_in,
             secs(3)
         );
+    }
+
+    #[test]
+    fn the_levels_and_ambient_fields_survive_the_cut() {
+        let mut status = playing_at(1);
+        status.gains_revision = Some(u32::MAX);
+        status.ambient_mode = Some("auto".into());
+        status.ambient_state = Some("unavailable".into());
+        status.playlist_name = "a".repeat(5000);
+        status.song_name = "b".repeat(5000);
+        status.loop_section = Some("d".repeat(5000));
+        let encoded = encode_capped(&status);
+        assert!(encoded.len() <= MAX_STATUS_LEN, "{}", encoded.len());
+        let decoded = Status::decode(encoded.as_slice()).expect("a valid status");
+        assert_eq!(decoded.gains_revision, Some(u32::MAX));
+        assert_eq!(decoded.ambient_mode.as_deref(), Some("auto"));
+        assert_eq!(decoded.ambient_state.as_deref(), Some("unavailable"));
     }
 
     #[test]

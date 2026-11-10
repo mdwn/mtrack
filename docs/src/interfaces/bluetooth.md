@@ -4,7 +4,7 @@ The player can be controlled from a phone over Bluetooth Low Energy, with no net
 them: no wifi, no router, no cable. The phone pairs with the player once, and after that it
 finds it and reconnects by itself when it is in range. The Bluetooth controller carries the same
 `PlayerService` messages as [gRPC](grpc.md), so a phone can do what a gRPC client can do during a
-show: transport, playlist, section loops and status.
+show: transport, playlist, section loops, track levels, the ambient light and status.
 
 This page covers setting the controller up, how pairing works, and the protocol, for anyone
 writing a client.
@@ -151,7 +151,8 @@ The calls a phone may make, and no others:
 
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
-`StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`.
+`StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
+`SetTrackMute`, `SetAmbientMode`.
 
 Anything else, every call that changes the configuration included, is refused with
 `PERMISSION_DENIED`. A response too large for a frame is replaced by a `RESOURCE_EXHAUSTED`
@@ -169,8 +170,12 @@ requests waiting has the excess dropped.
 
 The `status` characteristic carries a small `Status` message: the playlist and song names, the
 song's length, whether it is playing, the elapsed time, the playlist position, the song
-waiting to start by itself, if any, and the section a section loop is set on, if any. It carries
-no beat grid and no sections; fetch those with the `Status` call when the song changes.
+waiting to start by itself, if any, the section a section loop is set on, if any, the ambient
+light's mode and state (`ambient_mode`: `auto`, `on` or `off`; `ambient_state`: `playing`,
+`pending`, `off` or `unavailable`; the player does not fill them in yet, so read the `ambient`
+field of the `Status` call) and `gains_revision`. That last is a count the player moves whenever any track's gain or mute changes, from any surface; call
+`GetTrackGains` again when it differs from the one you last saw. It wraps, so compare for
+inequality. The message carries no beat grid and no sections; fetch those with the `Status` call when the song changes.
 
 - **Read** returns the latest `Status` as a bare encoded message, not chunked, at most 512
   bytes (a long name is shortened to fit). It uses long reads if the MTU is small.

@@ -76,4 +76,17 @@ message Status {
     // on, as the web UI marks it: from the LoopSection call until the loop
     // is stopped. Absent when no section is looping.
     optional string loop_section = 8;
+    // A count the player moves on any change to a track's gain or mute, from
+    // any surface: this one, gRPC, OSC or the web UI. A client fetches the
+    // gains again when it differs from the last it saw. It wraps, so compare
+    // for inequality, not order. Absent only from a player too old to count.
+    optional uint32 gains_revision = 9;
+    // The ambient light's mode: "auto", "on" or "off", as
+    // player.v1.AmbientStatus.mode gives it. Absent when the player does not
+    // report it, which today is always: the Status method carries it.
+    optional string ambient_mode = 10;
+    // What the ambient light is doing: "playing", "pending", "off" or
+    // "unavailable", as player.v1.AmbientStatus.state gives it. Absent when
+    // ambient_mode is.
+    optional string ambient_state = 11;
 }

@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first phone can claim a fresh player. Devices that connect without pairing are dropped,
   except a device you have marked trusted in BlueZ yourself (a BLE MIDI pedal, say), which is
   left alone and not listed. The phone sends the performance calls of the gRPC service
-  (transport, seek, playlists, section loops) and receives a slim status. The adapter must not be
+  (transport, seek, playlists, section loops, track gains and mutes, the ambient mode) and receives a slim status, with a counter that moves when a gain changes. The adapter must not be
   soft-blocked (`rfkill unblock bluetooth`); mtrack does not unblock it, and while the radio is blocked or
   missing only this controller waits, retrying until it is there. The Raspberry Pi image unblocks Bluetooth on first boot, which
   Raspberry Pi OS does not (it blocks every radio until a wifi country is set); wifi is left as
