@@ -149,9 +149,9 @@ and the web UI: a locked player refuses what it refuses there.
 
 The calls a phone may make, and no others:
 
-`Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `Seek`, `SeekToSection`,
-`SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`, `StopSamples`,
-`CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`.
+`Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
+`SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
+`StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`.
 
 Anything else, every call that changes the configuration included, is refused with
 `PERMISSION_DENIED`. A response too large for a frame is replaced by a `RESOURCE_EXHAUSTED`
@@ -168,9 +168,9 @@ requests waiting has the excess dropped.
 ### Status
 
 The `status` characteristic carries a small `Status` message: the playlist and song names, the
-song's length, whether it is playing, the elapsed time, the playlist position, and the song
-waiting to start by itself, if any. It carries no beat grid and no sections; fetch those with the
-`Status` call when the song changes.
+song's length, whether it is playing, the elapsed time, the playlist position, the song
+waiting to start by itself, if any, and the section a section loop is set on, if any. It carries
+no beat grid and no sections; fetch those with the `Status` call when the song changes.
 
 - **Read** returns the latest `Status` as a bare encoded message, not chunked, at most 512
   bytes (a long name is shortened to fit). It uses long reads if the MTU is small.
@@ -182,6 +182,11 @@ waiting to start by itself, if any. It carries no beat grid and no sections; fet
 
 ## Phone app
 
-A phone app for this protocol is under development in
-[`app/`](https://github.com/mdwn/mtrack/tree/main/app) in the source repository. It is not
-released yet. Until it is, any client that follows the protocol above works.
+A phone app for this protocol is in [`app/`](https://github.com/mdwn/mtrack/tree/main/app) in the
+source repository. It is not released in any store; it builds as an Android APK (the CI run
+for a change to `app/` uploads one as an artifact) and as an iOS project that has not been run
+on a phone. It finds a player, pairs, and then reconnects to it by itself. Its three tabs show
+the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
+current; switch to another playlist), and the song's sections (tap to jump to one, hold to loop
+it). Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
+Until the app is released, any client that follows the protocol above works.

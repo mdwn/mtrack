@@ -38,6 +38,7 @@ pub(crate) const ALLOWED: &[&str] = &[
     "PlaySongFrom",
     "Stop",
     "Next",
+    "NavigateToSong",
     "Previous",
     "Seek",
     "SeekToSection",

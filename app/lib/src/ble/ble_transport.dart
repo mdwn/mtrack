@@ -39,30 +39,9 @@ const int requestedMtu = 517;
 /// larger than this cannot be written.
 const int maxAttributeValue = 512;
 
-/// A player seen while scanning.
-class DiscoveredPlayer {
-  /// A player advertising the service.
-  const DiscoveredPlayer({
-    required this.id,
-    required this.name,
-    required this.rssi,
-  });
-
-  /// The platform's identifier for the peripheral: a MAC address on Android, a
-  /// per-phone UUID on iOS. Stable enough to reconnect to with
-  /// [BlePlayerTransport.connect].
-  final String id;
-
-  /// The name the player advertises.
-  final String name;
-
-  /// Signal strength in dBm at the last advertisement.
-  final int rssi;
-}
-
 /// A [PlayerTransport] over Bluetooth LE, through `universal_ble`.
 ///
-/// This is the only file that touches the plugin. It moves chunks and reports
+/// With `ble_link.dart` this is where the app touches the plugin. It moves chunks and reports
 /// the link's state and nothing else; framing, requests and timeouts live in
 /// the protocol layer where they can be tested. Nothing here has run on a
 /// device (see README.md for what is unverified).
@@ -81,51 +60,7 @@ class BlePlayerTransport implements PlayerTransport {
   TransportState _currentState = TransportState.disconnected;
   String? _deviceId;
   int _mtu = 23;
-
-  /// Scans for players advertising the service, emitting the full list of
-  /// those seen so far each time it changes, until the scan ends after
-  /// [timeout] or the subscription is cancelled. Asks for the Bluetooth
-  /// permissions first on Android and iOS.
-  static Stream<List<DiscoveredPlayer>> scan({
-    Duration timeout = const Duration(seconds: 10),
-  }) {
-    late final StreamController<List<DiscoveredPlayer>> controller;
-    final found = <String, DiscoveredPlayer>{};
-    StreamSubscription<BleDevice>? results;
-    Timer? ender;
-
-    Future<void> stop() async {
-      ender?.cancel();
-      await results?.cancel();
-      await UniversalBle.stopScan();
-    }
-
-    controller = StreamController<List<DiscoveredPlayer>>(
-      onListen: () async {
-        results = UniversalBle.scanStream.listen((device) {
-          final name = device.name;
-          found[device.deviceId] = DiscoveredPlayer(
-            id: device.deviceId,
-            name: name != null && name.isNotEmpty ? name : device.deviceId,
-            rssi: device.rssi ?? 0,
-          );
-          controller.add(found.values.toList(growable: false));
-        });
-        try {
-          await UniversalBle.startScan(
-            scanFilter: ScanFilter(withServices: [serviceUuid]),
-          );
-        } on Object catch (e, stack) {
-          controller.addError(e, stack);
-          await controller.close();
-          return;
-        }
-        ender = Timer(timeout, () => unawaited(controller.close()));
-      },
-      onCancel: stop,
-    );
-    return controller.stream;
-  }
+  bool _linkLost = false;
 
   @override
   TransportState get currentState => _currentState;
@@ -153,24 +88,21 @@ class BlePlayerTransport implements PlayerTransport {
   }
 
   /// Connects to the player with the platform identifier [deviceId], requests
-  /// the MTU, discovers the service and subscribes to `response` and `status`,
-  /// then reports [TransportState.ready].
+  /// the MTU and discovers the service. The transport stays
+  /// [TransportState.connecting]: the player drops a phone that stays
+  /// connected without pairing, so pairing comes next, and [subscribe]
+  /// finishes the setup.
   ///
-  /// Throws when any step fails, leaving the transport disconnected. Pairing
-  /// is left to the operating system, which starts it on the first encrypted
-  /// access; [pair] starts it deliberately.
+  /// Throws when any step fails, leaving the transport disconnected.
   Future<void> connect(String deviceId) async {
     await _teardown();
     _setState(TransportState.connecting);
     _deviceId = deviceId;
     try {
-      final lost = Completer<void>();
       _subscriptions.add(
         UniversalBle.connectionStream(deviceId).listen((connected) {
           if (!connected) {
-            if (!lost.isCompleted) {
-              lost.complete();
-            }
+            _linkLost = true;
             _onLinkLost();
           }
         }),
@@ -178,7 +110,22 @@ class BlePlayerTransport implements PlayerTransport {
       await UniversalBle.connect(deviceId);
       _mtu = await UniversalBle.requestMtu(deviceId, requestedMtu);
       await UniversalBle.discoverServices(deviceId);
+    } on Object {
+      await _teardown();
+      rethrow;
+    }
+  }
 
+  /// Subscribes to `response` and `status`, then reports
+  /// [TransportState.ready]. The characteristics need an encrypted link, so
+  /// this comes after pairing. Throws when a step fails, leaving the
+  /// transport disconnected.
+  Future<void> subscribe() async {
+    final deviceId = _deviceId;
+    if (deviceId == null || _linkLost) {
+      throw StateError('not connected');
+    }
+    try {
       // Listen before subscribing, so the status the player sends on
       // subscribe is not missed.
       _subscriptions
@@ -204,7 +151,7 @@ class BlePlayerTransport implements PlayerTransport {
         serviceUuid,
         statusUuid,
       );
-      if (lost.isCompleted) {
+      if (_linkLost) {
         throw StateError('connection lost during setup');
       }
       _setState(TransportState.ready);
@@ -238,6 +185,7 @@ class BlePlayerTransport implements PlayerTransport {
   }
 
   Future<void> _teardown() async {
+    _linkLost = false;
     for (final subscription in _subscriptions) {
       await subscription.cancel();
     }

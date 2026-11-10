@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   active one; the second returns a playlist's entries (each song's name and duration) and the
   entry it is on, for the active playlist or one by name. Both are reads, open while the player
   is locked.
+- **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
+  song's name to catch a playlist that changed) the current one without playing it, with the
+  effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the
+  playlist where it is while a song plays, and it is open while the player is locked. A position
+  past the end is `OUT_OF_RANGE`; a name that is not the entry's is `FAILED_PRECONDITION`.
 
 ## [0.18.1] - 2026-11-09
 

@@ -96,6 +96,27 @@ message NextResponse {
     Song song = 1;
 }
 
+// NavigateToSongRequest is the message for making an entry of the active
+// playlist the current one without playing it.
+message NavigateToSongRequest {
+    // The index of the entry in the active playlist, as GetPlaylist lists
+    // them. A song listed twice is reached at either entry.
+    uint32 position = 1;
+    // The name of the song the caller believes is at that entry. When set and
+    // the entry holds another song, the playlist has changed under the
+    // caller and nothing moves.
+    string song_name = 2;
+}
+
+// NavigateToSongResponse is the response message after the playlist moved.
+message NavigateToSongResponse {
+    // Song is the song the playlist is now pointing at. While a song plays
+    // the playlist does not move, and this is the song playing. When the
+    // playlist is already on that entry nothing changes: no pause is called
+    // off, no waiting auto-play cancelled, no song-change announced.
+    Song song = 1;
+}
+
 // StopRequest is the message for requesting the player to stop the currently
 // playing song.
 message StopRequest {}
@@ -522,6 +543,13 @@ service PlayerService {
 
     // Next will move the playlist to the next song.
     rpc Next(NextRequest) returns (NextResponse);
+
+    // NavigateToSong makes an entry of the active playlist the current one
+    // without playing it. Like Next, it does not move the playlist while a
+    // song plays (unlike Next it does not break a section loop). A position
+    // past the end is OUT_OF_RANGE; a song_name that is not the entry's, or an
+    // entry whose song did not load, is FAILED_PRECONDITION.
+    rpc NavigateToSong(NavigateToSongRequest) returns (NavigateToSongResponse);
 
     // Stop will stop the currently playing song.
     rpc Stop(StopRequest) returns (StopResponse);

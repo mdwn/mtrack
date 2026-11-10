@@ -72,4 +72,8 @@ message Status {
     // The song waiting to start by itself, and how long until it does.
     // Absent when none is.
     optional player.v1.AutoPlayStatus auto_play = 7;
+    // The name of the section of the current song that a section loop is set
+    // on, as the web UI marks it: from the LoopSection call until the loop
+    // is stopped. Absent when no section is looping.
+    optional string loop_section = 8;
 }

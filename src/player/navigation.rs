@@ -129,27 +129,91 @@ impl Player {
             }
             return current;
         }
-        let (playlist, (from, before, song)) = self.move_playlist(|playlist| {
+        let stay = format!("Nothing to go to {}: the paused song stays.", direction);
+        let moved = self
+            .navigate_stopped(join, stay, |playlist| {
+                // A paused song an edit took off the list after the last
+                // entry has no entry to move on to: it stays paused, and
+                // current, as at the end of the list, rather than losing its
+                // pause and staying off the list (#576).
+                if playlist.entry().is_none()
+                    && !playlist.can_move(direction == PlaylistDirection::Prev)
+                {
+                    return Ok(None);
+                }
+                Ok::<_, std::convert::Infallible>(Some(match direction {
+                    PlaylistDirection::Next => playlist.next(),
+                    PlaylistDirection::Prev => playlist.prev(),
+                }))
+            })
+            .await;
+        match moved {
+            Ok(song) => song,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Makes the entry at `position` of the active playlist the current one
+    /// without playing it, as a navigation makes its song current: a pause is
+    /// called off, a song waiting to start by itself is cancelled or
+    /// scheduled, and the ambient light follows the entry. `expected`, when
+    /// given, is the song the caller believes is there; another song means the
+    /// playlist changed under the caller and nothing moves.
+    ///
+    /// The checks and the move are made under the playlist's move lock, so a
+    /// reload cannot come between them. Already being on that entry, on the
+    /// list, changes nothing: no pause is called off, no auto-play cancelled,
+    /// no song-change event. While a song plays nothing moves and the playing
+    /// song is returned, as for `next`; unlike `next`, this does not break a
+    /// section loop.
+    pub async fn navigate_to_song(
+        &self,
+        position: usize,
+        expected: Option<&str>,
+    ) -> Result<Arc<Song>, playlist::EntryError> {
+        let join = self.join.lock().await;
+        if join.is_some() {
+            let current = self.get_playlist().current();
+            info!(
+                current_song = ?current.as_ref().map(|s| s.name().to_string()),
+                "Can't go to entry {}, player is active.", position
+            );
+            return current.ok_or(playlist::EntryError::OutOfRange { position, len: 0 });
+        }
+        let stay = format!("Already on entry {}: nothing changes.", position);
+        self.navigate_stopped(join, stay, |playlist| {
+            let (song, moved) = playlist.navigate_to_entry(position, expected)?;
+            Ok(moved.then_some(Some(song)))
+        })
+        .await?
+        .ok_or(playlist::EntryError::OutOfRange { position, len: 0 })
+    }
+
+    /// The part of a navigation that runs while nothing plays: `step` moves
+    /// the playlist (`None` leaves it where it is, and the song stays, with
+    /// `stay` logged) and everything that follows a move -- the song-change
+    /// event, auto-play and ambient light -- is brought here, the same for
+    /// every kind of move. An error from `step` is the move refused, with
+    /// nothing changed.
+    async fn navigate_stopped<E>(
+        &self,
+        join: tokio::sync::MutexGuard<'_, Option<super::PlayHandles>>,
+        stay: String,
+        step: impl FnOnce(&Playlist) -> Result<Option<Option<Arc<Song>>>, E>,
+    ) -> Result<Option<Arc<Song>>, E> {
+        let (playlist, stepped) = self.move_playlist(|playlist| {
             let from = playlist.entry();
             let before = playlist.ambient_before(self.waiting_entry(playlist));
-            // A paused song an edit took off the list after the last entry
-            // has no entry to move on to: it stays paused, and current, as
-            // at the end of the list, rather than losing its pause and
-            // staying off the list (#576).
-            if from.is_none() && !playlist.can_move(direction == PlaylistDirection::Prev) {
-                return (from, before, None);
-            }
-            let song = match direction {
-                PlaylistDirection::Next => playlist.next(),
-                PlaylistDirection::Prev => playlist.prev(),
-            };
-            (from, before, Some(song))
+            step(playlist).map(|song| (from, before, song))
         });
+        let (from, before, song) = stepped?;
         let Some(song) = song else {
-            info!("Nothing to go to {}: the paused song stays.", direction);
-            return playlist.current();
+            info!("{}", stay);
+            return Ok(playlist.current());
         };
-        let song = song?;
+        let Some(song) = song else {
+            return Ok(None);
+        };
         // A paused song holds its lights, which a navigation leaves held.
         let paused = self.pending_start().is_some();
         self.clear_pending_start();
@@ -183,7 +247,7 @@ impl Player {
         self.reload_deferred_hardware();
         drop(join);
         self.load_song_samples(&song);
-        Some(song)
+        Ok(Some(song))
     }
 
     /// Next goes to the next entry in the playlist.

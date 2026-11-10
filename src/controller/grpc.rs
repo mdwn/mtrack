@@ -29,16 +29,17 @@ use crate::{
         CancelAutoPlayResponse, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetPlaylistRequest,
         GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest,
-        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
-        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PlaylistEntry,
-        PreviousRequest, PreviousResponse, RemoveProfileRequest, SectionAckRequest,
-        SectionAckResponse, SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
-        SetAmbientModeResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
-        SetTrackMuteResponse, Song, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
+        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
+        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
+        RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
+        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetTrackGainRequest,
+        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StatusRequest,
+        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
+        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
+        FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -476,6 +477,29 @@ impl PlayerService for PlayerServer {
     async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
         Ok(Response::new(NextResponse {
             song: Some(navigated(self.player.next().await)?),
+        }))
+    }
+
+    async fn navigate_to_song(
+        &self,
+        request: Request<NavigateToSongRequest>,
+    ) -> Result<Response<NavigateToSongResponse>, Status> {
+        use crate::playlist::EntryError;
+
+        let req = request.into_inner();
+        let expected = Some(req.song_name.as_str()).filter(|name| !name.is_empty());
+        let song = self
+            .player
+            .navigate_to_song(req.position as usize, expected)
+            .await
+            .map_err(|e| match e {
+                EntryError::OutOfRange { .. } => Status::out_of_range(e.to_string()),
+                EntryError::Changed { .. } | EntryError::Unloadable(_) => {
+                    Status::failed_precondition(e.to_string())
+                }
+            })?;
+        Ok(Response::new(NavigateToSongResponse {
+            song: Some(song.to_proto()?),
         }))
     }
 
@@ -1346,6 +1370,83 @@ mod test {
 
         let current = player.get_playlist().current().unwrap().name().to_string();
         let result = client.next(NextRequest {}).await?.into_inner();
+        assert_eq!(result.song.unwrap().name, current);
+        assert_eq!(player.get_playlist().current().unwrap().name(), current);
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    fn navigate_request(
+        position: u32,
+        name: &str,
+    ) -> crate::proto::player::v1::NavigateToSongRequest {
+        crate::proto::player::v1::NavigateToSongRequest {
+            position,
+            song_name: name.to_string(),
+        }
+    }
+
+    /// Navigating to an entry makes it current and does not play it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_navigate_to_song_stopped() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, device) = setup_grpc().await?;
+
+        let names: Vec<String> = player.get_playlist().songs().clone();
+        let last = names.len() - 1;
+        assert_ne!(player.get_playlist().entry(), Some(last));
+
+        let result = client
+            .navigate_to_song(navigate_request(last as u32, &names[last]))
+            .await?
+            .into_inner();
+        assert_eq!(result.song.unwrap().name, names[last]);
+        assert_eq!(player.get_playlist().entry(), Some(last));
+        assert!(!device.is_playing());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_navigate_to_song_refusals() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, _device) = setup_grpc().await?;
+        let before = player.get_playlist().entry();
+        let first = player.get_playlist().songs()[0].clone();
+
+        // Past the end: OUT_OF_RANGE, as nothing else in the service has a
+        // position to be out of.
+        let status = client
+            .navigate_to_song(navigate_request(999, ""))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::OutOfRange);
+
+        // A name that is not the entry's: the playlist changed.
+        let status = client
+            .navigate_to_song(navigate_request(1, "no such song"))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("playlist has changed"));
+        assert_ne!(player.get_playlist().songs()[1], first);
+        assert_eq!(player.get_playlist().entry(), before);
+        Ok(())
+    }
+
+    /// While a song plays the player stays on it, as for Next.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_navigate_to_song_while_playing() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, device) = setup_grpc().await?;
+
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        let current = player.get_playlist().current().unwrap().name().to_string();
+        let other = player.get_playlist().songs()[1].clone();
+        let result = client
+            .navigate_to_song(navigate_request(1, &other))
+            .await?
+            .into_inner();
         assert_eq!(result.song.unwrap().name, current);
         assert_eq!(player.get_playlist().current().unwrap().name(), current);
 

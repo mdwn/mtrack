@@ -1,0 +1,121 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+import 'package:flutter/material.dart';
+
+import 'now_screen.dart';
+import 'playlist_screen.dart';
+import 'sections_screen.dart';
+import 'theme.dart';
+
+/// The three tabs and the bar to switch between them. Each tab keeps its state
+/// while another is showing.
+class HomeShell extends StatefulWidget {
+  /// The tabs.
+  const HomeShell({super.key});
+
+  @override
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  static const List<String> _labels = ['Now', 'Playlist', 'Sections'];
+
+  int _index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      children: [
+        Expanded(
+          child: IndexedStack(
+            index: _index,
+            children: [
+              const NowScreen(),
+              PlaylistScreen(active: _index == 1),
+              const SectionsScreen(),
+            ],
+          ),
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: colors.surface,
+            border: Border(top: BorderSide(color: colors.line)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Row(
+              children: [
+                for (var i = 0; i < _labels.length; i++)
+                  Expanded(
+                    child: _Tab(
+                      label: _labels[i],
+                      selected: i == _index,
+                      onTap: () => setState(() => _index = i),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Tab extends StatelessWidget {
+  const _Tab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          alignment: Alignment.center,
+          constraints: const BoxConstraints(minHeight: 52),
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(
+                color: selected ? colors.cyan : Colors.transparent,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Text(
+            label,
+            style: AppText.bodyStrong.copyWith(
+              fontSize: 12.5,
+              color: selected ? colors.cyan : colors.dim,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

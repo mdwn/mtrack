@@ -41,6 +41,13 @@ class PlaybackClock {
     _duration = Duration.zero;
   }
 
+  /// Freezes the position where it is now, for a lost connection: the last
+  /// state stays on show without running on.
+  void hold() {
+    _elapsed = position;
+    _playing = false;
+  }
+
   /// Whether the last status said a song is playing.
   bool get playing => _playing;
 

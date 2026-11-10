@@ -3210,6 +3210,163 @@ mod test {
         Ok(())
     }
 
+    /// The songs the player announced as current, in order.
+    struct Announced(parking_lot::Mutex<Vec<String>>);
+
+    impl SongChangeNotifier for Announced {
+        fn notify(&self, song: &Song) {
+            self.0.lock().push(song.name().to_string());
+        }
+    }
+
+    fn announce(player: &Player) -> Arc<Announced> {
+        let announced = Arc::new(Announced(Default::default()));
+        player.add_song_change_notifier(announced.clone());
+        announced
+    }
+
+    /// The code a refused `navigate_to_song` is.
+    fn entry_error(result: Result<Arc<Song>, playlist::EntryError>) -> playlist::EntryError {
+        result.err().expect("the move should have been refused")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_moves_to_the_entry_and_announces_it_once(
+    ) -> Result<(), Box<dyn Error>> {
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- Song 3\n- Song 5\n").await?;
+        let announced = announce(&player);
+        let song = player.navigate_to_song(2, Some("Song 5")).await?;
+        assert_eq!(song.name(), "Song 5");
+        assert_eq!(current_name(&player).await, "Song 5");
+        assert!(!player.is_playing().await);
+        assert_eq!(*announced.0.lock(), ["Song 5"]);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_calls_a_pause_off_as_next_does() -> Result<(), Box<dyn Error>> {
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- Song 3\n- Song 5\n").await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        assert!(player.pending_start().is_some(), "paused");
+
+        player.navigate_to_song(1, None).await?;
+        assert_eq!(current_name(&player).await, "Song 3");
+        assert!(player.pending_start().is_none(), "the pause is called off");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_schedules_and_cancels_auto_play() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        player.navigate_to_song(1, None).await?;
+        let (song, _) = player.auto_play_status().expect("scheduled");
+        assert_eq!(song, "Song 3");
+        // Leaving the entry calls the wait off.
+        player.navigate_to_song(2, None).await?;
+        assert!(player.auto_play_status().is_none());
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!player.is_playing().await, "called off");
+        assert_eq!(current_name(&player).await, "Song 5");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_reaches_the_second_entry_of_a_repeated_song(
+    ) -> Result<(), Box<dyn Error>> {
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- Song 3\n- Song 1\n").await?;
+        let song = player.navigate_to_song(2, Some("Song 1")).await?;
+        assert_eq!(song.name(), "Song 1");
+        assert_eq!(player.get_playlist().entry(), Some(2));
+        let status = crate::controller::ble::status::from_player(&player.transport_status().await)?;
+        assert_eq!(status.position, Some(2));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_refuses_a_stale_name_and_a_bad_position() -> Result<(), Box<dyn Error>>
+    {
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- Song 3\n- Song 5\n").await?;
+        let announced = announce(&player);
+        let changed = entry_error(player.navigate_to_song(1, Some("Song 5")).await);
+        assert!(matches!(changed, playlist::EntryError::Changed { .. }));
+        let out = entry_error(player.navigate_to_song(3, None).await);
+        assert_eq!(
+            out,
+            playlist::EntryError::OutOfRange {
+                position: 3,
+                len: 3
+            }
+        );
+        assert_eq!(player.get_playlist().entry(), Some(0));
+        assert!(announced.0.lock().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigating_to_the_entry_it_is_on_changes_nothing() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 5s\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        let announced = announce(&player);
+
+        // A waiting auto-play stays waiting.
+        player.navigate_to_song(1, None).await?;
+        assert_eq!(announced.0.lock().len(), 1);
+        player.navigate_to_song(1, Some("Song 3")).await?;
+        assert!(player.auto_play_status().is_some(), "still waiting");
+        assert_eq!(announced.0.lock().len(), 1, "no second event");
+        player.navigate_to_song(0, None).await?;
+
+        // A paused song stays paused.
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        let events = announced.0.lock().len();
+        let song = player.navigate_to_song(0, Some("Song 1")).await?;
+        assert_eq!(song.name(), "Song 1");
+        assert!(player.pending_start().is_some(), "still paused");
+        assert_eq!(announced.0.lock().len(), events);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_while_playing_moves_nothing() -> Result<(), Box<dyn Error>> {
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- Song 3\n- Song 5\n").await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        let announced = announce(&player);
+        let song = player.navigate_to_song(2, Some("Song 5")).await?;
+        assert_eq!(song.name(), "Song 1");
+        assert_eq!(player.get_playlist().entry(), Some(0));
+        assert!(announced.0.lock().is_empty());
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_to_song_works_in_all_songs() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        player.switch_to_playlist("all_songs").await?;
+        let names = player.get_playlist().songs().clone();
+        let last = names.len() - 1;
+        let song = player.navigate_to_song(last, Some(&names[last])).await?;
+        assert_eq!(song.name(), names[last]);
+        assert_eq!(player.get_playlist().entry(), Some(last));
+        Ok(())
+    }
+
     #[test]
     fn status_events_show_a_waiting_auto_play_when_they_have_its_events() {
         let parse = |yaml: &str| -> StatusEvents {
@@ -4859,6 +5016,32 @@ mod test {
         )?;
         player.await_hardware_ready().await;
         Ok((dir, player))
+    }
+
+    /// A phone's status names the section a loop is set on from the call
+    /// until the loop is stopped, as the web UI marks it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phones_status_names_the_looping_section() -> Result<(), Box<dyn Error>> {
+        use crate::controller::ble::status::from_player;
+
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        let status = from_player(&player.transport_status().await)?;
+        assert_eq!(status.loop_section, None);
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        let status = from_player(&player.transport_status().await)?;
+        assert_eq!(status.loop_section.as_deref(), Some("a"));
+
+        player.stop_section_loop();
+        let status = from_player(&player.transport_status().await)?;
+        assert_eq!(status.loop_section, None);
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
     }
 
     /// A section loop armed, then Stop: the section is forgotten. Kept, the

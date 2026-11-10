@@ -77,6 +77,7 @@ class FakePlayer implements PlayerTransport {
     'Stop',
     'Next',
     'Previous',
+    'NavigateToSong',
     'Seek',
     'SeekToSection',
     'SwitchToPlaylist',
@@ -108,6 +109,11 @@ class FakePlayer implements PlayerTransport {
 
   /// The bytes the next [readStatus] returns.
   Uint8List statusBytes = Uint8List(0);
+
+  /// When set, each status read and each request is noted in it, as
+  /// `readStatus` and `call:Method`, so a test can check their order against
+  /// other events.
+  List<String>? log;
 
   @override
   int maxChunk;
@@ -177,6 +183,7 @@ class FakePlayer implements PlayerTransport {
 
   void _handle(ble.Request request) {
     received.add(request);
+    log?.add('call:${request.method}');
     final FakeReply reply;
     if (!allowlist.contains(request.method)) {
       reply = FakeReply.error(7, 'method ${request.method} is not allowed');
@@ -227,7 +234,10 @@ class FakePlayer implements PlayerTransport {
   }
 
   @override
-  Future<Uint8List> readStatus() async => statusBytes;
+  Future<Uint8List> readStatus() async {
+    log?.add('readStatus');
+    return statusBytes;
+  }
 
   @override
   Future<void> close() async {
