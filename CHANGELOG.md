@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry it is on, for the active playlist or one by name. Both are reads, open while the player
   is locked.
 
+## [0.18.1] - 2026-11-09
+
+### Fixed
+
+- **The beat indicator's dot no longer flickers through a song's first bar**: in the web UI the
+  dot marking the current beat went out for a frame at a time, many times over the first bar
+  of a song whose click starts a little after 0, and settled from the second bar on. The
+  indicator took a rounding error in the playhead's position for the moment before the first
+  beat. New in 0.18.0.
+
 ## [0.18.0] - 2026-11-09
 
 Upgrade notes: what an existing setup can notice. Each is described in full below.
