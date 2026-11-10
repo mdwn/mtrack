@@ -71,14 +71,21 @@ message StageUpdate {
 ```
 
 `StageLayout` is what the websocket's `metadata` message carries: per fixture
-its name, type, tags, position, rotation, beam angle, rig asset and the names
-of its channels, in order; and the venue's name, focus points and scenery.
+its name, type, tags, position, rotation, beam angle, rig asset, the names of
+its channels, in order, and where it points when the layout is sent; and the
+venue's name, focus points and scenery.
 
 `StageFrame` is what the `state` message carries, without the names: for each
 fixture, in the layout's order, its channel values as bytes in the layout's
-channel order; strobe rates; poses for the fixtures that have one, and only
-when they changed; per-cell values while a per-cell effect runs; the active
-effects and fixtures under test.
+channel order; strobe rates; a pose for each fixture that points somewhere
+other than the layout says; per-cell values while a per-cell effect runs; the
+active effects and fixtures under test.
+
+**Every frame stands alone.** A frame is read against the layout and nothing
+else, never against the frame before it, because a frame may be dropped (§5).
+That is why poses are sent as a difference from the layout, not from the last
+frame: a fixture that never moves costs nothing, and losing a frame loses
+nothing a later one does not say again.
 
 For the rig's eight fixtures that is about 40 bytes a frame against 1.4 kB of
 JSON. A frame for 50 fixtures of eight channels is under one packet.
@@ -97,8 +104,9 @@ It does not help with bandwidth, and bandwidth is not short: this needs a few
 kB/s of the 50 measured.
 
 **Compression.** Frames are not compressed: they are small and mostly bytes
-that change, where gzip's own header costs more than it saves. Sending only
-what changed (poses, cells) does more, and the messages do that. The layout
+that change, where gzip's own header costs more than it saves. Leaving out
+what the layout already says (poses) and what is not running (cells) does
+more, and the messages do that. The layout
 and the 3D assets (§6) are text and models, compress well, and are sent
 gzipped.
 
@@ -122,7 +130,8 @@ envelope, and a channel of its own.
 - **Newest wins.** A gRPC stream is ordered and loses nothing; a lighting
   frame that is late is worthless. The player keeps one pending frame per
   stream: when the radio is busy the newer frame replaces it. A slow phone
-  sees fewer frames, never a growing delay. A layout is never dropped.
+  sees fewer frames, never a growing delay. This is safe because every frame
+  stands alone (§4). A layout is never dropped.
 - **One packet at a time.** The stream pump sends one packet, then lets
   anything waiting on `response` or `status` go first.
 - **Rate.** The app asks for 10 frames a second; the player samples at 20.
