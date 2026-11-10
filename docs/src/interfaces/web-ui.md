@@ -26,8 +26,9 @@ The lock holds on every control surface, not only the web UI. While locked, the 
 RPCs ([gRPC](grpc.md#lock-mode)) and the MCP tools that write config or project files
 ([MCP](mcp.md#lock-mode)) are refused too; reads and playback controls stay open on all of
 them. Track gain faders are a performance control: a gain change still saves to the active
-profile while locked. The lock is toggled only from the web UI, so when the web UI cannot
-start (its address is invalid or its port is taken), mtrack logs it and runs unlocked.
+profile while locked. The lock is normally toggled from the web UI (a gRPC client or a paired phone can also do it, with
+`SetLock`), so when the web UI cannot start (its address is invalid or its port is taken), mtrack
+logs it and runs unlocked.
 
 Toggle the lock from the lock icon in the top nav (or, on phone, from the mini-player). When
 locked, a thin amber **LIVE — locked** stripe surfaces under the top nav as a constant

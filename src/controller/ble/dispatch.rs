@@ -55,7 +55,15 @@ pub(crate) const ALLOWED: &[&str] = &[
     "SetTrackGain",
     "SetTrackMute",
     "SetAmbientMode",
+    "SavePlaylist",
+    "DeletePlaylist",
+    "SetLock",
 ];
+
+/// The allowed methods that write playlists: refused while the player is
+/// locked, which the phone lifts with `SetLock`.
+#[cfg(test)]
+const LOCKED_WRITES: &[&str] = &["SavePlaylist", "DeletePlaylist"];
 
 /// The service name in a gRPC request path.
 const SERVICE: &str = <PlayerServiceServer<PlayerServer> as tonic::server::NamedService>::NAME;
@@ -419,10 +427,90 @@ mod tests {
             response.message
         );
 
+        // Every other allowed method is left open by the lock policy; the
+        // playlist writes are the exception, and are refused.
         let open: HashSet<&str> = open_on(Surface::Grpc).collect();
         for method in ALLOWED {
-            assert!(open.contains(method), "{method} is refused while locked");
+            if LOCKED_WRITES.contains(method) {
+                assert!(!open.contains(method), "{method} is open while locked");
+            } else {
+                assert!(open.contains(method), "{method} is refused while locked");
+            }
         }
+        for method in LOCKED_WRITES {
+            let response = call(&dispatcher, 3, method, Vec::new()).await;
+            assert_eq!(response.code, FAILED_PRECONDITION, "{method}");
+            assert_eq!(
+                response.message,
+                crate::player::LockedError.to_string(),
+                "{method}"
+            );
+        }
+        // SetLock is how a phone gets out of it.
+        let response = call(&dispatcher, 4, "SetLock", Vec::new()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phone_unlocks_then_edits_a_playlist_and_locks_again() {
+        use crate::proto::player::v1::{
+            DeletePlaylistRequest, DeletePlaylistResponse, SavePlaylistRequest, SetLockRequest,
+            SetLockResponse,
+        };
+
+        let project = crate::testutil::player::playlist_project()
+            .await
+            .expect("project");
+        let player = project.player.clone();
+        player.set_locked(true);
+        let dispatcher = Dispatcher::new(player.clone());
+        let save = SavePlaylistRequest {
+            name: "set".to_string(),
+            songs: vec!["Song 3".to_string(), "Song 1".to_string()],
+            create: true,
+            ..Default::default()
+        };
+
+        let response = call(&dispatcher, 1, "SavePlaylist", save.encode_to_vec()).await;
+        assert_eq!(response.code, FAILED_PRECONDITION);
+        assert!(!project.file("set").exists());
+
+        let unlock = SetLockRequest { locked: false };
+        let response = call(&dispatcher, 2, "SetLock", unlock.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        let set = SetLockResponse::decode(response.payload.as_slice()).expect("lock");
+        assert!(!set.locked);
+        assert!(!player.is_locked(), "the flag the web UI reads");
+
+        let response = call(&dispatcher, 3, "SavePlaylist", save.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        let saved = GetPlaylistResponse::decode(response.payload.as_slice()).expect("playlist");
+        assert_eq!(saved.name, "set");
+        assert_eq!(saved.entries.len(), 2);
+        assert!(project.file("set").exists());
+
+        // The service's own refusals are not the allowlist's.
+        let again = call(&dispatcher, 4, "SavePlaylist", save.encode_to_vec()).await;
+        assert_eq!(again.code, Code::AlreadyExists as u32);
+
+        let delete = DeletePlaylistRequest {
+            name: "set".to_string(),
+        };
+        let response = call(&dispatcher, 5, "DeletePlaylist", delete.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        DeletePlaylistResponse::decode(response.payload.as_slice()).expect("empty");
+        assert!(!project.file("set").exists());
+
+        let lock = SetLockRequest { locked: true };
+        let response = call(&dispatcher, 6, "SetLock", lock.encode_to_vec()).await;
+        assert!(
+            SetLockResponse::decode(response.payload.as_slice())
+                .unwrap()
+                .locked
+        );
+        assert!(player.is_locked());
+        let response = call(&dispatcher, 7, "DeletePlaylist", delete.encode_to_vec()).await;
+        assert_eq!(response.code, FAILED_PRECONDITION);
     }
 
     #[test]

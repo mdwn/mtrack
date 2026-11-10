@@ -60,6 +60,9 @@ empty cell means the RPC is available to gRPC clients only.
 | `Status` | Returns the player's current status: the playlist and song, whether it plays and how far in, the audio output's health, the [ambient light](../lighting/configuration.md#ambient-mode)'s `mode`, `state` and `show` (absent without a DMX engine; when the status's read of the DMX engine did not answer, `available` is false, `reason` says why, and `mode` and `state` are empty), and a song waiting to [auto play](../getting-started/playlists.md#auto-play) (`auto_play`: its `song` and `starts_in`). | `status` |
 | `ListPlaylists` | Lists the playlists' names, sorted, and names the active one (`active`). | |
 | `GetPlaylist` | Returns a playlist's entries (`song_name` and `duration`) and `position`, the index of the entry it is on (absent while the song playing is one an edit took off the list). An empty `name` is the active playlist; an unknown one is `NOT_FOUND`. | |
+| `SavePlaylist` | Sets a playlist's songs and their order, as the web UI's save does when it sends only the songs: an existing file keeps each entry's own settings with its song, and the playlist's, and a song listed twice stays listed twice. `create` makes a new playlist and refuses (`ALREADY_EXISTS`) one that exists; without it, a playlist that does not exist is `NOT_FOUND`. A name the player refuses (`all_songs`, or one that is empty or not a plain name) or a song it does not have is `INVALID_ARGUMENT`; a file that does not read is `FAILED_PRECONDITION`, not written over. With `check_expected` set, `expected` is the songs the caller last saw, and a file that differs is `FAILED_PRECONDITION` with a message starting "the playlist has changed". Answers with the playlist as `GetPlaylist` now reports it. Refused while the player is locked; allowed while a song plays. | |
+| `DeletePlaylist` | Deletes a playlist's file, as the web UI does: an unknown name is `NOT_FOUND`, `all_songs` is `INVALID_ARGUMENT`, and the active playlist, if it was that one, falls back to `all_songs`. Refused while the player is locked. | |
+| `SetLock` | Locks (`locked: true`) or unlocks the player, as the web UI's lock does, and answers with the lock as it now stands. Open while locked. | |
 | `GetCues` | Lists the cues in the current song's lighting timeline. | `cues` |
 | `GetActiveEffects` | Returns the running lighting effects as a formatted string. | `active-effects` |
 | `StopSamples` | Stops all triggered samples that are playing. | |
@@ -87,8 +90,9 @@ While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAud
 `RemoveProfile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
-after a short pause, while locked. Unlock from the web UI. When the web UI cannot start, the
-player runs unlocked, since nothing else could release the lock.
+after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are
+refused too. Unlock from the web UI, or with `SetLock`, which is open while locked. When the web UI cannot start, the
+player runs unlocked, since the web UI is how the lock is normally released.
 
 ## Security
 

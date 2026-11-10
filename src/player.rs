@@ -3313,6 +3313,7 @@ mod test {
             &player.transport_status().await,
             player.gains_revision(),
             None,
+            player.is_locked(),
         )?;
         assert_eq!(status.position, Some(2));
         Ok(())
@@ -5058,6 +5059,7 @@ mod test {
             &player.transport_status().await,
             player.gains_revision(),
             None,
+            player.is_locked(),
         )?;
         assert_eq!(status.loop_section, None);
 
@@ -5068,6 +5070,7 @@ mod test {
             &player.transport_status().await,
             player.gains_revision(),
             None,
+            player.is_locked(),
         )?;
         assert_eq!(status.loop_section.as_deref(), Some("a"));
 
@@ -5076,6 +5079,7 @@ mod test {
             &player.transport_status().await,
             player.gains_revision(),
             None,
+            player.is_locked(),
         )?;
         assert_eq!(status.loop_section, None);
 

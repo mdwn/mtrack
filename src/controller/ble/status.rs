@@ -46,6 +46,7 @@ pub(crate) fn from_player(
     status: &PlayerStatus,
     gains_revision: u32,
     ambient: Option<&Ambient>,
+    locked: bool,
 ) -> Result<Status, tonic::Status> {
     let song = status.current_song.as_ref();
     Ok(Status {
@@ -60,6 +61,7 @@ pub(crate) fn from_player(
         gains_revision: Some(gains_revision),
         ambient_mode: ambient.map(|a| a.mode.clone()),
         ambient_state: ambient.map(|a| a.state.clone()),
+        locked: Some(locked),
     })
 }
 
@@ -211,7 +213,12 @@ pub(crate) async fn poll(
             let gains_revision = player.gains_revision();
             let transport = player.transport_status().await;
             let ambient = ambient.lock().clone();
-            match from_player(&transport, gains_revision, ambient.as_ref()) {
+            match from_player(
+                &transport,
+                gains_revision,
+                ambient.as_ref(),
+                player.is_locked(),
+            ) {
                 Ok(status) => publish(status),
                 Err(e) => tracing::debug!(error = %e, "Bluetooth status not read"),
             }
@@ -244,6 +251,7 @@ mod tests {
             gains_revision: Some(0),
             ambient_mode: None,
             ambient_state: None,
+            locked: Some(false),
         }
     }
 
@@ -299,6 +307,51 @@ mod tests {
         poll.abort();
     }
 
+    /// A phone is told of the lock, and of a change to it made over its own
+    /// link, at the next poll after the answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_poll_reports_the_lock_and_a_change_over_the_link() {
+        use crate::controller::ble::dispatch::Dispatcher;
+        use crate::proto::ble::v1::Request;
+        use crate::proto::player::v1::SetLockRequest;
+
+        let player = crate::testutil::player::assets_player()
+            .build()
+            .expect("player");
+        player.await_hardware_ready().await;
+        assert!(player.is_locked(), "a player starts locked");
+        let wanted = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (seen, mut statuses) = tokio::sync::mpsc::unbounded_channel();
+        let poll = tokio::spawn(poll(player.clone(), wanted.clone(), move |status| {
+            let _ = seen.send(status);
+        }));
+        let mut wait_for = async |locked: bool| {
+            let found = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let status = statuses.recv().await.expect("the poll ended");
+                    if status.locked == Some(locked) {
+                        return;
+                    }
+                }
+            })
+            .await;
+            assert!(found.is_ok(), "no status said locked={locked}");
+        };
+        wait_for(true).await;
+
+        let frame = Request {
+            id: 1,
+            method: "SetLock".to_string(),
+            payload: SetLockRequest { locked: false }.encode_to_vec(),
+        }
+        .encode_to_vec();
+        Dispatcher::new(player.clone()).handle(&frame).await;
+        // The link nudges the poll after each answer.
+        wanted.notify_one();
+        wait_for(false).await;
+        poll.abort();
+    }
+
     /// A phone's status is what gRPC's `Status` says of the same player.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_phones_status_is_what_grpc_reports() {
@@ -309,7 +362,7 @@ mod tests {
             .build()
             .expect("player");
         player.await_hardware_ready().await;
-        let mine = from_player(&player.transport_status().await, 0, None).expect("a status");
+        let mine = from_player(&player.transport_status().await, 0, None, true).expect("a status");
         let grpc = crate::controller::grpc::PlayerServer::new(player.clone())
             .status(tonic::Request::new(StatusRequest {}))
             .await
@@ -321,6 +374,7 @@ mod tests {
         assert!(!mine.song_name.is_empty());
         assert_eq!(mine.song_name, song.name);
         assert_eq!(mine.song_duration, song.duration);
+        assert_eq!(mine.locked, Some(true));
         assert_eq!(mine.playing, grpc.playing);
         assert_eq!(mine.elapsed, grpc.elapsed);
         assert_eq!(mine.auto_play, grpc.auto_play);
@@ -373,6 +427,7 @@ mod tests {
             |s: &mut Status| s.gains_revision = Some(1),
             |s: &mut Status| s.ambient_mode = Some("on".into()),
             |s: &mut Status| s.ambient_state = Some("playing".into()),
+            |s: &mut Status| s.locked = Some(true),
             |s: &mut Status| {
                 s.auto_play = Some(crate::proto::player::v1::AutoPlayStatus {
                     song: "Next".into(),
@@ -440,6 +495,7 @@ mod tests {
         status.gains_revision = Some(u32::MAX);
         status.ambient_mode = Some("auto".into());
         status.ambient_state = Some("unavailable".into());
+        status.locked = Some(true);
         status.playlist_name = "a".repeat(5000);
         status.song_name = "b".repeat(5000);
         status.loop_section = Some("d".repeat(5000));
@@ -449,6 +505,7 @@ mod tests {
         assert_eq!(decoded.gains_revision, Some(u32::MAX));
         assert_eq!(decoded.ambient_mode.as_deref(), Some("auto"));
         assert_eq!(decoded.ambient_state.as_deref(), Some("unavailable"));
+        assert_eq!(decoded.locked, Some(true));
     }
 
     #[test]

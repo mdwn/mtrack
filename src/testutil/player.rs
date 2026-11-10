@@ -170,6 +170,69 @@ impl AssetsPlayer {
     }
 }
 
+/// A project on disk for the playlist writes: a temporary directory with the
+/// `assets/` songs and a config beside them, an empty `playlists/` and a
+/// player that reloads from there, with a config store and unlocked.
+pub struct PlaylistProject {
+    /// Holds the project; dropped with it.
+    pub dir: tempfile::TempDir,
+    pub player: Arc<Player>,
+    pub store: Arc<config::ConfigStore>,
+}
+
+impl PlaylistProject {
+    /// The file of the playlist `name`.
+    pub fn file(&self, name: &str) -> std::path::PathBuf {
+        self.dir
+            .path()
+            .join("playlists")
+            .join(format!("{name}.yaml"))
+    }
+
+    /// Writes the playlist `name` as `yaml` and reloads the player.
+    pub async fn write(&self, name: &str, yaml: &str) {
+        std::fs::write(self.file(name), yaml).expect("write playlist");
+        self.player.reload_songs().await.expect("reload");
+    }
+}
+
+/// See [`PlaylistProject`].
+pub async fn playlist_project() -> Result<PlaylistProject, Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir_all(dir.path().join("playlists"))?;
+    // The songs name their files relative to themselves, in `assets/`.
+    let assets = dir.path().join("assets");
+    std::fs::create_dir_all(assets.join("songs"))?;
+    for entry in std::fs::read_dir("assets")? {
+        let entry = entry?;
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), assets.join(entry.file_name()))?;
+        }
+    }
+    for entry in std::fs::read_dir("assets/songs")? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), assets.join("songs").join(entry.file_name()))?;
+    }
+    let songs_dir = assets.join("songs");
+    let config_path = dir.path().join("mtrack.yaml");
+    std::fs::write(&config_path, "songs: assets/songs\n")?;
+    let config = config::Player::deserialize(&config_path)?;
+    let songs = songs::get_all_songs(&songs_dir)?;
+    let playlists =
+        crate::player::load_playlists(Some(&dir.path().join("playlists")), None, songs)?;
+    let player = Player::new(
+        playlists,
+        "all_songs".to_string(),
+        &config,
+        Some(dir.path()),
+    )?;
+    let store = Arc::new(config::ConfigStore::new(config, config_path));
+    player.set_config_store(store.clone());
+    player.await_hardware_ready().await;
+    player.set_locked(false);
+    Ok(PlaylistProject { dir, player, store })
+}
+
 /// A player on the `assets/` fixtures' songs with the given devices, and no
 /// configuration: `assets/playlist.yaml` playing as `playlist`, beside
 /// `all_songs`.

@@ -36,7 +36,7 @@ use Surface::{Grpc, Mcp, Web};
 /// The operations that stay open while the player is locked: reads,
 /// validation and offline evaluation, and the playback controls
 /// (transport, playlist switch, samples, ambient light, section loops,
-/// auto-play, track gains). Every other operation writes config or project
+/// auto-play, track gains) and the lock itself. Every other operation writes config or project
 /// files and is refused while locked, so a new one is locked out until it is
 /// listed here.
 pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
@@ -111,6 +111,10 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GetTrackGains"),
     (Grpc, "ListPlaylists"),
     (Grpc, "GetPlaylist"),
+    // The lock itself: the phone's only way to unlock. SavePlaylist and
+    // DeletePlaylist are playlist writes and stay locked out, as the web
+    // UI's are.
+    (Grpc, "SetLock"),
     // Web: the lock toggle, validation, playlist activation (a playback
     // control, not an edit), the controller restart, and the pure reads that
     // happen to be POSTs (a preview evaluation and the upload inspectors,

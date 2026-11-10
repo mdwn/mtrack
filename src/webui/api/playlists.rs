@@ -35,7 +35,7 @@ use crate::config;
 /// Validates a playlist name for use in file paths.
 /// The player's own playlist is refused (400) saying so.
 #[allow(clippy::result_large_err)]
-fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
+pub(crate) fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
     if crate::playlist::is_reserved_name(name) {
         let reserved = crate::playlist::PlaylistFileError::Reserved(name.to_string());
         return Err((
@@ -233,18 +233,7 @@ pub(super) async fn put_playlist_by_name(
         None => playlist_config,
     };
     check_playlist(&playlist_config, &state.player)?;
-    let yaml = match crate::util::to_yaml_string(&playlist_config) {
-        // A text file ends with a newline.
-        Ok(y) if y.ends_with('\n') => y,
-        Ok(y) => y + "\n",
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to serialize playlist: {}", e)})),
-            )
-                .into_response());
-        }
-    };
+    let yaml = playlist_yaml(&playlist_config)?;
 
     write_playlist_file(&file, yaml, &super::helpers::project_dir(&state)).await?;
 
@@ -291,6 +280,23 @@ pub(crate) async fn playlist_file_to_write(
     };
     validate_resource_name_to_write(name, "playlist", file.exists())?;
     Ok(file)
+}
+
+/// A playlist as the text of its file, which ends with a newline: the web
+/// UI's, MCP's and gRPC's saves.
+#[allow(clippy::result_large_err)]
+pub(crate) fn playlist_yaml(
+    playlist: &config::Playlist,
+) -> Result<String, axum::response::Response> {
+    match crate::util::to_yaml_string(playlist) {
+        Ok(y) if y.ends_with('\n') => Ok(y),
+        Ok(y) => Ok(y + "\n"),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to serialize playlist: {}", e)})),
+        )
+            .into_response()),
+    }
 }
 
 /// Refuses (422) a playlist the player would refuse to load, before it is
@@ -354,9 +360,32 @@ pub(super) async fn delete_playlist_by_name(
     let playlists_dir =
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
+    remove_playlist_file(&playlists_dir, &name).await?;
+
+    // Reload songs to remove the playlist.
+    super::helpers::reload_songs(&state).await?;
+
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// Deletes the file of the playlist `name` (already checked by
+/// [`validate_playlist_name`]) in `dir`, off the async runtime; 404 when
+/// there is none. The caller holds [`PLAYLIST_WRITES`] and reloads the
+/// player: the web UI's delete and gRPC's.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn remove_playlist_file(
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<(), axum::response::Response> {
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in playlist_path.
-    let target = playlist_path(&playlists_dir, &name)?;
+    let target = playlist_path(dir, name)?;
     if !target.exists() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -369,17 +398,7 @@ pub(super) async fn delete_playlist_by_name(
         std::fs::remove_file(target.path())
     })
     .await?;
-
-    // Reload songs to remove the playlist.
-    super::helpers::reload_songs(&state).await?;
-
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(json!({"status": "deleted", "name": name})),
-        )
-            .into_response(),
-    )
+    Ok(())
 }
 
 /// POST /api/playlists/:name/activate — switch the active playlist.
