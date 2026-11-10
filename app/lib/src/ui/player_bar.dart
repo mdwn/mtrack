@@ -19,11 +19,15 @@ import 'settings_sheet.dart';
 import 'theme.dart';
 
 /// The bar across the top of the tabs: the player's name with a light showing
-/// whether the link is up, [trailing] text about the screen, and the way to
-/// the settings.
+/// whether the link is up, [trailing] text about the screen, the player's
+/// lock, and the way to the settings.
 class PlayerBar extends StatelessWidget {
-  /// A bar with [trailing] at its right.
-  const PlayerBar({this.trailing, super.key});
+  /// A bar with [trailing] at its right. [title] takes the place of the
+  /// player's name, for a screen that is not one of the tabs.
+  const PlayerBar({this.trailing, this.title, super.key});
+
+  /// What to call the screen, instead of the player.
+  final String? title;
 
   /// What this screen wants said: the playlist, the song, a count.
   final String? trailing;
@@ -33,7 +37,7 @@ class PlayerBar extends StatelessWidget {
     final session = SessionScope.of(context);
     final colors = context.colors;
     final up = session.phase == ConnectionPhase.ready;
-    final name = session.playerName ?? 'mtrack';
+    final name = title ?? session.playerName ?? 'mtrack';
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 8, 6, 0),
       child: Row(
@@ -78,12 +82,66 @@ class PlayerBar extends StatelessWidget {
               style: AppText.small.copyWith(color: colors.muted),
             ),
           ),
+          if (session.lockAvailable) ...[
+            const SizedBox(width: 8),
+            LockPill(locked: session.locked!),
+          ],
           IconButton(
             tooltip: 'Settings',
             icon: Icon(Icons.settings_outlined, color: colors.muted),
             onPressed: () => showSettingsSheet(context),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The player's lock as a small label in the top bar: muted when locked,
+/// amber when unlocked, as a reminder that anyone can change things. Tapping
+/// it opens the settings, where the lock is.
+class LockPill extends StatelessWidget {
+  /// A pill for a player that is [locked] or not.
+  const LockPill({required this.locked, super.key});
+
+  /// Whether the player is locked.
+  final bool locked;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final color = locked ? colors.muted : colors.amber;
+    return Semantics(
+      button: true,
+      label: locked ? 'Player locked' : 'Player unlocked',
+      hint: 'Open settings',
+      excludeSemantics: true,
+      onTap: () => showSettingsSheet(context),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => showSettingsSheet(context),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Center(
+            widthFactor: 1,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+              decoration: BoxDecoration(
+                color: locked ? null : colors.loopTint,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: locked ? colors.line : color),
+              ),
+              child: Text(
+                locked ? 'Locked' : 'Unlocked',
+                maxLines: 1,
+                style: AppText.small.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

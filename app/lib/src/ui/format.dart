@@ -45,3 +45,9 @@ String formatDb(double db) {
   final size = tenths.abs();
   return '${tenths < 0 ? '−' : '+'}${size ~/ 10}.${size % 10} dB';
 }
+
+/// A count of songs and, when it is known, how long they run: `11 songs ·
+/// 52 min`.
+String formatSongs(int count, Duration total) =>
+    '$count ${count == 1 ? 'song' : 'songs'}'
+    '${total > Duration.zero ? ' · ${formatTotal(total)}' : ''}';

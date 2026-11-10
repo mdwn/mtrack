@@ -26,6 +26,9 @@ abstract final class GrpcCode {
   /// The named song, playlist or section does not exist.
   static const int notFound = 5;
 
+  /// The playlist to create already exists.
+  static const int alreadyExists = 6;
+
   /// The call is not allowed over Bluetooth, or the player is locked.
   static const int permissionDenied = 7;
 

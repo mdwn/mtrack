@@ -115,7 +115,12 @@ class Rig {
     player = FakePlayer();
     link = FakeLink(player);
     player.log = link.calls;
-    playlists = {playlist: List.of(this.songs)};
+    library = [
+      ...this.songs,
+      RigSong('Encore', lengthSeconds: 150),
+      RigSong('Opener', lengthSeconds: 75),
+    ]..sort((a, b) => a.name.compareTo(b.name));
+    playlists = {playlist: List.of(this.songs), 'all_songs': library};
     _install();
     publish();
   }
@@ -137,6 +142,9 @@ class Rig {
 
   /// The active playlist's name.
   String playlist;
+
+  /// Every song the player has, as `all_songs` lists them.
+  late List<RigSong> library;
 
   /// Every playlist's songs, by name.
   late Map<String, List<RigSong>> playlists;
@@ -162,6 +170,10 @@ class Rig {
 
   /// Whether the player is locked (it refuses what a locked player refuses).
   bool locked = false;
+
+  /// True for a player from before a phone could lock it or edit playlists:
+  /// its status has no lock, and it refuses the three calls as not allowed.
+  bool oldPlayer = false;
 
   /// The output tracks, in the order the player lists them.
   List<RigTrack> tracks = [
@@ -204,6 +216,7 @@ class Rig {
             startsIn: seconds(autoPlayIn.inMilliseconds / 1000),
           ),
     loopSection: loop,
+    locked: oldPlayer ? null : locked,
     gainsRevision: levelsAllowed ? gainsRevision : null,
     ambientMode: ambientMode,
     ambientState: ambientMode == null ? null : ambientState,
@@ -216,6 +229,52 @@ class Rig {
     gainsRevision++;
     publish();
   }
+
+  static bool _sameNames(List<String> a, List<String> b) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  pp.GetPlaylistResponse _playlistResponse(String name, List<RigSong> list) =>
+      pp.GetPlaylistResponse(
+        name: name,
+        entries: [
+          for (final s in list)
+            pp.PlaylistEntry(
+              songName: s.name,
+              duration: seconds(s.length.inSeconds),
+            ),
+        ],
+        position: name == playlist ? index : null,
+      );
+
+  /// Sets the songs of [name] and, if it is the active playlist, keeps the
+  /// current song current when it is still there.
+  void _store(String name, List<RigSong> chosen) {
+    final current = name == playlist && songs.isNotEmpty ? this.current : null;
+    playlists[name] = chosen;
+    if (name == playlist) {
+      songs = chosen;
+      final at = current == null
+          ? -1
+          : chosen.indexWhere((s) => s.name == current.name);
+      index = at >= 0 ? at : (index >= chosen.length ? 0 : index);
+    }
+    publish();
+  }
+
+  /// What another surface (the web UI) does: sets the songs of the playlist
+  /// [name] to those called [names], from the library.
+  void editElsewhere(String name, List<String> names) => _store(name, [
+    for (final n in names) library.firstWhere((s) => s.name == n),
+  ]);
 
   void _setAmbient(String mode) {
     ambientMode = mode;
@@ -246,19 +305,19 @@ class Rig {
         playing: playing,
       ),
     );
-    h['GetPlaylist'] = (_) => FakeReply.ok(
-      pp.GetPlaylistResponse(
-        name: playlist,
-        entries: [
-          for (final s in songs)
-            pp.PlaylistEntry(
-              songName: s.name,
-              duration: seconds(s.length.inSeconds),
-            ),
-        ],
-        position: index,
-      ),
-    );
+    h['GetPlaylist'] = (request) {
+      final asked = pp.GetPlaylistRequest.fromBuffer(request.payload).name;
+      final name = asked.isEmpty ? playlist : asked;
+      final list = name == 'all_songs'
+          ? library
+          : name == playlist
+          ? songs
+          : playlists[name];
+      if (list == null) {
+        return FakeReply.error(5, "Playlist '$name' not found");
+      }
+      return FakeReply.ok(_playlistResponse(name, list));
+    };
     h['ListPlaylists'] = (_) => FakeReply.ok(
       pp.ListPlaylistsResponse(
         names: playlists.keys.toList()..sort(),
@@ -317,6 +376,75 @@ class Rig {
         ),
       );
     };
+    FakeReply oldGuard(String method, FakeReply Function() body) => oldPlayer
+        ? FakeReply.error(7, 'method $method is not available over Bluetooth')
+        : body();
+    h['SetLock'] = (request) => oldGuard('SetLock', () {
+      locked = pp.SetLockRequest.fromBuffer(request.payload).locked;
+      publish();
+      return FakeReply.ok(pp.SetLockResponse(locked: locked));
+    });
+    h['SavePlaylist'] = (request) => oldGuard(
+      'SavePlaylist',
+      () => guard(() {
+        final req = pp.SavePlaylistRequest.fromBuffer(request.payload);
+        final name = req.name;
+        if (name.isEmpty ||
+            name.contains('/') ||
+            name.contains(r'\') ||
+            name == 'all_songs') {
+          return FakeReply.error(3, "Invalid playlist name '$name'");
+        }
+        final have = playlists[name];
+        if (req.create_5 && have != null) {
+          return FakeReply.error(6, "Playlist '$name' already exists");
+        }
+        if (!req.create_5 && have == null) {
+          return FakeReply.error(5, "Playlist '$name' not found");
+        }
+        final chosen = <RigSong>[];
+        for (final song in req.songs) {
+          final found = library.where((s) => s.name == song);
+          if (found.isEmpty) {
+            return FakeReply.error(3, "Song '$song' not found");
+          }
+          chosen.add(found.first);
+        }
+        if (req.checkExpected &&
+            have != null &&
+            !_sameNames([for (final s in have) s.name], req.expected)) {
+          return FakeReply.error(
+            9,
+            'the playlist has changed: it no longer holds the songs that '
+            'were read',
+          );
+        }
+        _store(name, chosen);
+        return FakeReply.ok(
+          _playlistResponse(name, name == playlist ? songs : chosen),
+        );
+      }),
+    );
+    h['DeletePlaylist'] = (request) => oldGuard(
+      'DeletePlaylist',
+      () => guard(() {
+        final name = pp.DeletePlaylistRequest.fromBuffer(request.payload).name;
+        if (name == 'all_songs') {
+          return FakeReply.error(3, 'all_songs cannot be deleted');
+        }
+        if (!playlists.containsKey(name)) {
+          return FakeReply.error(5, "Playlist '$name' not found");
+        }
+        playlists.remove(name);
+        if (name == playlist) {
+          playlist = 'all_songs';
+          songs = library;
+          index = 0;
+        }
+        publish();
+        return FakeReply.ok(pp.DeletePlaylistResponse());
+      }),
+    );
     h['Play'] = (_) => guard(() {
       playing = true;
       publish();
@@ -367,7 +495,7 @@ class Rig {
     h['SwitchToPlaylist'] = (request) => guard(() {
       final name = pp.SwitchToPlaylistRequest.fromBuffer(request.payload)
           .playlistName;
-      final list = playlists[name];
+      final list = name == 'all_songs' ? library : playlists[name];
       if (list == null) {
         return FakeReply.error(5, "Playlist '$name' not found");
       }

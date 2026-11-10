@@ -276,8 +276,12 @@ class RowCard extends StatelessWidget {
     this.semanticLabel,
     this.semanticHint,
     this.enabled = true,
+    this.padding = const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     super.key,
   });
+
+  /// Space between the card's edge and its content.
+  final EdgeInsets padding;
 
   /// The row's content.
   final Widget child;
@@ -326,10 +330,7 @@ class RowCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             onTap: onTap,
             onLongPress: onLongPress,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              child: child,
-            ),
+            child: Padding(padding: padding, child: child),
           ),
         ),
       ),

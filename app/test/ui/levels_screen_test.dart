@@ -171,7 +171,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.textContaining('locked'), findsNothing);
+      expect(find.textContaining('is locked'), findsNothing);
       expect(find.byType(Slider), findsNothing);
     }, setup: (rig) => rig.levelsAllowed = false);
 

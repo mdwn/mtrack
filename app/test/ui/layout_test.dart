@@ -43,8 +43,19 @@ void main() {
       RigSong('Short', lengthSeconds: 59),
     ];
     rig.playlists['Set'] = rig.songs;
+    rig.library = List.of(rig.songs);
     rig.playlist = 'A playlist with a name that runs on and on and on';
     rig.playlists[rig.playlist] = rig.songs;
+  }
+
+  const longPlaylist =
+      'A playlist with a name that runs on and on and on and on and on';
+
+  Future<void> startEditing(AppHarness h) async {
+    await h.openTab('Playlist');
+    await h.tester.tap(find.text('Edit'));
+    await h.settle();
+    await h.tester.pump(const Duration(milliseconds: 400));
   }
 
   for (final look in Look.all) {
@@ -121,6 +132,146 @@ void main() {
           expect(find.text('Choose a playlist'), findsOneWidget);
         },
         setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'Playlist, locked',
+        (h) async {
+          await h.openTab('Playlist');
+          expect(find.text('Unlock to edit'), findsOneWidget);
+          expect(find.text('Locked'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.locked = true;
+        },
+        look: look,
+      );
+
+      appTest(
+        'the playlist picker, with a playlist to delete',
+        (h) async {
+          await h.openTab('Playlist');
+          await h.tester.tap(find.text('change'));
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 400));
+          expect(find.text('+ NEW PLAYLIST'), findsOneWidget);
+          expect(find.text(longPlaylist), findsWidgets);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.playlists[longPlaylist] = [RigSong('First')];
+        },
+        look: look,
+      );
+
+      appTest(
+        'the editor',
+        (h) async {
+          await startEditing(h);
+          expect(find.text('Editing'), findsOneWidget);
+        },
+        setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'the editor, with the playlist changed under it',
+        (h) async {
+          await startEditing(h);
+          h.rig.editElsewhere(h.rig.playlist, ['Short']);
+          await h.tester.tap(find.byTooltip('Remove Short'));
+          await h.tester.pump(const Duration(milliseconds: 50));
+          await h.tester.tap(find.text('SAVE'));
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 100));
+          expect(find.text('SAVE ANYWAY'), findsOneWidget);
+          expect(find.text('DISCARD MY CHANGES'), findsOneWidget);
+        },
+        setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'the editor, locked',
+        (h) async {
+          await startEditing(h);
+          h.rig.locked = true;
+          h.rig.publish();
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 100));
+          expect(find.textContaining('Unlock it to save'), findsOneWidget);
+        },
+        setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'the editor, without the player',
+        (h) async {
+          await startEditing(h);
+          h.rig.link.connectFailures = 100;
+          h.rig.player.disconnect();
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 100));
+          expect(find.text('Not connected to a player.'), findsOneWidget);
+          await h.advance(const Duration(seconds: 30));
+        },
+        setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'a new playlist, empty',
+        (h) async {
+          h.session.startNewPlaylist(longPlaylist);
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 100));
+          expect(find.text('No songs yet.'), findsOneWidget);
+        },
+        setup: sized,
+        look: look,
+      );
+
+      appTest(
+        'Add songs',
+        (h) async {
+          await startEditing(h);
+          await h.tester.tap(find.text('+ ADD SONGS'));
+          await h.settle();
+          await h.tester.pump(const Duration(seconds: 1));
+          await h.tester.tap(find.text('Another'));
+          await h.tester.pump(const Duration(milliseconds: 50));
+          expect(find.text('1 chosen'), findsOneWidget);
+          expect(find.text('in playlist'), findsWidgets);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.library = [
+            ...rig.songs,
+            RigSong('Another', lengthSeconds: 61),
+            RigSong(
+              'A song whose name is far too long for one line of a phone',
+            ),
+          ];
+        },
+        look: look,
+      );
+
+      appTest(
+        'Settings, unlocking',
+        (h) async {
+          appVersion = () async => '0.1.0 (1)';
+          await h.tester.tap(find.byTooltip('Settings'));
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 400));
+          expect(find.text('HOLD TO UNLOCK'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.locked = true;
+        },
         look: look,
       );
 
@@ -316,6 +467,48 @@ void main() {
         await h.openTab('Levels');
         expect(find.text('Cue'), findsOneWidget);
       },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'the editor still fits',
+      (h) async {
+        await h.openTab('Playlist');
+        await h.tester.tap(find.text('Edit'));
+        await h.settle();
+        await h.tester.pump(const Duration(milliseconds: 400));
+        expect(find.text('Editing'), findsOneWidget);
+        expect(find.text('SAVE'), findsOneWidget);
+      },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'Add songs still fits',
+      (h) async {
+        await h.openTab('Playlist');
+        await h.tester.tap(find.text('Edit'));
+        await h.settle();
+        await h.tester.pump(const Duration(milliseconds: 400));
+        await h.tester.tap(find.text('+ ADD SONGS'));
+        await h.settle();
+        await h.tester.pump(const Duration(seconds: 1));
+        expect(find.text('Add songs'), findsOneWidget);
+        expect(find.text('ADD SONGS'), findsOneWidget);
+      },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'the playlist header still fits when locked',
+      (h) async {
+        await h.openTab('Playlist');
+        expect(find.text('Unlock to edit'), findsOneWidget);
+      },
+      setup: (rig) => rig.locked = true,
       size: const Size(320, 480),
       look: const Look(Brightness.dark, 1.3),
     );

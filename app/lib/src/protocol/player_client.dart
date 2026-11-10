@@ -359,6 +359,42 @@ class PlayerClient {
     player.GetPlaylistResponse.fromBuffer,
   );
 
+  /// Sets the songs of the playlist [name] to [songs], in order. With
+  /// [expected], the save is refused when the playlist on the player is no
+  /// longer those songs. With [create], the playlist must not exist yet.
+  /// Answers with the playlist as saved.
+  Future<player.GetPlaylistResponse> savePlaylist(
+    String name,
+    List<String> songs, {
+    List<String>? expected,
+    bool create = false,
+  }) => call(
+    'SavePlaylist',
+    player.SavePlaylistRequest(
+      name: name,
+      songs: songs,
+      expected: expected,
+      checkExpected: expected != null,
+      // The generator suffixes the field's name; it is `create` on the wire.
+      create_5: create,
+    ),
+    player.GetPlaylistResponse.fromBuffer,
+  );
+
+  /// Deletes the playlist [name].
+  Future<player.DeletePlaylistResponse> deletePlaylist(String name) => call(
+    'DeletePlaylist',
+    player.DeletePlaylistRequest(name: name),
+    player.DeletePlaylistResponse.fromBuffer,
+  );
+
+  /// Locks the player, or unlocks it. Allowed while locked.
+  Future<player.SetLockResponse> setLock(bool locked) => call(
+    'SetLock',
+    player.SetLockRequest(locked: locked),
+    player.SetLockResponse.fromBuffer,
+  );
+
   /// The gain and mute of every output track, in the player's order.
   Future<player.GetTrackGainsResponse> getTrackGains() => call(
     'GetTrackGains',
