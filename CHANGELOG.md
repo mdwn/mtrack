@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`ListPlaylists` and `GetPlaylist` gRPC RPCs**: the first names the player's playlists and the
+  active one; the second returns a playlist's entries (each song's name and duration) and the
+  entry it is on, for the active playlist or one by name. Both are reads, open while the player
+  is locked.
+
 ## [0.18.1] - 2026-11-09
 
 ### Fixed

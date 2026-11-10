@@ -11,6 +11,13 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+// Include the generated Bluetooth envelope code.
+pub mod ble {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/ble.v1.rs"));
+    }
+}
+
 // Include the generated player code.
 pub mod player {
     pub mod v1 {

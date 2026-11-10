@@ -1,0 +1,40 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+syntax = "proto3";
+
+package ble.v1;
+
+// Request is one call from a phone: a PlayerService method and its request
+// message.
+message Request {
+    // The call's id. The response carries it back, so a client matches
+    // responses to its calls.
+    uint32 id = 1;
+    // The bare name of a PlayerService method, such as Play.
+    string method = 2;
+    // The method's request message, serialized.
+    bytes payload = 3;
+}
+
+// Response answers one Request.
+message Response {
+    // The id of the Request this answers.
+    uint32 id = 1;
+    // The gRPC status code of the call; 0 is OK.
+    uint32 code = 2;
+    // The status message, when code is not 0.
+    string message = 3;
+    // The method's response message, serialized. Empty when code is not 0.
+    bytes payload = 4;
+}

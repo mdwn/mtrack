@@ -460,6 +460,43 @@ message GetTrackGainsResponse {
     repeated TrackGain gains = 1;
 }
 
+// ListPlaylistsRequest is the message for listing the player's playlists.
+message ListPlaylistsRequest {}
+
+// ListPlaylistsResponse names the player's playlists.
+message ListPlaylistsResponse {
+    // The playlists' names, sorted.
+    repeated string names = 1;
+    // The name of the active playlist, as StatusResponse reports it.
+    string active = 2;
+}
+
+// GetPlaylistRequest is the message for reading one playlist's songs.
+message GetPlaylistRequest {
+    // The playlist's name. Empty means the active playlist.
+    string name = 1;
+}
+
+// PlaylistEntry is one entry of a playlist: its song, without the song's
+// beat grid and sections.
+message PlaylistEntry {
+    // The song's name.
+    string song_name = 1;
+    // How long the song plays. Absent for a song the player cannot load.
+    google.protobuf.Duration duration = 2;
+}
+
+// GetPlaylistResponse lists a playlist's entries in order.
+message GetPlaylistResponse {
+    // The playlist's name.
+    string name = 1;
+    // The playlist's entries, in playing order.
+    repeated PlaylistEntry entries = 2;
+    // The index of the entry the playlist is on. Absent while the song
+    // playing is one an edit took off the list.
+    optional uint32 position = 3;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -556,4 +593,11 @@ service PlayerService {
     // CancelAutoPlay calls off an auto play waiting to start, leaving the
     // player stopped on its song with ambient light up, as after a stop.
     rpc CancelAutoPlay(CancelAutoPlayRequest) returns (CancelAutoPlayResponse);
+
+    // ListPlaylists names the player's playlists and the active one.
+    rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
+
+    // GetPlaylist returns a playlist's entries and the one it is on. An
+    // unknown name is NOT_FOUND.
+    rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
 }

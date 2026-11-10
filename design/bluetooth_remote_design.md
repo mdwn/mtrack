@@ -121,7 +121,7 @@ config-mutating RPCs are refused over BLE.
 smaller MTUs than Android. Each write or notification is a chunk whose first
 byte says whether it starts a frame; a frame is a varint length followed by the
 envelope. The receiver reassembles, and drops a partial frame on disconnect or
-when a new start arrives. Frames are capped (4 KiB to start with) and the
+when a new start arrives. Frames are capped at 64 KiB (a long playlist has to fit) and the
 buffer is sized from the cap, never from the length on the wire.
 
 **Status.** `StatusResponse` as it stands, sent whole when anything but the
