@@ -1,0 +1,85 @@
+name: CodeQL
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+  schedule:
+  # Weekly, so a new query finds old code.
+  - cron: '23 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The Rust analysis takes a quarter of an hour, so a pull request that
+  # changes no Rust does not wait for it. A push to main and the weekly run
+  # always analyse everything.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+    steps:
+    - uses: actions/checkout@v7
+    - id: classify
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        if [ "$EVENT" != "pull_request" ]; then
+          echo "rust=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+          --jq '.[] | .filename, (.previous_filename // empty)' |
+          scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+    - uses: actions/checkout@v7
+    - uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: none
+    - uses: github/codeql-action/analyze@v4
+      with:
+        category: /language:${{ matrix.language }}
+
+  analyze-rust:
+    name: Analyze (rust)
+    needs: changes
+    # Runs too when the detection itself failed: a skip must be a decision.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+    - uses: actions/checkout@v7
+    - uses: github/codeql-action/init@v4
+      with:
+        languages: rust
+        build-mode: none
+    - uses: github/codeql-action/analyze@v4
+      with:
+        category: /language:rust
