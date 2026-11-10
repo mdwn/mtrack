@@ -172,8 +172,8 @@ The `status` characteristic carries a small `Status` message: the playlist and s
 song's length, whether it is playing, the elapsed time, the playlist position, the song
 waiting to start by itself, if any, the section a section loop is set on, if any, the ambient
 light's mode and state (`ambient_mode`: `auto`, `on` or `off`; `ambient_state`: `playing`,
-`pending`, `off` or `unavailable`; the player does not fill them in yet, so read the `ambient`
-field of the `Status` call) and `gains_revision`. That last is a count the player moves whenever any track's gain or mute changes, from any surface; call
+`pending`, `off` or `unavailable`; read about twice a second, and absent on a player with no
+DMX engine) and `gains_revision`. That last is a count the player moves whenever any track's gain or mute changes, from any surface; call
 `GetTrackGains` again when it differs from the one you last saw. It wraps, so compare for
 inequality. The message carries no beat grid and no sections; fetch those with the `Status` call when the song changes.
 

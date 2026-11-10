@@ -45,6 +45,7 @@ const POLL_JITTER: Duration = Duration::from_millis(25);
 pub(crate) fn from_player(
     status: &PlayerStatus,
     gains_revision: u32,
+    ambient: Option<&Ambient>,
 ) -> Result<Status, tonic::Status> {
     let song = status.current_song.as_ref();
     Ok(Status {
@@ -57,10 +58,52 @@ pub(crate) fn from_player(
         auto_play: auto_play_to_proto(status.auto_play.clone())?,
         loop_section: status.active_section.as_ref().map(|s| s.name.clone()),
         gains_revision: Some(gains_revision),
-        // Not read here: see `poll`.
-        ambient_mode: None,
-        ambient_state: None,
+        ambient_mode: ambient.map(|a| a.mode.clone()),
+        ambient_state: ambient.map(|a| a.state.clone()),
     })
+}
+
+/// The ambient light as last read, in the words gRPC's `AmbientStatus` uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Ambient {
+    pub(crate) mode: String,
+    pub(crate) state: String,
+}
+
+/// How often the ambient light is read. Its mode changes by hand and its
+/// state at the pace of a fade, so twice a second loses nothing.
+const AMBIENT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Reads the ambient light every [`AMBIENT_INTERVAL`] into `latest`, and
+/// tells `wanted` when it changed. This is apart from the status poll
+/// because the read is behind the DMX engine's ambient lock, which the
+/// effects loop holds while it starts a show: the read can wait as long as
+/// [`crate::player::STATUS_DMX_READ_TIMEOUT`], and a Stop must not be told
+/// late behind it. A read that does not answer keeps the last one.
+async fn poll_ambient(
+    player: &crate::player::Player,
+    latest: &parking_lot::Mutex<Option<Ambient>>,
+    wanted: &tokio::sync::Notify,
+) {
+    let mut ticks = tokio::time::interval(AMBIENT_INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let read = match player.ambient_status().await {
+            // No DMX engine: there is no ambient light to speak of.
+            None => None,
+            Some(crate::player::DmxRead::Read(ambient)) => Some(Ambient {
+                mode: ambient.report.mode.as_str().to_string(),
+                state: ambient.report.state.to_string(),
+            }),
+            Some(_) => continue,
+        };
+        let mut latest = latest.lock();
+        if *latest != read {
+            *latest = read;
+            wanted.notify_one();
+        }
+    }
 }
 
 /// Whether `current` is worth sending to a phone that last had `sent`, at
@@ -154,24 +197,27 @@ pub(crate) async fn poll(
     wanted: std::sync::Arc<tokio::sync::Notify>,
     publish: impl Fn(Status),
 ) {
-    let mut ticks = tokio::time::interval(PLAYING_INTERVAL);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = ticks.tick() => {}
-            () = wanted.notified() => {}
+    let ambient = parking_lot::Mutex::new(None);
+    let status = async {
+        let mut ticks = tokio::time::interval(PLAYING_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => {}
+                () = wanted.notified() => {}
+            }
+            // No DMX reads here: the ambient light is whatever
+            // `poll_ambient` last read.
+            let gains_revision = player.gains_revision();
+            let transport = player.transport_status().await;
+            let ambient = ambient.lock().clone();
+            match from_player(&transport, gains_revision, ambient.as_ref()) {
+                Ok(status) => publish(status),
+                Err(e) => tracing::debug!(error = %e, "Bluetooth status not read"),
+            }
         }
-        // No DMX reads: a phone's status is the transport's. The ambient
-        // light's mode and state are behind the DMX engine's ambient lock,
-        // which the effects loop holds while it starts a show; a read waits
-        // up to `STATUS_DMX_READ_TIMEOUT` for it, and this loop would wait
-        // too, late with every status behind it.
-        let gains_revision = player.gains_revision();
-        match from_player(&player.transport_status().await, gains_revision) {
-            Ok(status) => publish(status),
-            Err(e) => tracing::debug!(error = %e, "Bluetooth status not read"),
-        }
-    }
+    };
+    tokio::join!(status, poll_ambient(&player, &ambient, &wanted));
 }
 
 #[cfg(test)]
@@ -201,6 +247,58 @@ mod tests {
         }
     }
 
+    /// The poll tells a phone the ambient light's mode and state, and of a
+    /// change to the mode without being asked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_poll_reports_the_ambient_light() {
+        use crate::config;
+
+        // A DMX engine with no ambient show: on has none to play.
+        let player = crate::testutil::player::assets_player()
+            .dmx(Some(config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![config::Universe::new(1, "test".to_string())],
+                None,
+            )))
+            .ready()
+            .await
+            .expect("player");
+        let (seen, mut statuses) = tokio::sync::mpsc::unbounded_channel();
+        let poll = tokio::spawn(poll(
+            player.clone(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            move |status| {
+                let _ = seen.send(status);
+            },
+        ));
+        let mut wait_for = async |mode: &str, state: &str| {
+            let found = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let status = statuses.recv().await.expect("the poll ended");
+                    if status.ambient_mode.as_deref() == Some(mode)
+                        && status.ambient_state.as_deref() == Some(state)
+                    {
+                        return;
+                    }
+                }
+            })
+            .await;
+            assert!(found.is_ok(), "no status said {mode}/{state}");
+        };
+        wait_for("auto", "off").await;
+
+        let setter = player.clone();
+        tokio::task::spawn_blocking(move || {
+            setter.set_ambient_mode(crate::dmx::engine::AmbientMode::On)
+        })
+        .await
+        .expect("set");
+        wait_for("on", "unavailable").await;
+        poll.abort();
+    }
+
     /// A phone's status is what gRPC's `Status` says of the same player.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_phones_status_is_what_grpc_reports() {
@@ -211,7 +309,7 @@ mod tests {
             .build()
             .expect("player");
         player.await_hardware_ready().await;
-        let mine = from_player(&player.transport_status().await, 0).expect("a status");
+        let mine = from_player(&player.transport_status().await, 0, None).expect("a status");
         let grpc = crate::controller::grpc::PlayerServer::new(player.clone())
             .status(tonic::Request::new(StatusRequest {}))
             .await

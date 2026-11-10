@@ -3312,6 +3312,7 @@ mod test {
         let status = crate::controller::ble::status::from_player(
             &player.transport_status().await,
             player.gains_revision(),
+            None,
         )?;
         assert_eq!(status.position, Some(2));
         Ok(())
@@ -5053,17 +5054,29 @@ mod test {
 
         let (_dir, player) = two_section_songs_player().await?;
         let device = player.audio_device().expect("audio device").to_mock()?;
-        let status = from_player(&player.transport_status().await, player.gains_revision())?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section, None);
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
         player.loop_section("a").await?;
-        let status = from_player(&player.transport_status().await, player.gains_revision())?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section.as_deref(), Some("a"));
 
         player.stop_section_loop();
-        let status = from_player(&player.transport_status().await, player.gains_revision())?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section, None);
 
         player.stop().await;

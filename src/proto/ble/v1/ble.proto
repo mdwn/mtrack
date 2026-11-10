@@ -82,8 +82,8 @@ message Status {
     // for inequality, not order. Absent only from a player too old to count.
     optional uint32 gains_revision = 9;
     // The ambient light's mode: "auto", "on" or "off", as
-    // player.v1.AmbientStatus.mode gives it. Absent when the player does not
-    // report it, which today is always: the Status method carries it.
+    // player.v1.AmbientStatus.mode gives it. Absent when the player has no
+    // DMX engine, or has not read it yet. Read about twice a second.
     optional string ambient_mode = 10;
     // What the ambient light is doing: "playing", "pending", "off" or
     // "unavailable", as player.v1.AmbientStatus.state gives it. Absent when
