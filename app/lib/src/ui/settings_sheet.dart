@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../app/session.dart';
+import 'hold_to_stop.dart';
 import 'session_scope.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -60,6 +61,10 @@ class _SettingsSheet extends StatelessWidget {
           const SizedBox(height: 16),
           if (session.ambientMode != null) ...[
             _AmbientCard(session: session),
+            SizedBox(height: session.lockAvailable ? 14 : 22),
+          ],
+          if (session.lockAvailable) ...[
+            const _LockCard(),
             const SizedBox(height: 22),
           ],
           Text('PLAYER', style: AppText.eyebrow.copyWith(color: colors.dim)),
@@ -108,6 +113,96 @@ class _SettingsSheet extends StatelessWidget {
             onPressed: () =>
                 showLicensePage(context: context, applicationName: 'mtrack'),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The player's lock: a tap locks it, and unlocking takes a hold, as stopping
+/// does, so a brushed screen cannot let anyone change the playlists.
+class _LockCard extends StatefulWidget {
+  const _LockCard();
+
+  @override
+  State<_LockCard> createState() => _LockCardState();
+}
+
+class _LockCardState extends State<_LockCard> {
+  bool _tapped = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = SessionScope.of(context);
+    final colors = context.colors;
+    final locked = session.locked ?? true;
+    final usable = session.isReady && !session.isBusy(ActionKind.setLock);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: colors.page,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                'Player lock',
+                style: AppText.bodyStrong.copyWith(color: colors.text),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  locked ? 'locked' : 'unlocked',
+                  textAlign: TextAlign.end,
+                  style: AppText.small.copyWith(
+                    color: locked ? colors.muted : colors.amber,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            locked
+                ? 'While locked, playlists and settings cannot be changed from '
+                      'any screen. Playing, levels and ambient light still '
+                      'work.'
+                : 'The player stays unlocked until someone locks it. Lock it '
+                      'before the show.',
+            style: AppText.small.copyWith(color: colors.muted, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          if (locked)
+            HoldButton(
+              label: _tapped ? 'KEEP HOLDING' : 'HOLD TO UNLOCK',
+              fontSize: 15,
+              height: 52,
+              enabled: usable,
+              semanticLabel: 'Hold to unlock the player',
+              semanticHint: 'Press and hold to unlock',
+              fill: colors.surface,
+              progress: colors.amber.withAlpha(90),
+              foreground: colors.amber,
+              borderColor: colors.amber,
+              onComplete: () {
+                setState(() => _tapped = false);
+                session.setLock(false);
+              },
+              onEarlyRelease: () => setState(() => _tapped = true),
+            )
+          else
+            ChunkyButton(
+              height: 52,
+              fontSize: 15,
+              label: 'LOCK',
+              semanticLabel: 'Lock the player',
+              onPressed: usable ? () => session.setLock(true) : null,
+            ),
         ],
       ),
     );

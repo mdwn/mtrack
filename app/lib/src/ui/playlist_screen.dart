@@ -13,10 +13,13 @@
 //
 import 'package:flutter/material.dart';
 
+import '../app/playlist_edit.dart';
 import '../app/session.dart';
 import 'format.dart';
 import 'player_bar.dart';
+import 'playlist_dialogs.dart';
 import 'session_scope.dart';
+import 'settings_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -109,10 +112,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         total += entry.duration.toDart();
       }
     }
-    final summary = entries.isEmpty
-        ? null
-        : '${entries.length} ${entries.length == 1 ? 'song' : 'songs'}'
-              '${total > Duration.zero ? ' · ${formatTotal(total)}' : ''}';
+    final summary = entries.isEmpty ? null : formatSongs(entries.length, total);
     final playing = session.playing;
     final inert = !session.isReady || playing;
 
@@ -122,7 +122,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         const ReconnectBanner(),
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
-          child: _PlaylistPick(session: session),
+          child: _PlaylistHeader(session: session),
         ),
         if (playing)
           Padding(
@@ -231,6 +231,116 @@ class _SongRow extends StatelessWidget {
             ).copyWith(color: colors.muted),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The playlist's name, which opens the list of playlists, and beside it the
+/// way to edit this one.
+class _PlaylistHeader extends StatelessWidget {
+  const _PlaylistHeader({required this.session});
+
+  final Session session;
+
+  @override
+  Widget build(BuildContext context) {
+    final pick = _PlaylistPick(session: session);
+    final edit = _editAction(context);
+    if (edit == null) {
+      return pick;
+    }
+    // At a large text size the two do not fit side by side.
+    if (MediaQuery.textScalerOf(context).scale(10) > 11.5) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [pick, const SizedBox(height: 8), edit],
+      );
+    }
+    return Row(
+      children: [
+        Expanded(child: pick),
+        const SizedBox(width: 8),
+        edit,
+      ],
+    );
+  }
+
+  /// Edit while the player is unlocked, "Unlock to edit" while it is locked,
+  /// nothing for a player that cannot be locked from a phone or for the
+  /// playlist of every song.
+  Widget? _editAction(BuildContext context) {
+    final locked = session.locked;
+    final name = session.status?.playlistName ?? '';
+    if (locked == null || name == allSongsName) {
+      return null;
+    }
+    final colors = context.colors;
+    if (locked) {
+      return _HeaderAction(
+        label: 'Unlock to edit',
+        semanticLabel: 'Unlock to edit',
+        semanticHint: 'Opens the settings, where the player is unlocked',
+        color: colors.amber,
+        onTap: () => showSettingsSheet(context),
+      );
+    }
+    return _HeaderAction(
+      label: 'Edit',
+      semanticLabel: 'Edit playlist',
+      color: colors.cyan,
+      onTap: session.isReady ? () => session.startEditing() : null,
+    );
+  }
+}
+
+class _HeaderAction extends StatelessWidget {
+  const _HeaderAction({
+    required this.label,
+    required this.semanticLabel,
+    required this.color,
+    required this.onTap,
+    this.semanticHint,
+  });
+
+  final String label;
+  final String semanticLabel;
+  final String? semanticHint;
+  final Color color;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      label: semanticLabel,
+      hint: semanticHint,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Opacity(
+        opacity: onTap == null ? 0.5 : 1,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: onTap,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 48, minWidth: 64),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: colors.line, width: 1.5),
+              ),
+              child: Text(
+                label,
+                style: AppText.bodyStrong.copyWith(color: color),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -370,6 +480,12 @@ class _PlaylistPickerState extends State<PlaylistPicker> {
                         semanticLabel: name == choices.active
                             ? '$name, active'
                             : name,
+                        onLongPress: session.locked == false
+                            ? () => _delete(context, session, name)
+                            : null,
+                        semanticHint: session.locked == false
+                            ? 'Hold to delete'
+                            : null,
                         onTap: session.isBusy(ActionKind.switchPlaylist)
                             ? null
                             : () async {
@@ -391,11 +507,52 @@ class _PlaylistPickerState extends State<PlaylistPicker> {
                         ),
                       ),
                     ),
+                  if (session.locked == false) ...[
+                    ChunkyButton(
+                      height: 52,
+                      fontSize: 15,
+                      label: '+ NEW PLAYLIST',
+                      semanticLabel: 'New playlist',
+                      onPressed: session.isReady
+                          ? () => _makeNew(context, session)
+                          : null,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Tap to switch to a playlist. Hold one to delete it.',
+                      style: AppText.small.copyWith(color: colors.dim),
+                    ),
+                  ],
                 ],
               ),
             ),
         ],
       ),
     );
+  }
+
+  Future<void> _delete(
+    BuildContext context,
+    Session session,
+    String name,
+  ) async {
+    await session.deletePlaylist(
+      name,
+      confirm: () => confirmDelete(context, name),
+    );
+  }
+
+  Future<void> _makeNew(BuildContext context, Session session) async {
+    final navigator = Navigator.of(context);
+    final made = await askPlaylistName(
+      context,
+      title: 'New playlist',
+      action: 'Create',
+      accept: session.startNewPlaylist,
+    );
+    if (made) {
+      // The editor opens over the tabs.
+      navigator.pop();
+    }
   }
 }

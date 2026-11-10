@@ -15,8 +15,10 @@ import 'package:flutter/material.dart';
 
 import 'levels_screen.dart';
 import 'now_screen.dart';
+import 'playlist_editor.dart';
 import 'playlist_screen.dart';
 import 'sections_screen.dart';
+import 'session_scope.dart';
 import 'theme.dart';
 
 /// The four tabs and the bar to switch between them. Each tab keeps its state
@@ -37,41 +39,68 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Column(
-      children: [
-        Expanded(
-          child: IndexedStack(
-            index: _index,
-            children: [
-              const NowScreen(),
-              PlaylistScreen(active: _index == 1),
-              const SectionsScreen(),
-              LevelsScreen(active: _index == 3),
-            ],
-          ),
-        ),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: colors.surface,
-            border: Border(top: BorderSide(color: colors.line)),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Row(
+    final editing = SessionScope.of(context).editing != null;
+    return PopScope(
+      canPop: !editing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          leaveEditor(context);
+        }
+      },
+      child: Column(
+        children: [
+          Expanded(
+            // The tabs stay built under the editor, so they are as they were
+            // when it closes.
+            child: Stack(
+              fit: StackFit.expand,
               children: [
-                for (var i = 0; i < _labels.length; i++)
-                  Expanded(
-                    child: _Tab(
-                      label: _labels[i],
-                      selected: i == _index,
-                      onTap: () => setState(() => _index = i),
+                Offstage(
+                  offstage: editing,
+                  child: TickerMode(
+                    enabled: !editing,
+                    child: IndexedStack(
+                      index: _index,
+                      children: [
+                        const NowScreen(),
+                        PlaylistScreen(active: _index == 1 && !editing),
+                        const SectionsScreen(),
+                        LevelsScreen(active: _index == 3 && !editing),
+                      ],
                     ),
                   ),
+                ),
+                if (editing) const Positioned.fill(child: PlaylistEditor()),
               ],
             ),
           ),
+          if (!editing) _tabBar(colors),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabBar(AppColors colors) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(top: BorderSide(color: colors.line)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            for (var i = 0; i < _labels.length; i++)
+              Expanded(
+                child: _Tab(
+                  label: _labels[i],
+                  selected: i == _index,
+                  onTap: () => setState(() => _index = i),
+                ),
+              ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

@@ -24,6 +24,7 @@ import '../protocol/transport.dart';
 import 'failure.dart';
 import 'levels.dart';
 import 'player_link.dart';
+import 'playlist_edit.dart';
 import 'ports.dart';
 import 'sections.dart';
 
@@ -62,6 +63,8 @@ enum ActionKind {
   stopLoop,
   cancelAutoPlay,
   setAmbient,
+  setLock,
+  deletePlaylist,
 }
 
 /// What the app knows of the current song beyond the status: its sections
@@ -171,6 +174,8 @@ class Session extends ChangeNotifier {
   String? _entriesAskedFor;
   PlaylistChoices? _choices;
   bool _loadingChoices = false;
+  bool? _lockedAnswer;
+  PlaylistEdit? _edit;
 
   final Set<ActionKind> _busy = {};
 
@@ -216,6 +221,31 @@ class Session extends ChangeNotifier {
   /// What the ambient light is doing (`playing`, `pending`, `off` or
   /// `unavailable`), or null with [ambientMode].
   String? get ambientState => _ambientState;
+
+  /// Whether the player is locked, or null when it does not say (a player
+  /// from before a phone could lock it, which cannot be edited from one).
+  bool? get locked {
+    final answered = _lockedAnswer;
+    if (answered != null) {
+      return answered;
+    }
+    final s = _status;
+    return s != null && s.hasLocked() ? s.locked : null;
+  }
+
+  /// Whether the player has a lock a phone can use: what shows the lock, and
+  /// the playlist editing it guards.
+  bool get lockAvailable => locked != null;
+
+  /// Whether the active playlist may be edited now: the player is unlocked
+  /// and the playlist is not its own list of every song.
+  bool get canEditPlaylist {
+    final name = _status?.playlistName ?? '';
+    return locked == false && name.isNotEmpty && name != allSongsName;
+  }
+
+  /// The playlist being edited, or null.
+  PlaylistEdit? get editing => _edit;
 
   /// The current song's sections, once fetched.
   SongDetails? get details => _details;
@@ -359,6 +389,8 @@ class Session extends ChangeNotifier {
     _entriesPlaylist = null;
     _entriesAskedFor = null;
     _choices = null;
+    _lockedAnswer = null;
+    _endEdit();
     clock.reset();
     _setPhase(ConnectionPhase.noPlayer);
   }
@@ -543,10 +575,12 @@ class Session extends ChangeNotifier {
       return;
     }
     _status = status;
+    _lockedAnswer = null;
     _statusAt = _monotonic();
     _ambientMode = status.hasAmbientMode() ? status.ambientMode : null;
     _ambientState = status.hasAmbientState() ? status.ambientState : null;
     clock.update(status);
+    _edit?.noteStatus();
     _notify();
     levels.onStatus(status.hasGainsRevision() ? status.gainsRevision : null);
     if (_needsFetch(status)) {
@@ -824,6 +858,126 @@ class Session extends ChangeNotifier {
         return response;
       });
 
+  /// Locks the player, or unlocks it. What the player answers is shown at
+  /// once; the status then keeps it current.
+  Future<String?> setLock(bool locked) => _act(ActionKind.setLock, (c) async {
+    final response = await c.setLock(locked);
+    if (!_disposed && _client == c) {
+      _lockedAnswer = response.locked;
+      _edit?.noteStatus();
+    }
+    return response;
+  });
+
+  /// Begins editing the active playlist, as loaded. Returns why not, or null.
+  String? startEditing() {
+    final status = _status;
+    if (_edit != null) {
+      return null;
+    }
+    if (!canEditPlaylist || status == null) {
+      return _notice('Unlock the player to edit a playlist.');
+    }
+    if (_entriesPlaylist != status.playlistName) {
+      return _notice('The playlist has not loaded yet.');
+    }
+    _beginEdit(status.playlistName, _entries, isNew: false);
+    return null;
+  }
+
+  /// Begins a new, empty playlist called [name]. It is made on the player
+  /// when the edit is saved. Returns what is wrong with the name, or null.
+  String? startNewPlaylist(String name) {
+    if (_edit != null) {
+      return null;
+    }
+    final trimmed = name.trim();
+    final bad = playlistNameProblem(trimmed);
+    if (bad != null) {
+      return bad;
+    }
+    if (_choices?.names.contains(trimmed) ?? false) {
+      return nameTakenMessage;
+    }
+    _beginEdit(trimmed, const [], isNew: true);
+    return null;
+  }
+
+  void _beginEdit(
+    String name,
+    List<player.PlaylistEntry> entries, {
+    required bool isNew,
+  }) {
+    _edit = PlaylistEdit(
+      name: name,
+      entries: entries,
+      isNew: isNew,
+      client: () => _client,
+      isReady: () => isReady,
+      locked: () => locked,
+      notice: _notice,
+      lostIfUnanswered: _lostIfUnanswered,
+      saved: _playlistSaved,
+    );
+    _notify();
+  }
+
+  /// Leaves the editor, dropping what was changed.
+  void endEditing() {
+    _endEdit();
+    _notify();
+  }
+
+  void _endEdit() {
+    final edit = _edit;
+    _edit = null;
+    if (edit != null) {
+      // Disposed after the screen has let go of it.
+      scheduleMicrotask(edit.dispose);
+    }
+  }
+
+  void _playlistSaved(PlaylistEdit edit, player.GetPlaylistResponse response) {
+    if (!edit.isNew && response.name == _status?.playlistName) {
+      _entries = response.entries;
+      _entriesPlaylist = response.name;
+    }
+    _choices = null;
+    if (edit.isNew) {
+      _notice(
+        'Saved ${response.name}. Choose it in the playlist list to use it.',
+      );
+    }
+    _endEdit();
+    _notify();
+  }
+
+  /// Deletes the playlist [name] once [confirm] says to. Refused here, with
+  /// the reason, for the playlist in use and for the player's own list of
+  /// every song. Returns the failure in words, or null.
+  Future<String?> deletePlaylist(
+    String name, {
+    required Future<bool> Function() confirm,
+  }) async {
+    if (name == allSongsName) {
+      return _notice('The $allSongsName playlist cannot be deleted.');
+    }
+    if (name == (_status?.playlistName ?? _choices?.active)) {
+      return _notice('Switch to another playlist before deleting this one.');
+    }
+    if (!await confirm() || _disposed) {
+      return null;
+    }
+    final failure = await _act(
+      ActionKind.deletePlaylist,
+      (c) => c.deletePlaylist(name),
+    );
+    if (failure == null) {
+      await loadPlaylists();
+    }
+    return failure;
+  }
+
   Future<String?> _act(
     ActionKind kind,
     Future<Object?> Function(PlayerClient) call,
@@ -920,6 +1074,8 @@ class Session extends ChangeNotifier {
       unawaited(wake.setEnabled(false).catchError((Object _) {}));
     }
     levels.dispose();
+    _edit?.dispose();
+    _edit = null;
     unawaited(_notices.close());
     super.dispose();
   }

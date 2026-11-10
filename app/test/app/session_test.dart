@@ -464,7 +464,7 @@ void main() {
       h.connect();
       expect(h.session.choices, isNull);
       h.run(h.session.loadPlaylists);
-      expect(h.session.choices?.names, ['Other', 'Set']);
+      expect(h.session.choices?.names, ['Other', 'Set', 'all_songs']);
       expect(h.session.choices?.active, 'Set');
     });
   });

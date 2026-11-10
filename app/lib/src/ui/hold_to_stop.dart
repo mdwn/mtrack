@@ -16,20 +16,15 @@ import 'package:flutter/services.dart';
 
 import 'theme.dart';
 
-/// How long the Stop button has to be held.
+/// How long a press-and-hold button has to be held.
 const Duration holdToStopDuration = Duration(milliseconds: 600);
 
 /// The Stop button: press and hold to stop, so a brushed screen cannot end a
 /// song.
 ///
-/// Holding fills the button over [holdToStopDuration]. When the fill is full
-/// [onStop] is called, with a haptic. Letting go early starts over and calls
-/// [onEarlyRelease], which the screen uses to show the hint. A tap is an early
-/// release.
-///
-/// For a screen reader the button has a long-press action that stops at once,
-/// and a tap that gives the hint.
-class HoldToStop extends StatefulWidget {
+/// A [HoldButton] in the Stop button's colours. For a screen reader it has a
+/// long-press action that stops at once, and a tap that gives the hint.
+class HoldToStop extends StatelessWidget {
   /// A Stop button.
   const HoldToStop({
     required this.onStop,
@@ -52,10 +47,98 @@ class HoldToStop extends StatefulWidget {
   final double height;
 
   @override
-  State<HoldToStop> createState() => _HoldToStopState();
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return HoldButton(
+      label: 'STOP',
+      fontSize: 26,
+      semanticLabel: 'Stop',
+      semanticHint: 'Press and hold to stop',
+      onComplete: onStop,
+      onEarlyRelease: onEarlyRelease,
+      enabled: enabled,
+      height: height,
+      fill: colors.stop,
+      progress: colors.stopFill,
+      foreground: colors.onStop,
+      borderColor: colors.shadow,
+      shadow: true,
+    );
+  }
 }
 
-class _HoldToStopState extends State<HoldToStop>
+/// A button that has to be held: for what a brushed screen must not do.
+///
+/// Holding fills the button over [holdToStopDuration]. When the fill is full
+/// [onComplete] is called, with a haptic. Letting go early starts over and
+/// calls [onEarlyRelease], which the screen uses to show the hint. A tap is
+/// an early release.
+///
+/// For a screen reader the button has a long-press action that completes at
+/// once, and a tap that gives the hint.
+class HoldButton extends StatefulWidget {
+  /// A button that says [label].
+  const HoldButton({
+    required this.label,
+    required this.semanticLabel,
+    required this.semanticHint,
+    required this.onComplete,
+    required this.onEarlyRelease,
+    required this.fill,
+    required this.progress,
+    required this.foreground,
+    required this.borderColor,
+    this.fontSize = 26,
+    this.enabled = true,
+    this.height = 108,
+    this.shadow = false,
+    super.key,
+  });
+
+  /// The text on the button.
+  final String label;
+
+  /// The label size before text scaling.
+  final double fontSize;
+
+  /// What a screen reader calls it.
+  final String semanticLabel;
+
+  /// What a screen reader says it takes.
+  final String semanticHint;
+
+  /// Called once, when the hold completes.
+  final VoidCallback onComplete;
+
+  /// Called when the finger lifts before the hold completes.
+  final VoidCallback onEarlyRelease;
+
+  /// False dims the button and ignores presses.
+  final bool enabled;
+
+  /// The button's height before text scaling.
+  final double height;
+
+  /// The button's fill.
+  final Color fill;
+
+  /// The colour that grows over the fill while it is held.
+  final Color progress;
+
+  /// The colour of the label.
+  final Color foreground;
+
+  /// The colour of the border.
+  final Color borderColor;
+
+  /// Whether to draw the hard shadow.
+  final bool shadow;
+
+  @override
+  State<HoldButton> createState() => _HoldButtonState();
+}
+
+class _HoldButtonState extends State<HoldButton>
     with SingleTickerProviderStateMixin {
   late final AnimationController _fill = AnimationController(
     vsync: this,
@@ -68,7 +151,7 @@ class _HoldToStopState extends State<HoldToStop>
     if (status == AnimationStatus.completed && !_fired) {
       _fired = true;
       HapticFeedback.heavyImpact();
-      widget.onStop();
+      widget.onComplete();
     }
   }
 
@@ -81,8 +164,8 @@ class _HoldToStopState extends State<HoldToStop>
   }
 
   void _up() {
-    // The song stopping replaces this button with Play while the finger is
-    // still down; its lift arrives after the button is gone.
+    // What the hold did can replace this button while the finger is still
+    // down; its lift arrives after the button is gone.
     if (!mounted) {
       return;
     }
@@ -98,7 +181,7 @@ class _HoldToStopState extends State<HoldToStop>
   }
 
   @override
-  void didUpdateWidget(HoldToStop oldWidget) {
+  void didUpdateWidget(HoldButton oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!widget.enabled && _fill.value > 0 && !_fired) {
       _fill.value = 0;
@@ -114,15 +197,15 @@ class _HoldToStopState extends State<HoldToStop>
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final radius = BorderRadius.circular(18);
+    final radius = BorderRadius.circular(widget.height < 80 ? 14 : 18);
     return Semantics(
       button: true,
       enabled: widget.enabled,
-      label: 'Stop',
-      hint: 'Press and hold to stop',
+      label: widget.semanticLabel,
+      hint: widget.semanticHint,
       excludeSemantics: true,
       onTap: widget.enabled ? widget.onEarlyRelease : null,
-      onLongPress: widget.enabled ? widget.onStop : null,
+      onLongPress: widget.enabled ? widget.onComplete : null,
       child: Opacity(
         opacity: widget.enabled ? 1 : 0.35,
         child: Listener(
@@ -133,15 +216,20 @@ class _HoldToStopState extends State<HoldToStop>
           child: Container(
             constraints: BoxConstraints(minHeight: widget.height),
             decoration: BoxDecoration(
-              color: colors.stop,
+              color: widget.fill,
               borderRadius: radius,
-              border: Border.all(color: colors.shadow, width: 2),
-              boxShadow: [
-                BoxShadow(color: colors.shadow, offset: const Offset(4, 4)),
-              ],
+              border: Border.all(color: widget.borderColor, width: 2),
+              boxShadow: widget.shadow
+                  ? [
+                      BoxShadow(
+                        color: colors.shadow,
+                        offset: const Offset(4, 4),
+                      ),
+                    ]
+                  : null,
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: radius - const BorderRadius.all(Radius.circular(2)),
               child: Stack(
                 alignment: Alignment.center,
                 children: [
@@ -153,7 +241,7 @@ class _HoldToStopState extends State<HoldToStop>
                         child: FractionallySizedBox(
                           widthFactor: _fill.value,
                           heightFactor: 1,
-                          child: ColoredBox(color: colors.stopFill),
+                          child: ColoredBox(color: widget.progress),
                         ),
                       ),
                     ),
@@ -161,8 +249,10 @@ class _HoldToStopState extends State<HoldToStop>
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      'STOP',
-                      style: AppText.button(26).copyWith(color: colors.onStop),
+                      widget.label,
+                      textAlign: TextAlign.center,
+                      style: AppText.button(widget.fontSize)
+                          .copyWith(color: widget.foreground),
                     ),
                   ),
                 ],

@@ -93,6 +93,9 @@ class FakePlayer implements PlayerTransport {
     'SetTrackGain',
     'SetTrackMute',
     'SetAmbientMode',
+    'SavePlaylist',
+    'DeletePlaylist',
+    'SetLock',
   };
 
   /// How a method is answered, by bare method name.
