@@ -82,7 +82,10 @@ class PlayerBar extends StatelessWidget {
               style: AppText.small.copyWith(color: colors.muted),
             ),
           ),
-          if (session.lockAvailable) LockPill(locked: session.locked!),
+          if (session.lockAvailable) ...[
+            const SizedBox(width: 8),
+            LockPill(locked: session.locked!),
+          ],
           IconButton(
             tooltip: 'Settings',
             icon: Icon(Icons.settings_outlined, color: colors.muted),

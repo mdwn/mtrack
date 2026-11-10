@@ -140,8 +140,11 @@ class _EditorBody extends StatelessWidget {
             },
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+        // The tab bar is hidden here, and it was what kept the bottom clear
+        // of the system's navigation bar.
+        SafeArea(
+          top: false,
+          minimum: const EdgeInsets.fromLTRB(18, 4, 18, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

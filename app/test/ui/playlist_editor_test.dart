@@ -280,6 +280,22 @@ void main() {
       expect(x.height, greaterThanOrEqualTo(48));
     });
 
+    appTest('keeps Save and Cancel above the navigation bar', (h) async {
+      // The system's bar at the bottom of a phone, 48 px tall.
+      h.tester.view.viewPadding = const FakeViewPadding(bottom: 48 * 3.0);
+      h.tester.view.padding = const FakeViewPadding(bottom: 48 * 3.0);
+      addTearDown(h.tester.view.resetViewPadding);
+      addTearDown(h.tester.view.resetPadding);
+      await startEditing(h);
+      final screen =
+          h.tester.view.physicalSize.height / h.tester.view.devicePixelRatio;
+      final bar = 48 * 3.0 / h.tester.view.devicePixelRatio;
+      for (final label in ['SAVE', 'CANCEL']) {
+        final bottom = h.tester.getRect(find.text(label)).bottom;
+        expect(bottom, lessThanOrEqualTo(screen - bar), reason: label);
+      }
+    });
+
     appTest('Save is off until something changes', (h) async {
       await startEditing(h);
       await h.tester.tap(find.text('SAVE'));
