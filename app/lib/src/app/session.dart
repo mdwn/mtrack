@@ -452,12 +452,13 @@ class Session extends ChangeNotifier {
     _scheduleRetry();
   }
 
-  /// A call to [client] failed with [error]. No answer in time on a link the
-  /// phone still calls connected means the player behind it is not the one
-  /// subscribed to (it restarted, and the radio kept the link): the
-  /// connection is made again. Returns whether it was.
+  /// A call to [client] failed with [error]. No answer in time, or a write
+  /// that would not go, on a link the phone still calls connected means the
+  /// player behind it is not the one subscribed to (it restarted, and the
+  /// radio kept the link): the connection is made again. Returns whether it
+  /// was.
   bool _lostIfUnanswered(PlayerClient client, Object error) {
-    if (error is! PlayerException || !error.isTimeout) {
+    if (error is! PlayerException || !(error.isTimeout || error.unsent)) {
       return false;
     }
     if (_disposed || _client != client || _phase != ConnectionPhase.ready) {
