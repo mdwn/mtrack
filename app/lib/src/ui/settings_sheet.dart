@@ -40,6 +40,19 @@ Future<void> showSettingsSheet(BuildContext context) {
   );
 }
 
+/// Why some of the app is not there: the player is older than the app. An
+/// app with fewer features and no reason given looks like a broken app.
+String olderPlayerNote(List<String> missing) {
+  final list = missing.length == 1
+      ? missing.single
+      : '${missing.sublist(0, missing.length - 1).join(', ')} '
+            'and ${missing.last}';
+  return 'This player runs an older mtrack, so $list '
+      '${missing.length == 1 ? 'is' : 'are'} not shown. '
+      'Update mtrack on the player to use '
+      '${missing.length == 1 ? 'it' : 'them'}.';
+}
+
 class _SettingsSheet extends StatelessWidget {
   const _SettingsSheet();
 
@@ -80,6 +93,13 @@ class _SettingsSheet extends StatelessWidget {
             session.isReady ? 'Connected' : 'Not connected',
             style: AppText.small.copyWith(color: colors.muted),
           ),
+          if (session.missingFromPlayer.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              olderPlayerNote(session.missingFromPlayer),
+              style: AppText.small.copyWith(color: colors.amber),
+            ),
+          ],
           const SizedBox(height: 14),
           if (name != null)
             ChunkyButton(

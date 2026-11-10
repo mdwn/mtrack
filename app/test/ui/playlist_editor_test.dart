@@ -150,6 +150,22 @@ void main() {
       expect(find.text('Ambient light'), findsOneWidget);
     }, setup: (rig) => rig.oldPlayer = true);
 
+    appTest('says why, when the player is too old for it', (h) async {
+      await openSettings(h);
+      expect(
+        find.text(
+          'This player runs an older mtrack, so playlist editing and the '
+          'lock are not shown. Update mtrack on the player to use them.',
+        ),
+        findsOneWidget,
+      );
+    }, setup: (rig) => rig.oldPlayer = true);
+
+    appTest('says nothing of the kind to a current player', (h) async {
+      await openSettings(h);
+      expect(find.textContaining('older mtrack'), findsNothing);
+    });
+
     appTest('says what each button is to a screen reader', (h) async {
       final handle = h.tester.ensureSemantics();
       await openSettings(h);

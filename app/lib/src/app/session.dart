@@ -237,6 +237,22 @@ class Session extends ChangeNotifier {
   /// the playlist editing it guards.
   bool get lockAvailable => locked != null;
 
+  /// What the app can do that the connected player is too old for, in words
+  /// for a sentence; empty when it has everything, or when nothing has been
+  /// heard from a player yet. Each feature came with a field in the status,
+  /// so a status without the field is from before the feature.
+  List<String> get missingFromPlayer {
+    final status = _status;
+    if (status == null) {
+      return const [];
+    }
+    return [
+      if (!status.hasGainsRevision()) 'track levels',
+      if (!status.hasLocked()) 'playlist editing',
+      if (!status.hasLocked()) 'the lock',
+    ];
+  }
+
   /// Whether the active playlist may be edited now: the player is unlocked
   /// and the playlist is not its own list of every song.
   bool get canEditPlaylist {
