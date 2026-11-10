@@ -138,14 +138,22 @@ impl StatusFeed {
     }
 }
 
-/// Polls the player every [`PLAYING_INTERVAL`] and hands each status to
+/// Polls the player every [`PLAYING_INTERVAL`], and at once whenever `wanted`
+/// is told (a phone's request was just answered), and hands each status to
 /// `publish`. A status that cannot be read is skipped: the phone keeps the
 /// last one.
-pub(crate) async fn poll(player: std::sync::Arc<crate::player::Player>, publish: impl Fn(Status)) {
+pub(crate) async fn poll(
+    player: std::sync::Arc<crate::player::Player>,
+    wanted: std::sync::Arc<tokio::sync::Notify>,
+    publish: impl Fn(Status),
+) {
     let mut ticks = tokio::time::interval(PLAYING_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            () = wanted.notified() => {}
+        }
         // No DMX reads: a phone's status is the transport's.
         match from_player(&player.transport_status().await) {
             Ok(status) => publish(status),

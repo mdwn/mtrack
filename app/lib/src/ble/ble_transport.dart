@@ -13,8 +13,8 @@
 //
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import '../protocol/transport.dart';
@@ -109,10 +109,30 @@ class BlePlayerTransport implements PlayerTransport {
       );
       await UniversalBle.connect(deviceId);
       _mtu = await UniversalBle.requestMtu(deviceId, requestedMtu);
+      await _askForShortInterval(deviceId);
       await UniversalBle.discoverServices(deviceId);
     } on Object {
       await _teardown();
       rethrow;
+    }
+  }
+
+  /// Asks Android for its low-latency connection interval (about 7.5 to
+  /// 15 ms in place of 30 to 50), so a tap is answered within a frame or two.
+  /// It costs battery on both ends while connected, which a remote in use
+  /// can afford. Only Android has the call: elsewhere, and when the phone
+  /// refuses, the link keeps the interval it has.
+  Future<void> _askForShortInterval(String deviceId) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    try {
+      await UniversalBle.requestConnectionPriority(
+        deviceId,
+        BleConnectionPriority.highPerformance,
+      );
+    } on Object {
+      // A hint, not a need.
     }
   }
 
