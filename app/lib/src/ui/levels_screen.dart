@@ -224,25 +224,144 @@ class _TrackRow extends StatelessWidget {
                 Expanded(
                   child: _Fader(track: track, levels: levels, enabled: enabled),
                 ),
-                SizedBox(
-                  width: valueWidth,
-                  child: Text(
-                    formatDb(track.gainDb),
-                    maxLines: 1,
-                    softWrap: false,
-                    textAlign: TextAlign.end,
-                    style: AppText.time(
-                      12.5,
-                      weight: 500,
-                    ).copyWith(color: muted ? colors.dim : colors.muted),
+                // The value is a button: a fader is coarse under a thumb,
+                // and typing sets a level to the tenth.
+                Semantics(
+                  button: true,
+                  enabled: enabled,
+                  label: 'Type the ${track.name} level',
+                  excludeSemantics: true,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: enabled
+                        ? () => _typeLevel(context, track, levels)
+                        : null,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: 48),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        child: Center(
+                          widthFactor: 1,
+                          child: SizedBox(
+                            width: valueWidth,
+                            child: Text(
+                              formatDb(track.gainDb),
+                              maxLines: 1,
+                              softWrap: false,
+                              textAlign: TextAlign.end,
+                              style: AppText.time(12.5, weight: 500).copyWith(
+                                color: muted ? colors.dim : colors.muted,
+                                decoration: enabled
+                                    ? TextDecoration.underline
+                                    : null,
+                                decorationStyle: TextDecorationStyle.dotted,
+                                decorationColor: colors.dim,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                const SizedBox(width: 6),
               ],
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Asks for a level in dB and sets the track to it.
+Future<void> _typeLevel(
+  BuildContext context,
+  TrackLevel track,
+  Levels levels,
+) async {
+  final value = await showDialog<double>(
+    context: context,
+    builder: (_) => _LevelDialog(track: track),
+  );
+  if (value != null) {
+    levels.setTo(track.name, value);
+  }
+}
+
+class _LevelDialog extends StatefulWidget {
+  const _LevelDialog({required this.track});
+
+  final TrackLevel track;
+
+  @override
+  State<_LevelDialog> createState() => _LevelDialogState();
+}
+
+class _LevelDialogState extends State<_LevelDialog> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.track.gainDb.toStringAsFixed(1),
+  );
+  bool _refused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Selected, so typing replaces what is there.
+    _text.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _text.text.length,
+    );
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = parseGain(_text.text);
+    if (value == null) {
+      setState(() => _refused = true);
+      return;
+    }
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.track.name),
+      content: TextField(
+        controller: _text,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(
+          signed: true,
+          decimal: true,
+        ),
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+        onChanged: (_) {
+          if (_refused) {
+            setState(() => _refused = false);
+          }
+        },
+        decoration: InputDecoration(
+          labelText: 'Level',
+          suffixText: 'dB',
+          helperText: 'From ${formatDb(minGainDb)} to ${formatDb(maxGainDb)}',
+          errorText: _refused
+              ? 'A number from ${minGainDb.toInt()} to ${maxGainDb.toInt()}'
+              : null,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Set')),
+      ],
     );
   }
 }

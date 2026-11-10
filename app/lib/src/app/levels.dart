@@ -74,6 +74,25 @@ class TrackLevel {
 }
 
 /// Rounds a gain to a tenth of a dB and keeps it within the player's range.
+/// The gain a person typed, in dB, or null when it is not a number in the
+/// player's range. A comma for the decimal point, a typographic minus and a
+/// trailing "dB" are all taken.
+double? parseGain(String text) {
+  final cleaned = text
+      .trim()
+      .replaceAll('\u2212', '-')
+      .replaceAll(',', '.')
+      .replaceFirst(RegExp(r'\s*db$', caseSensitive: false), '');
+  final value = double.tryParse(cleaned);
+  if (value == null || !value.isFinite) {
+    return null;
+  }
+  if (value < minGainDb || value > maxGainDb) {
+    return null;
+  }
+  return clampGain(value);
+}
+
 double clampGain(double db) =>
     ((db.clamp(minGainDb, maxGainDb)) * 10).round() / 10;
 
@@ -322,6 +341,9 @@ class Levels extends ChangeNotifier {
     _pump(t);
     check();
   }
+
+  /// Sets [name] to exactly [db], as typed: no snap to 0 dB.
+  void setTo(String name, double db) => endDrag(name, db, snap: false);
 
   void _want(_Track t, double value) {
     t.pending = value == t.lastSent ? null : value;

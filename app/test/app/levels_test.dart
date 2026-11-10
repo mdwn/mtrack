@@ -170,6 +170,39 @@ void main() {
     });
   });
 
+  group('a typed level', () {
+    test('is read the ways a person writes one', () {
+      expect(parseGain('-3.5'), -3.5);
+      expect(parseGain(' \u22123,5 dB '), -3.5);
+      expect(parseGain('+6'), 6);
+      expect(parseGain('0'), 0);
+      expect(parseGain('-0.04'), 0);
+      expect(parseGain('-60'), -60);
+      expect(parseGain('12'), 12);
+    });
+
+    test('is refused when it is not a level the player has', () {
+      for (final text in [
+        '',
+        'loud',
+        '12.1',
+        '-60.1',
+        'NaN',
+        'Infinity',
+        '1e9',
+      ]) {
+        expect(parseGain(text), isNull, reason: text);
+      }
+    });
+
+    scenario('is sent as typed, with no snap to 0 dB', (h, levels, _) {
+      levels.setTo('Click', -0.5);
+      h.elapse(const Duration(milliseconds: 200));
+      expect(sentGains(h), [-0.5]);
+      expect(gainOf(levels, 'Click'), -0.5);
+    });
+  });
+
   group('the faders', () {
     scenario('send at most one write per track every 100 ms, and the last', (
       h,

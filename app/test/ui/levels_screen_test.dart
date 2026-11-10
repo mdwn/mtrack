@@ -105,6 +105,33 @@ void main() {
       );
     });
 
+    appTest('take a level typed to the tenth', (h) async {
+      await h.openTab('Levels');
+      await h.tester.tap(find.bySemanticsLabel('Type the Cue level'));
+      await h.tester.pumpAndSettle();
+      await h.tester.enterText(find.byType(TextField), '-7,3');
+      await h.tester.tap(find.text('Set'));
+      await h.tester.pumpAndSettle();
+      await h.settle();
+      await h.tester.pump(const Duration(milliseconds: 200));
+      expect(h.rig.tracks[1].gainDb, -7.3);
+      expect(find.text('−7.3 dB'), findsOneWidget);
+    });
+
+    appTest('refuse a typed level out of range and keep the dialog', (h) async {
+      await h.openTab('Levels');
+      final before = h.rig.tracks[1].gainDb;
+      await h.tester.tap(find.bySemanticsLabel('Type the Cue level'));
+      await h.tester.pumpAndSettle();
+      await h.tester.enterText(find.byType(TextField), '40');
+      await h.tester.tap(find.text('Set'));
+      await h.tester.pumpAndSettle();
+      expect(find.text('A number from -60 to 12'), findsOneWidget);
+      await h.tester.tap(find.text('Cancel'));
+      await h.tester.pumpAndSettle();
+      expect(h.rig.tracks[1].gainDb, before);
+    });
+
     appTest('mute a track and show it muted', (h) async {
       await h.openTab('Levels');
       await h.tester.tap(find.bySemanticsLabel('Mute Cue'));

@@ -47,8 +47,11 @@ class _SettingsSheet extends StatelessWidget {
     final session = SessionScope.of(context);
     final colors = context.colors;
     final name = session.playerName;
+    // The sheet's own safe area leaves the bottom alone, so the last button
+    // would sit under the system's navigation bar.
+    final below = MediaQuery.viewPaddingOf(context).bottom;
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+      padding: EdgeInsets.fromLTRB(18, 18, 18, 24 + below),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
