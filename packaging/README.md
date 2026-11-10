@@ -37,7 +37,8 @@ packaged unit instead. The deployment guide tells people to add
 — only carries `Provides: libasound2 (= <version>)`. A versioned `Provides`
 satisfies an unversioned `Depends` but not a versioned one, so an auto-generated
 package builds cleanly on bookworm and then refuses to install on trixie. The
-alternation `libasound2t64 | libasound2` resolves on both sides of the rename.
+alternation `libasound2t64 | libasound2` resolves on both sides of the rename. `libdbus-1-3`,
+which the Bluetooth controller links, has kept its name and is listed plainly.
 
 ## Building a package locally
 

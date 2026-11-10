@@ -23,7 +23,7 @@
 FROM ubuntu:24.04 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config libasound2-dev \
+    curl build-essential pkg-config libasound2-dev libdbus-1-dev \
     protobuf-compiler libprotobuf-dev git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -74,7 +74,7 @@ FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd systemd-sysv dbus \
-    libasound2t64 \
+    libasound2t64 libdbus-1-3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

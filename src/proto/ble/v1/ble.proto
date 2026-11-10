@@ -15,6 +15,15 @@ syntax = "proto3";
 
 package ble.v1;
 
+import "google/protobuf/duration.proto";
+import "player/v1/player.proto";
+
+// Every response notification reaches every phone subscribed to the response
+// characteristic: the radio stack notifies a characteristic's subscribers
+// together, so one phone sees the answers to another's calls. A client
+// therefore starts its call ids at a random value and ignores a Response whose
+// id it did not send.
+
 // Request is one call from a phone: a PlayerService method and its request
 // message.
 message Request {
@@ -37,4 +46,30 @@ message Response {
     string message = 3;
     // The method's response message, serialized. Empty when code is not 0.
     bytes payload = 4;
+}
+
+// Status is the player's state, pushed on the status characteristic and
+// returned by a read of it. It is deliberately small, to fit a few packets:
+// it carries no beat grid and no sections, which a client fetches with the
+// Status method when the song changes.
+message Status {
+    // The name of the current playlist.
+    string playlist_name = 1;
+    // The name of the song the playlist is on. Empty when it has none.
+    string song_name = 2;
+    // The length of that song.
+    google.protobuf.Duration song_duration = 3;
+    // True while a song is playing.
+    bool playing = 4;
+    // How far into the song the player is, as of this message: on the
+    // playback clock while playing, the position kept for the next play while
+    // stopped. A client runs its own clock between messages.
+    google.protobuf.Duration elapsed = 5;
+    // The index of the playlist entry the playlist is on, as
+    // GetPlaylistResponse.position gives it. Absent while the song playing is
+    // one an edit took off the list.
+    optional uint32 position = 6;
+    // The song waiting to start by itself, and how long until it does.
+    // Absent when none is.
+    optional player.v1.AutoPlayStatus auto_play = 7;
 }

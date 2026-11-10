@@ -92,6 +92,7 @@ install_build_deps_debian() {
     pkg-config
     libasound2-dev
     libudev-dev
+    libdbus-1-dev
     libssl-dev
     protobuf-compiler
   )
@@ -106,6 +107,7 @@ install_build_deps_fedora() {
     pkg-config
     alsa-lib-devel
     systemd-devel
+    dbus-devel
     openssl-devel
     protobuf-compiler
   )
@@ -119,6 +121,7 @@ install_build_deps_arch() {
     pkg-config
     alsa-lib
     systemd-libs
+    dbus
     openssl
     protobuf
   )

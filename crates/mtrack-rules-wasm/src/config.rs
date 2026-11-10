@@ -60,7 +60,7 @@ mod trigger;
 
 pub use crate::tempo_config::TempoConfig;
 pub use audio::StreamBufferSize;
-pub use controller::MidiController;
+pub use controller::{BleController, MidiController};
 use duration::{parse_playback_delay, playback_delay_problem};
 pub use fade::{FadeCurve, FadeStatus};
 pub use midi_event::MidiEventShapes;

@@ -4445,6 +4445,7 @@ mod update_controllers_description_tests {
     /// needs a sample here before this compiles.
     fn sample(kind: ControllerKind) -> Controller {
         match kind {
+            ControllerKind::Ble => Controller::Ble(crate::config::BleController::default()),
             ControllerKind::Grpc => Controller::Grpc(crate::config::GrpcController::new(1)),
             ControllerKind::Mcp => Controller::Mcp(crate::config::McpController::new(1)),
             ControllerKind::Midi => {

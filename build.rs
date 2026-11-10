@@ -34,6 +34,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
             check_lib("alsa", "libasound2-dev");
             check_lib("libudev", "libudev-dev");
+            // Only the Bluetooth controller links it (the `ble` feature).
+            if env::var_os("CARGO_FEATURE_BLE").is_some() {
+                check_lib("dbus-1", "libdbus-1-dev");
+            }
         }
         check_lib("openssl", "libssl-dev");
     }
@@ -44,10 +48,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
         .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
 
-    // The Bluetooth envelope: messages only, no service.
+    // The Bluetooth envelope: messages only, no service. Its status borrows
+    // a player message, which it names rather than generates a second time.
     tonic_prost_build::configure()
         .build_client(false)
         .build_server(false)
+        .extern_path(".player.v1", "crate::proto::player::v1")
         .compile_protos(&["src/proto/ble/v1/ble.proto"], &["src/proto"])?;
 
     // Embed git hash.

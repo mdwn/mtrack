@@ -283,7 +283,7 @@ impl Player {
 
     /// The status without the DMX engine's reads: what the transport
     /// snapshot is made from, at its poll rate.
-    pub(super) async fn transport_status(&self) -> PlayerStatus {
+    pub(crate) async fn transport_status(&self) -> PlayerStatus {
         let playlist = self.get_playlist();
         let current_song = playlist.current();
         let playing = self.is_playing().await;

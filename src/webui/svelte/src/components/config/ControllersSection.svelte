@@ -261,6 +261,22 @@
             }}
           />
         </div>
+      {:else if ctrl.kind === "ble"}
+        <div class="field">
+          <label for="ctrl-ble-name-{i}"
+            >{$t("controllers.bleName")}
+            <Tooltip text={$t("tooltips.controllers.bleName")} /></label
+          >
+          <input
+            id="ctrl-ble-name-{i}"
+            type="text"
+            class="input"
+            placeholder={$t("controllers.bleNamePlaceholder")}
+            value={ctrl.name ?? ""}
+            onchange={(e) =>
+              updateField(i, "name", (e.target as HTMLInputElement).value)}
+          />
+        </div>
       {:else if ctrl.kind === "osc"}
         <div class="field">
           <label for="ctrl-osc-port-{i}"
@@ -474,6 +490,12 @@
       class="btn"
       title={$t("tooltips.controllers.addMidi")}
       onclick={addMidiController}>{$t("controllers.addMidi")}</button
+    >
+    <button
+      class="btn"
+      title={$t("tooltips.controllers.addBle")}
+      disabled={controllers.some((c) => c.kind === "ble")}
+      onclick={() => addController("ble")}>{$t("controllers.addBle")}</button
     >
   </div>
 </div>

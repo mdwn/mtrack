@@ -64,6 +64,12 @@ case "$control" in
     *"libasound2t64 | libasound2"*) ok "depends carry the libasound2t64 alternation" ;;
     *) fail "depends lost the libasound2t64 alternation: $(echo "$control" | grep -i '^Depends:')" ;;
 esac
+# The Bluetooth controller links libdbus; a package without the dependency
+# installs and then fails to start on a minimal system.
+case "$control" in
+    *"libdbus-1-3"*) ok "depends carry libdbus-1-3" ;;
+    *) fail "depends lost libdbus-1-3: $(echo "$control" | grep -i '^Depends:')" ;;
+esac
 check "recommends olad for DMX" sh -c "echo '$control' | grep -qE '^Recommends:.*\bola\b'"
 check "conffile registered" sh -c "dpkg-deb --ctrl-tarfile '$DEB' | tar xO ./conffiles | grep -qx /etc/default/mtrack"
 
