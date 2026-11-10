@@ -328,8 +328,11 @@ class _PlaylistPickerState extends State<PlaylistPicker> {
     final session = SessionScope.of(context);
     final colors = context.colors;
     final choices = session.choices;
+    // Clear of the system's navigation bar, which the sheet's own safe area
+    // leaves alone.
+    final below = MediaQuery.viewPaddingOf(context).bottom;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+      padding: EdgeInsets.fromLTRB(18, 18, 18, 8 + below),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
