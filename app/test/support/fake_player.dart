@@ -104,6 +104,10 @@ class FakePlayer implements PlayerTransport {
   /// mark of two requests interleaving on the wire.
   int interleavedStarts = 0;
 
+  /// When true, every [write] fails though the link says it is ready: what
+  /// a phone sees writing to a characteristic the player no longer has.
+  bool refuseWrites = false;
+
   /// How long each [write] takes to be acknowledged.
   Duration writeDelay = Duration.zero;
 
@@ -163,6 +167,9 @@ class FakePlayer implements PlayerTransport {
   Future<void> write(Uint8List chunk) async {
     if (_state != TransportState.ready) {
       throw StateError('write while not ready');
+    }
+    if (refuseWrites) {
+      throw StateError('write refused');
     }
     if (writeDelay > Duration.zero) {
       await Future<void>.delayed(writeDelay);

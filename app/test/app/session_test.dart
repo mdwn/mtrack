@@ -269,6 +269,49 @@ void main() {
   });
 
   group('reconnecting', () {
+    scenario('connects again when a call goes unanswered on a live link', (
+      h,
+      _,
+    ) {
+      // The player restarted and the radio kept the link: nothing says the
+      // connection is gone, and nothing answers.
+      h.connect();
+      expect(h.session.phase, ConnectionPhase.ready);
+      int connects() =>
+          h.link.calls.where((c) => c.startsWith('connect')).length;
+      final before = connects();
+
+      h.player.handlers['Next'] = (_) => FakeReply.drop();
+      String? said;
+      unawaited(h.session.next().then((m) => said = m));
+      h.elapse(const Duration(seconds: 5));
+      expect(said, isNotNull);
+      expect(h.session.phase, ConnectionPhase.lost);
+
+      h.elapse(const Duration(seconds: 1));
+      expect(connects() - before, 1);
+      expect(h.session.phase, ConnectionPhase.ready);
+    });
+
+    scenario('connects again when a write is refused on a live link', (h, _) {
+      // The same restart, seen the other way: the phone's write is refused
+      // at once, with the link still up.
+      h.connect();
+      int connects() =>
+          h.link.calls.where((c) => c.startsWith('connect')).length;
+      final before = connects();
+
+      h.player.refuseWrites = true;
+      String? said;
+      unawaited(h.session.next().then((m) => said = m));
+      h.settle();
+      expect(said, noAnswerMessage);
+      expect(h.session.phase, ConnectionPhase.lost);
+
+      h.elapse(const Duration(seconds: 1));
+      expect(connects() - before, 1);
+    });
+
     scenario('retries after 1 s, 2 s, 5 s, then every 5 s', (h, _) {
       h.connect();
       expect(h.session.phase, ConnectionPhase.ready);

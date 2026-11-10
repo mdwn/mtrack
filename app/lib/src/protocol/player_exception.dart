@@ -42,7 +42,7 @@ abstract final class GrpcCode {
 /// A call that did not succeed: the player refused it, or no answer came.
 class PlayerException implements Exception {
   /// An exception with the gRPC [code] and a [message] for the user.
-  const PlayerException(this.code, this.message);
+  const PlayerException(this.code, this.message, {this.unsent = false});
 
   /// The call got no answer in time.
   const PlayerException.timeout(String method)
@@ -52,8 +52,17 @@ class PlayerException implements Exception {
   const PlayerException.unavailable([String message = 'not connected'])
     : this(GrpcCode.unavailable, message);
 
+  /// The request could not be written: the link took nothing, though it
+  /// was thought to be up.
+  const PlayerException.unsent(String message)
+    : this(GrpcCode.unavailable, message, unsent: true);
+
   /// The gRPC status code.
   final int code;
+
+  /// True when the request never left the phone, as against a player that
+  /// answered with a refusal.
+  final bool unsent;
 
   /// The player's description, or ours for a timeout or a lost link.
   final String message;

@@ -149,7 +149,7 @@ class PlayerClient {
       final pending = _pending.remove(id);
       if (pending != null) {
         pending.completer.completeError(
-          e is PlayerException ? e : PlayerException.unavailable('$e'),
+          e is PlayerException ? e : PlayerException.unsent('$e'),
         );
       }
     } finally {
