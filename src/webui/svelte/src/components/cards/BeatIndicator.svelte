@@ -46,14 +46,17 @@
   });
 
   /** The beat the playhead is on, from the player's grid: one `grid_query`
-   * per animation frame. Before the first beat nothing has struck yet. */
+   * per animation frame. Before the first beat nothing has struck yet --
+   * told by the first beat's own time, not by the answer's `secs`: that is
+   * the position turned back into a time, which rounds to a hair after the
+   * time asked about often enough in the first bar to blink the dot off. */
   let beatState = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     if (!grid) return null;
     const elapsed = smoothElapsedMs / 1000;
     const at = rules.grid_query(grid, { secs: elapsed });
     if (!at) return null;
-    if (at.secs > elapsed) {
+    if (elapsed < grid.beats[0]) {
       return {
         beatIdx: -1,
         beatInMeasure: -1,
