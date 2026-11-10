@@ -439,12 +439,32 @@ class Session extends ChangeNotifier {
       return;
     }
     // The link dropped under a working connection.
+    _lose();
+  }
+
+  /// Gives up a working connection and starts over from the first retry.
+  void _lose() {
     _epoch++;
     clock.hold();
     unawaited(_dropConnection(keepState: true));
     _retries = 0;
     _setPhase(ConnectionPhase.lost);
     _scheduleRetry();
+  }
+
+  /// A call to [client] failed with [error]. No answer in time on a link the
+  /// phone still calls connected means the player behind it is not the one
+  /// subscribed to (it restarted, and the radio kept the link): the
+  /// connection is made again. Returns whether it was.
+  bool _lostIfUnanswered(PlayerClient client, Object error) {
+    if (error is! PlayerException || !error.isTimeout) {
+      return false;
+    }
+    if (_disposed || _client != client || _phase != ConnectionPhase.ready) {
+      return false;
+    }
+    _lose();
+    return true;
   }
 
   void _scheduleRetry() {
@@ -543,10 +563,12 @@ class Session extends ChangeNotifier {
       return;
     }
     _syncing = true;
+    PlayerClient? asked;
     try {
       do {
         _syncAgain = false;
         final client = _client;
+        asked = client;
         final status = _status;
         if (client == null || status == null) {
           break;
@@ -559,8 +581,10 @@ class Session extends ChangeNotifier {
           await _loadEntries(client, status.playlistName);
         }
       } while (_syncAgain && !_disposed && _client != null);
-    } on Object {
-      if (!_disposed && _client != null) {
+    } on Object catch (e) {
+      if (asked != null && _lostIfUnanswered(asked, e)) {
+        // Connecting again fetches everything.
+      } else if (!_disposed && _client != null) {
         _detailsTimer?.cancel();
         _detailsTimer = Timer(detailsRetryDelay, () {
           _detailsTimer = null;
@@ -777,6 +801,7 @@ class Session extends ChangeNotifier {
       await call(client);
       return null;
     } on Object catch (e) {
+      _lostIfUnanswered(client, e);
       return _notice(describeFailure(e));
     } finally {
       _busy.remove(kind);

@@ -156,7 +156,8 @@ impl Drop for Pairing {
 impl Pairing {
     /// Starts the policy: the window opens for `first_window` if no device
     /// is paired, and is closed otherwise. Phones already connected and
-    /// unpaired are held to the same rule as ones that connect later.
+    /// unpaired are held to the same rule as ones that connect later; paired
+    /// phones already connected are dropped once, to connect afresh.
     pub(crate) async fn start(
         adapter: Arc<dyn AdapterOps>,
         first_window: Duration,
@@ -175,6 +176,19 @@ impl Pairing {
         }
         for device in devices.iter().filter(|d| d.is_unpaired_visitor()) {
             pairing.police(device.address);
+        }
+        // BlueZ keeps a link up while the player is away, so a paired phone
+        // can still be connected from before this start. What it subscribed
+        // to is gone with the player it knew, and it was told of no
+        // disconnect: it would sit there deaf. Dropped, it connects afresh.
+        for device in devices.iter().filter(|d| d.is_phone() && d.connected) {
+            if let Err(e) = pairing.adapter.disconnect(device.address).await {
+                tracing::warn!(
+                    device = %format_address(device.address),
+                    error = %e,
+                    "Bluetooth phone connected from before the start was not dropped"
+                );
+            }
         }
         Ok(pairing)
     }
@@ -624,7 +638,19 @@ mod tests {
         // A phone paired and one that is not, both connected, window closed.
         let (fake, _pairing) = started(vec![device(1, true, true), device(2, false, true)]).await;
         eventually_async(|| gone(&fake, 2), "the unpaired phone stayed").await;
-        assert!(!gone(&fake, 1).await);
+    }
+
+    #[tokio::test]
+    async fn a_paired_phone_connected_from_before_the_start_connects_afresh() {
+        // Its link outlived the last player, and its subscriptions did not.
+        // One not connected, and the owner's own device, are left alone.
+        let (fake, _pairing) = started(vec![
+            device(1, true, true),
+            device(2, true, false),
+            trusted_device(3, true),
+        ])
+        .await;
+        assert_eq!(*fake.disconnected.lock(), vec![[0, 0, 0, 0, 0, 1]]);
     }
 
     #[tokio::test]
