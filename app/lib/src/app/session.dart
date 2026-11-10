@@ -22,6 +22,7 @@ import '../protocol/player_client.dart';
 import '../protocol/player_exception.dart';
 import '../protocol/transport.dart';
 import 'failure.dart';
+import 'levels.dart';
 import 'player_link.dart';
 import 'ports.dart';
 import 'sections.dart';
@@ -60,6 +61,7 @@ enum ActionKind {
   loopSection,
   stopLoop,
   cancelAutoPlay,
+  setAmbient,
 }
 
 /// What the app knows of the current song beyond the status: its sections
@@ -124,6 +126,12 @@ class Session extends ChangeNotifier {
   }) : _monotonic = monotonic ?? _stopwatchClock(),
        _clientFactory = clientFactory ?? PlayerClient.new {
     clock = PlaybackClock(_monotonic);
+    levels = Levels(
+      client: () => _client,
+      isReady: () => isReady,
+      notice: _notice,
+      lostIfUnanswered: _lostIfUnanswered,
+    );
   }
 
   final PlayerLink _link;
@@ -135,6 +143,9 @@ class Session extends ChangeNotifier {
 
   /// The song position to show, run between status messages.
   late final PlaybackClock clock;
+
+  /// The output tracks' gains and mutes, for the Levels tab.
+  late final Levels levels;
 
   final StreamController<String> _notices = StreamController<String>.broadcast(
     sync: true,
@@ -150,6 +161,8 @@ class Session extends ChangeNotifier {
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
   ble.Status? _status;
+  String? _ambientMode;
+  String? _ambientState;
   Duration _statusAt = Duration.zero;
   SongDetails? _details;
   String? _detailsName;
@@ -195,6 +208,14 @@ class Session extends ChangeNotifier {
   /// The latest status from the player. Kept, and shown dimmed, while the
   /// link is lost.
   ble.Status? get status => _status;
+
+  /// The ambient light's mode (`auto`, `on` or `off`), or null when the
+  /// player has no ambient light to set.
+  String? get ambientMode => _ambientMode;
+
+  /// What the ambient light is doing (`playing`, `pending`, `off` or
+  /// `unavailable`), or null with [ambientMode].
+  String? get ambientState => _ambientState;
 
   /// The current song's sections, once fetched.
   SongDetails? get details => _details;
@@ -329,6 +350,9 @@ class Session extends ChangeNotifier {
     _target = null;
     _connectError = null;
     _status = null;
+    _ambientMode = null;
+    _ambientState = null;
+    levels.clear();
     _details = null;
     _detailsName = null;
     _entries = const [];
@@ -497,6 +521,7 @@ class Session extends ChangeNotifier {
     _transport = null;
     _busy.clear();
     _syncing = false;
+    levels.reset();
     await client?.dispose();
     await transport?.close();
     if (!keepState) {
@@ -519,8 +544,11 @@ class Session extends ChangeNotifier {
     }
     _status = status;
     _statusAt = _monotonic();
+    _ambientMode = status.hasAmbientMode() ? status.ambientMode : null;
+    _ambientState = status.hasAmbientState() ? status.ambientState : null;
     clock.update(status);
     _notify();
+    levels.onStatus(status.hasGainsRevision() ? status.gainsRevision : null);
     if (_needsFetch(status)) {
       unawaited(_sync());
     }
@@ -784,6 +812,18 @@ class Session extends ChangeNotifier {
   Future<String?> cancelAutoPlay() =>
       _act(ActionKind.cancelAutoPlay, (c) => c.cancelAutoPlay());
 
+  /// Sets the ambient light's mode to `auto`, `on` or `off`. What the player
+  /// answers is shown at once; the status then keeps it current.
+  Future<String?> setAmbientMode(String mode) =>
+      _act(ActionKind.setAmbient, (c) async {
+        final response = await c.setAmbientMode(mode);
+        if (response.hasAmbient() && !_disposed && _client == c) {
+          _ambientMode = response.ambient.mode;
+          _ambientState = response.ambient.state;
+        }
+        return response;
+      });
+
   Future<String?> _act(
     ActionKind kind,
     Future<Object?> Function(PlayerClient) call,
@@ -830,6 +870,7 @@ class Session extends ChangeNotifier {
     _phase = phase;
     _updateWake();
     _notify();
+    levels.check();
   }
 
   void _updateWake() {
@@ -878,6 +919,7 @@ class Session extends ChangeNotifier {
     if (wake != null && _wakeAsked == true) {
       unawaited(wake.setEnabled(false).catchError((Object _) {}));
     }
+    levels.dispose();
     unawaited(_notices.close());
     super.dispose();
   }

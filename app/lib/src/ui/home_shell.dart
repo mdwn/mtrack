@@ -13,12 +13,13 @@
 //
 import 'package:flutter/material.dart';
 
+import 'levels_screen.dart';
 import 'now_screen.dart';
 import 'playlist_screen.dart';
 import 'sections_screen.dart';
 import 'theme.dart';
 
-/// The three tabs and the bar to switch between them. Each tab keeps its state
+/// The four tabs and the bar to switch between them. Each tab keeps its state
 /// while another is showing.
 class HomeShell extends StatefulWidget {
   /// The tabs.
@@ -29,7 +30,7 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  static const List<String> _labels = ['Now', 'Playlist', 'Sections'];
+  static const List<String> _labels = ['Now', 'Playlist', 'Sections', 'Levels'];
 
   int _index = 0;
 
@@ -45,6 +46,7 @@ class _HomeShellState extends State<HomeShell> {
               const NowScreen(),
               PlaylistScreen(active: _index == 1),
               const SectionsScreen(),
+              LevelsScreen(active: _index == 3),
             ],
           ),
         ),

@@ -358,6 +358,39 @@ class PlayerClient {
     player.GetPlaylistRequest(name: name),
     player.GetPlaylistResponse.fromBuffer,
   );
+
+  /// The gain and mute of every output track, in the player's order.
+  Future<player.GetTrackGainsResponse> getTrackGains() => call(
+    'GetTrackGains',
+    player.GetTrackGainsRequest(),
+    player.GetTrackGainsResponse.fromBuffer,
+  );
+
+  /// Sets the gain of output track [track] to [gainDb]. The player clamps it
+  /// and answers with the gain it applied.
+  Future<player.SetTrackGainResponse> setTrackGain(
+    String track,
+    double gainDb,
+  ) => call(
+    'SetTrackGain',
+    player.SetTrackGainRequest(track: track, gainDb: gainDb),
+    player.SetTrackGainResponse.fromBuffer,
+  );
+
+  /// Mutes or unmutes output track [track].
+  Future<player.SetTrackMuteResponse> setTrackMute(String track, bool muted) =>
+      call(
+        'SetTrackMute',
+        player.SetTrackMuteRequest(track: track, muted: muted),
+        player.SetTrackMuteResponse.fromBuffer,
+      );
+
+  /// Sets the ambient light's mode: `auto`, `on` or `off`.
+  Future<player.SetAmbientModeResponse> setAmbientMode(String mode) => call(
+    'SetAmbientMode',
+    player.SetAmbientModeRequest(mode: mode),
+    player.SetAmbientModeResponse.fromBuffer,
+  );
 }
 
 /// A call waiting for its response.

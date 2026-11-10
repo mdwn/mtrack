@@ -93,6 +93,21 @@ class RigSong {
 
 /// A player with songs and playlists that answers the way the real one does
 /// and tells the phone what changed.
+/// An output track as the player holds it.
+class RigTrack {
+  /// A track [name] at [gainDb].
+  RigTrack(this.name, [this.gainDb = 0, this.muted = false]);
+
+  /// The track's name.
+  final String name;
+
+  /// Its gain in dB.
+  double gainDb;
+
+  /// Whether it is muted.
+  bool muted;
+}
+
 class Rig {
   /// A rig with [songs] in its first playlist.
   Rig({List<RigSong>? songs, this.playlist = 'Set'})
@@ -148,6 +163,29 @@ class Rig {
   /// Whether the player is locked (it refuses what a locked player refuses).
   bool locked = false;
 
+  /// The output tracks, in the order the player lists them.
+  List<RigTrack> tracks = [
+    RigTrack('Click'),
+    RigTrack('Cue', -3),
+    RigTrack('Keys', -6),
+  ];
+
+  /// The counter the player bumps on any gain or mute change.
+  int gainsRevision = 1;
+
+  /// False for a player that refuses the level calls as not allowed.
+  bool levelsAllowed = true;
+
+  /// The ambient light's mode, or null for a player without a lighting
+  /// engine (or an older one): the status then carries no ambient fields.
+  String? ambientMode = 'auto';
+
+  /// What the ambient light is doing.
+  String ambientState = 'off';
+
+  /// False when the ambient light has no show to play.
+  bool ambientShow = true;
+
   /// The player's current song.
   RigSong get current => songs[index];
 
@@ -166,7 +204,27 @@ class Rig {
             startsIn: seconds(autoPlayIn.inMilliseconds / 1000),
           ),
     loopSection: loop,
+    gainsRevision: levelsAllowed ? gainsRevision : null,
+    ambientMode: ambientMode,
+    ambientState: ambientMode == null ? null : ambientState,
   );
+
+  /// What a change by another surface (the web UI) does: moves a gain and
+  /// bumps the revision.
+  void setGainElsewhere(String track, double gainDb) {
+    tracks.firstWhere((t) => t.name == track).gainDb = gainDb;
+    gainsRevision++;
+    publish();
+  }
+
+  void _setAmbient(String mode) {
+    ambientMode = mode;
+    ambientState = switch (mode) {
+      'off' => 'off',
+      'on' => ambientShow ? 'playing' : 'unavailable',
+      _ => playing ? 'off' : (ambientShow ? 'playing' : 'unavailable'),
+    };
+  }
 
   /// Makes the status readable and tells the phone.
   void publish() {
@@ -207,6 +265,58 @@ class Rig {
         active: playlist,
       ),
     );
+    FakeReply levelGuard(FakeReply Function() body) =>
+        levelsAllowed ? body() : FakeReply.error(7, 'method is not allowed');
+    h['GetTrackGains'] = (_) => levelGuard(
+      () => FakeReply.ok(
+        pp.GetTrackGainsResponse(
+          gains: [
+            for (final t in tracks)
+              pp.TrackGain(track: t.name, gainDb: t.gainDb, muted: t.muted),
+          ],
+        ),
+      ),
+    );
+    h['SetTrackGain'] = (request) => levelGuard(() {
+      final req = pp.SetTrackGainRequest.fromBuffer(request.payload);
+      final at = tracks.indexWhere((t) => t.name == req.track);
+      if (at < 0) {
+        return FakeReply.error(5, "Track '${req.track}' not found");
+      }
+      tracks[at].gainDb = req.gainDb.clamp(-60.0, 12.0);
+      gainsRevision++;
+      publish();
+      return FakeReply.ok(
+        pp.SetTrackGainResponse(appliedGainDb: tracks[at].gainDb),
+      );
+    });
+    h['SetTrackMute'] = (request) => levelGuard(() {
+      final req = pp.SetTrackMuteRequest.fromBuffer(request.payload);
+      final at = tracks.indexWhere((t) => t.name == req.track);
+      if (at < 0) {
+        return FakeReply.error(5, "Track '${req.track}' not found");
+      }
+      tracks[at].muted = req.muted;
+      gainsRevision++;
+      publish();
+      return FakeReply.ok(pp.SetTrackMuteResponse(muted: req.muted));
+    });
+    h['SetAmbientMode'] = (request) {
+      final mode = pp.SetAmbientModeRequest.fromBuffer(request.payload).mode;
+      if (!const {'auto', 'on', 'off'}.contains(mode)) {
+        return FakeReply.error(3, "Unknown ambient mode '$mode'");
+      }
+      if (ambientMode == null) {
+        return FakeReply.ok(pp.SetAmbientModeResponse());
+      }
+      _setAmbient(mode);
+      publish();
+      return FakeReply.ok(
+        pp.SetAmbientModeResponse(
+          ambient: pp.AmbientStatus(mode: ambientMode, state: ambientState),
+        ),
+      );
+    };
     h['Play'] = (_) => guard(() {
       playing = true;
       publish();
