@@ -35,6 +35,10 @@ excludes:
   - .*\.png
   - .*\.glb
   - .*\.svg
+  # The phone app's platform projects are the Flutter template's own files
+  # (Gradle, Xcode, Kotlin and Swift stubs); only its Dart is ours.
+  - ^app/(android|ios)/
+  - ^app/\.metadata$
 licenses:
   - files: any
     ident: GPL-3.0
@@ -61,6 +65,7 @@ comments:
       - rs
       - proto
       - pest
+      - dart
       - ts
       - js
     commenter:
