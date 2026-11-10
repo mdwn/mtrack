@@ -206,8 +206,8 @@ pub async fn start_or_unlock(
             tracing::warn!("Failed to start web UI: {}", e);
             player.set_locked(false);
             info!(
-                "No web UI is running, so the player is unlocked: only the web UI can \
-                 lock or unlock it"
+                "No web UI is running, so the player starts unlocked: there may be \
+                 nothing else to unlock it with"
             );
             None
         }
