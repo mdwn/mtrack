@@ -109,7 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
+          sudo apt-get install -y libasound2-dev libudev-dev libdbus-1-dev pkg-config libssl-dev
 
       - name: Install protoc (source builds only)
         # Deliberately not apt's protobuf-compiler, exactly as in publish.yaml:

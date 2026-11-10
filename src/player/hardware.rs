@@ -1308,6 +1308,15 @@ impl Player {
         }
     }
 
+    /// The Bluetooth controller's pairing, for the web API to open the
+    /// pairing window and list or forget paired phones. `None` unless a
+    /// Bluetooth controller is configured and has been started; its
+    /// operations say so when it is not running, as when the radio is
+    /// blocked.
+    pub fn ble_handle(&self) -> Option<crate::controller::ble::BleHandle> {
+        self.controller.lock().as_ref()?.ble_handle()
+    }
+
     /// Where the `index`th controller's listener is bound, for a test to
     /// reach one started on port 0.
     #[cfg(test)]

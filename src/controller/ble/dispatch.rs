@@ -147,7 +147,7 @@ impl Dispatcher {
 }
 
 /// An encoded [`Response`] carrying a failed status.
-fn failure(id: u32, code: Code, message: String) -> Vec<u8> {
+pub(super) fn failure(id: u32, code: Code, message: String) -> Vec<u8> {
     Response {
         id,
         code: code as u32,

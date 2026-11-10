@@ -395,6 +395,19 @@ impl Profile {
             ));
         }
 
+        // A machine has one Bluetooth adapter, which one controller serves.
+        let ble_controllers = self
+            .controllers
+            .iter()
+            .filter(|c| matches!(c, Controller::Ble(_)))
+            .count();
+        if ble_controllers > 1 {
+            errors.push(format!(
+                "controllers: {ble_controllers} Bluetooth controllers, but there is one \
+                 Bluetooth adapter to serve; keep one"
+            ));
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -617,6 +630,23 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("only one can watch")),
             "expected a duplicate MIDI controller error, got {errors:?}"
+        );
+    }
+
+    /// There is one Bluetooth adapter, so a second Bluetooth controller is
+    /// refused when the config is saved.
+    #[test]
+    fn a_second_ble_controller_fails_validation() {
+        let ble = |name| Controller::Ble(crate::config::BleController::new(name));
+        let mut profile = Profile::new(None, None, None, None);
+        profile.set_controllers(vec![ble(Some("one"))]);
+        assert!(profile.validate().is_ok());
+
+        profile.set_controllers(vec![ble(Some("one")), ble(None)]);
+        let errors = profile.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("one Bluetooth adapter")),
+            "expected a duplicate Bluetooth controller error, got {errors:?}"
         );
     }
 

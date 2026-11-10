@@ -103,6 +103,7 @@ fn default_osc_timeline() -> String {
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
+    Ble(BleController),
     Grpc(GrpcController),
     Mcp(McpController),
     Midi(MidiController),
@@ -113,6 +114,7 @@ pub enum Controller {
 /// The kind of a [`Controller`], as its `kind` tag names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 pub enum ControllerKind {
+    Ble,
     Grpc,
     Mcp,
     Midi,
@@ -124,6 +126,7 @@ impl ControllerKind {
     /// The `kind` tag, as serde writes it.
     pub fn name(self) -> &'static str {
         match self {
+            ControllerKind::Ble => "ble",
             ControllerKind::Grpc => "grpc",
             ControllerKind::Mcp => "mcp",
             ControllerKind::Midi => "midi",
@@ -147,6 +150,7 @@ impl Controller {
     /// The controller's kind.
     pub fn kind(&self) -> ControllerKind {
         match self {
+            Controller::Ble(_) => ControllerKind::Ble,
             Controller::Grpc(_) => ControllerKind::Grpc,
             Controller::Mcp(_) => ControllerKind::Mcp,
             Controller::Midi(_) => ControllerKind::Midi,
@@ -319,6 +323,35 @@ fn optional_event(
     event: &Option<midi::Event>,
 ) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
     event.as_ref().map(|e| e.to_midi_event()).transpose()
+}
+
+/// The configuration for the Bluetooth LE remote: a GATT service a paired
+/// phone controls the player through, with no network.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct BleController {
+    /// The name the player advertises. Defaults to the machine's hostname,
+    /// which is not known until the controller starts.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl BleController {
+    #[cfg(test)]
+    pub fn new(name: Option<&str>) -> BleController {
+        BleController {
+            name: name.map(str::to_string),
+        }
+    }
+
+    /// Gets the advertised name, when the config sets one. An empty or
+    /// blank name, as an emptied form field saves, is no name.
+    pub fn name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
 }
 
 /// The configuration for the multitrack player gRPC server.
@@ -1094,5 +1127,46 @@ mod test {
             _ => panic!("expected Osc variant"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn ble_name_is_optional() -> Result<(), Box<dyn Error>> {
+        let bare: Controller = Config::builder()
+            .add_source(File::from_str("kind: ble", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        let named: Controller = Config::builder()
+            .add_source(File::from_str(
+                "kind: ble\nname: stage-left",
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match (bare, named) {
+            (Controller::Ble(bare), Controller::Ble(named)) => {
+                assert_eq!(bare.name(), None);
+                assert_eq!(named.name(), Some("stage-left"));
+            }
+            _ => panic!("expected Ble variants"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ble_round_trips_through_its_tag() -> Result<(), Box<dyn Error>> {
+        let controller = Controller::Ble(BleController::new(Some("mtrack")));
+        assert_eq!(controller.kind(), ControllerKind::Ble);
+        let yaml = crate::util::to_yaml_string(&controller)?;
+        assert!(yaml.contains("kind: ble"), "{yaml}");
+        assert!(yaml.contains("name: mtrack"), "{yaml}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_blank_ble_name_is_no_name() {
+        assert_eq!(BleController::new(None).name(), None);
+        assert_eq!(BleController::new(Some("")).name(), None);
+        assert_eq!(BleController::new(Some("  ")).name(), None);
+        assert_eq!(BleController::new(Some(" stage ")).name(), Some("stage"));
     }
 }

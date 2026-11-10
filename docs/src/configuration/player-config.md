@@ -294,6 +294,7 @@ notifications:
 # - midi
 # - osc
 # - mcp
+# - ble
 controllers:
 # The gRPC server configuration.
 - kind: grpc

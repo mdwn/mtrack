@@ -34,6 +34,11 @@ pub trait Driver: Send + Sync + 'static {
     fn bound_addr(&self) -> Option<BoundAddr> {
         None
     }
+
+    /// How the rest of mtrack reaches its pairing, for the Bluetooth driver.
+    fn ble_handle(&self) -> Option<ble::BleHandle> {
+        None
+    }
 }
 
 /// The address a listening driver's socket is bound to, once it is: for a
@@ -233,10 +238,14 @@ struct Entry {
     /// Whether it is a MIDI controller, which registers song-change
     /// notifiers on the player.
     midi: bool,
-    /// Whether it is a MIDI controller refused for coming after another:
-    /// the one MIDI device can be watched by only one. It registers
-    /// nothing, and does not count as a MIDI controller.
+    /// Whether it is a MIDI or Bluetooth controller refused for coming after
+    /// another: the one MIDI device can be watched by only one, and the
+    /// one Bluetooth adapter served by only one. It registers nothing, and
+    /// does not count as a MIDI controller.
     duplicate: bool,
+    /// How the rest of mtrack reaches its pairing, when it is the
+    /// Bluetooth controller.
+    ble: Option<ble::BleHandle>,
     /// The player's MIDI device when it started, which a MIDI controller
     /// listens on. A hardware reload opens a new one if the MIDI config
     /// changed or the device is gone, and otherwise keeps it.
@@ -272,6 +281,7 @@ impl Entry {
         midi_device: Option<Arc<dyn crate::midi::Device>>,
         stop_wait: std::time::Duration,
     ) -> Entry {
+        let ble = driver.ble_handle();
         let stop = CancellationToken::new();
         let failure = Arc::new(parking_lot::Mutex::new(None));
         #[cfg(test)]
@@ -328,6 +338,7 @@ impl Entry {
             midi,
             duplicate: false,
             midi_device,
+            ble,
             handle: Some(handle),
             #[cfg(test)]
             bound,
@@ -373,18 +384,22 @@ impl Entry {
     }
 }
 
-/// Whether each of `config` is a MIDI controller after the first. A MIDI
-/// controller watches the player's one MIDI device, which only one can: the
-/// watch of any other fails.
-fn midi_duplicates(config: &[config::Controller]) -> Vec<bool> {
-    let mut seen = false;
+/// Whether each of `config` is a MIDI or Bluetooth controller after the
+/// first of its kind. A MIDI controller watches the player's one MIDI
+/// device, which only one can: the watch of any other fails. The one
+/// Bluetooth adapter is served by one controller, and a second would
+/// register over the first.
+fn exclusive_duplicates(config: &[config::Controller]) -> Vec<bool> {
+    let (mut midi_seen, mut ble_seen) = (false, false);
     config
         .iter()
         .map(|c| {
-            let midi = matches!(c, config::Controller::Midi(_));
-            let duplicate = midi && seen;
-            seen |= midi;
-            duplicate
+            let seen = match c {
+                config::Controller::Midi(_) => &mut midi_seen,
+                config::Controller::Ble(_) => &mut ble_seen,
+                _ => return false,
+            };
+            std::mem::replace(seen, true)
         })
         .collect()
 }
@@ -398,7 +413,7 @@ impl Controller {
             entries: Vec::new(),
             statuses: Vec::new(),
         };
-        let duplicates = midi_duplicates(&config);
+        let duplicates = exclusive_duplicates(&config);
         for (config, duplicate) in config.into_iter().zip(duplicates) {
             controller.start(config, player.clone(), None, duplicate);
         }
@@ -435,7 +450,7 @@ impl Controller {
         };
         // Which running controller, if any, each one in the config keeps.
         let statuses = self.statuses();
-        let duplicates = midi_duplicates(&config);
+        let duplicates = exclusive_duplicates(&config);
         let mut taken = vec![false; self.entries.len()];
         let mut kept: Vec<Option<usize>> = config
             .iter()
@@ -542,6 +557,7 @@ impl Controller {
             ),
             config::Controller::Osc(c) => ("osc".to_string(), Some(format!("port {}", c.port()))),
             config::Controller::Midi(_) => ("midi".to_string(), None),
+            config::Controller::Ble(c) => ("ble".to_string(), c.name().map(str::to_string)),
             _ => ("unknown".to_string(), None),
         };
         let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
@@ -550,6 +566,14 @@ impl Controller {
                  before this one; put its events in that one"
                     .into(),
             ),
+            config::Controller::Ble(_) if duplicate => Err(
+                "only one Bluetooth controller can serve the Bluetooth adapter, and another \
+                 comes before this one"
+                    .into(),
+            ),
+            config::Controller::Ble(config) => {
+                ble::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
             config::Controller::Grpc(config) => {
                 grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
             }
@@ -582,6 +606,7 @@ impl Controller {
                         midi,
                         duplicate,
                         midi_device,
+                        ble: None,
                         handle: None,
                         #[cfg(test)]
                         bound: None,
@@ -639,6 +664,12 @@ impl Controller {
                 None => status.clone(),
             })
             .collect()
+    }
+
+    /// The handle to the Bluetooth controller's pairing, when one is
+    /// configured and started.
+    pub(crate) fn ble_handle(&self) -> Option<ble::BleHandle> {
+        self.entries.iter().find_map(|entry| entry.ble.clone())
     }
 
     /// Where the `index`th controller's listener is bound, for a test to
@@ -703,6 +734,22 @@ mod test {
                 ),
             }
         }
+    }
+
+    /// Only the first MIDI controller and the first Bluetooth controller
+    /// are served; a later one of the same kind is a duplicate, and kinds
+    /// do not count against each other.
+    #[test]
+    fn only_the_first_midi_and_ble_controller_count() {
+        use super::exclusive_duplicates;
+        let midi = || midi_controller(0);
+        let ble = || config::Controller::Ble(config::BleController::default());
+        let grpc = || config::Controller::Grpc(config::GrpcController::new(1));
+        assert_eq!(
+            exclusive_duplicates(&[midi(), ble(), grpc(), midi(), ble(), grpc(), ble()]),
+            vec![false, false, false, true, true, false, true]
+        );
+        assert!(exclusive_duplicates(&[]).is_empty());
     }
 
     use std::{collections::HashMap, error::Error, io, path::Path, sync::Arc};

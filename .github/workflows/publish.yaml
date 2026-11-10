@@ -36,7 +36,7 @@ jobs:
           exit 1
         fi
     - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libdbus-1-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
@@ -130,7 +130,7 @@ jobs:
         # use ("--experimental_allow_proto3_optional was not set") — the
         # failure that broke the v0.16.0 Linux binaries.
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libdbus-1-dev pkg-config libssl-dev
       - name: Install protoc
         if: matrix.platform == 'linux'
         run: ./scripts/install-protoc.sh

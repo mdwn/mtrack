@@ -12,11 +12,12 @@ $ tar xzf mtrack-<version>-<target>.tar.gz
 $ sudo cp mtrack-<version>-<target>/mtrack /usr/local/bin/mtrack
 ```
 
-On Linux, the binary needs `libasound2` and `libudev1` at runtime. These are
+On Linux, the binary needs `libasound2`, `libudev1` and `libdbus-1-3` at runtime
+(the last for the [Bluetooth controller](../interfaces/bluetooth.md)). These are
 present by default on most desktop distros; on a minimal server:
 
 ```
-$ sudo apt install libasound2 libudev1
+$ sudo apt install libasound2 libudev1 libdbus-1-3
 ```
 
 If you use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), it
@@ -59,7 +60,7 @@ $ sudo apt install ./mtrack_<version>_arm64.deb
 ```
 
 Installing it through `apt` rather than `dpkg -i` matters: it pulls in
-`libasound2` and `libudev1` for you. It also installs `ola` — the Open Lighting
+`libasound2`, `libudev1` and `libdbus-1-3` for you. It also installs `ola` — the Open Lighting
 daemon mtrack talks to for DMX output — because the package recommends it. If you
 do not run lights, skip it with `--no-install-recommends`; if you skipped it and
 later want lights, `sudo apt install ola` adds it.
@@ -84,12 +85,12 @@ tells you what it would have written.
 ## From source with cargo
 
 Building from source requires a Rust toolchain plus a few system packages:
-the protobuf compiler and, on Linux, ALSA and udev development headers.
+the protobuf compiler and, on Linux, ALSA, udev and D-Bus development headers.
 
 On Debian/Ubuntu:
 
 ```
-$ sudo apt install libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+$ sudo apt install libasound2-dev libudev-dev libdbus-1-dev pkg-config libssl-dev protobuf-compiler
 ```
 
 On macOS:

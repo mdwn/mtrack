@@ -105,6 +105,41 @@ impl super::Driver for Driver {
     }
 }
 
+/// The position in the song a status reports, as the wire carries it: the
+/// player's one reading, shared by every surface that serves a status.
+#[allow(clippy::result_large_err)]
+pub(crate) fn elapsed_to_proto(
+    elapsed: Result<Option<std::time::Duration>, String>,
+) -> Result<Option<prost_types::Duration>, Status> {
+    match elapsed {
+        Ok(Some(elapsed)) => Ok(Some(
+            prost_types::Duration::try_from(elapsed)
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+        )),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Status::internal(e)),
+    }
+}
+
+/// The song waiting to start by itself and how long until it does, as the
+/// wire carries it.
+#[allow(clippy::result_large_err)]
+pub(crate) fn auto_play_to_proto(
+    auto_play: Option<(String, std::time::Duration)>,
+) -> Result<Option<AutoPlayStatus>, Status> {
+    auto_play
+        .map(|(song, starts_in)| {
+            Ok(AutoPlayStatus {
+                song,
+                starts_in: Some(
+                    prost_types::Duration::try_from(starts_in)
+                        .map_err(|e| Status::internal(e.to_string()))?,
+                ),
+            })
+        })
+        .transpose()
+}
+
 /// The player's gRPC service, behind the lock: what both the gRPC
 /// controller and the web UI's gRPC-Web route serve.
 pub(crate) fn player_service(player: Arc<Player>) -> LockGuard<PlayerServiceServer<PlayerServer>> {
@@ -470,14 +505,7 @@ impl PlayerService for PlayerServer {
         // loop leaves the ambient light out rather than hanging the call.
         let status = self.player.playback_status().await;
 
-        let elapsed = match status.elapsed {
-            Ok(Some(elapsed)) => Some(
-                prost_types::Duration::try_from(elapsed)
-                    .map_err(|e| Status::from_error(Box::new(e)))?,
-            ),
-            Ok(None) => None,
-            Err(e) => return Err(Status::internal(e)),
-        };
+        let elapsed = elapsed_to_proto(status.elapsed)?;
 
         let current_song = match &status.current_song {
             Some(song) => Some(song.to_proto()?),
@@ -496,16 +524,7 @@ impl PlayerService for PlayerServer {
             last_error: h.last_error,
         });
 
-        let auto_play = match status.auto_play {
-            Some((song, starts_in)) => Some(AutoPlayStatus {
-                song,
-                starts_in: Some(
-                    prost_types::Duration::try_from(starts_in)
-                        .map_err(|e| Status::internal(e.to_string()))?,
-                ),
-            }),
-            None => None,
-        };
+        let auto_play = auto_play_to_proto(status.auto_play)?;
 
         let ambient = ambient_to_proto(status.ambient);
 

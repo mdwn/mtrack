@@ -19,6 +19,7 @@
 - [gRPC Control](interfaces/grpc.md)
 - [OSC Control](interfaces/osc.md)
 - [MCP Control](interfaces/mcp.md)
+- [Bluetooth Control](interfaces/bluetooth.md)
 
 # Configuration Reference
 
