@@ -256,7 +256,7 @@ pub(super) async fn run(
     let _status_pump = spawn_guarded(notify::run(status_rx, status_frames, Some(greeting)));
     let _status_poll = spawn_guarded({
         let link = link.clone();
-        status::poll(player, move |status| {
+        status::poll(player, link.status_wanted(), move |status| {
             link.publish_status(Instant::now(), status)
         })
     });

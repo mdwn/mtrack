@@ -36,7 +36,7 @@ use std::time::Instant;
 
 use futures_util::future::BoxFuture;
 use prost::Message;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::proto::ble::v1::{Request, Status};
 
@@ -180,6 +180,9 @@ pub(crate) struct Link<H: Handler> {
     responses: mpsc::Sender<Vec<Vec<u8>>>,
     /// Status frames, as chunks, for the pump that notifies them.
     status_out: mpsc::Sender<Vec<Vec<u8>>>,
+    /// Told after each request is answered: the status poll looks at once,
+    /// so a phone sees what its call changed without waiting for a tick.
+    status_wanted: Arc<Notify>,
 }
 
 impl<H: Handler> Link<H> {
@@ -194,7 +197,13 @@ impl<H: Handler> Link<H> {
             status: parking_lot::Mutex::new(StatusFeed::default()),
             responses,
             status_out,
+            status_wanted: Arc::new(Notify::new()),
         })
+    }
+
+    /// Told after each answered request; see [`super::status::poll`].
+    pub(crate) fn status_wanted(&self) -> Arc<Notify> {
+        self.status_wanted.clone()
     }
 
     /// A phone connected. It counts toward the chunk size from now on, at
@@ -249,6 +258,8 @@ impl<H: Handler> Link<H> {
     /// Answers one request frame with the chunks of its response.
     async fn respond(&self, frame: &[u8]) -> Vec<Vec<u8>> {
         let response = self.handler.handle(frame).await;
+        // Whatever the call changed, the phone hears of it now.
+        self.status_wanted.notify_one();
         let size = self.chunk_size();
         match chunks(&response, size) {
             Ok(chunks) => chunks,
@@ -464,6 +475,19 @@ mod tests {
         for chunk in &answer {
             assert!(chunk.len() <= 20, "chunk of {}", chunk.len());
         }
+    }
+
+    #[tokio::test]
+    async fn an_answered_request_asks_for_the_status_at_once() {
+        let (link, _pumps) = link(Echo);
+        let wanted = link.status_wanted();
+        let good = chunks(&request(5, vec![]), 20).unwrap();
+        let answer = link.on_write(peer(1), 23, &good[0]).await;
+        assert_eq!(response_id(&answer), 5);
+        // The permit is already there: this does not wait for a tick.
+        tokio::time::timeout(Duration::from_millis(200), wanted.notified())
+            .await
+            .expect("the status poll was not told");
     }
 
     #[tokio::test]
