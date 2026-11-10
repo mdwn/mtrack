@@ -17,6 +17,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Says which slow jobs a pull request's changes call for. A push to main
+  # runs everything.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ui: ${{ steps.classify.outputs.ui }}
+    steps:
+    - uses: actions/checkout@v7
+    - id: classify
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        if [ "$EVENT" != "pull_request" ]; then
+          echo "ui=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+          --jq '.[] | .filename, (.previous_filename // empty)' |
+          scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   # Build the code and verify that Cargo.lock is up to date.
   build:
     name: Build mtrack
@@ -244,9 +270,13 @@ jobs:
     - name: Format check
       run: cd src/webui/svelte && npm run format:check
 
-  # Run Playwright E2E tests against mock backend.
+  # Run Playwright E2E tests against mock backend. Skipped on a pull request
+  # that changes nothing the web UI is built from (scripts/ci-changes.sh).
   playwright:
     name: Playwright E2E tests
+    needs: changes
+    # Runs too when the detection itself failed: a skip must be a decision.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui == 'true') }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
