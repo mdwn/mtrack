@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-<<<<<<< HEAD
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
   network at all. Add `- kind: ble` (optionally with a `name` to advertise, which defaults to the
   hostname) to a profile's `controllers`. Phones pair once and are trusted from then on: the
@@ -24,8 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open the pairing window, pairing a second phone means forgetting the first with
   `bluetoothctl remove` and restarting the controllers. See [Bluetooth
   Control](docs/src/interfaces/bluetooth.md) for the protocol.
-=======
->>>>>>> origin/main
 - **`ListPlaylists` and `GetPlaylist` gRPC RPCs**: the first names the player's playlists and the
   active one; the second returns a playlist's entries (each song's name and duration) and the
   entry it is on, for the active playlist or one by name. Both are reads, open while the player
