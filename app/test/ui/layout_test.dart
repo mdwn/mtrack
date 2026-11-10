@@ -162,6 +162,70 @@ void main() {
       );
 
       appTest(
+        'Levels',
+        (h) async {
+          await h.openTab('Levels');
+          expect(find.text('Cue'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.tracks = [
+            RigTrack('A track with a name that runs on and on and on', -60),
+            RigTrack('Backing L/R', 12, true),
+            RigTrack('Cue', -3.5),
+            RigTrack('Keys', 0),
+            RigTrack('Bass synth', -12),
+            RigTrack('Click', 0, true),
+          ];
+        },
+        look: look,
+      );
+
+      appTest(
+        'Levels, none',
+        (h) async {
+          await h.openTab('Levels');
+          expect(find.textContaining('no output tracks'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.tracks = [];
+        },
+        look: look,
+      );
+
+      appTest(
+        'Levels, too old',
+        (h) async {
+          await h.openTab('Levels');
+          expect(find.textContaining('too old'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.levelsAllowed = false;
+        },
+        look: look,
+      );
+
+      appTest(
+        'Settings, with the ambient light',
+        (h) async {
+          appVersion = () async => '0.1.0 (1)';
+          await h.tester.tap(find.byTooltip('Settings'));
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 400));
+          expect(find.text('Ambient light'), findsOneWidget);
+          expect(find.text('no ambient show'), findsOneWidget);
+        },
+        setup: (rig) {
+          sized(rig);
+          rig.ambientMode = 'on';
+          rig.ambientState = 'unavailable';
+        },
+        look: look,
+      );
+
+      appTest(
         'Settings',
         (h) async {
           appVersion = () async => '0.1.0 (1)';
@@ -246,6 +310,16 @@ void main() {
   }
 
   group('a short phone', () {
+    appTest(
+      'Levels still fit',
+      (h) async {
+        await h.openTab('Levels');
+        expect(find.text('Cue'), findsOneWidget);
+      },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
     appTest(
       'Now still fits, scrolling if it must',
       (h) async {

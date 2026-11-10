@@ -34,3 +34,14 @@ String formatTotal(Duration total) {
   final rest = minutes % 60;
   return rest == 0 ? '${minutes ~/ 60} h' : '${minutes ~/ 60} h $rest min';
 }
+
+/// A gain as the mixer reads it: `−3.0 dB`, `0.0 dB`, `+3.0 dB`, with a real
+/// minus sign and one decimal. A gain that rounds to zero has no sign.
+String formatDb(double db) {
+  final tenths = (db * 10).round();
+  if (tenths == 0) {
+    return '0.0 dB';
+  }
+  final size = tenths.abs();
+  return '${tenths < 0 ? '−' : '+'}${size ~/ 10}.${size % 10} dB';
+}
