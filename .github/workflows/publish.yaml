@@ -72,14 +72,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      # The notes go by file, never through the environment or a command
+      # line: 0.18.0's were 170000 characters, more than one argument or
+      # environment string may be (128 KiB), and the step failed to start
+      # with "Argument list too long". They are also more than a release
+      # body may be (125000 characters), so they are cut to fit.
       - name: Extract release notes
-        id: extract-release-notes
         uses: ffurrer2/extract-release-notes@v3
+        with:
+          release_notes_file: RELEASE_NOTES.md
+      - name: Fit the notes to a release body
+        run: ./scripts/fit-release-notes.sh RELEASE_NOTES.md "https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md"
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
-        run: gh release create --notes "$RELEASE_NOTES" --title "${{ github.ref_name }}" "${{ github.ref_name }}"
+        run: gh release create --notes-file RELEASE_NOTES.md --title "${{ github.ref_name }}" "${{ github.ref_name }}"
 
   # Builds release binaries for each supported platform and uploads them to the
   # GitHub release. Linux binaries are built on the oldest supported Ubuntu LTS
@@ -102,11 +109,15 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
             platform: linux
+          # macos-14 runners are gone ("The configuration
+          # 'macos-14-arm64-us-default' is not supported"): the jobs were
+          # cancelled as they started, and the packages, which wait on every
+          # binary, were skipped with them.
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             platform: macos
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             platform: macos
     runs-on: ${{ matrix.os }}
     steps:
