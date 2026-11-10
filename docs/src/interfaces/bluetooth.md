@@ -46,9 +46,11 @@ closed by default.
 - Every characteristic that controls or reports on the player requires an encrypted link, so a
   phone that has not paired can see the advertisement and nothing else.
 - The adapter accepts new pairings only while the **pairing window** is open. The player has no
-  screen to confirm a code on, so pairing is "Just Works": the link is encrypted, but the moment
-  of pairing is not authenticated. Whoever pairs while the window is open is trusted from then
-  on. That is why the window is closed except when you open it.
+  screen and nobody at it, so it accepts every pairing a phone starts while the window is open,
+  and refuses every one while it is closed. Your phone may show a six-digit code and ask you to
+  confirm it: confirm it. The player does not check the code, so the link is encrypted but the
+  moment of pairing is not authenticated. Whoever pairs while the window is open is trusted from
+  then on. That is why the window is closed except when you open it.
 - **A fresh player claims its first phone.** When the controller starts and no phone is paired,
   the window opens for five minutes, so the first phone can pair with a player that has no
   network and no other way to be configured. Once any phone is paired, the controller starts with

@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bluer::adv::Advertisement;
-use bluer::agent::Agent;
+use bluer::agent::{Agent, ReqError as AgentError};
 use bluer::gatt::local::{
     Application, Characteristic, CharacteristicNotifier, CharacteristicNotify,
     CharacteristicNotifyMethod, CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod,
@@ -41,7 +41,9 @@ use crate::player::Player;
 
 use super::dispatch::Dispatcher;
 use super::notify::{self, Greeting, Notifier};
-use super::pairing::{AdapterOps, BleHandle, DeviceInfo, Pairing, FIRST_WINDOW, UNPAIRED_GRACE};
+use super::pairing::{
+    AdapterOps, BleHandle, DeviceInfo, Pairing, PairingState, FIRST_WINDOW, UNPAIRED_GRACE,
+};
 use super::session::{Link, PeerId, PUMP_DEPTH};
 use super::status;
 use super::{REQUEST_UUID, RESPONSE_UUID, SERVICE_UUID, STATUS_UUID};
@@ -209,11 +211,22 @@ pub(super) async fn run(
         handle: handle.clone(),
     };
 
-    // "Just Works": no passkey, no confirmation. Who may pair is decided by
-    // the window, not by the agent.
+    // The player has no screen or keys, so nobody confirms a pairing at
+    // it: the agent says yes while the pairing window is open and no
+    // otherwise. BlueZ asks the agent to authorize an incoming pairing
+    // even when there is no code to compare, and an agent with no answer
+    // refuses it.
     let _agent = session
         .register_agent(Agent {
             request_default: true,
+            request_confirmation: Some(Box::new({
+                let handle = handle.clone();
+                move |request| answer_pairing(handle.clone(), request.device).boxed()
+            })),
+            request_authorization: Some(Box::new({
+                let handle = handle.clone();
+                move |request| answer_pairing(handle.clone(), request.device).boxed()
+            })),
             ..Default::default()
         })
         .await
@@ -378,6 +391,18 @@ pub(super) async fn run(
     ))
 }
 
+/// Answers BlueZ's question whether `device` may pair: yes while the
+/// pairing window is open.
+async fn answer_pairing(handle: BleHandle, device: Address) -> Result<(), AgentError> {
+    if matches!(handle.pairing_state(), Ok(PairingState::Open { .. })) {
+        tracing::info!(%device, "Bluetooth device pairing: the pairing window is open");
+        Ok(())
+    } else {
+        tracing::info!(%device, "Refused a Bluetooth pairing: the pairing window is closed");
+        Err(AgentError::Rejected)
+    }
+}
+
 /// Follows one device's connection: the link learns of it, and the pairing
 /// policy holds it to account.
 async fn watch_device(
@@ -400,13 +425,20 @@ async fn watch_device(
         pairing.police(address.0);
     }
     while let Some(DeviceEvent::PropertyChanged(property)) = events.next().await {
-        if let DeviceProperty::Connected(connected) = property {
-            if connected {
+        match property {
+            DeviceProperty::Connected(true) => {
+                tracing::info!(device = %address, "Bluetooth device connected");
                 link.on_connect(address.0);
                 pairing.police(address.0);
-            } else {
+            }
+            DeviceProperty::Connected(false) => {
+                tracing::info!(device = %address, "Bluetooth device disconnected");
                 link.on_disconnect(address.0);
             }
+            DeviceProperty::Paired(true) => {
+                tracing::info!(device = %address, "Bluetooth device paired");
+            }
+            _ => {}
         }
     }
 }

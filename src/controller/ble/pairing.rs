@@ -18,7 +18,8 @@
 //! for nothing but four operations, [`AdapterOps`], which BlueZ glue
 //! implements.
 //!
-//! "Just Works" pairing is encrypted but not authenticated: whoever
+//! The player accepts a pairing without anyone checking a code, so a
+//! pairing is encrypted but not authenticated: whoever
 //! pairs during the window is trusted from then on. So the window is
 //! closed by default. It opens by itself only while no phone has ever
 //! paired, so the first phone can claim a fresh player (trust on first
