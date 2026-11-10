@@ -1,0 +1,64 @@
+name: mtrack phone app
+# The Flutter app under app/. It runs only when the app or the protocol it speaks
+# changes, so a Rust or web UI PR pays nothing for it.
+on:
+  push:
+    branches:
+    - main
+    paths:
+    - 'app/**'
+    - 'src/proto/**'
+    - 'Makefile'
+    - '.github/workflows/app.yaml'
+  pull_request:
+    branches:
+    - main
+    paths:
+    - 'app/**'
+    - 'src/proto/**'
+    - 'Makefile'
+    - '.github/workflows/app.yaml'
+
+permissions:
+  contents: read
+
+# Supersede stale runs on force-push/re-push; only cancel in-flight runs for
+# PRs so a main push always runs to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The Flutter release the app is built and tested with. Move it deliberately.
+  FLUTTER_VERSION: '3.47.9'
+
+jobs:
+  # Format, analyze and test the app against the generated protobuf messages.
+  # There is no APK or iOS build here: the radio cannot run in CI, and a build
+  # is slow enough to wait for the screens it would build.
+  app:
+    name: Analyze and test the app
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install protoc
+      # The runner's protoc is too old for the proto3 optional fields in
+      # player.proto; see the script.
+      run: ./scripts/install-protoc.sh
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        channel: stable
+        cache: true
+    - name: Generate protobuf messages
+      run: make gen-app-proto
+    - name: Check formatting
+      # The generated code in lib/gen is not ours to format.
+      working-directory: app
+      run: dart format --output=none --set-exit-if-changed lib/main.dart lib/src test
+    - name: Analyze
+      working-directory: app
+      run: flutter analyze
+    - name: Test
+      working-directory: app
+      run: flutter test

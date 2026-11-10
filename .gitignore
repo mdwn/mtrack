@@ -13,3 +13,4 @@ docs/book/
 .playwright-mcp/
 tests/gdtf-corpus/
 tests/mvr-corpus/
+app/lib/gen/

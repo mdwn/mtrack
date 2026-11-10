@@ -17,7 +17,7 @@ WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
 WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -53,6 +53,22 @@ install-ui:
 ## Generate protobuf TypeScript bindings
 gen-proto:
 	cd $(SVELTE_DIR) && npx @bufbuild/buf generate
+
+## Generate the phone app's protobuf Dart messages into app/lib/gen (gitignored, like the
+## TypeScript bindings). Needs protoc 3.15 or newer on PATH and the Flutter SDK; the Dart
+## plugin is the protoc_plugin dev dependency of app/, so its version is the one in
+## app/pubspec.lock. Messages only: the app speaks gRPC's messages over Bluetooth, not gRPC.
+gen-app-proto:
+	cd $(ROOT_DIR)/app && flutter pub get
+	rm -rf $(ROOT_DIR)/app/lib/gen
+	mkdir -p $(ROOT_DIR)/app/lib/gen
+	@# protoc finds its plugin by path; a throwaway wrapper runs the pinned one from app/.
+	plugin_dir=$$(mktemp -d) && \
+		printf '#!/bin/sh\ncd "%s" && exec dart run protoc_plugin\n' "$(ROOT_DIR)/app" > "$$plugin_dir/protoc-gen-dart" && \
+		chmod +x "$$plugin_dir/protoc-gen-dart" && \
+		protoc -I $(ROOT_DIR)/src/proto --plugin=protoc-gen-dart="$$plugin_dir/protoc-gen-dart" \
+			--dart_out=$(ROOT_DIR)/app/lib/gen ble/v1/ble.proto player/v1/player.proto; \
+		status=$$?; rm -rf "$$plugin_dir"; exit $$status
 
 ## Compile the player's rules (beat grid, tempo map, metronome) to WebAssembly for the
 ## web UI, with their TypeScript types. Generated into src/gen like the proto bindings.

@@ -179,3 +179,9 @@ waiting to start by itself, if any. It carries no beat grid and no sections; fet
   is as of the message: run your own clock between messages. A notification subscription starts
   with the latest status. If you subscribe in the middle of a frame, you receive continuation
   chunks with no start: ignore them until the next start.
+
+## Phone app
+
+A phone app for this protocol is under development in
+[`app/`](https://github.com/mdwn/mtrack/tree/main/app) in the source repository. It is not
+released yet. Until it is, any client that follows the protocol above works.
