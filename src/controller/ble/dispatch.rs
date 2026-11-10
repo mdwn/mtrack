@@ -51,6 +51,10 @@ pub(crate) const ALLOWED: &[&str] = &[
     "CancelAutoPlay",
     "ListPlaylists",
     "GetPlaylist",
+    "GetTrackGains",
+    "SetTrackGain",
+    "SetTrackMute",
+    "SetAmbientMode",
 ];
 
 /// The service name in a gRPC request path.
@@ -311,6 +315,92 @@ mod tests {
         assert_eq!(response.code, 0, "{}", response.message);
         let playlist = GetPlaylistResponse::decode(response.payload.as_slice()).expect("playlist");
         assert_eq!(playlist.entries.len(), 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn track_levels_and_the_ambient_mode_are_answered() {
+        use crate::proto::player::v1::{
+            GetTrackGainsRequest, GetTrackGainsResponse, SetAmbientModeRequest,
+            SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
+        };
+
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .track_mappings(std::collections::HashMap::from([
+                ("click".to_string(), vec![1]),
+                ("keys".to_string(), vec![2]),
+            ]))
+            .build()
+            .expect("player");
+        player.await_hardware_ready().await;
+        player.set_locked(false);
+        let dispatcher = Dispatcher::new(player.clone());
+
+        let response = call(
+            &dispatcher,
+            1,
+            "GetTrackGains",
+            GetTrackGainsRequest {}.encode_to_vec(),
+        )
+        .await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        let gains = GetTrackGainsResponse::decode(response.payload.as_slice()).expect("gains");
+        assert_eq!(gains.gains.len(), 2);
+
+        let set = SetTrackGainRequest {
+            track: "click".to_string(),
+            gain_db: -6.0,
+        };
+        let response = call(&dispatcher, 2, "SetTrackGain", set.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        let applied = SetTrackGainResponse::decode(response.payload.as_slice()).expect("applied");
+        assert_eq!(applied.applied_gain_db, -6.0);
+
+        let response = call(
+            &dispatcher,
+            3,
+            "GetTrackGains",
+            GetTrackGainsRequest {}.encode_to_vec(),
+        )
+        .await;
+        let gains = GetTrackGainsResponse::decode(response.payload.as_slice()).expect("gains");
+        let click = gains
+            .gains
+            .iter()
+            .find(|g| g.track == "click")
+            .expect("click");
+        assert_eq!((click.gain_db, click.muted), (-6.0, false));
+
+        let mute = SetTrackMuteRequest {
+            track: "click".to_string(),
+            muted: true,
+        };
+        let response = call(&dispatcher, 4, "SetTrackMute", mute.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        assert_eq!(player.get_track_mutes().map(|m| m.len()), Some(2));
+
+        // The service's own refusals come through, not the allowlist's.
+        let unknown = SetTrackGainRequest {
+            track: "nope".to_string(),
+            gain_db: 0.0,
+        };
+        let response = call(&dispatcher, 5, "SetTrackGain", unknown.encode_to_vec()).await;
+        assert_ne!(response.code, PERMISSION_DENIED);
+        assert_ne!(response.code, 0);
+
+        let bad = SetAmbientModeRequest {
+            mode: "sideways".to_string(),
+        };
+        let response = call(&dispatcher, 6, "SetAmbientMode", bad.encode_to_vec()).await;
+        assert_eq!(response.code, INVALID_ARGUMENT);
+        assert!(!response.message.is_empty());
+
+        // With no DMX engine a good mode is still answered, not refused.
+        let good = SetAmbientModeRequest {
+            mode: "auto".to_string(),
+        };
+        let response = call(&dispatcher, 7, "SetAmbientMode", good.encode_to_vec()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
     }
 
     #[tokio::test(flavor = "multi_thread")]

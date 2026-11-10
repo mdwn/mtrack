@@ -485,6 +485,9 @@ impl Player {
                 if !installed {
                     return;
                 }
+                // The rebuilt gains come from the profile, and may differ
+                // from the ones a remote screen last read.
+                self.bump_gains_revision();
                 (Some(device), Some(mappings), Some(resolved_audio))
             }
             None => (None, None, None),

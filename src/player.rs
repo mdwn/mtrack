@@ -316,6 +316,11 @@ pub struct Player {
     /// The status's reads of the DMX engine outstanding, one of each kind
     /// at most (see `status::InflightRead`).
     ambient_reads: Arc<status::InflightRead<dmx::engine::AmbientReport>>,
+    /// Counts changes to any track's gain or mute, from any surface, so a
+    /// remote screen can tell its levels are stale without reading them. It
+    /// lives here, not in `TrackGains`, because a hardware reload builds a
+    /// new `TrackGains`. Wraps on overflow.
+    gains_revision: Arc<std::sync::atomic::AtomicU32>,
     lighting_reads: Arc<status::InflightRead<Option<LightingStatus>>>,
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
@@ -706,6 +711,7 @@ impl Player {
             cli_playlist: Arc::new(parking_lot::RwLock::new(None)),
             song_scans: Arc::new(parking_lot::Mutex::new(())),
             ambient_reads: Arc::default(),
+            gains_revision: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             lighting_reads: Arc::default(),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
@@ -1041,7 +1047,11 @@ impl Player {
             (hw.track_gains.clone(), hw.hostname.clone())
         };
         let track_gains = track_gains.ok_or(TrackGainError::NoAudioProfile)?;
+        let before = track_gains.get_db(track);
         let applied = track_gains.set_db(track, gain_db)?;
+        if before != Some(applied) {
+            self.bump_gains_revision();
+        }
 
         // Debounced persistence: replace any pending save with a fresh timer.
         match (self.config_store(), hostname) {
@@ -1070,6 +1080,16 @@ impl Player {
         Ok(applied)
     }
 
+    /// The count of changes to any track's gain or mute so far; it only
+    /// matters when it differs from the last one read.
+    pub fn gains_revision(&self) -> u32 {
+        self.gains_revision.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn bump_gains_revision(&self) {
+        self.gains_revision.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Returns all output track gains as (name, dB) pairs, or None when no
     /// audio profile is active.
     pub fn get_track_gains(&self) -> Option<Vec<(String, f32)>> {
@@ -1090,7 +1110,11 @@ impl Player {
             .track_gains
             .clone()
             .ok_or(TrackGainError::NoAudioProfile)?;
+        let before = track_gains.get_muted(track);
         let applied = track_gains.set_muted(track, muted)?;
+        if before != Some(applied) {
+            self.bump_gains_revision();
+        }
         info!(track, muted = applied, "track mute changed");
         Ok(applied)
     }
@@ -3285,7 +3309,11 @@ mod test {
         let song = player.navigate_to_song(2, Some("Song 1")).await?;
         assert_eq!(song.name(), "Song 1");
         assert_eq!(player.get_playlist().entry(), Some(2));
-        let status = crate::controller::ble::status::from_player(&player.transport_status().await)?;
+        let status = crate::controller::ble::status::from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.position, Some(2));
         Ok(())
     }
@@ -5026,17 +5054,29 @@ mod test {
 
         let (_dir, player) = two_section_songs_player().await?;
         let device = player.audio_device().expect("audio device").to_mock()?;
-        let status = from_player(&player.transport_status().await)?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section, None);
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
         player.loop_section("a").await?;
-        let status = from_player(&player.transport_status().await)?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section.as_deref(), Some("a"));
 
         player.stop_section_loop();
-        let status = from_player(&player.transport_status().await)?;
+        let status = from_player(
+            &player.transport_status().await,
+            player.gains_revision(),
+            None,
+        )?;
         assert_eq!(status.loop_section, None);
 
         player.stop().await;
@@ -5885,6 +5925,36 @@ mod test {
         // Test songs don't have loop_playback set, so this should be false.
         assert!(!player.is_current_song_looping());
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_gains_revision_moves_on_a_change_and_not_on_a_repeat() -> Result<(), Box<dyn Error>>
+    {
+        let mappings: HashMap<String, Vec<u16>> = HashMap::from([("click".to_string(), vec![1])]);
+        let player = assets_player_with_devices(PlayerDevices {
+            mappings: Some(Arc::new(mappings)),
+            ..no_devices()
+        })?;
+
+        let start = player.gains_revision();
+        player.set_track_gain("click", -6.0)?;
+        assert_eq!(player.gains_revision(), start.wrapping_add(1));
+        // Setting the value it already has is not a change.
+        player.set_track_gain("click", -6.0)?;
+        assert_eq!(player.gains_revision(), start.wrapping_add(1));
+
+        player.set_track_mute("click", true)?;
+        assert_eq!(player.gains_revision(), start.wrapping_add(2));
+        player.set_track_mute("click", true)?;
+        assert_eq!(player.gains_revision(), start.wrapping_add(2));
+        player.set_track_mute("click", false)?;
+        assert_eq!(player.gains_revision(), start.wrapping_add(3));
+
+        // A refused set changes nothing.
+        assert!(player.set_track_gain("nope", 0.0).is_err());
+        assert!(player.set_track_gain("click", f32::NAN).is_err());
+        assert_eq!(player.gains_revision(), start.wrapping_add(3));
         Ok(())
     }
 

@@ -707,6 +707,9 @@ mod tests {
             position: None,
             auto_play: None,
             loop_section: None,
+            gains_revision: None,
+            ambient_mode: None,
+            ambient_state: None,
         }
     }
 
