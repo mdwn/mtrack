@@ -25,6 +25,7 @@ include = [
     "src/**/*",
     "!src/webui/svelte/node_modules/**",
     "!src/webui/svelte/src/**",
+    "!src/webui/svelte/dist-stage/**",
     "!src/webui/svelte/.svelte-kit/**",
     "!src/webui/svelte/.claude/**",
     "!src/webui/svelte/e2e/**",

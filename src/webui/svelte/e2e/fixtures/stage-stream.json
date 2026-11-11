@@ -1,0 +1,375 @@
+{
+  "about": "A WatchStage stream as the player encodes it, with the websocket's message for the same stage beside each update. Written by the test the_web_uis_recorded_stream_is_what_the_encoder_says in src/controller/grpc/stage.rs; do not edit by hand.",
+  "steps": [
+    {
+      "metadata": {
+        "fixtures": {
+          "bar": {
+            "beam_angle": null,
+            "capabilities": [
+              "cells"
+            ],
+            "cells": [
+              {
+                "name": "1",
+                "offset": [
+                  -0.25,
+                  0.0,
+                  0.0
+                ]
+              },
+              {
+                "name": "2",
+                "offset": [
+                  0.25,
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "position": null,
+            "rig": null,
+            "rotation": null,
+            "tags": [],
+            "type": "Bar"
+          },
+          "head": {
+            "beam_angle": 12.5,
+            "capabilities": [
+              "color",
+              "pan_tilt",
+              "color_wheel"
+            ],
+            "cells": [],
+            "position": [
+              -2.0,
+              3.5,
+              4.25
+            ],
+            "rig": "rigs/head.glb",
+            "rotation": [
+              0.0,
+              0.0,
+              180.0
+            ],
+            "tags": [
+              "back",
+              "mover"
+            ],
+            "type": "Head"
+          },
+          "spare": {
+            "beam_angle": null,
+            "capabilities": [],
+            "cells": [],
+            "position": null,
+            "rig": null,
+            "rotation": null,
+            "tags": [],
+            "type": "Par"
+          }
+        },
+        "type": "metadata",
+        "venue": {
+          "dir": "/somewhere/venues",
+          "focus_points": {
+            "drummer": [
+              0.0,
+              2.75,
+              1.5
+            ]
+          },
+          "name": "club",
+          "scenery": "scenery/club.glb",
+          "scenery_error": null
+        }
+      },
+      "update": "CqwCCjYKA2JhchIDQmFyQgVjZWxsc0oKCgExEgUNAACAvkoKCgEyEgUNAACAPlIGZGltbWVyUgNyZWQKnwEKBGhlYWQSBEhlYWQaBGJhY2saBW1vdmVyIg8NAAAAwBUAAGBAHQAAiEAqBR0AADRDNQAASEE6DXJpZ3MvaGVhZC5nbGJCBWNvbG9yQghwYW5fdGlsdEILY29sb3Jfd2hlZWxSBmRpbW1lclIDcGFuUgR0aWx0WicNAAC0QhUAADZCGg8NzczMPRUzMzO/HTMzMz8iCg0AAMA/FQAAAMAKDAoFc3BhcmUSA1BhcgoPCgVzdHJheVIGZGltbWVyEi8KBGNsdWISFQoHZHJ1bW1lchIKFQAAMEAdAADAPxoQc2NlbmVyeS9jbHViLmdsYhgB",
+      "what": "the first layout"
+    },
+    {
+      "state": {
+        "active_effects": [
+          "chase",
+          "wash"
+        ],
+        "cells": {
+          "bar": {
+            "1": {
+              "red": 7
+            },
+            "2": {
+              "red": 9
+            }
+          }
+        },
+        "fixtures": {
+          "bar": {
+            "dimmer": 255,
+            "red": 10
+          },
+          "head": {
+            "dimmer": 1,
+            "pan": 2,
+            "tilt": 3
+          },
+          "stray": {
+            "dimmer": 77
+          }
+        },
+        "poses": {
+          "head": {
+            "aim": [
+              0.1,
+              -0.7,
+              0.7
+            ],
+            "floor": [
+              1.5,
+              -2.0
+            ],
+            "pan": 90.0,
+            "tilt": 45.5
+          }
+        },
+        "strobe_rates": {
+          "head": 12.5
+        },
+        "type": "state",
+        "under_test": [
+          "head"
+        ]
+      },
+      "update": "EjoKBv8KAQIDTRIHCAEVAABIQSIVEgNyZWQaBgoBMRIBBxoGCgEyEgEJKgVjaGFzZSoEd2FzaDIBATgB",
+      "what": "a frame with nothing moved: the mover points where the layout says"
+    },
+    {
+      "state": {
+        "active_effects": [],
+        "cells": {},
+        "fixtures": {
+          "bar": {
+            "dimmer": 255,
+            "red": 10
+          },
+          "head": {
+            "dimmer": 1,
+            "pan": 200,
+            "tilt": 3
+          },
+          "stray": {
+            "dimmer": 77
+          }
+        },
+        "poses": {
+          "head": {
+            "aim": [
+              0.1,
+              -0.7,
+              0.7
+            ],
+            "floor": null,
+            "pan": 120.0,
+            "tilt": 45.5
+          }
+        },
+        "strobe_rates": {
+          "stray": 3.0
+        },
+        "type": "state",
+        "under_test": [
+          "bar",
+          "stray"
+        ]
+      },
+      "update": "EjgKBv8KAcgDTRIHCAMVAABAQBofCAESGw0AAPBCFQAANkIaDw3NzMw9FTMzM78dMzMzPzICAAM4AQ==",
+      "what": "values, the pose, the strobes, the cells and the test all change"
+    },
+    {
+      "state": {
+        "active_effects": [],
+        "cells": {},
+        "fixtures": {
+          "bar": {
+            "dimmer": 255,
+            "red": 10
+          },
+          "head": {
+            "dimmer": 1,
+            "pan": 200,
+            "tilt": 3
+          },
+          "stray": {
+            "dimmer": 77
+          }
+        },
+        "poses": {},
+        "strobe_rates": {
+          "stray": 3.0
+        },
+        "type": "state",
+        "under_test": [
+          "bar",
+          "stray"
+        ]
+      },
+      "update": "EhsKBv8KAcgDTRIHCAMVAABAQBoCCAEyAgADOAE=",
+      "what": "the mover has no pose now, though the layout gave it one"
+    },
+    {
+      "dropped": true,
+      "update": "EjsKB/8KCQECA00SBwgCFQAASEEiFRIDcmVkGgYKATESAQcaBgoBMhIBCSoFY2hhc2UqBHdhc2gyAQI4Ag==",
+      "what": "a frame of a layout that has not arrived"
+    },
+    {
+      "metadata": {
+        "fixtures": {
+          "bar": {
+            "beam_angle": null,
+            "capabilities": [
+              "cells"
+            ],
+            "cells": [
+              {
+                "name": "1",
+                "offset": [
+                  -0.25,
+                  0.0,
+                  0.0
+                ]
+              },
+              {
+                "name": "2",
+                "offset": [
+                  0.25,
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "position": null,
+            "rig": null,
+            "rotation": null,
+            "tags": [],
+            "type": "Bar"
+          },
+          "head": {
+            "beam_angle": 12.5,
+            "capabilities": [
+              "color",
+              "pan_tilt",
+              "color_wheel"
+            ],
+            "cells": [],
+            "position": [
+              -2.0,
+              3.5,
+              4.25
+            ],
+            "rig": "rigs/head.glb",
+            "rotation": [
+              0.0,
+              0.0,
+              180.0
+            ],
+            "tags": [
+              "back",
+              "mover"
+            ],
+            "type": "Head"
+          },
+          "spare": {
+            "beam_angle": null,
+            "capabilities": [],
+            "cells": [],
+            "position": null,
+            "rig": null,
+            "rotation": null,
+            "tags": [],
+            "type": "Par"
+          }
+        },
+        "type": "metadata",
+        "venue": {
+          "dir": "/somewhere/venues",
+          "focus_points": {
+            "drummer": [
+              0.0,
+              2.75,
+              1.5
+            ]
+          },
+          "name": "club",
+          "scenery": "scenery/club.glb",
+          "scenery_error": null
+        }
+      },
+      "update": "Cr0CCjYKA2JhchIDQmFyQgVjZWxsc0oKCgExEgUNAACAvkoKCgEyEgUNAACAPlIGZGltbWVyUgNyZWQKDwoFZXh0cmFSBmRpbW1lcgqfAQoEaGVhZBIESGVhZBoEYmFjaxoFbW92ZXIiDw0AAADAFQAAYEAdAACIQCoFHQAANEM1AABIQToNcmlncy9oZWFkLmdsYkIFY29sb3JCCHBhbl90aWx0Qgtjb2xvcl93aGVlbFIGZGltbWVyUgNwYW5SBHRpbHRaJw0AALRCFQAANkIaDw3NzMw9FTMzM78dMzMzPyIKDQAAwD8VAAAAwAoMCgVzcGFyZRIDUGFyCg8KBXN0cmF5UgZkaW1tZXISLwoEY2x1YhIVCgdkcnVtbWVyEgoVAAAwQB0AAMA/GhBzY2VuZXJ5L2NsdWIuZ2xiGAI=",
+      "what": "the second layout: one more driven fixture, the same venue"
+    },
+    {
+      "state": {
+        "active_effects": [
+          "chase",
+          "wash"
+        ],
+        "cells": {
+          "bar": {
+            "1": {
+              "red": 7
+            },
+            "2": {
+              "red": 9
+            }
+          }
+        },
+        "fixtures": {
+          "bar": {
+            "dimmer": 255,
+            "red": 10
+          },
+          "extra": {
+            "dimmer": 9
+          },
+          "head": {
+            "dimmer": 1,
+            "pan": 2,
+            "tilt": 3
+          },
+          "stray": {
+            "dimmer": 77
+          }
+        },
+        "poses": {
+          "head": {
+            "aim": [
+              0.1,
+              -0.7,
+              0.7
+            ],
+            "floor": [
+              1.5,
+              -2.0
+            ],
+            "pan": 90.0,
+            "tilt": 45.5
+          }
+        },
+        "strobe_rates": {
+          "head": 12.5
+        },
+        "type": "state",
+        "under_test": [
+          "head"
+        ]
+      },
+      "update": "EjsKB/8KCQECA00SBwgCFQAASEEiFRIDcmVkGgYKATESAQcaBgoBMhIBCSoFY2hhc2UqBHdhc2gyAQI4Ag==",
+      "what": "a frame of the second layout"
+    },
+    {
+      "dropped": true,
+      "update": "EjoKBv8KAQIDTRIHCAEVAABIQSIVEgNyZWQaBgoBMRIBBxoGCgEyEgEJKgVjaGFzZSoEd2FzaDIBATgB",
+      "what": "a late frame of the first layout"
+    }
+  ]
+}

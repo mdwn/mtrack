@@ -269,6 +269,11 @@ jobs:
       run: make lint-ui
     - name: Format check
       run: cd src/webui/svelte && npm run format:check
+    # The phone app's stage page is a second build of the same sources, and
+    # nothing else in CI builds it: a few seconds here, with everything it
+    # needs already generated.
+    - name: Build the stage-only page
+      run: cd src/webui/svelte && npm run build:stage
 
   # Run Playwright E2E tests against mock backend. Skipped on a pull request
   # that changes nothing the web UI is built from (scripts/ci-changes.sh).
