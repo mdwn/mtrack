@@ -135,12 +135,22 @@ envelope, and a channel of its own.
   in front of a Stop's answer.
 - **Newest wins.** A gRPC stream is ordered and loses nothing; a lighting
   frame that is late is worthless. The player keeps one pending frame per
-  stream: when the radio is busy the newer frame replaces it. A slow phone
-  sees fewer frames, never a growing delay. This is safe because every frame
-  stands alone (§4). A layout is never dropped.
+  stream: while it waits its turn, a newer frame replaces it. This is safe
+  because every frame stands alone (§4). A layout is never dropped.
 - **One packet at a time.** The stream pump sends one packet, then lets
   anything waiting on `response` or `status` go first.
+- **A fixed pace, because the player cannot see the link.** The first draft
+  assumed the player would feel a slow phone. It does not: BlueZ takes each
+  packet at once and queues it itself, and says nothing back. So the pump
+  sends at a fixed 16 kB/s, under what the Pixel's link carried (§3), and
+  frames coalesce in the player while the pace holds it. On a link slower than
+  the stream, a backlog builds inside BlueZ where the player can neither see
+  nor shorten it: frames arrive late, and so do answers to calls. If that
+  shows on real links, the remedy is the phone acknowledging frames; it is not
+  built. The pace is a guess until it is measured (§11).
 - **Rate.** The app asks for 10 frames a second; the player samples at 20.
+- **Limits.** Two streams a phone; a cancel by the id the stream was opened
+  with.
 
 The dispatcher calls the gRPC service in-process and collects the whole body
 today. For a stream it reads the body message by message; the service side is
@@ -207,6 +217,9 @@ the same either way.
 - Anything on iOS, where the link is assumed to carry a third of what the
   Pixel's does.
 - Movers, per-cell fixtures and scenery: the rig has none.
+- Streams over Bluetooth on hardware: the 16 kB/s pace, how late a Stop's
+  answer is while a layout streams, and what a weak link does.
+- Layouts are not yet gzipped (§4); one over 64 KiB ends the stream.
 - The frame sizes in §4 are measured on made-up fixtures, not on the rig.
 
 ## 12. Decisions
