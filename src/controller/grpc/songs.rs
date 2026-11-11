@@ -52,9 +52,16 @@ pub(super) const PAGE_BUDGET: usize = 48 * 1024;
 const LISTED_FAILURE: usize = 200;
 
 /// The page of the library from `start`: as many songs, loaded and failed,
-/// sorted by name, as fit `budget` bytes (one at least).
-pub(super) fn list(player: &Player, start: u32, budget: usize) -> ListSongsResponse {
+/// sorted by name, as fit `budget` bytes (one at least). With the songs
+/// directory `root`, each says its directory under it.
+pub(super) fn list(
+    player: &Player,
+    root: Option<&Path>,
+    start: u32,
+    budget: usize,
+) -> ListSongsResponse {
     let songs = player.songs();
+    let base_dir = |dir: &Path| root.map(|root| songs_api::base_dir(root, dir));
     let mut rows: Vec<SongListing> = songs
         .sorted_list()
         .iter()
@@ -66,10 +73,12 @@ pub(super) fn list(player: &Player, start: u32, budget: usize) -> ListSongsRespo
             has_midi: song.midi_playback().is_some(),
             has_samples: !song.samples_config().samples().is_empty(),
             failure: None,
+            base_dir: base_dir(song.base_path()),
         })
         .chain(songs.failures().iter().map(|failure| SongListing {
             name: failure.name().to_string(),
             failure: Some(shortened(failure.error(), LISTED_FAILURE)),
+            base_dir: base_dir(failure.base_path()),
             ..Default::default()
         }))
         .collect();
@@ -145,6 +154,16 @@ async fn songs_root(
         }
         None => Err(Status::failed_precondition("No songs directory configured")),
     }
+}
+
+/// The songs directory as song directories are given relative to it: the
+/// web UI's, canonical. None when there is none to say.
+pub(super) async fn listing_root(
+    player: &Player,
+    store: Option<&config::ConfigStore>,
+) -> Option<PathBuf> {
+    let root = songs_root(player, store).await.ok()?;
+    Some(root.canonicalize().unwrap_or(root))
 }
 
 /// The song's file as read, with what it says.
@@ -241,11 +260,16 @@ pub(super) async fn get(
 ) -> Result<GetSongResponse, Status> {
     let located = locate(player, name)?;
     // Under the songs directory, as every song write checks.
-    songs_api::resolve_song_dir(player, &songs_root(player, store).await?, name)
+    let root = songs_root(player, store).await?;
+    songs_api::resolve_song_dir(player, &root, name)
         .map_err(|_| Status::not_found(format!("Song '{name}' not found")))?;
     let read = read(&located).await?;
     let mut response = report(name, &located, &read);
     response.playing = is_playing(player, name).await;
+    response.base_dir = Some(songs_api::base_dir(
+        &root.canonicalize().unwrap_or(root),
+        &located.dir,
+    ));
     Ok(response)
 }
 
@@ -1488,7 +1512,8 @@ notification_audio:
             let mut paged = Vec::new();
             let mut start = 0;
             loop {
-                let page = super::super::list(&project.player, start, 64);
+                let root = super::super::listing_root(&project.player, Some(&project.store)).await;
+                let page = super::super::list(&project.player, root.as_deref(), start, 64);
                 assert_eq!(page.total, all.total);
                 assert!(!page.songs.is_empty());
                 paged.extend(page.songs);
@@ -1498,6 +1523,54 @@ notification_audio:
                 }
             }
             assert_eq!(paged, all.songs);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn songs_say_their_directory_as_the_web_ui_does() {
+            let project = project().await;
+            let deep = project.dir.path().join("assets/songs/Live/2026 tour/Deep");
+            std::fs::create_dir_all(&deep).unwrap();
+            crate::testutil::write_wav(deep.join("click.wav"), vec![vec![0_i32; 8000]], 8000)
+                .unwrap();
+            std::fs::write(
+                deep.join("song.yaml"),
+                "name: Deep\ntracks:\n- name: click\n  file: click.wav\n",
+            )
+            .unwrap();
+            project.player.reload_songs().await.unwrap();
+            let all = server(&project)
+                .list_songs(Request::new(ListSongsRequest { start: 0 }))
+                .await
+                .unwrap()
+                .into_inner();
+            let dir = |name: &str| {
+                all.songs
+                    .iter()
+                    .find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("{name} in {:?}", all.songs))
+                    .base_dir
+                    .clone()
+            };
+            assert_eq!(dir("Full").as_deref(), Some("Full"));
+            assert_eq!(dir("Broken").as_deref(), Some("Broken"));
+            assert_eq!(dir("Deep").as_deref(), Some("Live/2026 tour/Deep"));
+            // The web UI's list says the same.
+            let root = super::super::listing_root(&project.player, Some(&project.store))
+                .await
+                .unwrap();
+            for song in project.player.songs().sorted_list() {
+                assert_eq!(
+                    dir(song.name()).unwrap(),
+                    crate::webui::api::songs_api::base_dir(&root, song.base_path()),
+                );
+            }
+            assert_eq!(
+                get(&project, "Deep").await.unwrap().base_dir.as_deref(),
+                Some("Live/2026 tour/Deep")
+            );
+            // Without a songs directory to say it under, it is not said.
+            let bare = super::super::list(&project.player, None, 0, super::super::PAGE_BUDGET);
+            assert!(bare.songs.iter().all(|s| s.base_dir.is_none()));
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1752,10 +1825,18 @@ notification_audio:
         }
 
         #[test]
-        fn two_hundred_long_named_songs_fit_one_page() {
+        fn two_hundred_long_named_songs_in_nested_folders_fit_one_page() {
             use prost::Message;
             let row = |i: usize| crate::proto::player::v1::SongListing {
                 name: format!("Song {i:03} {}", "with a long name ".repeat(4)),
+                // Two folders down, each with a long name, then the song's
+                // own folder, named as the song is.
+                base_dir: Some(format!(
+                    "Live sets for the {} tour/Set {} with a long name/Song {i:03} {}",
+                    i % 4,
+                    i % 10,
+                    "with a long name ".repeat(4)
+                )),
                 duration: Some(prost_types::Duration {
                     seconds: 300,
                     nanos: 500_000_000,

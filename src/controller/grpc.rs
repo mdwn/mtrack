@@ -1062,8 +1062,10 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<ListSongsRequest>,
     ) -> Result<Response<ListSongsResponse>, Status> {
+        let root = songs::listing_root(&self.player, self.config_store.as_deref()).await;
         Ok(Response::new(songs::list(
             &self.player,
+            root.as_deref(),
             request.into_inner().start,
             songs::PAGE_BUDGET,
         )))

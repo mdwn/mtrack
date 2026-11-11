@@ -662,6 +662,13 @@ message SongListing {
     bool has_samples = 6;
     // Why the song failed to load. Absent for a song that loaded.
     optional string failure = 7;
+    // The song's directory relative to the songs directory, "/" between
+    // its parts, as the web UI's song list has it (base_dir): "Encore" for
+    // a song in a folder of its own at the top, "Live/2026/Encore" for one
+    // two folders down. Empty when the song is not under the songs
+    // directory. A list groups songs by the part before the last "/".
+    // Absent from a player from before it was sent: read as the top.
+    optional string base_dir = 8;
 }
 
 // ListSongsResponse is a page of the library: every song, loaded or not,
@@ -816,6 +823,9 @@ message GetSongResponse {
     // once and takes effect the next time it plays: the playing pass keeps
     // the tracks, loop and samples it started with.
     bool playing = 12;
+    // The song's directory relative to the songs directory, as
+    // SongListing.base_dir has it.
+    optional string base_dir = 13;
 }
 
 // UpdateSongSettingsRequest changes some of a song's settings. Each group

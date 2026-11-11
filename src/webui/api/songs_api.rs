@@ -30,6 +30,22 @@ use crate::webui::wire::songs::{
 };
 use crate::{config, songs};
 
+/// A song's directory `dir` relative to the songs directory `root`, "/"
+/// between its parts: the song list's `base_dir`, which the web UI groups
+/// songs by and the gRPC library sends as it. Empty when `dir` is not under
+/// `root`.
+pub(crate) fn base_dir(root: &std::path::Path, dir: &std::path::Path) -> String {
+    dir.strip_prefix(root)
+        .map(|relative| {
+            relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
 /// GET /api/songs — returns a list of all songs with metadata.
 ///
 /// Uses the player's song registry rather than rescanning disk, so the API
@@ -42,12 +58,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
         .map(|song| {
             // Compute the song's directory path relative to the songs root,
             // so the frontend can construct lighting API paths.
-            let base_dir = song
-                .base_path()
-                .strip_prefix(state.songs_path())
-                .unwrap_or(std::path::Path::new(""))
-                .to_string_lossy()
-                .to_string();
+            let base_dir = base_dir(&state.songs_path(), song.base_path());
 
             // Collect DSL lighting show file paths relative to the songs root.
             let lighting_files: Vec<String> = song
@@ -101,12 +112,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
         .failures()
         .iter()
         .map(|f| {
-            let base_dir = f
-                .base_path()
-                .strip_prefix(state.songs_path())
-                .unwrap_or(std::path::Path::new(""))
-                .to_string_lossy()
-                .to_string();
+            let base_dir = base_dir(&state.songs_path(), f.base_path());
             SongFailure {
                 name: f.name().to_string(),
                 error: f.error().to_string(),
