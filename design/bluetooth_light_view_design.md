@@ -5,8 +5,7 @@
 Decided with Mike since: mtrack keeps one lighting visualization, the web UI's,
 and the phone reuses it; the phone gets the plot, with movers, and 3D after it;
 the feed is a gRPC stream. A spike the same day ran the web UI's stage view with
-no server behind it (§3). It has not yet run on a phone, and §9 says what
-changes if it cannot.*
+no server behind it (§3). It has since run on a Pixel (§3).*
 
 ## 1. What it is for
 
@@ -44,8 +43,21 @@ Chromium with no backend (branch `stage-spike`, not for merging):
 - The rig's feed today: 1.4 kB of JSON per update, 20 a second. More than half
   is poses for fixtures that do not move.
 
-Not shown by the spike: anything on a phone; movers, per-cell fixtures and
-scenery (the rig has none); iOS.
+Then on a Pixel, in the app's web view, from the same recording (L0,
+2026-11-10): the plot and the 3D view both draw, 3D turns under a finger, and
+the page renders at about 100 frames a second while taking 20 updates a
+second. Mike: "pretty smooth". So the reuse in §2 stands.
+
+One thing it turned up: the 3D view rebuilds its whole scene when a layout
+arrives, which shows as a blank for a fraction of a second. The spike sent
+the layout at every loop of its recording; sending it once removed the blank.
+The player's stream can send a layout that says nothing new (a venue reload
+that changed nothing), so the page keeps its scene when the layout is the one
+it has (§8).
+
+Not shown by the spike: movers, per-cell fixtures and scenery (the rig has
+none); iOS. The phone run reported two files not found and one page error
+that were not read; L3 serves its own files and looks at them then.
 
 Measured separately on a Pixel against the rig: the link carries about
 50 kB/s, player to phone, in 512-byte packets. One phone, one position.
@@ -189,6 +201,8 @@ and the plot works meanwhile.
 - The websocket starts when asked to, not when a file is imported.
 - The stage stores take a layout and frames from either source.
 - The stage view gets a mode with no editing chrome.
+- The 3D view keeps its scene when a layout arrives that matches the one it
+  was built from.
 - The stage build should not carry the config API or the rules parser. The
   WebAssembly module wants splitting for that; until then it ships whole.
 
@@ -213,7 +227,6 @@ the same either way.
 
 ## 11. Not verified
 
-- Android's web view: loading the page, WebGL, speed. L0 is for this.
 - Anything on iOS, where the link is assumed to carry a third of what the
   Pixel's does.
 - Movers, per-cell fixtures and scenery: the rig has none.
@@ -225,7 +238,7 @@ the same either way.
 ## 12. Decisions
 
 1. **The feed is a gRPC stream** (§4). Decided.
-2. **One visualization, reused in a web view** (§2). Decided, subject to L0.
+2. **One visualization, reused in a web view** (§2). Decided; L0 passed.
 3. **Plot with movers first, 3D after** (§10). Decided.
 4. **Retire the websocket's JSON stage messages later, not now** (§4).
    Decided.
