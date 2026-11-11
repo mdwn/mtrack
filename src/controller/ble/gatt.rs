@@ -46,7 +46,8 @@ use super::pairing::{
 };
 use super::session::{Link, PeerId, PUMP_DEPTH};
 use super::status;
-use super::{REQUEST_UUID, RESPONSE_UUID, SERVICE_UUID, STATUS_UUID};
+use super::stream::{self, Outbox, STREAM_RATE};
+use super::{REQUEST_UUID, RESPONSE_UUID, SERVICE_UUID, STATUS_UUID, STREAM_UUID};
 
 /// Why the adapter is unusable, with the likely fix, as an error.
 fn unusable(what: &str, e: &bluer::Error) -> io::Error {
@@ -93,6 +94,17 @@ impl Drop for Cleanup {
                 }
             });
         }
+    }
+}
+
+/// On the driver ending, however it does: the streams end, and with them
+/// the player's side of each. The link itself may outlive the driver's
+/// future in what the radio stack still holds of the service.
+struct EndStreams(Arc<Outbox>);
+
+impl Drop for EndStreams {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 
@@ -158,6 +170,10 @@ impl Notifier for Session {
 
     fn notify(&mut self, value: Vec<u8>) -> BoxFuture<'_, bool> {
         Box::pin(async move { self.0.notify(value).await.is_ok() })
+    }
+
+    fn stopped(&self) -> BoxFuture<'static, ()> {
+        Box::pin(self.0.stopped())
     }
 }
 
@@ -248,12 +264,34 @@ pub(super) async fn run(
     let link = Link::new(Dispatcher::new(player.clone()), responses, status_out);
     let (response_sessions, response_rx) = mpsc::unbounded_channel();
     let (status_sessions, status_rx) = mpsc::unbounded_channel();
-    let _response_pump = spawn_guarded(notify::run(response_rx, response_frames, None));
+    let (stream_sessions, stream_rx) = mpsc::unbounded_channel();
+    let _response_pump = spawn_guarded(notify::run(
+        response_rx,
+        response_frames,
+        None,
+        Some(link.control()),
+    ));
     let greeting: Greeting = {
         let link = link.clone();
         Box::new(move || link.status_chunks())
     };
-    let _status_pump = spawn_guarded(notify::run(status_rx, status_frames, Some(greeting)));
+    let _status_pump = spawn_guarded(notify::run(
+        status_rx,
+        status_frames,
+        Some(greeting),
+        Some(link.control()),
+    ));
+    let _streams = EndStreams(link.outbox());
+    let _stream_pump = spawn_guarded(stream::run(
+        stream_rx,
+        link.outbox(),
+        link.control(),
+        {
+            let link = link.clone();
+            move || link.chunk_size()
+        },
+        Some(STREAM_RATE),
+    ));
     let _status_poll = spawn_guarded({
         let link = link.clone();
         status::poll(player, link.status_wanted(), move |status| {
@@ -316,12 +354,22 @@ pub(super) async fn run(
             ..Default::default()
         }
     };
+    let stream_characteristic = Characteristic {
+        uuid: Uuid::from_u128(STREAM_UUID),
+        notify: Some(notify_method(stream_sessions)),
+        ..Default::default()
+    };
     let _application = adapter
         .serve_gatt_application(Application {
             services: vec![Service {
                 uuid: Uuid::from_u128(SERVICE_UUID),
                 primary: true,
-                characteristics: vec![request, response, status_characteristic],
+                characteristics: vec![
+                    request,
+                    response,
+                    status_characteristic,
+                    stream_characteristic,
+                ],
                 ..Default::default()
             }],
             ..Default::default()

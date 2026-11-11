@@ -21,8 +21,9 @@
 //! `pairing` is the policy of who may pair and when; `status` builds what
 //! the phone watches; `notify` fans chunks out to subscribers; the
 //! `codec` frames envelopes for ATT chunks and the `dispatch`er answers
-//! them by calling the player's gRPC service in process. Everything but
-//! `gatt` is tested without a radio.
+//! them by calling the player's gRPC service in process; `stream` carries
+//! a server-streaming call, newest message first where late ones are
+//! worthless. Everything but `gatt` is tested without a radio.
 
 use std::error::Error;
 use std::io;
@@ -47,6 +48,8 @@ mod pairing;
 mod session;
 #[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
 pub(crate) mod status;
+#[cfg_attr(not(all(target_os = "linux", feature = "ble")), allow(dead_code))]
+mod stream;
 
 #[cfg(test)]
 pub(crate) use pairing::fake;
@@ -63,6 +66,9 @@ pub const RESPONSE_UUID: u128 = 0x6d747261_636b_0003_8000_00805f9b34fb;
 /// The characteristic carrying the player's status: read (a bare encoded
 /// `Status`) and notify (the same, framed).
 pub const STATUS_UUID: u128 = 0x6d747261_636b_0004_8000_00805f9b34fb;
+/// The characteristic a server stream's framed responses come on, the last
+/// with its status: notify.
+pub const STREAM_UUID: u128 = 0x6d747261_636b_0005_8000_00805f9b34fb;
 
 /// How long the controller waits before trying the radio again.
 #[cfg(all(target_os = "linux", feature = "ble"))]
@@ -168,6 +174,7 @@ mod tests {
         assert_eq!(text(REQUEST_UUID), "6d747261-636b-0002-8000-00805f9b34fb");
         assert_eq!(text(RESPONSE_UUID), "6d747261-636b-0003-8000-00805f9b34fb");
         assert_eq!(text(STATUS_UUID), "6d747261-636b-0004-8000-00805f9b34fb");
+        assert_eq!(text(STREAM_UUID), "6d747261-636b-0005-8000-00805f9b34fb");
     }
 
     /// Without Bluetooth in the build, the controller says so rather than

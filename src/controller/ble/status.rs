@@ -343,6 +343,7 @@ mod tests {
             id: 1,
             method: "SetLock".to_string(),
             payload: SetLockRequest { locked: false }.encode_to_vec(),
+            cancel: false,
         }
         .encode_to_vec();
         Dispatcher::new(player.clone()).handle(&frame).await;
