@@ -42,8 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   player is locked, and allowed over Bluetooth.
 - **`ListSongs`, `GetSong` and `UpdateSongSettings` gRPC RPCs**, also allowed over Bluetooth:
   the first pages through the song library (loaded songs and failed ones, sorted, each with its
-  duration and whether it loops, has lights, MIDI or samples, or why it failed to load; a page
-  fits one Bluetooth message, a library of 200 songs one page); the second returns a song's
+  duration and whether it loops, has lights, MIDI or samples, or why it failed to load, and its
+  folder under the songs directory as the web UI's song list has it, `base_dir`; a page fits one
+  Bluetooth message, a library of 200 songs in nested folders one page); the second returns a song's
   looping, tracks and samples as its file has them, what else it has (tempo, sections,
   metronome, pilot, MIDI, light shows), its sample triggers in words, the audio files in its
   folder with their channel counts, and a `revision` of its file; the third changes the looping
@@ -57,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The reads are open while the player is locked; the change is not. A change to the song that
   is playing is written at once and takes effect the next time it plays, as a web UI save does:
   the pass playing keeps its tracks, loop and samples, but turning looping on or off changes at
-  once whether Play and Next break out of it.
+  once whether Play and Next break out of it. The phone app's second tab, **Library**, switches
+  between the playlist and these songs, grouped under their folders as the web UI groups them.
 - **`SavePlaylist`, `DeletePlaylist` and `SetLock` gRPC RPCs**: the first sets a playlist's songs
   and their order (or makes the playlist), keeping each entry's own settings with its song, or,
   with `set_settings` and `set_ambient`, setting them, checked as the web UI's save checks them

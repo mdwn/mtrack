@@ -177,7 +177,8 @@ be editable from a phone. Anyone paired can do it, as anyone paired can already 
 
 `ListSongs` and `GetSong` read the song library and a song's settings, and are open while the
 player is locked. `ListSongs` answers a page at a time, at most 48 KiB, and says where the next
-page starts (`next`); a library of 200 songs with long names is some 22 kB, one page.
+page starts (`next`); a library of 200 songs with long names, two folders down, is some 48 kB,
+one page.
 `UpdateSongSettings` changes a song's looping, tracks or its own samples, as `GetSong` reports
 them, writing the song's file as the web UI's song save does; send the `revision` `GetSong`
 answered as `expected_revision`, and a song edited since is refused (`FAILED_PRECONDITION`,
@@ -319,7 +320,8 @@ for a change to `app/` uploads one as an artifact) and as an iOS project that ha
 on a phone. It finds a player, pairs, and then reconnects to it by itself. Its five tabs show
 the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
 current; switch to another playlist; make, edit and delete playlists, with each song's fades,
-auto play and ambient light and the playlist's own; and, behind **Songs**, the song library, where
+auto play and ambient light and the playlist's own; and, on the other side of its **Playlist |
+Songs** switch, the song library, grouped under its folders as the web UI groups it, where
 a song's looping, tracks and samples can be changed), the song's sections (tap to jump to one, hold to loop
 it), the output tracks' levels and mutes, and the lights: the ambient light's mode, and under it
 the stage the web UI draws, as a plot or in 3D, live from the [stage stream](#streams). The 3D

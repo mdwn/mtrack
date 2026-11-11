@@ -191,7 +191,8 @@ rpc UpdateSongSettings(UpdateSongSettingsRequest) returns (GetSongResponse);
 message ListSongsRequest { uint32 start = 1; }
 message ListSongsResponse {
   repeated SongListing songs = 1;   // name, duration, loops, has_lighting,
-                                    // has_midi, has_samples, failure
+                                    // has_midi, has_samples, failure,
+                                    // base_dir (8)
   optional uint32 next = 2;         // more: ask again from here
   uint32 total = 3;
 }
@@ -209,6 +210,7 @@ message GetSongResponse {
   repeated SongFile files = 10;     // audio files beside it, with channels
   string revision = 11;
   bool playing = 12;
+  optional string base_dir = 13;    // as SongListing's
 }
 
 message SongSample {
@@ -235,8 +237,20 @@ message UpdateSongSettingsRequest {
 
 - **Paged, not gzipped.** The Bluetooth envelope carries no compressed
   message, and gzip guarantees no size. A page holds at most 48 KiB of
-  the 64 KiB frame; 200 songs with long names are 22 kB, one page. A test
-  holds both.
+  the 64 KiB frame; 200 songs with long names, each two long-named
+  folders down, are 47.6 kB, one page (22 kB before `base_dir`). A test
+  holds both. A bigger library takes more pages, not a bigger one.
+- **Folders, as the web UI has them.** The web UI's Songs page
+  (`SongList.svelte`) groups songs by `base_dir` from `GET /api/songs`
+  (the song's directory relative to the songs directory): each song goes
+  under its `base_dir` less the last part, so `Live/2026/Encore` is under
+  `Live/2026` and `Encore` is at the top. Every folder is one flat group
+  labelled with its whole path, not a tree; the top comes first with no
+  heading, the rest sorted by path (`localeCompare`); each heading shows
+  the path in capitals and a count, and closes and opens its group, kept
+  until the page goes. `ListSongs` and `GetSong` send `base_dir` as the
+  web UI computes it (one function, `songs_api::base_dir`, for both),
+  absent when the player has no songs directory to say it under.
 - **The file keeps its shape.** The player reads the file as a YAML tree,
   changes only the keys whose values differ from what the file has, and
   writes it back through the web UI's song save, under the lock the song
@@ -274,10 +288,21 @@ message UpdateSongSettingsRequest {
   when a change takes effect.
 - Reads are open while locked; the update is not.
 
-The app reaches the library from the Playlist tab: a **Songs** button
-beside **Edit**, under the playlist's name. A sixth tab would shrink every
-label, and the library is the playlist's raw material: it is where the
-editor's "add songs" picks from. A song's page shows what it has first,
+The app's second tab is the **Library**: a **Playlist | Songs** switch at
+its top, as the Lights tab switches between the plot and 3D, with the
+playlist on one side and the song library on the other. A sixth tab would
+shrink every label, and the library is the playlist's raw material: it is
+where the editor's "add songs" picks from. (It was first a **Songs**
+button beside **Edit**; Mike found a button in the playlist wonky.) The
+switch keeps the side last shown across launches (`library.view`, as
+`lights.view`), each side keeps its scroll while the other shows, and
+while a playlist is edited the editor covers the tab, switch and all. The
+Songs side groups songs as the web UI does, with folders that close and
+open (kept until the player is forgotten); a search lists the songs that
+match flat, each with its folder under its name; a player that sends no
+`base_dir` shows one list. The editor's "add songs" picker stays a flat,
+searched list, as the web UI's playlist editor's is. A song's page shows
+its folder under its name, then what it has first,
 then Looping (the switch on the page, the crossfade and its cut tracks in
 a sheet), Tracks and Samples, each item a sheet, worded as the web UI's
 song editor; one Save sends the groups changed, with the revision.

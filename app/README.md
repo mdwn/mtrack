@@ -5,18 +5,26 @@ protocol it speaks is documented in [`docs/src/interfaces/bluetooth.md`](../docs
 and the design in [`design/bluetooth_remote_design.md`](../design/bluetooth_remote_design.md).
 
 The app is not released: it is not in any store. It has five tabs: **Now** (the song, its time and
-the transport), **Playlist** (the songs, a way to switch playlist, and an editor for the playlists: songs and
-their order, each song's fades, auto play and ambient light, and the playlist's ambient light; and
-**Songs**, the song library, below), **Sections** (tap a section
+the transport), **Library** (a **Playlist | Songs** switch at the top: the playlist, with a way to
+switch playlist and an editor for the playlists: songs and their order, each song's fades, auto
+play and ambient light, and the playlist's ambient light; or **Songs**, the song library, below),
+**Sections** (tap a section
 to jump to it, hold to loop it), **Levels** (a fader and a mute for each output track) and **Lights**
 (below), with a connect screen for the first run and a small settings sheet. It follows the phone's
 light or dark setting.
 
 ## Songs
 
-The **Songs** button beside **Edit** in the Playlist tab opens the song library: every song on
-the player, with a search, each row saying whether it loops, has lights, MIDI or samples, or
-failed to load. It reads while the player is locked. Tapping a song opens its page: first what
+The **Songs** side of the Library tab's switch is the song library: every song on the player,
+each row saying whether it loops, has lights, MIDI or samples, or failed to load. Songs are
+grouped under their folders as the web UI's Songs page groups them: the songs at the top of the
+songs directory first, then a heading for each folder, nested ones under their whole path
+(`LIVE/2026 TOUR`), with how many songs it holds; tap a heading to close or open it, which the
+app keeps until the player is forgotten. A search lists the songs that match, each with its
+folder under its name. A player that does not say where its songs are shows one list. The
+switch keeps the side last shown for the next launch, and each side keeps its place while the
+other shows; it is not there while a playlist is being edited. It reads while the player is
+locked. Tapping a song opens its page, which says the song's folder under its name: first what
 it has that the phone does not change (tempo map, sections, metronome, pilot hints, MIDI, light
 shows), then the settings it does, worded as the web UI's song editor words them:
 
