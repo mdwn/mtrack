@@ -65,6 +65,13 @@ class FakeReply {
 /// [handlers] (an empty success when a method has none), refuses every other
 /// method with `PERMISSION_DENIED` as the real player does, and sends
 /// responses and status frames back as chunks cut to [maxChunk].
+///
+/// It opens the streams in [streamMethods] as the real player does: at most
+/// [maxStreams] at once, an id that is open refused on `response`, a cancel
+/// answered with `CANCELLED` on `stream`. What a stream says is the test's to
+/// send, with [streamMessage] and [endStream]. With [hasStreams] false it is
+/// a player from before streams: no `stream` characteristic, and a stream
+/// method refused like any other it does not know.
 class FakePlayer implements PlayerTransport {
   /// A fake that starts connected, cutting to [maxChunk].
   FakePlayer({this.maxChunk = 185});
@@ -97,6 +104,30 @@ class FakePlayer implements PlayerTransport {
     'DeletePlaylist',
     'SetLock',
   };
+
+  /// The stream methods a phone may open.
+  static const Set<String> streamMethods = {'WatchStage'};
+
+  /// How many streams a phone may have open.
+  static const int maxStreams = 2;
+
+  /// False for a player from before streams.
+  @override
+  bool hasStreams = true;
+
+  /// Called when a stream has been opened, with its request.
+  void Function(ble.Request request)? onStream;
+
+  /// The ids of the streams that are open, in the order they were opened.
+  final List<int> openStreams = [];
+
+  /// The ids cancelled, in order, whether or not a stream was open under
+  /// them.
+  final List<int> cancels = [];
+
+  /// When true a cancel is taken but its last response is not sent, until
+  /// the test sends it with [endStream].
+  bool holdCancels = false;
 
   /// How a method is answered, by bare method name.
   final Map<String, FakeReply Function(ble.Request)> handlers = {};
@@ -136,6 +167,8 @@ class FakePlayer implements PlayerTransport {
       StreamController<Uint8List>.broadcast();
   final StreamController<Uint8List> _statuses =
       StreamController<Uint8List>.broadcast();
+  final StreamController<Uint8List> _streams =
+      StreamController<Uint8List>.broadcast();
   final Reassembler _incoming = Reassembler();
   bool _midFrame = false;
 
@@ -144,6 +177,9 @@ class FakePlayer implements PlayerTransport {
 
   /// True while something listens for status notifications.
   bool get hasStatusListener => _statuses.hasListener;
+
+  /// True while something listens for stream notifications.
+  bool get hasStreamListener => _streams.hasListener;
 
   @override
   TransportState get currentState => _state;
@@ -157,12 +193,17 @@ class FakePlayer implements PlayerTransport {
   @override
   Stream<Uint8List> get statusChunks => _statuses.stream;
 
-  /// Moves the link to [next]. Leaving ready drops the frame being received.
+  @override
+  Stream<Uint8List> get streamChunks => _streams.stream;
+
+  /// Moves the link to [next]. Leaving ready drops the frame being received
+  /// and every open stream, with nothing said.
   void setState(TransportState next) {
     _state = next;
     if (next != TransportState.ready) {
       _incoming.reset();
       _midFrame = false;
+      openStreams.clear();
     }
     _stateController.add(next);
   }
@@ -197,7 +238,40 @@ class FakePlayer implements PlayerTransport {
 
   void _handle(ble.Request request) {
     received.add(request);
+    if (hasStreams && request.cancel) {
+      log?.add('cancel');
+      cancels.add(request.id);
+      // Nothing answers a cancel itself, and one for no open stream is
+      // ignored.
+      if (openStreams.contains(request.id) && !holdCancels) {
+        endStream(request.id, code: 1, text: 'cancelled');
+      }
+      return;
+    }
     log?.add('call:${request.method}');
+    if (hasStreams && streamMethods.contains(request.method)) {
+      if (openStreams.contains(request.id)) {
+        sendResponse(
+          ble.Response(
+            id: request.id,
+            code: 6,
+            message: 'stream ${request.id} is already open',
+          ),
+        );
+      } else if (openStreams.length >= maxStreams) {
+        sendStream(
+          ble.Response(
+            id: request.id,
+            code: 8,
+            message: '$maxStreams streams are open already',
+          ),
+        );
+      } else {
+        openStreams.add(request.id);
+        onStream?.call(request);
+      }
+      return;
+    }
     final FakeReply reply;
     if (!allowlist.contains(request.method)) {
       reply = FakeReply.error(7, 'method ${request.method} is not allowed');
@@ -230,6 +304,30 @@ class FakePlayer implements PlayerTransport {
   /// Sends raw chunks on the response characteristic.
   void sendResponseChunks(Iterable<Uint8List> pieces) {
     pieces.forEach(_responses.add);
+  }
+
+  /// Sends [response] on the stream characteristic, chunked.
+  void sendStream(ble.Response response, {int? chunkSize}) {
+    sendStreamChunks(chunks(response.writeToBuffer(), chunkSize ?? maxChunk));
+  }
+
+  /// Sends raw chunks on the stream characteristic.
+  void sendStreamChunks(Iterable<Uint8List> pieces) {
+    pieces.forEach(_streams.add);
+  }
+
+  /// Sends [payload] as a message of stream [id].
+  void streamMessage(int id, List<int> payload, {int? chunkSize}) {
+    sendStream(
+      ble.Response(id: id, more: true, payload: payload),
+      chunkSize: chunkSize,
+    );
+  }
+
+  /// Ends stream [id] with its last response.
+  void endStream(int id, {int code = 0, String text = ''}) {
+    openStreams.remove(id);
+    sendStream(ble.Response(id: id, code: code, message: text));
   }
 
   /// Sends [status] on the status characteristic, chunked.

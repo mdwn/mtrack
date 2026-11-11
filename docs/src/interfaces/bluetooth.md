@@ -301,8 +301,10 @@ asking, and is pushed when it changes. The message carries no beat grid and no s
 A phone app for this protocol is in [`app/`](https://github.com/mdwn/mtrack/tree/main/app) in the
 source repository. It is not released in any store; it builds as an Android APK (the CI run
 for a change to `app/` uploads one as an artifact) and as an iOS project that has not been run
-on a phone. It finds a player, pairs, and then reconnects to it by itself. Its three tabs show
+on a phone. It finds a player, pairs, and then reconnects to it by itself. Its five tabs show
 the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
-current; switch to another playlist), and the song's sections (tap to jump to one, hold to loop
-it). Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
+current; switch to another playlist), the song's sections (tap to jump to one, hold to loop
+it), the output tracks' levels and mutes, and the lights: the ambient light's mode, and under it
+the stage plot the web UI draws, live from the [stage stream](#streams), to look at and not to
+touch. Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
 Until the app is released, any client that follows the protocol above works.

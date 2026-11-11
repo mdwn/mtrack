@@ -16,9 +16,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/src/app/player_link.dart';
+import 'package:mtrack_remote/src/ui/lights_screen.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 
 import '../support/app_harness.dart';
+import '../support/fake_stage.dart';
 import '../support/rig.dart';
 
 /// Every screen in every state, in both themes at normal and large text on a
@@ -50,6 +52,14 @@ void main() {
 
   const longPlaylist =
       'A playlist with a name that runs on and on and on and on and on';
+
+  /// The Lights tab, open, with its page ready and a layout drawn.
+  Future<void> showLights(AppHarness h) async {
+    await h.openTab('Lights');
+    h.stage.surface.ready();
+    h.rig.player.streamMessage(h.rig.player.openStreams.last, stageLayout(1));
+    await h.settle();
+  }
 
   Future<void> startEditing(AppHarness h) async {
     await h.openTab('Playlist');
@@ -358,21 +368,110 @@ void main() {
         look: look,
       );
 
+      void lit(Rig rig) {
+        sized(rig);
+        rig.ambientMode = 'on';
+        rig.ambientState = 'unavailable';
+      }
+
       appTest(
-        'Settings, with the ambient light',
+        'Lights, waiting',
         (h) async {
-          appVersion = () async => '0.1.0 (1)';
-          await h.tester.tap(find.byTooltip('Settings'));
-          await h.settle();
-          await h.tester.pump(const Duration(milliseconds: 400));
+          await h.openTab('Lights');
           expect(find.text('Ambient light'), findsOneWidget);
           expect(find.text('no ambient show'), findsOneWidget);
+          expect(find.text(lightsWaitingMessage), findsOneWidget);
+        },
+        setup: lit,
+        look: look,
+      );
+
+      appTest(
+        'Lights, showing',
+        (h) async {
+          await showLights(h);
+          expect(find.byKey(const Key('stage-surface')), findsOneWidget);
+          expect(find.text(lightsWaitingMessage), findsNothing);
+          expect(
+            h.tester.getSize(find.byKey(const Key('stage-surface'))).height,
+            greaterThan(200),
+          );
+        },
+        setup: lit,
+        look: look,
+      );
+
+      appTest(
+        'Lights, with no ambient light',
+        (h) async {
+          await showLights(h);
+          expect(find.text('Ambient light'), findsNothing);
         },
         setup: (rig) {
           sized(rig);
-          rig.ambientMode = 'on';
-          rig.ambientState = 'unavailable';
+          rig.ambientMode = null;
         },
+        look: look,
+      );
+
+      appTest(
+        'Lights, failed',
+        (h) async {
+          await h.openTab('Lights');
+          h.stage.surface.loadError('refused');
+          await h.settle();
+          expect(find.text(lightsFailedMessage), findsOneWidget);
+          expect(find.text('Try again'), findsOneWidget);
+        },
+        setup: lit,
+        look: look,
+      );
+
+      appTest(
+        'Lights, too old',
+        (h) async {
+          await h.openTab('Lights');
+          expect(find.text(lightsTooOldMessage), findsOneWidget);
+        },
+        setup: (rig) {
+          lit(rig);
+          rig.player.hasStreams = false;
+        },
+        look: look,
+      );
+
+      appTest(
+        'Lights, without the player',
+        (h) async {
+          await showLights(h);
+          h.rig.link.connectFailures = 100;
+          h.rig.player.disconnect();
+          await h.settle();
+          await h.tester.pump(const Duration(milliseconds: 100));
+          expect(find.text('Reconnecting…'), findsOneWidget);
+          expect(find.byKey(const Key('stage-dimmed')), findsOneWidget);
+          await h.advance(const Duration(seconds: 30));
+        },
+        setup: lit,
+        look: look,
+      );
+
+      appTest(
+        'Lights, above the navigation bar',
+        (h) async {
+          h.tester.view.viewPadding = const FakeViewPadding(bottom: 48 * 3.0);
+          h.tester.view.padding = const FakeViewPadding(bottom: 48 * 3.0);
+          addTearDown(h.tester.view.resetViewPadding);
+          addTearDown(h.tester.view.resetPadding);
+          await showLights(h);
+          final stage = h.tester.getRect(
+            find.byKey(const Key('stage-surface')),
+          );
+          final tab = h.tester.getRect(find.text('Lights').last);
+          expect(stage.bottom, lessThan(tab.top));
+          expect(tab.bottom, lessThanOrEqualTo(640 - 48));
+        },
+        setup: lit,
         look: look,
       );
 
@@ -509,6 +608,57 @@ void main() {
         expect(find.text('Unlock to edit'), findsOneWidget);
       },
       setup: (rig) => rig.locked = true,
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'Lights still fit, with the stage under the ambient light',
+      (h) async {
+        await showLights(h);
+        expect(find.text('Ambient light'), findsOneWidget);
+        expect(
+          h.tester.getSize(find.byKey(const Key('stage-surface'))).height,
+          greaterThan(120),
+        );
+      },
+      setup: (rig) {
+        rig.ambientMode = 'on';
+        rig.ambientState = 'unavailable';
+      },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'Lights, failed, still fit',
+      (h) async {
+        await h.openTab('Lights');
+        h.stage.surface.loadError('refused');
+        await h.settle();
+        expect(find.text('Try again'), findsOneWidget);
+      },
+      setup: (rig) {
+        rig.ambientMode = 'on';
+        rig.ambientState = 'unavailable';
+        rig.locked = true;
+      },
+      size: const Size(320, 480),
+      look: const Look(Brightness.dark, 1.3),
+    );
+
+    appTest(
+      'Lights, too old, still fit',
+      (h) async {
+        await h.openTab('Lights');
+        expect(find.text(lightsTooOldMessage), findsOneWidget);
+      },
+      setup: (rig) {
+        rig.ambientMode = 'on';
+        rig.ambientState = 'unavailable';
+        rig.locked = true;
+        rig.player.hasStreams = false;
+      },
       size: const Size(320, 480),
       look: const Look(Brightness.dark, 1.3),
     );

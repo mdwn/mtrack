@@ -27,6 +27,7 @@ import 'player_link.dart';
 import 'playlist_edit.dart';
 import 'ports.dart';
 import 'sections.dart';
+import 'stage_watch.dart';
 
 /// Where the connection to a player stands.
 enum ConnectionPhase {
@@ -135,6 +136,12 @@ class Session extends ChangeNotifier {
       notice: _notice,
       lostIfUnanswered: _lostIfUnanswered,
     );
+    _stage = StageWatch(
+      client: () => _client,
+      isReady: () => isReady,
+      lostIfUnanswered: _lostIfUnanswered,
+      changed: _notify,
+    );
   }
 
   final PlayerLink _link;
@@ -149,6 +156,8 @@ class Session extends ChangeNotifier {
 
   /// The output tracks' gains and mutes, for the Levels tab.
   late final Levels levels;
+
+  late final StageWatch _stage;
 
   final StreamController<String> _notices = StreamController<String>.broadcast(
     sync: true,
@@ -240,7 +249,8 @@ class Session extends ChangeNotifier {
   /// What the app can do that the connected player is too old for, in words
   /// for a sentence; empty when it has everything, or when nothing has been
   /// heard from a player yet. Each feature came with a field in the status,
-  /// so a status without the field is from before the feature.
+  /// so a status without the field is from before the feature; the stage
+  /// view came with streams instead (see [stageMissingFromPlayer]).
   List<String> get missingFromPlayer {
     final status = _status;
     if (status == null) {
@@ -250,8 +260,40 @@ class Session extends ChangeNotifier {
       if (!status.hasGainsRevision()) 'track levels',
       if (!status.hasLocked()) 'playlist editing',
       if (!status.hasLocked()) 'the lock',
+      if (_stage.missing) 'the light view',
     ];
   }
+
+  /// True when the connected player is too old to show its stage: it has no
+  /// `stream` characteristic, which is known on connecting, or it refused
+  /// `WatchStage` as a method it does not allow, which is known once
+  /// [watchStage] has been listened to. [missingFromPlayer] names it too.
+  bool get stageMissingFromPlayer => _stage.missing;
+
+  /// The player's stage, as serialized `player.v1.StageUpdate` messages for
+  /// the page that draws it: nothing here decodes them.
+  ///
+  /// Each message is a [StageBytes]. A [StageReset] comes before the first
+  /// message of every stream the session opens at the player, the very first
+  /// included: the page forgets its layout on it. The session opens the
+  /// stream when this is first listened to, cancels it when the last
+  /// listener cancels, and opens it again by itself after a reconnect, so a
+  /// listener listens when its tab shows and cancels when it hides, as often
+  /// as it likes. While the link is down, and against a player that is too
+  /// old ([stageMissingFromPlayer]), the stream is silent; it does not end
+  /// or fail.
+  ///
+  /// Several listeners share the one stream the player has open. When one
+  /// joins, the stream is started over so that it gets the layout, and every
+  /// listener sees the [StageReset]. [maxRate] is the most frames a second
+  /// this listener wants; the stream runs at the highest asked for.
+  ///
+  /// Events are handed over as they arrive and never queued: a listener that
+  /// cannot keep up keeps the newest frame itself, and never drops a layout.
+  /// One that pauses its subscription is passed over, and gets a
+  /// [StageReset] and a new stream when it resumes.
+  Stream<StageEvent> watchStage({int maxRate = 10}) =>
+      _stage.watch(maxRate: maxRate);
 
   /// Whether the active playlist may be edited now: the player is unlocked
   /// and the playlist is not its own list of every song.
@@ -408,6 +450,7 @@ class Session extends ChangeNotifier {
     _lockedAnswer = null;
     _endEdit();
     clock.reset();
+    _stage.clear();
     _setPhase(ConnectionPhase.noPlayer);
   }
 
@@ -593,6 +636,7 @@ class Session extends ChangeNotifier {
     _status = status;
     _lockedAnswer = null;
     _statusAt = _monotonic();
+    _stage.heard();
     _ambientMode = status.hasAmbientMode() ? status.ambientMode : null;
     _ambientState = status.hasAmbientState() ? status.ambientState : null;
     clock.update(status);
@@ -1039,6 +1083,7 @@ class Session extends ChangeNotifier {
   void _setPhase(ConnectionPhase phase) {
     _phase = phase;
     _updateWake();
+    _stage.linkChanged(ready: phase == ConnectionPhase.ready);
     _notify();
     levels.check();
   }
@@ -1090,6 +1135,7 @@ class Session extends ChangeNotifier {
       unawaited(wake.setEnabled(false).catchError((Object _) {}));
     }
     levels.dispose();
+    _stage.dispose();
     _edit?.dispose();
     _edit = null;
     unawaited(_notices.close());

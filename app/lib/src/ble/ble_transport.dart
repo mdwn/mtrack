@@ -31,6 +31,10 @@ const String responseUuid = '6d747261-636b-0003-8000-00805f9b34fb';
 /// Where the status is read and notified: encrypted link.
 const String statusUuid = '6d747261-636b-0004-8000-00805f9b34fb';
 
+/// Where the messages of server streams are notified. A player from before
+/// streams does not have it.
+const String streamUuid = '6d747261-636b-0005-8000-00805f9b34fb';
+
 /// The ATT MTU to ask for, the most Android allows. iOS negotiates its own and
 /// reports what it got.
 const int requestedMtu = 517;
@@ -55,12 +59,22 @@ class BlePlayerTransport implements PlayerTransport {
       StreamController<Uint8List>.broadcast();
   final StreamController<Uint8List> _statuses =
       StreamController<Uint8List>.broadcast();
+  final StreamController<Uint8List> _streams =
+      StreamController<Uint8List>.broadcast();
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
   TransportState _currentState = TransportState.disconnected;
   String? _deviceId;
   int _mtu = 23;
   bool _linkLost = false;
+  bool _streamFound = false;
+  bool _hasStreams = false;
+
+  @override
+  bool get hasStreams => _hasStreams;
+
+  @override
+  Stream<Uint8List> get streamChunks => _streams.stream;
 
   @override
   TransportState get currentState => _currentState;
@@ -110,7 +124,9 @@ class BlePlayerTransport implements PlayerTransport {
       await UniversalBle.connect(deviceId);
       _mtu = await UniversalBle.requestMtu(deviceId, requestedMtu);
       await _askForShortInterval(deviceId);
-      await UniversalBle.discoverServices(deviceId);
+      _streamFound = hasStreamCharacteristic(
+        await UniversalBle.discoverServices(deviceId),
+      );
     } on Object {
       await _teardown();
       rethrow;
@@ -136,16 +152,102 @@ class BlePlayerTransport implements PlayerTransport {
     }
   }
 
-  /// Subscribes to `response` and `status`, then reports
-  /// [TransportState.ready]. The characteristics need an encrypted link, so
-  /// this comes after pairing. Throws when a step fails, leaving the
-  /// transport disconnected.
+  /// Whether the player's service, as discovered, has the `stream`
+  /// characteristic.
+  @visibleForTesting
+  static bool hasStreamCharacteristic(List<BleService> services) {
+    for (final service in services) {
+      if (service.uuid.toLowerCase() != serviceUuid) {
+        continue;
+      }
+      for (final characteristic in service.characteristics) {
+        if (characteristic.uuid.toLowerCase() == streamUuid) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Discovers the services again with the phone's cache of them dropped,
+  /// and says whether the `stream` characteristic is there now.
+  ///
+  /// A phone remembers a bonded player's services, and one that bonded before
+  /// the player had streams can go on seeing the service without them.
+  /// BlueZ tells a bonded phone that its services changed, so this should
+  /// not be needed; it is here because being wrong about that would leave a
+  /// phone without the stage until it was paired again, with nothing to say
+  /// why. Only Android has a way to drop the cache (a hidden call the plugin
+  /// reaches by reflection), and it costs one more discovery on each
+  /// connection to a player that really is older. A phone that will not
+  /// drop its cache is left as the first discovery found it.
+  Future<bool> _streamAfterRefresh(String deviceId) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return false;
+    }
+    try {
+      return hasStreamCharacteristic(
+        await UniversalBle.discoverServices(
+          deviceId,
+          platformConfig: DiscoverServicesPlatformConfig(
+            android: AndroidDiscoverServicesOptions(clearGattCache: true),
+          ),
+        ),
+      );
+    } on Object {
+      // The cache may have been dropped and the discovery after it failed,
+      // which would leave the phone knowing no characteristic at all:
+      // discover once more, plainly. If that fails too, subscribing does,
+      // and the connection is made again from the start.
+      try {
+        return hasStreamCharacteristic(
+          await UniversalBle.discoverServices(deviceId),
+        );
+      } on Object {
+        return false;
+      }
+    }
+  }
+
+  /// Subscribes to `stream`, and says whether it is subscribed. A player
+  /// that will not take the subscription is a player without streams, not a
+  /// failed connection.
+  Future<bool> _subscribeToStream(String deviceId) async {
+    final values = UniversalBle.characteristicValueStream(
+      deviceId,
+      streamUuid,
+    ).listen((value) => _streams.add(Uint8List.fromList(value)));
+    _subscriptions.add(values);
+    try {
+      await UniversalBle.subscribeNotifications(
+        deviceId,
+        serviceUuid,
+        streamUuid,
+      );
+      return true;
+    } on Object {
+      // Discovery said it was there and the subscription says otherwise:
+      // the platforms report a characteristic that is not there either way.
+      _subscriptions.remove(values);
+      await values.cancel();
+      return false;
+    }
+  }
+
+  /// Subscribes to `response` and `status`, and to `stream` when the player
+  /// has it, then reports [TransportState.ready]. The characteristics need an
+  /// encrypted link, so this comes after pairing. Throws when a step fails,
+  /// leaving the transport disconnected; a player with no `stream`
+  /// characteristic is not a failure, and leaves [hasStreams] false.
   Future<void> subscribe() async {
     final deviceId = _deviceId;
     if (deviceId == null || _linkLost) {
       throw StateError('not connected');
     }
     try {
+      // Before anything is subscribed: dropping the phone's cache of the
+      // services under a subscription could take the subscription with it.
+      final streamThere = _streamFound || await _streamAfterRefresh(deviceId);
       // Listen before subscribing, so the status the player sends on
       // subscribe is not missed.
       _subscriptions
@@ -171,6 +273,9 @@ class BlePlayerTransport implements PlayerTransport {
         serviceUuid,
         statusUuid,
       );
+      // After the two the app cannot do without, and before ready: a stream
+      // is opened only once subscribed.
+      _hasStreams = streamThere && await _subscribeToStream(deviceId);
       if (_linkLost) {
         throw StateError('connection lost during setup');
       }
@@ -206,6 +311,8 @@ class BlePlayerTransport implements PlayerTransport {
 
   Future<void> _teardown() async {
     _linkLost = false;
+    _streamFound = false;
+    _hasStreams = false;
     for (final subscription in _subscriptions) {
       await subscription.cancel();
     }
@@ -254,5 +361,6 @@ class BlePlayerTransport implements PlayerTransport {
     await _state.close();
     await _responses.close();
     await _statuses.close();
+    await _streams.close();
   }
 }

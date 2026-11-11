@@ -19,15 +19,26 @@ import '../app/session.dart';
 import 'connect_screen.dart';
 import 'home_shell.dart';
 import 'session_scope.dart';
+import 'stage_surface.dart';
 import 'theme.dart';
 
 /// The app: both themes, following the phone's setting, over a [Session].
 class MtrackApp extends StatelessWidget {
-  /// The app over [session]. It does not dispose the session.
-  const MtrackApp({required this.session, this.themeMode, super.key});
+  /// The app over [session], showing the stage page it gets from [stage].
+  /// It does not dispose the session.
+  const MtrackApp({
+    required this.session,
+    required this.stage,
+    this.themeMode,
+    super.key,
+  });
 
   /// The session every screen reads.
   final Session session;
+
+  /// Where the Lights tab's stage page comes from. Tests replace it, as
+  /// they do the session's link: a web view does not run in a test.
+  final StageHost stage;
 
   /// Overrides the phone's light or dark setting. Null follows it.
   final ThemeMode? themeMode;
@@ -40,7 +51,10 @@ class MtrackApp extends StatelessWidget {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode ?? ThemeMode.system,
-      home: SessionScope(session: session, child: const _Root()),
+      home: SessionScope(
+        session: session,
+        child: _Root(stage: stage),
+      ),
     );
   }
 }
@@ -48,7 +62,9 @@ class MtrackApp extends StatelessWidget {
 /// Chooses between the connect screen and the tabs, reports whether the app
 /// is in the foreground, and shows the session's notices.
 class _Root extends StatefulWidget {
-  const _Root();
+  const _Root({required this.stage});
+
+  final StageHost stage;
 
   @override
   State<_Root> createState() => _RootState();
@@ -108,7 +124,9 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         // The tab bar keeps itself above the system's bar; the connect
         // screen has no tab bar, so its buttons need the room here.
         bottom: !showTabs,
-        child: showTabs ? const HomeShell() : const ConnectScreen(),
+        child: showTabs
+            ? HomeShell(stage: widget.stage)
+            : const ConnectScreen(),
       ),
     );
   }

@@ -15,7 +15,17 @@
     <uses-feature android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
+    <!-- The Lights tab shows the stage page, which ships inside the app, in a
+         web view, and serves it to that web view from 127.0.0.1 (see
+         lib/src/app/stage_server.dart). Android gives an app no sockets at
+         all, loopback included, without INTERNET. The app still talks to
+         nothing but the player, over Bluetooth: the network security config
+         allows cleartext to 127.0.0.1 and nowhere else, and the page asks for
+         nothing but its own files. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
+        android:networkSecurityConfig="@xml/network_security_config"
         android:label="mtrack"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

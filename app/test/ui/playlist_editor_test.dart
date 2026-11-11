@@ -147,7 +147,7 @@ void main() {
     appTest('is left out for a player that has no lock', (h) async {
       await openSettings(h);
       expect(find.text('Player lock'), findsNothing);
-      expect(find.text('Ambient light'), findsOneWidget);
+      expect(find.text('Forget this player'), findsOneWidget);
     }, setup: (rig) => rig.oldPlayer = true);
 
     appTest('says why, when the player is too old for it', (h) async {

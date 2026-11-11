@@ -17,7 +17,7 @@ WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
 WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-stage-ui app-stage-assets build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -88,6 +88,33 @@ build-ui:
 		cd $(SVELTE_DIR) && MTRACK_UI_BUILD=$(FRONTEND_HASH) npm run build && \
 		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
 	fi
+
+## Build the stage-only page (the phone app's Lights tab: the web UI's stage plot, fed the
+## gRPC stage stream by its host; src/stage-main.ts) into dist-stage/. Skips if its inputs are
+## unchanged: the frontend's, and the page's own two files outside src/.
+STAGE_INPUTS := $(SVELTE_DIR)/stage.html $(SVELTE_DIR)/vite.stage.config.ts
+STAGE_HASH := $(shell (echo $(FRONTEND_HASH); cat $(STAGE_INPUTS) 2>/dev/null) | git hash-object --stdin)
+STAGE_STAMP := $(SVELTE_DIR)/dist-stage/.build-stamp
+
+build-stage-ui:
+	@if [ -f "$(STAGE_STAMP)" ] && [ "$$(cat "$(STAGE_STAMP)")" = "$(STAGE_HASH)" ]; then \
+		echo "Stage page up to date, skipping build."; \
+	else \
+		$(MAKE) install-ui gen-proto gen-wasm && \
+		cd $(SVELTE_DIR) && npm run build:stage && \
+		echo "$(STAGE_HASH)" > "$(STAGE_STAMP)"; \
+	fi
+
+## Put the stage-only page among the phone app's assets (app/assets/stage, gitignored), where
+## the app's builds take it from: the Lights tab shows it in a web view. `flutter analyze` and
+## `flutter test` do not need it; `flutter build` and `flutter run` ship whatever is there.
+APP_STAGE_DIR := $(ROOT_DIR)/app/assets/stage
+
+app-stage-assets: build-stage-ui
+	@# Everything but the .gitignore files that keep the two directories in a checkout.
+	find "$(APP_STAGE_DIR)" -type f ! -name .gitignore -delete
+	cp "$(SVELTE_DIR)/dist-stage/stage.html" "$(APP_STAGE_DIR)/"
+	cp "$(SVELTE_DIR)"/dist-stage/assets/* "$(APP_STAGE_DIR)/assets/"
 
 ## Build the Rust binary
 build-rust:
@@ -238,4 +265,5 @@ docs-clean:
 ## Clean build artifacts
 clean: docs-clean
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml
-	rm -rf $(SVELTE_DIR)/dist $(WASM_GEN_DIR)
+	rm -rf $(SVELTE_DIR)/dist $(SVELTE_DIR)/dist-stage $(WASM_GEN_DIR)
+	find "$(APP_STAGE_DIR)" -type f ! -name .gitignore -delete

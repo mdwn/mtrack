@@ -21,6 +21,7 @@ import 'package:mtrack_remote/src/app/session.dart';
 import 'package:mtrack_remote/src/ui/app.dart';
 
 import 'fake_link.dart';
+import 'fake_stage.dart';
 import 'rig.dart';
 
 /// The bundled fonts, loaded so text measures as it does on a phone.
@@ -62,12 +63,22 @@ class Look {
 
 /// The app over a fake rig, on a small phone.
 class AppHarness {
-  AppHarness._(this.tester, this.rig, this.store, this.wake, this.session);
+  AppHarness._(
+    this.tester,
+    this.rig,
+    this.store,
+    this.wake,
+    this.stage,
+    this.session,
+  );
 
   final WidgetTester tester;
   final Rig rig;
   final MemoryStore store;
   final FakeWake wake;
+
+  /// What the Lights tab shows its stage page in.
+  final FakeStageHost stage;
   final Session session;
 
   /// The time the session's clock reads. Advances with [advance].
@@ -98,9 +109,10 @@ class AppHarness {
       wake: wake,
       monotonic: () => harness.now,
     );
-    harness = AppHarness._(tester, rig, store, wake, session);
+    final stage = FakeStageHost();
+    harness = AppHarness._(tester, rig, store, wake, stage, session);
     rig.link.paired.add('p1');
-    await tester.pumpWidget(MtrackApp(session: session));
+    await tester.pumpWidget(MtrackApp(session: session, stage: stage));
     unawaited(session.start());
     await harness.settle();
     return harness;
@@ -126,8 +138,15 @@ class AppHarness {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
+  /// Puts the app in the background or the foreground, as the system does.
+  Future<void> lifecycle(AppLifecycleState state) async {
+    tester.binding.handleAppLifecycleStateChanged(state);
+    await settle();
+  }
+
   /// Ends the session and the app, so nothing is left running.
   Future<void> close() async {
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     session.dispose();
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));

@@ -206,3 +206,51 @@ test.describe("3D on the venue card", () => {
     }
   });
 });
+
+// A rebuild empties the scene while its models load again, which shows as a
+// blank. The player says its metadata again whenever anything reloads, and
+// the gRPC stage stream sends a layout again for a venue reload that changed
+// nothing: neither is a reason to build what is already built.
+test.describe("3D keeps its scene", () => {
+  test("metadata that says what the scene was built from does not rebuild it", async ({
+    page,
+  }) => {
+    const wsId = `s3d-keep-${test.info().parallelIndex}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".stage-card")).toBeVisible();
+    await sendWs(page, wsId, VENUE_METADATA);
+    await page.getByTestId("stage-view-3d").click();
+    const viewport = page.locator(".stage3d__viewport");
+    await expect(viewport).toHaveAttribute("data-renderer", /webgl|none/, {
+      timeout: 15000,
+    });
+    test.skip(
+      (await viewport.getAttribute("data-renderer")) !== "webgl",
+      "no WebGL in this browser",
+    );
+    await expect(viewport).toHaveAttribute("data-fixtures", "3");
+    await expect(viewport).toHaveAttribute("data-builds", "1");
+
+    // The same metadata again (new objects off the wire, the same stage),
+    // then one fixture more. Messages arrive in order, so once the fourth
+    // fixture shows, the repeat has been through: one build more, not two.
+    await sendWs(page, wsId, VENUE_METADATA);
+    await sendWs(page, wsId, {
+      ...VENUE_METADATA,
+      fixtures: {
+        ...VENUE_METADATA.fixtures,
+        another: { tags: [], type: "par", position: [2, 0.5, 3], rig: null },
+      },
+    });
+    await expect(viewport).toHaveAttribute("data-fixtures", "4");
+    await expect(viewport).toHaveAttribute("data-builds", "2");
+
+    // A change to the venue alone (a focus point moved) is a rebuild.
+    await sendWs(page, wsId, {
+      ...VENUE_METADATA,
+      venue: { ...VENUE_METADATA.venue, focus_points: { drummer: [1, 2, 1] } },
+    });
+    await expect(viewport).toHaveAttribute("data-fixtures", "3");
+    await expect(viewport).toHaveAttribute("data-builds", "3");
+  });
+});

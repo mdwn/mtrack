@@ -27,6 +27,7 @@ excludes:
   - .*\.venue
   - .*/node_modules/.*
   - .*/dist/.*
+  - .*/dist-stage/.*
   - .*/gen/.*
   - .*\.json
   - .*\.prettierignore

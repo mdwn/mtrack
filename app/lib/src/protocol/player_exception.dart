@@ -17,6 +17,9 @@ abstract final class GrpcCode {
   /// The call succeeded.
   static const int ok = 0;
 
+  /// The stream was cancelled, by the phone.
+  static const int cancelled = 1;
+
   /// The request was malformed.
   static const int invalidArgument = 3;
 
@@ -32,11 +35,16 @@ abstract final class GrpcCode {
   /// The call is not allowed over Bluetooth, or the player is locked.
   static const int permissionDenied = 7;
 
-  /// The response did not fit in a frame.
+  /// The response did not fit in a frame, the phone has as many streams open
+  /// as it may, or a stream's listener fell too far behind it.
   static const int resourceExhausted = 8;
 
   /// The player is in a state that refuses the call.
   static const int failedPrecondition = 9;
+
+  /// The player has nothing to carry a stream on: it is from before streams.
+  /// Never sent by a player; the app's own, for a stream it did not ask for.
+  static const int unimplemented = 12;
 
   /// There is no link to the player.
   static const int unavailable = 14;
@@ -60,6 +68,10 @@ class PlayerException implements Exception {
   const PlayerException.unsent(String message)
     : this(GrpcCode.unavailable, message, unsent: true);
 
+  /// The player has no `stream` characteristic, so no stream was asked for.
+  const PlayerException.noStreams()
+    : this(GrpcCode.unimplemented, 'the player is too old for streams');
+
   /// The gRPC status code.
   final int code;
 
@@ -78,6 +90,12 @@ class PlayerException implements Exception {
 
   /// True when there was no link.
   bool get isUnavailable => code == GrpcCode.unavailable;
+
+  /// True when a stream was not opened because the player is from before
+  /// streams: it has no `stream` characteristic, or it refused the method as
+  /// one it does not allow.
+  bool get isStreamTooOld =>
+      code == GrpcCode.unimplemented || code == GrpcCode.permissionDenied;
 
   @override
   String toString() => 'PlayerException($code): $message';

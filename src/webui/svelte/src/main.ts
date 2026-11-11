@@ -23,6 +23,11 @@ import "./lib/theme";
 import "./app.css";
 import App from "./App.svelte";
 import { mount } from "svelte";
+import { connect } from "./lib/ws/stores";
+
+// The websocket that feeds the stores: opened here, before the rules module
+// has loaded, so the first messages are waiting when the app mounts.
+connect();
 
 async function start() {
   const target = document.getElementById("app")!;
