@@ -12,13 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/app/playlist_settings.dart';
 import 'package:mtrack_remote/src/app/song_edit.dart';
+import 'package:mtrack_remote/src/ui/library_screen.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 import 'package:mtrack_remote/src/ui/song_page.dart';
-import 'package:mtrack_remote/src/ui/songs_screen.dart' show SongsScreen;
+import 'package:mtrack_remote/src/ui/songs_screen.dart' show SongsView;
 import 'package:mtrack_remote/src/ui/widgets.dart';
 
 import '../support/app_harness.dart';
@@ -29,20 +31,55 @@ Future<void> pumpFor(AppHarness h, [int ms = 400]) async {
   await h.tester.pump(Duration(milliseconds: ms));
 }
 
-/// Opens the Songs screen from the Playlist tab.
+/// Opens the Library tab's Songs side.
 Future<void> openSongs(AppHarness h) async {
-  await h.openTab('Playlist');
+  await h.openTab('Library');
   await h.tester.tap(find.text('Songs'));
   await pumpFor(h);
 }
 
-/// Opens the page of [song] from the Songs screen.
+/// Opens the page of [song] from the Songs side.
 Future<void> openSong(AppHarness h, String song) async {
   await openSongs(h);
   await h.tester.tap(
-    find.descendant(of: find.byType(SongsScreen), matching: find.text(song)),
+    find.descendant(of: find.byType(SongsView), matching: find.text(song)),
   );
   await pumpFor(h);
+}
+
+/// The scroll position of the list showing (not the search field's).
+ScrollPosition listScroll(AppHarness h) => h.tester
+    .state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    )
+    .position;
+
+/// Which side of the Library tab the switch says is showing.
+LibrarySide shownSide(AppHarness h) => h.tester
+    .widget<ViewSwitch<LibrarySide>>(find.byType(ViewSwitch<LibrarySide>))
+    .selected;
+
+/// A library in folders, as a player sends it: two songs at the top (one
+/// with a folder of its own, one in the songs directory itself), two
+/// under "Live", one two folders down, and a folder that sorts before
+/// "Live" only ignoring case.
+void inFolders(Rig rig) {
+  rig.library
+    ..clear()
+    ..addAll([
+      RigSong('Alone', baseDir: 'Alone'),
+      RigSong('Bare', baseDir: ''),
+      RigSong('Encore', baseDir: 'Live/Encore'),
+      RigSong('First', baseDir: 'Live/First'),
+      RigSong('Deep', baseDir: 'Live/2026 tour/Deep'),
+      RigSong('Acoustic', baseDir: 'acoustic/Acoustic'),
+    ])
+    ..sort((a, b) => a.name.compareTo(b.name));
 }
 
 /// Brings [target] into view: built by scrolling the song's page down to
@@ -88,43 +125,313 @@ void withFull(Rig rig) => rig.songSettings['First'] = fullSongSettings();
 
 void main() {
   group('the library', () {
-    appTest('opens from the Playlist tab, with a search', (h) async {
+    appTest('is the Songs side of the Library tab, with a search', (h) async {
       await openSongs(h);
+      expect(shownSide(h), LibrarySide.songs);
+      // In the tab, not over it.
+      expect(find.text('Library'), findsOneWidget);
+      expect(find.byTooltip('Back'), findsNothing);
       expect(find.text('Encore'), findsOneWidget);
       expect(find.text('loops · samples'), findsOneWidget);
       await h.tester.enterText(find.byType(TextField), 'enc');
       await pumpFor(h, 50);
       expect(find.text('Encore'), findsOneWidget);
       expect(find.text('First'), findsNothing);
+      await h.tester.tap(find.byTooltip('Clear the search'));
+      await pumpFor(h, 50);
+      expect(find.text('First'), findsOneWidget);
+      // A song's page is pushed over the tab, and Back comes back to it.
+      await h.tester.tap(find.text('Encore'));
+      await pumpFor(h);
+      expect(find.byType(SongPage), findsOneWidget);
       await h.tester.tap(find.byTooltip('Back'));
       await h.tester.pumpAndSettle();
-      expect(find.byType(SongsScreen), findsNothing);
-      expect(find.text('Songs'), findsOneWidget);
+      expect(find.byType(SongPage), findsNothing);
+      expect(shownSide(h), LibrarySide.songs);
     }, setup: withFull);
 
-    appTest('is offered while locked: reading is open', (h) async {
-      await h.openTab('Playlist');
+    appTest('is open while locked: reading is open', (h) async {
+      await h.openTab('Library');
       expect(find.text('Unlock to edit'), findsOneWidget);
       await h.tester.tap(find.text('Songs'));
       await pumpFor(h);
       expect(find.text('Encore'), findsOneWidget);
     }, setup: (rig) => rig.locked = true);
 
-    appTest('is not offered by a player without the lock', (h) async {
-      await h.openTab('Playlist');
-      expect(find.text('Songs'), findsNothing);
+    appTest('of a player without the lock says it is older', (h) async {
+      await openSongs(h);
+      expect(find.text(olderPlayerSongsNote), findsOneWidget);
+      // The switch stays, and the playlist is a tap away.
+      await h.tester.tap(find.text('Playlist'));
+      await pumpFor(h);
+      expect(find.text('Third'), findsOneWidget);
     }, setup: (rig) => rig.oldPlayer = true);
 
     appTest('of an older player says so, and the settings list it', (h) async {
       await openSongs(h);
       expect(find.text(olderPlayerSongsNote), findsOneWidget);
-      await h.tester.tap(find.byTooltip('Back'));
-      await h.tester.pumpAndSettle();
+      expect(find.byType(ViewSwitch<LibrarySide>), findsOneWidget);
       appVersion = () async => '0.1.0 (1)';
       await h.tester.tap(find.byTooltip('Settings'));
       await pumpFor(h);
       expect(find.textContaining('the song library'), findsOneWidget);
     }, setup: (rig) => rig.songsTooOld = true);
+  });
+
+  group('the Library switch', () {
+    appTest('starts on the playlist, without the Songs button', (h) async {
+      await h.openTab('Library');
+      expect(shownSide(h), LibrarySide.playlist);
+      expect(find.text('Third'), findsOneWidget);
+      // Edit is beside the playlist's name again, the only action there.
+      final edit = h.tester.getRect(find.text('Edit'));
+      final pick = h.tester.getRect(find.text('change'));
+      expect(edit.center.dy, closeTo(pick.center.dy, 4));
+      expect(find.text('Songs'), findsOneWidget);
+      expect(h.views.values, isEmpty);
+    });
+
+    appTest('keeps the side chosen for the next launch', (h) async {
+      await openSongs(h);
+      expect(h.views.values[libraryViewKey], 'songs');
+      await h.tester.tap(find.text('Playlist'));
+      await pumpFor(h);
+      expect(h.views.values[libraryViewKey], 'playlist');
+    });
+
+    appTest('opens on the side kept from the last launch', (h) async {
+      await h.openTab('Library');
+      await pumpFor(h);
+      expect(shownSide(h), LibrarySide.songs);
+      expect(find.text('Encore'), findsOneWidget);
+      expect(
+        h.rig.player.received.where((r) => r.method == 'ListSongs'),
+        isNotEmpty,
+      );
+    }, views: {libraryViewKey: 'songs'});
+
+    appTest('ignores a kept side it does not know', (h) async {
+      await h.openTab('Library');
+      expect(shownSide(h), LibrarySide.playlist);
+    }, views: {libraryViewKey: 'sideways'});
+
+    appTest(
+      'keeps each side where it was scrolled to',
+      (h) async {
+        await h.openTab('Library');
+        await h.tester.drag(find.byType(ListView), const Offset(0, -500));
+        await pumpFor(h, 1000);
+        final playlistAt = listScroll(h).pixels;
+        expect(playlistAt, greaterThan(0));
+
+        await h.tester.tap(find.text('Songs'));
+        await pumpFor(h);
+        await h.tester.drag(find.byType(ListView), const Offset(0, -700));
+        await pumpFor(h, 1000);
+        final songsAt = listScroll(h).pixels;
+        expect(songsAt, greaterThan(0));
+
+        await h.tester.tap(find.text('Playlist'));
+        await pumpFor(h);
+        expect(listScroll(h).pixels, playlistAt);
+        await h.tester.tap(find.text('Songs'));
+        await pumpFor(h);
+        // Fetched again on the way back, and still where it was.
+        expect(listScroll(h).pixels, songsAt);
+
+        // Another tab and back: as left, too.
+        await h.openTab('Now');
+        await h.openTab('Library');
+        expect(shownSide(h), LibrarySide.songs);
+        expect(listScroll(h).pixels, songsAt);
+      },
+      setup: (rig) {
+        rig.songs = [
+          for (var i = 1; i <= 60; i++) RigSong('Song $i', lengthSeconds: 60),
+        ];
+        rig.playlists['Set'] = rig.songs;
+        rig.library
+          ..clear()
+          ..addAll(rig.songs);
+      },
+    );
+
+    appTest('is not shown while the playlist is edited', (h) async {
+      await h.openTab('Library');
+      await h.tester.tap(find.text('Edit'));
+      await pumpFor(h);
+      expect(find.text('Editing'), findsOneWidget);
+      expect(find.byType(ViewSwitch<LibrarySide>), findsNothing);
+      await h.tester.tap(find.text('CANCEL'));
+      await pumpFor(h);
+      expect(shownSide(h), LibrarySide.playlist);
+      expect(find.text('Edit'), findsOneWidget);
+    });
+
+    appTest('names each side to a screen reader, the one showing selected', (
+      h,
+    ) async {
+      final handle = h.tester.ensureSemantics();
+      await h.openTab('Library');
+      final playlist = h.tester.getSemantics(
+        find.bySemanticsLabel('Playlist').first,
+      );
+      expect(playlist, isSemantics(isSelected: true, isButton: true));
+      final songs = h.tester.getSemantics(find.bySemanticsLabel('Songs'));
+      expect(songs, isSemantics(isSelected: false, isButton: true));
+      expect(find.bySemanticsLabel('Library'), findsOneWidget);
+      handle.dispose();
+    });
+  });
+
+  group('folders', () {
+    appTest('group songs as the web UI does, the top first', (h) async {
+      final handle = h.tester.ensureSemantics();
+      await openSongs(h);
+      final order = [
+        find.text('Alone'),
+        find.text('Bare'),
+        find.text('ACOUSTIC'),
+        find.text('Acoustic'),
+        find.text('LIVE'),
+        find.text('Encore'),
+        find.text('First'),
+        find.text('LIVE/2026 TOUR'),
+        find.text('Deep'),
+      ];
+      for (final f in order) {
+        expect(f, findsOneWidget, reason: '$f');
+      }
+      final tops = [for (final f in order) h.tester.getRect(f).top];
+      expect([...tops]..sort(), tops);
+      // The top has no heading of its own.
+      expect(find.bySemanticsLabel(RegExp('^Folder ')), findsNWidgets(3));
+      expect(
+        find.bySemanticsLabel('Folder Live/2026 tour, 1 song'),
+        findsOneWidget,
+      );
+      handle.dispose();
+    }, setup: inFolders);
+
+    appTest('close and open, and stay closed across the sides', (h) async {
+      await openSongs(h);
+      await h.tester.tap(find.text('LIVE'));
+      await pumpFor(h, 50);
+      expect(find.text('Encore'), findsNothing);
+      expect(find.text('First'), findsNothing);
+      // Its nested folder is a folder of its own.
+      expect(find.text('Deep'), findsOneWidget);
+      await h.tester.tap(find.text('Playlist'));
+      await pumpFor(h);
+      await h.tester.tap(find.text('Songs'));
+      await pumpFor(h);
+      expect(find.text('Encore'), findsNothing);
+      await h.tester.tap(find.text('LIVE'));
+      await pumpFor(h, 50);
+      expect(find.text('Encore'), findsOneWidget);
+    }, setup: inFolders);
+
+    appTest('flatten in a search, each song saying its folder', (h) async {
+      await openSongs(h);
+      await h.tester.tap(find.text('LIVE'));
+      await pumpFor(h, 50);
+      await h.tester.enterText(find.byType(TextField), 'e');
+      await pumpFor(h, 50);
+      // Closed or not, a match is found, under no heading.
+      expect(find.text('LIVE'), findsNothing);
+      expect(find.text('Encore'), findsOneWidget);
+      expect(find.text('Live'), findsNWidgets(1));
+      expect(find.text('Live/2026 tour'), findsOneWidget);
+      expect(find.text('Deep'), findsOneWidget);
+      // A song at the top says no folder.
+      expect(find.text('Alone'), findsOneWidget);
+      final handle = h.tester.ensureSemantics();
+      expect(
+        find.bySemanticsLabel(RegExp(r'^Deep, in Live/2026 tour')),
+        findsOneWidget,
+      );
+      handle.dispose();
+      await h.tester.enterText(find.byType(TextField), '');
+      await pumpFor(h, 50);
+      expect(find.text('LIVE'), findsOneWidget);
+      expect(find.text('Encore'), findsNothing);
+    }, setup: inFolders);
+
+    appTest('are not drawn for a player that does not say them', (h) async {
+      final handle = h.tester.ensureSemantics();
+      await openSongs(h);
+      expect(find.bySemanticsLabel(RegExp('^Folder ')), findsNothing);
+      handle.dispose();
+      for (final song in ['Encore', 'First', 'Opener', 'Second', 'Third']) {
+        expect(find.text(song), findsOneWidget);
+      }
+    });
+
+    appTest('say where a song is on its page', (h) async {
+      await openSongs(h);
+      await h.tester.enterText(find.byType(TextField), 'deep');
+      await pumpFor(h, 50);
+      await h.tester.tap(find.text('Deep'));
+      await pumpFor(h);
+      expect(find.text('Live/2026 tour/Deep'), findsOneWidget);
+    }, setup: inFolders);
+  });
+
+  group('the library on a small phone', () {
+    for (final scale in [1.3, 2.0]) {
+      appTest(
+        'fits the switch, folders and search at 320 wide and ${scale}x text',
+        (h) async {
+          await openSongs(h);
+          expect(h.tester.takeException(), isNull);
+          final width =
+              h.tester.view.physicalSize.width / h.tester.view.devicePixelRatio;
+          for (final label in ['Playlist', 'Songs']) {
+            final text = find.text(label);
+            final rect = h.tester.getRect(text);
+            expect(rect.right, lessThanOrEqualTo(width), reason: label);
+            final paragraph = h.tester.renderObject<RenderParagraph>(text);
+            expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+          }
+          final long = find.text(
+            'LIVE/A FOLDER WITH A NAME FAR TOO LONG FOR A PHONE',
+          );
+          await h.tester.scrollUntilVisible(
+            long,
+            100,
+            scrollable: find
+                .descendant(
+                  of: find.byType(ListView),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          await pumpFor(h, 50);
+          expect(h.tester.getRect(long).right, lessThanOrEqualTo(width));
+          expect(h.tester.takeException(), isNull);
+          await h.tester.enterText(find.byType(TextField), 'deep');
+          await pumpFor(h, 50);
+          expect(find.text('Live/2026 tour'), findsOneWidget);
+          await h.tester.tap(find.text('Playlist'));
+          await pumpFor(h);
+          expect(find.text('change'), findsOneWidget);
+          expect(h.tester.takeException(), isNull);
+        },
+        setup: (rig) {
+          inFolders(rig);
+          rig.library.add(
+            RigSong(
+              'A song with a name far too long for a phone held upright',
+              baseDir:
+                  'Live/A folder with a name far too long for a phone/'
+                  'A song with a name far too long for a phone held upright',
+            ),
+          );
+        },
+        look: Look(Brightness.dark, scale),
+        size: const Size(320, 480),
+      );
+    }
   });
 
   group('a song', () {
@@ -337,7 +644,7 @@ void main() {
           await h.tester.pumpAndSettle();
           expect(
             find.descendant(
-              of: find.byType(SongsScreen),
+              of: find.byType(SongsView),
               matching: find.text('First'),
             ),
             findsOneWidget,
@@ -348,7 +655,7 @@ void main() {
           expect(h.tester.takeException(), isNull);
           await h.tester.tap(
             find.descendant(
-              of: find.byType(SongsScreen),
+              of: find.byType(SongsView),
               matching: find.text('First'),
             ),
           );

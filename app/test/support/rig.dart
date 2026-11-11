@@ -110,10 +110,15 @@ class RigSong {
     this.lengthSeconds = 120,
     this.sections = const [],
     this.grid,
+    this.baseDir,
   });
 
   /// The song's name.
   final String name;
+
+  /// Its directory under the songs directory, as `ListSongs` says it;
+  /// null for a player that does not say.
+  final String? baseDir;
 
   /// Its length in seconds.
   final int lengthSeconds;
@@ -266,6 +271,10 @@ class Rig {
     final song = (songSettings[name] ?? _defaultSong(name)).deepCopy()
       ..revision = 's${songRevisions[name] ?? 0}'
       ..playing = playing && current.name == name;
+    final dir = library.where((s) => s.name == name).firstOrNull?.baseDir;
+    if (dir != null) {
+      song.baseDir = dir;
+    }
     return song;
   }
 
@@ -662,6 +671,7 @@ class Rig {
             duration: seconds(song.lengthSeconds),
             loops: songOf(song.name).looping.loopPlayback,
             hasSamples: songOf(song.name).samples.samples.isNotEmpty,
+            baseDir: song.baseDir,
           ),
       ];
       final end = (start + songsPage).clamp(0, rows.length);

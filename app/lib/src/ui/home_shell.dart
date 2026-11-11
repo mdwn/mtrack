@@ -13,11 +13,12 @@
 //
 import 'package:flutter/material.dart';
 
+import '../app/ports.dart';
 import 'levels_screen.dart';
+import 'library_screen.dart';
 import 'lights_screen.dart';
 import 'now_screen.dart';
 import 'playlist_editor.dart';
-import 'playlist_screen.dart';
 import 'sections_screen.dart';
 import 'session_scope.dart';
 import 'stage_surface.dart';
@@ -26,11 +27,15 @@ import 'theme.dart';
 /// The five tabs and the bar to switch between them. Each tab keeps its state
 /// while another is showing.
 class HomeShell extends StatefulWidget {
-  /// The tabs. The Lights tab shows the stage page it gets from [stage].
-  const HomeShell({required this.stage, super.key});
+  /// The tabs. The Lights tab shows the stage page it gets from [stage];
+  /// [views] keeps which side of the Library tab was showing.
+  const HomeShell({required this.stage, required this.views, super.key});
 
   /// Where the Lights tab's stage page comes from.
   final StageHost stage;
+
+  /// Where view choices are kept across launches.
+  final ViewStore views;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -39,7 +44,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   static const List<String> _labels = [
     'Now',
-    'Playlist',
+    'Library',
     'Sections',
     'Levels',
     'Lights',
@@ -80,7 +85,10 @@ class _HomeShellState extends State<HomeShell> {
                       index: _index,
                       children: [
                         const NowScreen(),
-                        PlaylistScreen(active: _index == 1 && !editing),
+                        LibraryScreen(
+                          active: _index == 1 && !editing,
+                          views: widget.views,
+                        ),
                         const SectionsScreen(),
                         LevelsScreen(active: _index == 3 && !editing),
                         LightsScreen(

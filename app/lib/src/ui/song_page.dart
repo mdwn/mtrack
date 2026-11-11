@@ -119,16 +119,36 @@ class _SongPageState extends State<SongPage> {
                           onPressed: _leave,
                         ),
                         Expanded(
-                          child: Semantics(
-                            header: true,
-                            child: Text(
-                              widget.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: AppText.heading.copyWith(
-                                color: context.colors.text,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Semantics(
+                                header: true,
+                                child: Text(
+                                  widget.name,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppText.heading.copyWith(
+                                    color: context.colors.text,
+                                  ),
+                                ),
                               ),
-                            ),
+                              // Its folder under the songs directory, where
+                              // its files are.
+                              if (song != null && song.baseDir.isNotEmpty)
+                                Semantics(
+                                  label: 'Folder ${song.baseDir}',
+                                  excludeSemantics: true,
+                                  child: Text(
+                                    song.baseDir,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppText.small.copyWith(
+                                      color: context.colors.dim,
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                       ],

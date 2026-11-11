@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/// The song library and a song's settings: the list the Songs screen
-/// shows, and the edit a song's page stages and saves.
+/// The song library and a song's settings: the list the Library tab's
+/// Songs side shows, and the edit a song's page stages and saves.
 ///
 /// Lengths stay text, as in the playlist settings: the player reads them
 /// and says what is wrong with one when the song is saved.
@@ -42,7 +42,8 @@ const String playingSongNote =
 const String lockedSongNote =
     'The player is locked. Unlock it to change this song.';
 
-/// Said on the Songs screen against a player without the song library.
+/// Said on the Library tab's Songs side against a player without the song
+/// library.
 const String olderPlayerSongsNote =
     'This player runs an older mtrack, so its songs are not shown here. '
     'Update mtrack on the player to see and change them from the phone.';
@@ -78,6 +79,48 @@ List<player.SongListing> filterListings(
     for (final song in library)
       if (song.name.toLowerCase().contains(needle)) song,
   ];
+}
+
+/// The folder a song is listed under, as the web UI's song list groups
+/// songs: its directory under the songs directory less its own last part,
+/// so "Live/2026/Encore" is under "Live/2026" and "Encore" is at the top
+/// (""). A player that does not say where its songs are lists them all at
+/// the top.
+String songFolder(player.SongListing song) {
+  final at = song.baseDir.lastIndexOf('/');
+  return at < 0 ? '' : song.baseDir.substring(0, at);
+}
+
+/// The songs under one folder: [folder] is "" for the top.
+class SongGroup {
+  /// A group.
+  const SongGroup(this.folder, this.songs);
+
+  /// The folder, its parts joined by "/", as the web UI labels it.
+  final String folder;
+
+  /// Its songs, in the library's order (by name).
+  final List<player.SongListing> songs;
+}
+
+/// [songs] grouped as the web UI's song list groups them: one group a
+/// folder, each nested folder a group of its own labelled with its whole
+/// path (not a tree), the top first and the rest in order of their path
+/// ignoring case, the songs in each as the library has them.
+List<SongGroup> groupListings(List<player.SongListing> songs) {
+  final groups = <String, List<player.SongListing>>{};
+  for (final song in songs) {
+    (groups[songFolder(song)] ??= []).add(song);
+  }
+  final folders = groups.keys.toList()
+    ..sort((a, b) {
+      if (a.isEmpty || b.isEmpty) {
+        return a.isEmpty ? (b.isEmpty ? 0 : -1) : 1;
+      }
+      final folded = a.toLowerCase().compareTo(b.toLowerCase());
+      return folded != 0 ? folded : a.compareTo(b);
+    });
+  return [for (final folder in folders) SongGroup(folder, groups[folder]!)];
 }
 
 /// What a song has, in a few words for its row: empty for nothing.
@@ -200,8 +243,8 @@ List<String> overviewLines(player.SongOverview overview) => [
   if (overview.songSelectEvent) 'A song select MIDI event',
 ];
 
-/// The player's songs, for the Songs screen: fetched whole, page by page,
-/// when asked for, and kept until the player changes.
+/// The player's songs, for the Library tab's Songs side: fetched whole,
+/// page by page, when asked for, and kept until the player changes.
 class SongLibrary extends ChangeNotifier {
   /// A library fetched through the session's client.
   SongLibrary({
@@ -232,6 +275,20 @@ class SongLibrary extends ChangeNotifier {
   /// True once the player has refused the library as a call it does not
   /// have: it is from before songs could be read.
   bool get tooOld => _tooOld;
+
+  final Set<String> _collapsed = {};
+
+  /// Whether the folder [folder] is closed, its songs not shown. Kept until
+  /// the player is forgotten, as the web UI keeps it until the page goes.
+  bool isCollapsed(String folder) => _collapsed.contains(folder);
+
+  /// Closes the folder [folder] when it is open, and opens it when not.
+  void toggleFolder(String folder) {
+    if (!_collapsed.remove(folder)) {
+      _collapsed.add(folder);
+    }
+    _changed();
+  }
 
   /// Fetches the library.
   Future<void> load() async {
@@ -309,6 +366,7 @@ class SongLibrary extends ChangeNotifier {
   /// Forgets the songs, for another player.
   void clear() {
     _songs = null;
+    _collapsed.clear();
     _failure = null;
     _tooOld = false;
     _changed();

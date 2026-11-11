@@ -37,6 +37,7 @@ void main() {
     MtrackApp(
       session: session,
       stage: WebViewStageHost(assets: session.lightingAssets.get),
+      views: PreferencesViewStore(),
     ),
   );
 }

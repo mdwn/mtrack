@@ -16,28 +16,46 @@ import 'package:flutter/material.dart';
 import '../app/playlist_edit.dart';
 import '../app/session.dart';
 import 'format.dart';
-import 'player_bar.dart';
 import 'playlist_dialogs.dart';
 import 'session_scope.dart';
 import 'settings_sheet.dart';
-import 'songs_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-/// The Playlist tab: the songs, the current one marked, and the way to another
-/// playlist.
-class PlaylistScreen extends StatefulWidget {
-  /// The Playlist tab. [active] is true while the tab is the one on show.
-  const PlaylistScreen({required this.active, super.key});
-
-  /// Whether this tab is showing.
-  final bool active;
-
-  @override
-  State<PlaylistScreen> createState() => _PlaylistScreenState();
+/// What the top bar says of the playlist: how many songs and how long, or
+/// null for an empty one.
+String? playlistSummary(Session session) {
+  final entries = session.entries;
+  if (entries.isEmpty) {
+    return null;
+  }
+  var total = Duration.zero;
+  for (final entry in entries) {
+    if (entry.hasDuration()) {
+      total += entry.duration.toDart();
+    }
+  }
+  return formatSongs(entries.length, total);
 }
 
-class _PlaylistScreenState extends State<PlaylistScreen> {
+/// The Library tab's Playlist side: the songs, the current one marked, and
+/// the way to another playlist.
+class PlaylistView extends StatefulWidget {
+  /// The playlist. [active] is true while the tab is the one on show, and
+  /// [showing] while this side of it is.
+  const PlaylistView({required this.active, this.showing = true, super.key});
+
+  /// Whether the tab is showing.
+  final bool active;
+
+  /// Whether this side of the tab is showing.
+  final bool showing;
+
+  @override
+  State<PlaylistView> createState() => _PlaylistViewState();
+}
+
+class _PlaylistViewState extends State<PlaylistView> {
   final ScrollController _scroll = ScrollController();
   int? _revealed;
   double _extent = 64;
@@ -49,9 +67,11 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   @override
-  void didUpdateWidget(PlaylistScreen old) {
+  void didUpdateWidget(PlaylistView old) {
     super.didUpdateWidget(old);
-    if (widget.active && !old.active) {
+    // The tab opening centres the current song. Coming back from the
+    // other side does not: the list is where it was left.
+    if (widget.active && !old.active && widget.showing) {
       _revealSoon(center: true);
     }
   }
@@ -102,25 +122,16 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     _extent = scaler.scale(15) * 1.5 + 20 + 8;
     if (session.position != _revealed) {
       _revealed = session.position;
-      if (widget.active) {
+      if (widget.active && widget.showing) {
         _revealSoon(center: false);
       }
     }
 
-    var total = Duration.zero;
-    for (final entry in entries) {
-      if (entry.hasDuration()) {
-        total += entry.duration.toDart();
-      }
-    }
-    final summary = entries.isEmpty ? null : formatSongs(entries.length, total);
     final playing = session.playing;
     final inert = !session.isReady || playing;
 
     return Column(
       children: [
-        PlayerBar(trailing: summary),
-        const ReconnectBanner(),
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
           child: _PlaylistHeader(session: session),
@@ -238,7 +249,7 @@ class _SongRow extends StatelessWidget {
 }
 
 /// The playlist's name, which opens the list of playlists, and beside it the
-/// way to the song library and the way to edit this playlist.
+/// way to edit this one.
 class _PlaylistHeader extends StatelessWidget {
   const _PlaylistHeader({required this.session});
 
@@ -247,49 +258,23 @@ class _PlaylistHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pick = _PlaylistPick(session: session);
-    final actions = [?_songsAction(context), ?_editAction(context)];
-    if (actions.isEmpty) {
+    final edit = _editAction(context);
+    if (edit == null) {
       return pick;
     }
-    // Two actions beside the name leave it no room on a phone, and one
-    // does not fit beside it at a large text size: they go under it.
-    if (actions.length > 1 ||
-        MediaQuery.textScalerOf(context).scale(10) > 11.5) {
+    // At a large text size the two do not fit side by side.
+    if (MediaQuery.textScalerOf(context).scale(10) > 11.5) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          pick,
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              for (var i = 0; i < actions.length; i++) ...[
-                if (i > 0) const SizedBox(width: 8),
-                Expanded(child: actions[i]),
-              ],
-            ],
-          ),
-        ],
+        children: [pick, const SizedBox(height: 8), edit],
       );
     }
     return Row(
       children: [
         Expanded(child: pick),
-        for (final action in actions) ...[const SizedBox(width: 8), action],
+        const SizedBox(width: 8),
+        edit,
       ],
-    );
-  }
-
-  /// The song library, for a player that may have one.
-  Widget? _songsAction(BuildContext context) {
-    if (!session.songsAvailable) {
-      return null;
-    }
-    return _HeaderAction(
-      label: 'Songs',
-      semanticLabel: 'Songs',
-      semanticHint: 'Opens the song library',
-      color: context.colors.cyan,
-      onTap: session.isReady ? () => openSongs(context) : null,
     );
   }
 

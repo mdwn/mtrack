@@ -57,7 +57,7 @@ void main() {
   group('the tab bar', () {
     appTest('has five tabs, in order, with Lights last', (h) async {
       final centres = <double>[];
-      for (final label in ['Now', 'Playlist', 'Sections', 'Levels', 'Lights']) {
+      for (final label in ['Now', 'Library', 'Sections', 'Levels', 'Lights']) {
         final bar = find
             .text(label)
             .evaluate()
@@ -83,7 +83,7 @@ void main() {
           final sizes = <double>{};
           for (final label in [
             'Now',
-            'Playlist',
+            'Library',
             'Sections',
             'Levels',
             'Lights',

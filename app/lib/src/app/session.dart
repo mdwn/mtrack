@@ -176,7 +176,7 @@ class Session extends ChangeNotifier {
   late final LightingAssets lightingAssets;
   bool _assetsTooOld = false;
 
-  /// The player's songs, for the Songs screen.
+  /// The player's songs, for the Library tab's Songs side.
   late final SongLibrary songLibrary;
   bool _libraryTooOld = false;
 
@@ -295,7 +295,7 @@ class Session extends ChangeNotifier {
         'playlist settings',
       if (_stage.missing) 'the light view',
       if (!_stage.missing && lightingAssets.tooOld) 'the 3D light view',
-      // Known once the Songs screen has asked for them.
+      // Known once the Songs side has asked for them.
       if (songLibrary.tooOld) 'the song library',
     ];
   }
@@ -308,11 +308,6 @@ class Session extends ChangeNotifier {
       _notify();
     }
   }
-
-  /// Whether the Songs screen is offered: a player with the lock may have
-  /// the library (one that does not says so when it is asked); one without
-  /// is older still, and has not.
-  bool get songsAvailable => lockAvailable;
 
   /// An edit of the song [name], for its page, which disposes of it. A
   /// save tells the library what the song now has.

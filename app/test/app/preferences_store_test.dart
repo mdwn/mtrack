@@ -41,4 +41,10 @@ void main() {
     await store.clear();
     expect(await store.load(), isNull);
   });
+
+  test('keeps a view choice across a new store, as across a launch', () async {
+    expect(await PreferencesViewStore().read('library.view'), isNull);
+    await PreferencesViewStore().write('library.view', 'songs');
+    expect(await PreferencesViewStore().read('library.view'), 'songs');
+  });
 }

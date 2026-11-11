@@ -48,3 +48,30 @@ class PreferencesPlayerStore implements PlayerStore {
     await _preferences.remove(_nameKey);
   }
 }
+
+/// Keeps the app's view choices in its preferences.
+class PreferencesViewStore implements ViewStore {
+  /// A store over [SharedPreferencesAsync].
+  PreferencesViewStore([SharedPreferencesAsync? preferences])
+    : _preferences = preferences ?? SharedPreferencesAsync();
+
+  final SharedPreferencesAsync _preferences;
+
+  @override
+  Future<String?> read(String key) async {
+    try {
+      return await _preferences.getString(key);
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> write(String key, String value) async {
+    try {
+      await _preferences.setString(key, value);
+    } on Object {
+      // Not kept: the next launch starts as a first launch does.
+    }
+  }
+}

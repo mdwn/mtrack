@@ -83,8 +83,10 @@ void main() {
       expect(s.songLibrary.tooOld, isFalse);
     }, setup: (rig) => rig.songsTooOld = true);
 
-    scenario('is offered only to a player with the lock', (h, s, _) {
-      expect(s.songsAvailable, isFalse);
+    scenario('of a player without the lock is older still', (h, s, _) {
+      s.songLibrary.load();
+      h.settle();
+      expect(s.songLibrary.tooOld, isTrue);
     }, setup: (rig) => rig.oldPlayer = true);
 
     test('is searched by name, any case', () {
@@ -104,6 +106,61 @@ void main() {
         ),
         'lights · MIDI',
       );
+    });
+  });
+
+  group('folders', () {
+    pp.SongListing song(String name, [String? dir]) {
+      final listing = pp.SongListing(name: name);
+      if (dir != null) {
+        listing.baseDir = dir;
+      }
+      return listing;
+    }
+
+    test('are the directory less the song\'s own, as the web UI has it', () {
+      expect(songFolder(song('a', 'Live/2026/Encore')), 'Live/2026');
+      expect(songFolder(song('a', 'Encore')), '');
+      expect(songFolder(song('a', '')), '');
+      // A player that does not say: the top.
+      expect(songFolder(song('a')), '');
+    });
+
+    test('group the top first, then by path ignoring case, nested apart', () {
+      final groups = groupListings([
+        song('A', 'Live/A'),
+        song('B', 'B'),
+        song('C', 'acoustic/C'),
+        song('D', 'Live/2026/D'),
+        song('E', 'Live/E'),
+        song('F'),
+      ]);
+      expect(groups.map((g) => g.folder), [
+        '',
+        'acoustic',
+        'Live',
+        'Live/2026',
+      ]);
+      expect(groups.first.songs.map((s) => s.name), ['B', 'F']);
+      expect(groups[2].songs.map((s) => s.name), ['A', 'E']);
+    });
+
+    test('are one group, the top, for a player that does not say them', () {
+      final groups = groupListings([song('A'), song('B')]);
+      expect(groups, hasLength(1));
+      expect(groups.single.folder, '');
+    });
+
+    scenario('are closed and opened, and forgotten with the player', (h, s, _) {
+      final library = s.songLibrary;
+      expect(library.isCollapsed('Live'), isFalse);
+      library.toggleFolder('Live');
+      expect(library.isCollapsed('Live'), isTrue);
+      library.toggleFolder('Live');
+      expect(library.isCollapsed('Live'), isFalse);
+      library.toggleFolder('Live');
+      library.clear();
+      expect(library.isCollapsed('Live'), isFalse);
     });
   });
 
