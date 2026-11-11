@@ -404,7 +404,7 @@ class FakePlayer implements PlayerTransport {
   }
 
   /// Sends [status] on the status characteristic, chunked.
-  void emitStatus(ble.Status status, {int? chunkSize}) {
+  void emitStatus(player.RemoteStatus status, {int? chunkSize}) {
     emitStatusFrame(status.writeToBuffer(), chunkSize: chunkSize);
   }
 
