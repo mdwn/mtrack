@@ -63,7 +63,7 @@ Cycles through a list of colors continuously. Colors transition smoothly or inst
 **Parameters:**
 - `color`: Multiple color values (e.g., `color: "red", color: "green", color: "blue"`)
 - `speed`: Cycles per second, or tempo-aware (e.g., `1.5`, `1measure`, `2beats`). Default `1.0`
-- `direction`: `forward` (default), `backward`, or `pingpong`
+- `direction`: `forward` (default), `backward` (from the last color down), or `pingpong`
 - `transition`: `snap` (instant, the default), `fade` (smooth; `crossfade` means the same), or
   `hue`: a fade around the colour wheel. A plain fade blends red, green and blue separately, so
   colours far apart on the wheel pass through a dull midpoint (yellow to blue is grey halfway).
@@ -77,7 +77,8 @@ lint says so.
 
 With `spread` set, the cycle's targets each run a phase ahead of the last instead of in
 lockstep, so the palette paints across the group (or, with `per: cell`, across a fixture's
-cells) instead of every target showing the same color at once. See `spread` and `per` under
+cells) instead of every target showing the same color at once. `direction: backward` sends
+the colors the other way along the targets. See `spread` and `per` under
 [Common Effect Parameters](#common-effect-parameters).
 
 **Example:**

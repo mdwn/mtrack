@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`direction: backward` on a color cycle now runs backward properly**: with `spread`, a
+  backward cycle travelled along the fixtures the same way a forward one does, and for a frame
+  at each step two fixtures showed the same color, so one color of the palette went missing.
+  With `transition: fade` or `hue`, each step faded the wrong way and jumped at its end. A
+  backward cycle now steps from the last color down, fading into the color before, and with
+  `spread` its colors travel the opposite way along the fixtures to a forward cycle's. A show
+  that used a negative `spread` to get this still works as it did.
+
 - **The beat indicator's dot no longer flickers through a song's first bar**: in the web UI the
   dot marking the current beat went out for a frame at a time, many times over the first bar
   of a song whose click starts a little after 0, and settled from the second bar on. The

@@ -286,3 +286,128 @@ fn cycle_spread_paints_the_palette_across_placed_fixtures() {
         "F3 blue"
     );
 }
+
+/// Three fixtures left to right and a three-colour cycle at one cycle a
+/// second, spread once across them.
+fn spread_cycle_engine(direction: CycleDirection, transition: CycleTransition) -> EffectEngine {
+    let mut engine = EffectEngine::new();
+    for (name, address, x) in [("F1", 1, -1.0), ("F2", 10, 0.0), ("F3", 19, 1.0)] {
+        let mut fixture =
+            crate::lighting::engine::tests::common::create_test_fixture(name, 1, address);
+        fixture.position = Some([x, 0.0, 0.0]);
+        engine.register_fixture(fixture);
+    }
+    let mut cycle = EffectInstance::new(
+        "cycle".to_string(),
+        EffectType::ColorCycle {
+            colors: vec![
+                Color::new(255, 0, 0),
+                Color::new(0, 255, 0),
+                Color::new(0, 0, 255),
+            ],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction,
+            transition,
+            duration: Duration::from_secs(10),
+        },
+        vec!["F1".to_string(), "F2".to_string(), "F3".to_string()],
+        None,
+        None,
+        None,
+    );
+    cycle.spread = 360.0;
+    engine.start_effect(cycle).unwrap();
+    engine
+}
+
+/// The colour on each of `spread_cycle_engine`'s fixtures, left to right.
+fn spread_cycle_row(commands: &[DmxCommand]) -> [(u8, u8, u8); 3] {
+    [1, 10, 19].map(|address| {
+        (
+            byte(commands, address + 1),
+            byte(commands, address + 2),
+            byte(commands, address + 3),
+        )
+    })
+}
+
+/// `direction: backward` on a spread cycle sends the colours the other way
+/// along the fixtures: forward, each fixture takes the colour of the one to
+/// its right at every step; backward, the one to its left.
+#[test]
+fn backward_spread_cycle_travels_the_other_way() {
+    let rows = |direction| {
+        let mut engine = spread_cycle_engine(direction, CycleTransition::Snap);
+        // The middle of each of the cycle's three steps.
+        let mut rows = vec![spread_cycle_row(
+            engine.update(Duration::from_millis(100), None).unwrap(),
+        )];
+        for _ in 0..2 {
+            rows.push(spread_cycle_row(
+                engine.update(Duration::from_millis(333), None).unwrap(),
+            ));
+        }
+        rows
+    };
+    let forward = rows(CycleDirection::Forward);
+    let backward = rows(CycleDirection::Backward);
+    for step in 0..2 {
+        for i in 0..3 {
+            assert_eq!(
+                forward[step + 1][i],
+                forward[step][(i + 1) % 3],
+                "forward, step {step}, fixture {i}: {forward:?}"
+            );
+            assert_eq!(
+                backward[step + 1][i],
+                backward[step][(i + 2) % 3],
+                "backward, step {step}, fixture {i}: {backward:?}"
+            );
+        }
+    }
+}
+
+/// A snapped spread cycle shows every colour of the palette on every frame:
+/// the fixtures all step on the same frame, so none is momentarily missing.
+#[test]
+fn spread_cycle_keeps_every_colour_through_a_step() {
+    for direction in [CycleDirection::Forward, CycleDirection::Backward] {
+        let mut engine = spread_cycle_engine(direction, CycleTransition::Snap);
+        for frame in 0..3000 {
+            let dt = Duration::from_micros(if frame == 0 { 0 } else { 1000 });
+            let mut row = spread_cycle_row(engine.update(dt, None).unwrap());
+            row.sort();
+            assert_eq!(
+                row,
+                [(0, 0, 255), (0, 255, 0), (255, 0, 0)],
+                "{direction:?}, frame {frame}"
+            );
+        }
+    }
+}
+
+/// A fading cycle has no jumps in it, whichever way it runs: from one frame
+/// to the next a millisecond on, no channel moves more than a step or two.
+#[test]
+fn fading_cycle_is_continuous_in_every_direction() {
+    for direction in [
+        CycleDirection::Forward,
+        CycleDirection::Backward,
+        CycleDirection::PingPong,
+    ] {
+        let mut engine = spread_cycle_engine(direction, CycleTransition::Fade);
+        let mut last = spread_cycle_row(engine.update(Duration::ZERO, None).unwrap());
+        for frame in 1..3000 {
+            let row = spread_cycle_row(engine.update(Duration::from_millis(1), None).unwrap());
+            for (now, before) in row.iter().zip(last.iter()) {
+                for (a, b) in [(now.0, before.0), (now.1, before.1), (now.2, before.2)] {
+                    assert!(
+                        a.abs_diff(b) <= 3,
+                        "{direction:?}, frame {frame}: {before:?} then {now:?}"
+                    );
+                }
+            }
+            last = row;
+        }
+    }
+}

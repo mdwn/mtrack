@@ -71,6 +71,24 @@ fn phase(elapsed: Duration, frequency: f64) -> f64 {
     elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI
 }
 
+/// The step of a `color_count`-step cycle that `cycle_progress` (0.0 to
+/// 1.0) is in, and how far through that step it is.
+///
+/// A progress within rounding error of a step's start is on it. The targets
+/// of a spread cycle each add their own offset to the same progress, and
+/// often sit a whole number of steps apart; without this they would
+/// disagree by a frame about which side of a boundary they are on.
+fn cycle_step(cycle_progress: f64, color_count: usize) -> (usize, f64) {
+    let position = cycle_progress * color_count as f64;
+    let position = if (position - position.round()).abs() < 1e-9 {
+        position.round()
+    } else {
+        position
+    };
+    let step = position.floor();
+    (step as usize % color_count, position - step)
+}
+
 /// Calculate color indices and interpolation progress for color cycle effects
 fn calculate_color_indices(
     cycle_progress: f64,
@@ -79,30 +97,17 @@ fn calculate_color_indices(
 ) -> (usize, usize, f64) {
     match direction {
         CycleDirection::Forward => {
-            let color_index_f = cycle_progress * color_count as f64;
-            let color_index = color_index_f.floor() as usize;
-            let next_index = (color_index + 1) % color_count;
-            let segment_progress = color_index_f - color_index as f64;
-            (color_index, next_index, segment_progress)
+            let (step, segment_progress) = cycle_step(cycle_progress, color_count);
+            (step, (step + 1) % color_count, segment_progress)
         }
         CycleDirection::Backward => {
-            let reversed_progress = 1.0 - cycle_progress;
-            let color_index_f = reversed_progress * color_count as f64;
-            let color_index = color_index_f.floor() as usize;
-
-            // Handle boundary case: when reversed_progress = 1.0 (cycle start),
-            // color_index_f = color_count, which is out of bounds.
-            if color_index >= color_count {
-                (color_count - 1, color_count - 1, 0.0)
-            } else {
-                let next_index = if color_index == 0 {
-                    color_count - 1
-                } else {
-                    color_index - 1
-                };
-                let segment_progress = color_index_f - color_index as f64;
-                (color_index, next_index, segment_progress)
-            }
+            // The forward cycle's steps from the last colour down: each
+            // step starts on its colour and, fading, heads for the one
+            // before it.
+            let (step, segment_progress) = cycle_step(cycle_progress, color_count);
+            let color_index = color_count - 1 - step;
+            let next_index = (color_index + color_count - 1) % color_count;
+            (color_index, next_index, segment_progress)
         }
         CycleDirection::PingPong => {
             // PingPong: go forward then backward through colors
@@ -372,7 +377,14 @@ fn apply_color_cycle(
         // cycle: `spread: 360deg` paints every colour of the cycle across
         // the group at once.
         let fixture_states = build_spread_states(fixture_registry, effect, |share| {
-            let progress = (cycle_progress_val + share * effect.spread / 360.0).rem_euclid(1.0);
+            // A backward cycle runs its phase the other way, so the offset
+            // does too: the palette lies along the targets as it does
+            // forward, and travels the other way.
+            let offset = match direction {
+                CycleDirection::Backward => -share * effect.spread / 360.0,
+                _ => share * effect.spread / 360.0,
+            };
+            let progress = (cycle_progress_val + offset).rem_euclid(1.0);
             let (i, next, t) = calculate_color_indices(progress, colors.len(), direction);
             let color = match transition {
                 CycleTransition::Fade => {
@@ -1241,12 +1253,25 @@ mod tests {
 
     #[test]
     fn color_indices_backward_start() {
-        // At progress 0.0, backward means reversed_progress = 1.0
+        // A backward cycle starts on the last colour, heading for the one
+        // before it.
         let (idx, next, progress) = calculate_color_indices(0.0, 3, &CycleDirection::Backward);
-        // At boundary: color_index = color_count, returns (count-1, count-1, 0.0)
         assert_eq!(idx, 2);
-        assert_eq!(next, 2);
+        assert_eq!(next, 1);
         assert!(progress.abs() < 0.01);
+    }
+
+    #[test]
+    fn color_indices_backward_fades_toward_the_previous_colour() {
+        // A quarter of the way through the middle step: on colour 1, a
+        // quarter of the way to colour 0.
+        let (idx, next, progress) =
+            calculate_color_indices(1.25 / 3.0, 3, &CycleDirection::Backward);
+        assert_eq!((idx, next), (1, 0));
+        assert!((progress - 0.25).abs() < 0.01);
+        // The last step wraps from the first colour to the last.
+        let (idx, next, _) = calculate_color_indices(0.9, 3, &CycleDirection::Backward);
+        assert_eq!((idx, next), (0, 2));
     }
 
     #[test]
