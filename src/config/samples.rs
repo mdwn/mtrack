@@ -94,10 +94,18 @@ impl SampleDefinition {
     }
 
     /// Gets the fade time in milliseconds.
-    /// Note: Fade behavior is not yet implemented; this config option is reserved for future use.
-    #[allow(dead_code)]
     pub fn fade_time_ms(&self) -> u32 {
         self.fade_time_ms
+    }
+
+    /// Gets the audio file, when the sample plays one file.
+    pub fn file(&self) -> Option<&str> {
+        self.file.as_deref()
+    }
+
+    /// Gets the velocity handling.
+    pub fn velocity(&self) -> &VelocityConfig {
+        &self.velocity
     }
 
     /// Gets the file to play for a given velocity value.
@@ -166,11 +174,6 @@ impl SampleDefinition {
             fade_time_ms,
         }
     }
-
-    /// Gets the audio file path (test only).
-    pub fn file(&self) -> Option<&str> {
-        self.file.as_deref()
-    }
 }
 
 /// Configuration for velocity handling.
@@ -192,6 +195,28 @@ pub struct VelocityConfig {
     /// Velocity layers (used when mode is "layers").
     #[serde(default)]
     layers: Vec<VelocityLayer>,
+}
+
+impl VelocityConfig {
+    /// The velocity handling mode.
+    pub fn mode(&self) -> VelocityMode {
+        self.mode
+    }
+
+    /// The velocity used when mode is "ignore", if set.
+    pub fn default_velocity(&self) -> Option<u8> {
+        self.default
+    }
+
+    /// Whether layers also scale by velocity, if set.
+    pub fn scales(&self) -> Option<bool> {
+        self.scale
+    }
+
+    /// The velocity layers.
+    pub fn layers(&self) -> &[VelocityLayer] {
+        &self.layers
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +277,13 @@ pub struct VelocityLayer {
 
     /// The audio file for this velocity layer.
     file: String,
+}
+
+impl VelocityLayer {
+    /// The audio file for this velocity layer.
+    pub fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 #[cfg(test)]

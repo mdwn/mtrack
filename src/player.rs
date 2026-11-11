@@ -5399,6 +5399,42 @@ mod test {
         Ok(())
     }
 
+    /// What a song edit (the web UI's save, or the phone's) does to the
+    /// song playing: it is written and the songs reloaded at once, the
+    /// playback keeps the song it started with, and the transport asks the
+    /// reloaded one whether it loops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_to_the_playing_songs_loop_holds_the_pass_and_moves_the_transport(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, dir) = player_looping_b().await?;
+        let before = player.get_playlist().current().expect("B");
+        std::fs::write(
+            dir.path().join("songs/B/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        player.reload_songs_from(&SongSources {
+            songs: dir.path().join("songs"),
+            playlists_dir: None,
+            legacy_playlist: Some(dir.path().join("playlist.yaml")),
+        })?;
+        assert!(player.is_playing().await, "the reload does not stop it");
+        let after = player.get_playlist().current().expect("B");
+        assert_eq!(after.name(), "B");
+        assert!(before.loop_playback() && !after.loop_playback());
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "the registry has the new song"
+        );
+        // Next no longer breaks out of it: to the transport it is a song
+        // that does not loop, and one playing stays playing.
+        assert!(!player.is_current_song_looping());
+        let target = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(target.as_deref(), Some("B"));
+        assert!(player.is_playing().await);
+        player.stop().await;
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_loop_break_takes_its_fades_from_the_playlist() -> Result<(), Box<dyn Error>> {
         let (player, _dir) = player_looping_b_with(

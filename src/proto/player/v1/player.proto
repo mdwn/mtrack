@@ -639,6 +639,197 @@ message ListLightShowsResponse {
     repeated string paths = 1;
 }
 
+// ListSongsRequest asks for a page of the player's song library.
+message ListSongsRequest {
+    // The index to start from: 0 for the first page, else the `next` of the
+    // page before.
+    uint32 start = 1;
+}
+
+// SongListing is one song of the library, as a list shows it.
+message SongListing {
+    // The song's name.
+    string name = 1;
+    // How long the song plays. Absent for a song that failed to load.
+    google.protobuf.Duration duration = 2;
+    // Whether the song loops (loop_playback).
+    bool loops = 3;
+    // Whether the song has light shows.
+    bool has_lighting = 4;
+    // Whether the song plays a MIDI file.
+    bool has_midi = 5;
+    // Whether the song has samples of its own.
+    bool has_samples = 6;
+    // Why the song failed to load. Absent for a song that loaded.
+    optional string failure = 7;
+}
+
+// ListSongsResponse is a page of the library: every song, loaded or not,
+// sorted by name, as many as fit one Bluetooth message.
+message ListSongsResponse {
+    repeated SongListing songs = 1;
+    // Present when there are more: ask again with start set to it.
+    optional uint32 next = 2;
+    // How many songs the library has, on every page.
+    uint32 total = 3;
+}
+
+// GetSongRequest names the song to read.
+message GetSongRequest {
+    string name = 1;
+}
+
+// SongLooping is how a song loops, as its file has it.
+message SongLooping {
+    // Whether the song repeats when it ends.
+    bool loop_playback = 1;
+    // How long passes overlap, as written ("6s", "2measures"). Empty: none,
+    // passes back to back. The player checks it when it is saved.
+    string crossfade = 2;
+    // The tracks that switch over at the crossfade's midpoint instead of
+    // fading (loop_crossfade_cut).
+    repeated string cut = 3;
+}
+
+// SongTrack is one of a song's audio tracks.
+message SongTrack {
+    // The track's name, which routes it to an output.
+    string name = 1;
+    // Its audio file, relative to the song's directory, as written.
+    string file = 2;
+    // The channel of the file it plays, from 1. Absent: the file's only one.
+    optional uint32 file_channel = 3;
+}
+
+// SongTracks is a song's whole track list, in order.
+message SongTracks {
+    repeated SongTrack tracks = 1;
+}
+
+// SampleVelocity is how a sample answers velocity. Read only: an update
+// leaves a sample's velocity as its file has it.
+message SampleVelocity {
+    // "ignore", "scale" or "layers".
+    string mode = 1;
+    // The velocity it plays at when it ignores the trigger's. Absent: 100.
+    optional uint32 default_velocity = 2;
+    // How many velocity layers it has.
+    uint32 layers = 3;
+    // Whether layers are also scaled by velocity.
+    bool scale = 4;
+}
+
+// SongSample is one of a song's own sample definitions.
+message SongSample {
+    // The sample's name, which its triggers name.
+    string name = 1;
+    // In an update: the name the sample had when it was read, for one kept
+    // or renamed; empty for a new one. GetSong sets it to name.
+    string original_name = 2;
+    // Its audio file, relative to the song's directory. Absent for a
+    // sample that plays velocity layers only.
+    optional string file = 3;
+    // The output channels it plays on, from 1.
+    repeated uint32 output_channels = 4;
+    // The track mapping it plays on, over output_channels.
+    optional string output_track = 5;
+    // "play_to_completion", "stop" or "fade". Empty: play_to_completion.
+    string release_behavior = 6;
+    // "cut" or "polyphonic". Empty: cut.
+    string retrigger = 7;
+    // The most voices it plays at once. Absent: the global limit only.
+    optional uint32 max_voices = 8;
+    // The fade on a release or a cut, in milliseconds. Absent: 50.
+    optional uint32 fade_time_ms = 9;
+    // How it answers velocity: reported, and ignored in an update.
+    SampleVelocity velocity = 10;
+}
+
+// SongSamples is a song's whole list of its own samples.
+message SongSamples {
+    repeated SongSample samples = 1;
+}
+
+// SongTrigger is a MIDI event that plays one of the song's samples. Read
+// only.
+message SongTrigger {
+    // The event, in words ("Note On, channel 10, key 36").
+    string event = 1;
+    // The sample it plays.
+    string sample = 2;
+}
+
+// SongFile is an audio file in a song's directory.
+message SongFile {
+    // Its name, as a track's file names it.
+    string name = 1;
+    // How many channels it has; 0 when it could not be read.
+    uint32 channels = 2;
+}
+
+// SongOverview is what a song has that GetSong reports but
+// UpdateSongSettings does not change.
+message SongOverview {
+    // Its tempo map, in words ("120 bpm, 4/4, 2 changes"). Absent: none.
+    optional string tempo = 1;
+    // Its sections' names, in order.
+    repeated string sections = 2;
+    // Whether it has a metronome block.
+    bool metronome = 3;
+    // How many pilot hints it has.
+    uint32 pilot_hints = 4;
+    // The MIDI file it plays. Absent: none.
+    optional string midi_file = 5;
+    // Its light shows' files.
+    repeated string lighting = 6;
+    // How many MIDI DMX light shows it has.
+    uint32 midi_light_shows = 7;
+    // Whether it has notification audio of its own.
+    bool notification_audio = 8;
+    // Whether it sends a MIDI event when it is selected.
+    bool song_select_event = 9;
+}
+
+// GetSongResponse is a song's settings, as its file has them.
+message GetSongResponse {
+    string name = 1;
+    // How long the song plays. Absent for a song that failed to load.
+    google.protobuf.Duration duration = 2;
+    // Why the song failed to load. Absent for a song that loaded.
+    optional string failure = 3;
+    // Why the song cannot be changed with UpdateSongSettings (it has no
+    // config file, or its file does not read). Absent: it can.
+    optional string read_only = 4;
+    SongLooping looping = 5;
+    SongTracks tracks = 6;
+    SongSamples samples = 7;
+    repeated SongTrigger triggers = 8;
+    SongOverview overview = 9;
+    // The audio files in the song's directory, sorted: what a track or a
+    // sample can be pointed at.
+    repeated SongFile files = 10;
+    // A fingerprint of the song's file. Sent back as
+    // UpdateSongSettingsRequest.expected_revision, it has an update refused
+    // when the file changed since it was read.
+    string revision = 11;
+    // Whether this song is the one playing. An update to it is written at
+    // once and takes effect the next time it plays: the playing pass keeps
+    // the tracks, loop and samples it started with.
+    bool playing = 12;
+}
+
+// UpdateSongSettingsRequest changes some of a song's settings. Each group
+// is optional, and a group left out is left alone.
+message UpdateSongSettingsRequest {
+    string name = 1;
+    // The revision GetSong answered. When not empty, an update to a file
+    // that has changed since is refused with FAILED_PRECONDITION.
+    string expected_revision = 2;
+    SongLooping looping = 3;
+    SongTracks tracks = 4;
+    SongSamples samples = 5;
+}
+
 // DeletePlaylistRequest names the playlist to delete.
 message DeletePlaylistRequest {
     // The playlist's name. The player's own all_songs is refused.
@@ -981,6 +1172,23 @@ service PlayerService {
     // ListLightShows names the .light files an ambient light can play, as
     // the web UI's lighting list finds them. Open while locked.
     rpc ListLightShows(ListLightShowsRequest) returns (ListLightShowsResponse);
+
+    // ListSongs pages through the song library, loaded songs and failed
+    // ones, sorted by name. Open while locked.
+    rpc ListSongs(ListSongsRequest) returns (ListSongsResponse);
+
+    // GetSong reads a song's settings: its looping, tracks and samples as
+    // its file has them, what else it has, and the audio files beside it.
+    // An unknown name is NOT_FOUND. Open while locked.
+    rpc GetSong(GetSongRequest) returns (GetSongResponse);
+
+    // UpdateSongSettings changes a song's looping, tracks or samples in its
+    // file, keeping everything else in it, as the web UI's song save writes
+    // it, and answers with the song as GetSong now reports it. Refused while
+    // the player is locked. A setting the player would not load, or a file
+    // that is not the song's, is INVALID_ARGUMENT, saying why; a file
+    // changed since expected_revision is FAILED_PRECONDITION.
+    rpc UpdateSongSettings(UpdateSongSettingsRequest) returns (GetSongResponse);
 
     // DeletePlaylist deletes a playlist's file. Refused while the player
     // is locked. An unknown name is NOT_FOUND. The active playlist falls

@@ -379,6 +379,26 @@ impl Song {
         &self.loop_crossfade_cut
     }
 
+    /// The loop crossfade as written (`"2measures"`), unread.
+    pub fn loop_crossfade_text(&self) -> Option<&str> {
+        self.loop_crossfade.as_deref()
+    }
+
+    /// Whether the song sends a MIDI event when it is selected.
+    pub fn has_midi_event(&self) -> bool {
+        self.midi_event.is_some()
+    }
+
+    /// The song's own sample definitions, by name.
+    pub fn samples(&self) -> &HashMap<String, SampleDefinition> {
+        &self.samples
+    }
+
+    /// The song's own sample triggers.
+    pub fn sample_triggers(&self) -> &[SampleTrigger] {
+        &self.sample_triggers
+    }
+
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[Section] {
         &self.sections

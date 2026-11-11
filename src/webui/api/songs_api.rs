@@ -524,32 +524,7 @@ pub(super) async fn get_song_files(
     let named: Vec<std::path::PathBuf> = song.named_files().map(|p| p.to_path_buf()).collect();
 
     let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
-        // A hidden file the song's config names (`file: .click.wav`) is
-        // the song's, and listed.
-        let named: Vec<_> = named.iter().filter_map(|p| p.canonicalize().ok()).collect();
-        let mut files: Vec<SongFile> = Vec::new();
-        for entry in std::fs::read_dir(&song_dir)?.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let filename = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-            // Skip the song's config file, and hidden files it does not name
-            if songs::is_song_config_name(&path)
-                || (songs::is_hidden(&path)
-                    && !path.canonicalize().is_ok_and(|p| named.contains(&p)))
-            {
-                continue;
-            }
-            files.push(SongFile {
-                kind: FileKind::of(&path),
-                name: filename,
-            });
-        }
-        Ok::<_, std::io::Error>(files)
+        song_dir_files(&song_dir, &named)
     })
     .await
     {
@@ -560,6 +535,41 @@ pub(super) async fn get_song_files(
     files.sort_by(|a, b| a.name.cmp(&b.name));
 
     (StatusCode::OK, Json(SongFiles { files })).into_response()
+}
+
+/// The files in a song's directory, as `/songs/{name}/files` lists them:
+/// each file directly in it but the song's config, and hidden files only
+/// when the song's config names them (`named`, the files it names). In the
+/// order the directory gives them; on the blocking pool.
+pub(crate) fn song_dir_files(
+    song_dir: &std::path::Path,
+    named: &[std::path::PathBuf],
+) -> std::io::Result<Vec<SongFile>> {
+    // A hidden file the song's config names (`file: .click.wav`) is
+    // the song's, and listed.
+    let named: Vec<_> = named.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    let mut files: Vec<SongFile> = Vec::new();
+    for entry in std::fs::read_dir(song_dir)?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Skip the song's config file, and hidden files it does not name
+        if songs::is_song_config_name(&path)
+            || (songs::is_hidden(&path) && !path.canonicalize().is_ok_and(|p| named.contains(&p)))
+        {
+            continue;
+        }
+        files.push(SongFile {
+            kind: FileKind::of(&path),
+            name: filename,
+        });
+    }
+    Ok(files)
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,

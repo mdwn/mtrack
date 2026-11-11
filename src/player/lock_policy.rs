@@ -112,6 +112,8 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "ListPlaylists"),
     (Grpc, "GetPlaylist"),
     (Grpc, "ListLightShows"),
+    (Grpc, "ListSongs"),
+    (Grpc, "GetSong"),
     (Grpc, "WatchStage"),
     (Grpc, "GetLightingAsset"),
     // The lock itself: the phone's only way to unlock. SavePlaylist and
