@@ -19,9 +19,16 @@
 //! phone, a chunk sent on each would reach every phone once per session.
 //! So one task owns all the sessions of a characteristic and sends each
 //! chunk through just one of them.
+//!
+//! The `response` and `status` characteristics are the control ones: what
+//! waits on them goes before the next chunk of a stream (see
+//! [`super::stream`]). [`Control`] is how the stream pump knows.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 /// One phone's notification session on a characteristic.
 pub(crate) trait Notifier: Send + 'static {
@@ -29,6 +36,56 @@ pub(crate) trait Notifier: Send + 'static {
     fn is_stopped(&self) -> bool;
     /// Sends a value. False when the session can no longer send.
     fn notify(&mut self, value: Vec<u8>) -> BoxFuture<'_, bool>;
+    /// Resolves when the phone ends the session, for a pump with nothing to
+    /// send, which would otherwise not look. One that cannot tell never
+    /// resolves, and the end is found at the next send.
+    fn stopped(&self) -> BoxFuture<'static, ()> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// The frames waiting on the control characteristics, `response` and
+/// `status`: counted from when one is queued for its pump until the pump
+/// has sent the last of its chunks. A stream sends no chunk while there
+/// are any.
+#[derive(Default)]
+pub(crate) struct Control {
+    waiting: AtomicUsize,
+    idle: Notify,
+}
+
+impl Control {
+    /// A frame was queued for a control pump, or is about to be.
+    pub(crate) fn enter(&self) {
+        self.waiting.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// That frame was sent, or will not be.
+    pub(crate) fn leave(&self) {
+        if self.waiting.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle.notify_waiters();
+        }
+    }
+
+    /// How many frames wait.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+
+    /// Returns once nothing waits on a control characteristic: at once when
+    /// nothing does, which is the usual case.
+    pub(crate) async fn clear(&self) {
+        loop {
+            // Created before the count is read, so a `leave` in between
+            // still wakes it.
+            let idle = self.idle.notified();
+            if self.waiting.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
 }
 
 /// What a newly subscribed phone is sent at once, so it need not wait for
@@ -39,10 +96,15 @@ pub(crate) type Greeting = Box<dyn Fn() -> Vec<Vec<u8>> + Send + Sync>;
 /// no other batch between them, to the phones whose sessions arrive on
 /// `sessions`. A batch is a whole frame: a phone that subscribes between
 /// two batches starts at a frame boundary. Ends when either channel closes.
+///
+/// With `control`, this is a control characteristic's pump: whoever queues
+/// a batch on `frames` has counted it in with [`Control::enter`], and it is
+/// counted out here when its last chunk is sent.
 pub(crate) async fn run<N: Notifier>(
     mut sessions: mpsc::UnboundedReceiver<N>,
     mut frames: mpsc::Receiver<Vec<Vec<u8>>>,
     greeting: Option<Greeting>,
+    control: Option<Arc<Control>>,
 ) {
     let mut live: Vec<N> = Vec::new();
     loop {
@@ -51,12 +113,21 @@ pub(crate) async fn run<N: Notifier>(
                 let Some(session) = session else { return };
                 live.push(session);
                 if let Some(greeting) = &greeting {
+                    if let Some(control) = &control {
+                        control.enter();
+                    }
                     send(&mut live, greeting()).await;
+                    if let Some(control) = &control {
+                        control.leave();
+                    }
                 }
             }
             batch = frames.recv() => {
                 let Some(batch) = batch else { return };
                 send(&mut live, batch).await;
+                if let Some(control) = &control {
+                    control.leave();
+                }
             }
         }
     }
@@ -66,16 +137,24 @@ pub(crate) async fn run<N: Notifier>(
 /// sessions that ended. With none left the batch is dropped: nobody listens.
 async fn send<N: Notifier>(live: &mut Vec<N>, batch: Vec<Vec<u8>>) {
     for chunk in batch {
-        loop {
-            live.retain(|session| !session.is_stopped());
-            let Some(session) = live.first_mut() else {
-                return;
-            };
-            if session.notify(chunk.clone()).await {
-                break;
-            }
-            live.remove(0);
+        if !send_chunk(live, chunk).await {
+            return;
         }
+    }
+}
+
+/// Sends one chunk through the first session that will take it, dropping
+/// sessions that ended. False when none is left: nobody listens.
+pub(super) async fn send_chunk<N: Notifier>(live: &mut Vec<N>, chunk: Vec<u8>) -> bool {
+    loop {
+        live.retain(|session| !session.is_stopped());
+        let Some(session) = live.first_mut() else {
+            return false;
+        };
+        if session.notify(chunk.clone()).await {
+            return true;
+        }
+        live.remove(0);
     }
 }
 
@@ -138,7 +217,7 @@ mod tests {
         let sent: Sent = Default::default();
         let (sessions, sessions_rx) = mpsc::unbounded_channel();
         let (frames, frames_rx) = mpsc::channel(8);
-        tokio::spawn(run(sessions_rx, frames_rx, None));
+        tokio::spawn(run(sessions_rx, frames_rx, None, None));
 
         sessions.send(fake("a", &sent, false).0).unwrap();
         sessions.send(fake("b", &sent, false).0).unwrap();
@@ -156,7 +235,7 @@ mod tests {
         let sent: Sent = Default::default();
         let (sessions, sessions_rx) = mpsc::unbounded_channel();
         let (frames, frames_rx) = mpsc::channel(8);
-        tokio::spawn(run(sessions_rx, frames_rx, None));
+        tokio::spawn(run(sessions_rx, frames_rx, None, None));
 
         let (a, a_stopped) = fake("a", &sent, false);
         sessions.send(a).unwrap();
@@ -179,7 +258,7 @@ mod tests {
         let sent: Sent = Default::default();
         let (sessions, sessions_rx) = mpsc::unbounded_channel();
         let (frames, frames_rx) = mpsc::channel(8);
-        tokio::spawn(run(sessions_rx, frames_rx, None));
+        tokio::spawn(run(sessions_rx, frames_rx, None, None));
 
         frames.send(vec![vec![1]]).await.unwrap();
         settle().await;
@@ -194,7 +273,7 @@ mod tests {
         let (sessions, sessions_rx) = mpsc::unbounded_channel();
         let (_frames, frames_rx) = mpsc::channel(8);
         let greeting: Greeting = Box::new(|| vec![vec![9, 9], vec![8]]);
-        tokio::spawn(run(sessions_rx, frames_rx, Some(greeting)));
+        tokio::spawn(run(sessions_rx, frames_rx, Some(greeting), None));
 
         sessions.send(fake("a", &sent, false).0).unwrap();
         settle().await;

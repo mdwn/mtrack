@@ -18,34 +18,54 @@ package ble.v1;
 import "google/protobuf/duration.proto";
 import "player/v1/player.proto";
 
-// Every response notification reaches every phone subscribed to the response
-// characteristic: the radio stack notifies a characteristic's subscribers
-// together, so one phone sees the answers to another's calls. A client
-// therefore starts its call ids at a random value and ignores a Response whose
-// id it did not send.
+// Every response notification reaches every phone subscribed to the
+// characteristic it is sent on, response or stream: the radio stack notifies
+// a characteristic's subscribers together, so one phone sees the answers to
+// another's calls. A client therefore starts its call ids at a random value
+// and ignores a Response whose id it did not send.
 
 // Request is one call from a phone: a PlayerService method and its request
-// message.
+// message. Or, with cancel set, the end of a stream the phone opened.
 message Request {
     // The call's id. The response carries it back, so a client matches
-    // responses to its calls.
+    // responses to its calls. A stream is open under its id from the Request
+    // that asks for it until its last Response; the phone uses no id for two
+    // streams at once. A Request for a stream under an id that is open is
+    // refused with ALREADY_EXISTS (6) on the response characteristic, not
+    // the stream one, and the open stream carries on.
     uint32 id = 1;
     // The bare name of a PlayerService method, such as Play.
     string method = 2;
     // The method's request message, serialized.
     bytes payload = 3;
+    // True to end the stream this phone opened with this id; method and
+    // payload are then ignored. The stream's last Response follows on the
+    // stream characteristic, with the code CANCELLED (1). Nothing answers a
+    // cancel itself, and one for an id that is not an open stream of this
+    // phone's is ignored: the stream may have ended by itself meanwhile.
+    bool cancel = 4;
 }
 
-// Response answers one Request.
+// Response answers one Request. A call to a server-streaming method is
+// answered by several, on the stream characteristic: one for each message
+// of the stream, with more set, and a last one with the call's status. On
+// the stream characteristic a Response without more always ends the stream
+// with its id.
 message Response {
     // The id of the Request this answers.
     uint32 id = 1;
-    // The gRPC status code of the call; 0 is OK.
+    // The gRPC status code of the call; 0 is OK. Always 0 while more is set.
     uint32 code = 2;
     // The status message, when code is not 0.
     string message = 3;
-    // The method's response message, serialized. Empty when code is not 0.
+    // The method's response message, serialized. Empty when code is not 0,
+    // and in the last Response of a stream.
     bytes payload = 4;
+    // True in every Response of a stream but the last: more follow under
+    // this id. The Response without it ends the stream, carries its status
+    // in code and message, and has no payload. Never set in the answer to a
+    // unary call.
+    bool more = 5;
 }
 
 // Status is the player's state, pushed on the status characteristic and

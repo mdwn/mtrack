@@ -105,9 +105,11 @@ configuration (or the hostname), as discoverable.
 | `request` | `6d747261-636b-0002-8000-00805f9b34fb` | write, write without response; encrypted link |
 | `response` | `6d747261-636b-0003-8000-00805f9b34fb` | notify |
 | `status` | `6d747261-636b-0004-8000-00805f9b34fb` | read (encrypted link), notify |
+| `stream` | `6d747261-636b-0005-8000-00805f9b34fb` | notify |
 
-Subscribe to `response` and `status` before sending anything. The UUIDs are also constants in
-the source (`SERVICE_UUID` and its siblings in `src/controller/ble.rs`).
+Subscribe to `response` and `status` before sending anything, and to `stream` before opening a
+[stream](#streams). The UUIDs are also constants in the source (`SERVICE_UUID` and its siblings
+in `src/controller/ble.rs`). A player from before streams has no `stream` characteristic.
 
 ### Framing
 
@@ -137,9 +139,12 @@ A frame is a protobuf message from [`ble.proto`](https://github.com/mdwn/mtrack/
 Write a `Request` frame to `request`; the matching `Response` frame comes back on `response`.
 
 ```proto
-message Request  { uint32 id = 1; string method = 2; bytes payload = 3; }
-message Response { uint32 id = 1; uint32 code = 2; string message = 3; bytes payload = 4; }
+message Request  { uint32 id = 1; string method = 2; bytes payload = 3; bool cancel = 4; }
+message Response { uint32 id = 1; uint32 code = 2; string message = 3; bytes payload = 4; bool more = 5; }
 ```
+
+`cancel` and `more` are for [streams](#streams) and are never set in a unary call or its
+answer, so a client that knows nothing of streams reads and writes exactly what it always did.
 
 `method` is the bare name of a `PlayerService` method (`Play`, `Seek`, ...) and `payload` is that
 method's request message from [`player.proto`](grpc.md), serialized. The response carries the
@@ -152,7 +157,8 @@ The calls a phone may make, and no others:
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
-`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`.
+`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`, and one stream,
+`WatchStage` (see [Streams](#streams)).
 
 `SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
 playlist editor does with only the songs: each entry keeps its own settings (fades, auto play,
@@ -174,6 +180,92 @@ did not send.**
 A phone's requests are answered one at a time, in the order they arrive. A slow call from one
 phone does not hold up another phone, or the status. A phone that has more than a handful of
 requests waiting has the excess dropped.
+
+### Streams
+
+`WatchStage` is a server stream: one request, answered by many messages. It is the only one a
+phone may open. Everything about a stream arrives on the `stream` characteristic, framed and
+chunked like a response, and nothing about it arrives on `response`.
+
+**Opening.** Write a `Request` to `request` as for any call: `method` is `WatchStage`, `payload`
+its `WatchStageRequest`, and `id` an id you have no stream open under. Each message of the stream
+then arrives on `stream` as a `Response` with your `id`, `more` set, `code` 0 and the message
+(a `StageUpdate`) in `payload`.
+
+**The end.** A stream ends with one `Response` that has `more` unset. It carries the call's gRPC
+status in `code` and `message`, and no payload. On `stream`, a `Response` without `more` always
+ends the stream with that `id`. That is how every stream ends that the phone is told about, and
+also how one that never opened is refused (its id is then no open stream's, with the one
+exception below):
+
+| `code` | Why |
+|---|---|
+| 0 (`OK`) | The player ended the stream. `WatchStage` does not, short of a failure. |
+| 1 (`CANCELLED`) | You cancelled it. |
+| 8 (`RESOURCE_EXHAUSTED`) | You have two streams open, which is the most one phone may have; or a message of the stream was too large for a frame, which ends it. |
+| any other | The call's own refusal or failure, as gRPC would report it: a `WatchStageRequest` that does not parse, for one. |
+
+A stream is open, and counts toward the two, from its request until its last `Response` has been
+sent. So after a cancel, wait for the last `Response` before counting the stream closed or using
+its id again.
+
+**An id that is already open** is the one refusal of a stream that comes on `response`: a
+request for a stream under an `id` you have a stream open under is answered there, with
+`ALREADY_EXISTS` (6), and the stream that is open carries on untouched. On `stream` that answer
+would carry the open stream's id with `more` unset, and read as its end. A client that never
+reuses an open id never sees this.
+
+So a stream method is answered on `stream`, the refusals of the call itself and of a third
+stream included, and everything else is answered on `response`; the only answers to a stream
+request that come on `response` are `ALREADY_EXISTS`, above, and an old player's: a player from
+before streams does not know `WatchStage`, and answers it like any method it does not allow,
+with `PERMISSION_DENIED`. A client that might meet one listens there for that answer, or checks
+first whether the service has a `stream` characteristic.
+
+**Cancelling.** Write a `Request` with the stream's `id` and `cancel` set; `method` and `payload`
+are ignored. The player drops its side of the stream at once, discards any message it had not
+begun to send, finishes one it had, and then sends the last `Response`, with `CANCELLED`.
+Nothing answers the cancel itself. A cancel for an id you have no stream open under is ignored,
+without an answer: the stream may have ended by itself while the cancel was on its way. One
+phone cannot cancel another's stream.
+
+A stream also ends, with no last `Response`, when the phone disconnects, is forgotten, or the
+controller stops, and when nobody at all is subscribed to `stream`. The player cannot tell which
+phone unsubscribed, so it is the last subscription going that ends the streams, every phone's.
+Open a stream only once you are subscribed.
+
+**Newest wins.** A gRPC stream is ordered and loses nothing. Over a radio that would mean a
+growing delay whenever the stage changes faster than the link carries it, and a lighting frame
+that arrives late is worthless. So the player keeps, for each stream, only what is still worth
+sending:
+
+- A `StageUpdate` holding a `frame` is *replaceable*. At most one waits for the radio, and a newer
+  frame takes its place. You see fewer frames, never older ones.
+- A `StageUpdate` holding a `layout` is never dropped, and layouts arrive in order. When one is
+  queued, a frame waiting ahead of it is discarded: it was read against the layout before. So no
+  frame for an older layout follows a newer layout. (Each frame names its layout by id all the
+  same, and a frame for a layout you do not hold is to be dropped.)
+- A message whose first chunk has been sent is sent whole.
+
+A stream never holds up a call. The player sends a stream one chunk at a time, and before each
+chunk it sends anything waiting on `response` or `status` first: a Stop is answered ahead of the
+rest of a layout, however large the layout.
+
+**The limit of this version.** The player cannot see how fast the link is. The Bluetooth adapter
+takes each chunk at once and queues it itself, and says nothing of when it leaves or how many
+wait; nothing handed to it can be overtaken or taken back. So the player paces streams at a
+fixed rate instead, 16 kB a second across all of them, whatever the phone: newest wins and
+calls-go-first both happen in the player, in front of that pacing. On a link that carries at
+least that much (the stage needs a fraction of it, and a phone at close range carries several
+times it) the adapter's queue stays about a chunk deep and all of the above holds. On a link
+slower than what a stream is sending (a phone at the edge of range, say) a backlog can build
+inside the adapter, where the player can neither see nor shorten it: frames then arrive late
+instead of being replaced, and a call's answer waits behind what is queued. A client that sees
+frames falling behind can ask for fewer (`max_rate`), or cancel the stream and open it again.
+
+Like every notification, a stream's reaches every phone subscribed to `stream`: ignore a
+`Response` whose id is not a stream of yours. If you subscribe in the middle of a frame, ignore
+continuation chunks until the next start.
 
 ### Status
 

@@ -15,7 +15,9 @@
 //! The link between phones and the player: everything the radio stack
 //! hands over or takes back, with no stack types in it. A write is a chunk
 //! of some peer's frame; a frame is a request, answered by a response cut
-//! back into chunks. The status goes the same way, a frame of its own.
+//! back into chunks. The status goes the same way, a frame of its own. A
+//! request for a server stream opens one instead, which
+//! [`stream`](super::stream) carries from there.
 //!
 //! # Tasking
 //!
@@ -29,6 +31,8 @@
 //! other peers have workers of their own, the status stream is polled by a
 //! task of its own, and the write that carried the request returns at once
 //! instead of holding the radio's write response until the player answers.
+//! Opening a stream holds the worker only until the service has answered
+//! the call; the stream's messages are read by a task of the stream's own.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -41,8 +45,10 @@ use tokio::sync::{mpsc, Notify};
 use crate::proto::ble::v1::{Request, Status};
 
 use super::codec::{chunks, Reassembler};
-use super::dispatch::{failure, Dispatcher};
+use super::dispatch::{failure, stream_method, Dispatcher};
+use super::notify::Control;
 use super::status::StatusFeed;
+use super::stream::{self, ending, Messages, Outbox, Refused, Replaceable};
 
 /// A central's Bluetooth address, which is all the stack tells us of it.
 pub(crate) type PeerId = [u8; 6];
@@ -97,14 +103,50 @@ pub(crate) fn parse_address(text: &str) -> Option<PeerId> {
     parts.next().is_none().then_some(address)
 }
 
-/// Answers a request frame with a response frame.
+/// Answers a request frame with a response frame, and opens the streams it
+/// has.
 pub(crate) trait Handler: Send + Sync + 'static {
     fn handle<'a>(&'a self, frame: &'a [u8]) -> BoxFuture<'a, Vec<u8>>;
+
+    /// Whether `method` is a server stream this handler opens, and if so
+    /// which of its messages are replaceable. Any other method is answered
+    /// by [`Handler::handle`], its refusal included.
+    fn stream(&self, _method: &str) -> Option<Replaceable> {
+        None
+    }
+
+    /// Opens `method`, which [`Handler::stream`] says is a stream, with a
+    /// serialized request message: its messages, or the status it is
+    /// refused with.
+    fn open<'a>(
+        &'a self,
+        _method: &'a str,
+        _payload: &'a [u8],
+    ) -> BoxFuture<'a, Result<Box<dyn Messages>, tonic::Status>> {
+        Box::pin(async { Err(tonic::Status::unimplemented("no streams")) })
+    }
 }
 
 impl Handler for Dispatcher {
     fn handle<'a>(&'a self, frame: &'a [u8]) -> BoxFuture<'a, Vec<u8>> {
         Box::pin(Dispatcher::handle(self, frame))
+    }
+
+    fn stream(&self, method: &str) -> Option<Replaceable> {
+        stream_method(method).map(|stream| stream.replaceable)
+    }
+
+    fn open<'a>(
+        &'a self,
+        method: &'a str,
+        payload: &'a [u8],
+    ) -> BoxFuture<'a, Result<Box<dyn Messages>, tonic::Status>> {
+        Box::pin(async move {
+            match stream_method(method) {
+                Some(stream) => Dispatcher::open(self, stream, payload).await,
+                None => Err(tonic::Status::unimplemented("not a stream")),
+            }
+        })
     }
 }
 
@@ -120,18 +162,23 @@ struct Peer {
     queue: Option<mpsc::Sender<Vec<u8>>>,
     /// Cleared when the peer goes, so its worker drops what is queued.
     alive: Arc<AtomicBool>,
+    /// Where its open streams are.
+    outbox: Arc<Outbox>,
 }
 
 impl Drop for Peer {
+    /// However the peer goes (it disconnected, was forgotten, or lost its
+    /// place in the table), its streams go with it.
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
+        self.outbox.drop_peer(self.id);
     }
 }
 
-#[derive(Default)]
 struct Peers {
     peers: Vec<Peer>,
     clock: u64,
+    outbox: Arc<Outbox>,
 }
 
 impl Peers {
@@ -157,6 +204,7 @@ impl Peers {
                     touched: clock,
                     queue: None,
                     alive: Arc::new(AtomicBool::new(true)),
+                    outbox: self.outbox.clone(),
                 });
                 self.peers.len() - 1
             }
@@ -183,6 +231,18 @@ pub(crate) struct Link<H: Handler> {
     /// Told after each request is answered: the status poll looks at once,
     /// so a phone sees what its call changed without waiting for a tick.
     status_wanted: Arc<Notify>,
+    /// The open streams, and what they have for the stream pump.
+    outbox: Arc<Outbox>,
+    /// Counts what waits on `responses` and `status_out`, which the stream
+    /// pump gives way to.
+    control: Arc<Control>,
+}
+
+impl<H: Handler> Drop for Link<H> {
+    /// The controller stopped: nothing is left to carry a stream.
+    fn drop(&mut self) {
+        self.outbox.close();
+    }
 }
 
 impl<H: Handler> Link<H> {
@@ -191,14 +251,33 @@ impl<H: Handler> Link<H> {
         responses: mpsc::Sender<Vec<Vec<u8>>>,
         status_out: mpsc::Sender<Vec<Vec<u8>>>,
     ) -> Arc<Link<H>> {
+        let outbox = Arc::new(Outbox::default());
         Arc::new(Link {
             handler,
-            peers: parking_lot::Mutex::new(Peers::default()),
+            peers: parking_lot::Mutex::new(Peers {
+                peers: Vec::new(),
+                clock: 0,
+                outbox: outbox.clone(),
+            }),
             status: parking_lot::Mutex::new(StatusFeed::default()),
             responses,
             status_out,
             status_wanted: Arc::new(Notify::new()),
+            outbox,
+            control: Arc::new(Control::default()),
         })
+    }
+
+    /// What the stream pump sends from: see [`stream::run`].
+    pub(crate) fn outbox(&self) -> Arc<Outbox> {
+        self.outbox.clone()
+    }
+
+    /// What the pumps of the two channels given to [`Link::new`] count
+    /// their frames out of, and the stream pump gives way to: see
+    /// [`super::notify::run`].
+    pub(crate) fn control(&self) -> Arc<Control> {
+        self.control.clone()
     }
 
     /// Told after each answered request; see [`super::status::poll`].
@@ -213,7 +292,7 @@ impl<H: Handler> Link<H> {
     }
 
     /// A phone disconnected: its state, a partly received frame included, is
-    /// dropped, and so is any request of its still waiting.
+    /// dropped, and so are any request of its still waiting and its streams.
     pub(crate) fn on_disconnect(&self, peer: PeerId) {
         self.peers.lock().peers.retain(|p| p.id != peer);
     }
@@ -272,6 +351,81 @@ impl<H: Handler> Link<H> {
         }
     }
 
+    /// Serves one request frame of `peer`'s: the chunks of its response,
+    /// for the response characteristic. A request that opens a stream or
+    /// cancels one has none, save a request for a stream under an id that
+    /// is open already: all there is to say about a stream is said on
+    /// the stream characteristic.
+    async fn serve(&self, peer: PeerId, alive: &AtomicBool, frame: &[u8]) -> Option<Vec<Vec<u8>>> {
+        // A frame that is not a request is the handler's to refuse.
+        if let Ok(request) = Request::decode(frame) {
+            if request.cancel {
+                if !self.outbox.cancel(peer, request.id) {
+                    tracing::debug!(
+                        peer = %format_address(peer),
+                        id = request.id,
+                        "Bluetooth cancel ignored: no such stream"
+                    );
+                }
+                return None;
+            }
+            if let Some(replaceable) = self.handler.stream(&request.method) {
+                let refusal = self.open(peer, alive, &request, replaceable).await?;
+                return chunks(&refusal, self.chunk_size()).ok();
+            }
+        }
+        Some(self.respond(frame).await)
+    }
+
+    /// Opens the stream `request` asks for. What comes of it the phone
+    /// hears on the stream characteristic: the stream's messages, or a last
+    /// response saying why there are none. With one exception, which is
+    /// what this returns, a response for the response characteristic: the
+    /// refusal of an id that is open already. On the stream characteristic
+    /// a response without `more` under that id would read as the end of the
+    /// stream that is open, which carries on.
+    async fn open(
+        &self,
+        peer: PeerId,
+        alive: &AtomicBool,
+        request: &Request,
+        replaceable: Replaceable,
+    ) -> Option<Vec<u8>> {
+        let id = request.id;
+        let slot = match self.outbox.open(peer, id, alive) {
+            Ok(slot) => slot,
+            Err(Refused::Duplicate) => {
+                return Refused::Duplicate
+                    .status(id)
+                    .map(|status| ending(id, &status));
+            }
+            Err(refused) => {
+                // Too many: the id is no open stream's (that was looked at
+                // first), so on the stream characteristic it ends nothing
+                // but itself.
+                if let Some(status) = refused.status(id) {
+                    self.outbox.notice(ending(id, &status));
+                }
+                return None;
+            }
+        };
+        match self.handler.open(&request.method, &request.payload).await {
+            Ok(messages) => {
+                tokio::spawn(stream::read(
+                    self.outbox.clone(),
+                    slot,
+                    messages,
+                    replaceable,
+                ));
+            }
+            Err(status) => {
+                slot.finish(ending(id, &status));
+                self.outbox.wake();
+            }
+        }
+        None
+    }
+
     /// Takes one chunk written by `peer` and answers it: the chunks to send
     /// back on the response characteristic, when the chunk completed a
     /// request. [`Link::submit`] is this with the answer queued instead of
@@ -279,10 +433,11 @@ impl<H: Handler> Link<H> {
     /// the exchange in one call, for tests.
     #[cfg(test)]
     pub(crate) async fn on_write(&self, peer: PeerId, mtu: u16, chunk: &[u8]) -> Vec<Vec<u8>> {
-        match self.push(peer, mtu, chunk) {
-            Some(frame) => self.respond(&frame).await,
-            None => Vec::new(),
-        }
+        let Some(frame) = self.push(peer, mtu, chunk) else {
+            return Vec::new();
+        };
+        let alive = self.peers.lock().touch(peer, None).alive.clone();
+        self.serve(peer, &alive, &frame).await.unwrap_or_default()
     }
 
     /// Takes one chunk written by `peer`. A request it completes is queued
@@ -299,6 +454,7 @@ impl<H: Handler> Link<H> {
                 let (queue, waiting) = mpsc::channel(QUEUE_DEPTH);
                 tokio::spawn(work(
                     Arc::downgrade(self),
+                    peer,
                     entry.alive.clone(),
                     waiting,
                     self.responses.clone(),
@@ -339,10 +495,12 @@ impl<H: Handler> Link<H> {
         let Some(encoded) = encoded else {
             return;
         };
+        self.control.enter();
         let sent = chunks(&encoded, self.chunk_size())
             .ok()
             .is_some_and(|chunks| self.status_out.try_send(chunks).is_ok());
         if !sent {
+            self.control.leave();
             self.status.lock().unsend();
         }
     }
@@ -351,6 +509,7 @@ impl<H: Handler> Link<H> {
 /// Answers one peer's requests, one at a time, in order.
 async fn work<H: Handler>(
     link: Weak<Link<H>>,
+    peer: PeerId,
     alive: Arc<AtomicBool>,
     mut waiting: mpsc::Receiver<Vec<u8>>,
     responses: mpsc::Sender<Vec<Vec<u8>>>,
@@ -363,9 +522,19 @@ async fn work<H: Handler>(
         let Some(link) = link.upgrade() else {
             break;
         };
-        let answer = link.respond(&frame).await;
+        let answer = link.serve(peer, &alive, &frame).await;
+        let control = link.control();
         drop(link);
-        if !alive.load(Ordering::Acquire) || responses.send(answer).await.is_err() {
+        let Some(answer) = answer else {
+            continue;
+        };
+        if !alive.load(Ordering::Acquire) {
+            break;
+        }
+        // Waiting from here on, so a stream gives way to it.
+        control.enter();
+        if responses.send(answer).await.is_err() {
+            control.leave();
             break;
         }
     }
@@ -395,6 +564,7 @@ mod tests {
                     code: 0,
                     message: String::new(),
                     payload: request.payload,
+                    more: false,
                 }
                 .encode_to_vec()
             })
@@ -413,6 +583,7 @@ mod tests {
                     code: 0,
                     message: String::new(),
                     payload: vec![7; self.0],
+                    more: false,
                 }
                 .encode_to_vec()
             })
@@ -439,6 +610,7 @@ mod tests {
             id,
             method: "Play".into(),
             payload,
+            cancel: false,
         }
         .encode_to_vec()
     }
