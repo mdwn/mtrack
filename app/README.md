@@ -13,7 +13,9 @@ It follows the phone's light or dark setting.
 
 - `lib/src/protocol/` is pure Dart with no Flutter or plugin imports: the chunk framing
   (`frame_codec.dart`, a port of `src/controller/ble/codec.rs`), the `PlayerClient` that numbers,
-  frames and matches calls, the playback clock, and `PlayerTransport`, the seam to the radio.
+  frames and matches calls and carries server streams (`openStream`: messages on the `stream`
+  characteristic, a cancel, an id kept until the player's last response), the playback clock, and
+  `PlayerTransport`, the seam to the radio.
 - `lib/src/app/` is the application layer, also with no plugin imports, and where every decision is
   made:
   - `Session` (a `ChangeNotifier`) owns the connection and everything the screens show: it finds the
@@ -26,6 +28,10 @@ It follows the phone's light or dark setting.
     `ScreenWake` are the other two seams.
   - `sections.dart` turns a song's sections and beat grid into time ranges, the way the player does
     when it seeks to or loops a section.
+  - `stage_watch.dart` keeps the player's stage stream (`WatchStage`) open while anything listens
+    to `Session.watchStage()`: one stream for every listener, opened again after a reconnect, with a
+    reset before each new stream. It hands on the serialized messages and decodes nothing. No
+    screen uses it yet.
 - `lib/src/ble/` (`ble_transport.dart`, `ble_link.dart`) is the only code that touches the Bluetooth
   plugin. `lib/src/platform/` holds the other two plugin adapters (`shared_preferences`,
   `wakelock_plus`). None of these can be tested without a phone, so each is kept to translating calls.
@@ -99,6 +105,13 @@ on a device:
   characteristic is used, so the app reads `status` to start it.
 - The permission prompts, "Bluetooth off" detection, and what the adapter reports while the system
   is still starting.
+- The `stream` characteristic: that discovery lists it on both platforms, that subscribing to it
+  works, and that a player from before streams (which has none) still connects. A phone that
+  bonded before the player had it may remember the service without it: on Android the app then
+  discovers once more with the phone's cache dropped (`clearGattCache`, a hidden call), which has
+  never run; iOS has no such call and relies on the player telling the phone its services changed.
+- Stream messages and call answers interleaving on the air, and what the stage stream does to the
+  latency of a tap.
 - A dropped link being noticed, and reconnecting after it, including a phone that leaves and returns
   to range, and the player restarting.
 - The remembered player surviving a launch, and the phone's per-app identifier for the player (a
