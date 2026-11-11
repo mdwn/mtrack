@@ -17,7 +17,11 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mtrack_remote/src/app/lighting_assets.dart';
 import 'package:mtrack_remote/src/app/stage_server.dart';
+import 'package:mtrack_remote/src/protocol/player_client.dart';
+
+import '../support/fake_player.dart';
 
 /// An answer read off a socket.
 class Answer {
@@ -345,6 +349,184 @@ void main() {
       } finally {
         files['stage.html'] = kept;
       }
+    });
+  });
+
+  group('lighting assets', () {
+    const rig = 'abc123/rig-def-v2.json';
+    late StageServer assetServer;
+    late int assetPort;
+    late String assetPrefix;
+    final sourced = <String>[];
+    Future<Uint8List?> Function(String path) source = (_) async => null;
+
+    Future<Answer> ask(String path, {String method = 'GET'}) => send(
+      assetPort,
+      '$method $assetPrefix/api/lighting/assets/$path HTTP/1.1\r\n'
+      'Host: 127.0.0.1:$assetPort\r\n'
+      'Connection: close\r\n\r\n',
+    );
+
+    setUp(() async {
+      sourced.clear();
+      source = (path) async => switch (path) {
+        rig => Uint8List.fromList(utf8.encode('{"nodes":[]}')),
+        'abc123/models/Pan Tilt.glb' => Uint8List.fromList([0x67, 0x6c]),
+        'abc123/thumbnail.png' => Uint8List.fromList([0x89, 0x50]),
+        'abc123/thumbnail.svg' => Uint8List.fromList(utf8.encode('<svg/>')),
+        _ => null,
+      };
+      assetServer = StageServer(
+        load: (path) async =>
+            files[path] == null ? null : Uint8List.fromList(files[path]!),
+        assets: (path) {
+          sourced.add(path);
+          return source(path);
+        },
+      );
+      final at = await assetServer.start();
+      assetPort = at.port;
+      assetPrefix = '/${at.pathSegments.first}';
+    });
+
+    tearDown(() => assetServer.stop());
+
+    for (final (path, type) in [
+      (rig, 'application/json'),
+      ('abc123/models/Pan%20Tilt.glb', 'model/gltf-binary'),
+      ('abc123/thumbnail.png', 'image/png'),
+      ('abc123/thumbnail.svg', 'image/svg+xml'),
+    ]) {
+      test('serves $path as $type, not to be sniffed', () async {
+        final answer = await ask(path);
+        expect(answer.status, 200);
+        expect(answer.headers['content-type'], type);
+        expect(answer.headers['x-content-type-options'], 'nosniff');
+        expect(answer.headers['content-length'], '${answer.body.length}');
+        expect(answer.body, isNotEmpty);
+      });
+    }
+
+    test('asks for a path as the player names it, unescaped', () async {
+      await ask('abc123/models/Pan%20Tilt.glb');
+      expect(sourced, ['abc123/models/Pan Tilt.glb']);
+    });
+
+    test('one the player does not have is a 404', () async {
+      final answer = await ask('abc123/missing.glb');
+      expect(answer.status, 404);
+      expect(sourced, ['abc123/missing.glb']);
+    });
+
+    test('one that cannot be had now is a 503', () async {
+      source = (_) async =>
+          throw const AssetUnavailable(AssetFailure.unavailable, 'no link');
+      expect((await ask(rig)).status, 503);
+    });
+
+    test('a path that is not an asset\'s never reaches the source', () async {
+      for (final path in [
+        'abc123/rig.js',
+        'abc123/rig.html',
+        'abc123/noextension',
+        '%2E%2E/%2E%2E/secret.json',
+        'abc123/%2Ehidden.json',
+        'abc123/a%5Cb.json',
+        'abc123/rig%00.json',
+        'abc123/%20lead.json',
+        '',
+      ]) {
+        expect((await ask(path)).status, 404, reason: path);
+      }
+      expect(sourced, isEmpty);
+    });
+
+    test('only under the random name, and to its own Host', () async {
+      final wrong = await send(
+        assetPort,
+        'GET /api/lighting/assets/$rig HTTP/1.1\r\n'
+        'Host: 127.0.0.1:$assetPort\r\nConnection: close\r\n\r\n',
+      );
+      expect(wrong.status, 404);
+      final foreign = await send(
+        assetPort,
+        'GET $assetPrefix/api/lighting/assets/$rig HTTP/1.1\r\n'
+        'Host: evil.example:$assetPort\r\nConnection: close\r\n\r\n',
+      );
+      expect(foreign.status, 403);
+      expect(sourced, isEmpty);
+    });
+
+    test('without a source, every asset is a 404', () async {
+      final bare = StageServer(load: (_) async => null);
+      try {
+        final at = await bare.start();
+        final answer = await send(
+          at.port,
+          'GET /${at.pathSegments.first}/api/lighting/assets/$rig HTTP/1.1\r\n'
+          'Host: 127.0.0.1:${at.port}\r\nConnection: close\r\n\r\n',
+        );
+        expect(answer.status, 404);
+      } finally {
+        await bare.stop();
+      }
+    });
+
+    group('fetched from the player', () {
+      late FakePlayer fake;
+      late PlayerClient client;
+      late LightingAssets assets;
+
+      setUp(() {
+        fake = FakePlayer();
+        client = PlayerClient(fake);
+        assets = LightingAssets(client: () => client, isReady: () => true)
+          ..linkChanged(ready: true);
+        source = assets.get;
+      });
+
+      tearDown(() async {
+        assets.dispose();
+        await client.dispose();
+      });
+
+      test('a request waits for its asset to come', () async {
+        final answer = ask(rig);
+        while (fake.openStreams.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 2));
+        }
+        fake.sendAsset(
+          fake.openStreams.single,
+          utf8.encode('{"nodes":[1]}'),
+          gzip: true,
+        );
+        final got = await answer;
+        expect(got.status, 200);
+        expect(got.text, '{"nodes":[1]}');
+      });
+
+      test('requests for one asset at once share one fetch', () async {
+        final asked = Future.wait([ask(rig), ask(rig), ask(rig)]);
+        while (sourced.length < 3 || fake.openStreams.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 2));
+        }
+        fake.sendAsset(fake.openStreams.single, utf8.encode('{"nodes":[]}'));
+        final answers = await asked;
+        expect(answers.map((a) => a.status), [200, 200, 200]);
+        expect(answers.map((a) => a.text).toSet(), {'{"nodes":[]}'});
+        expect(fake.assetsAsked, [rig]);
+      });
+
+      test('NOT_FOUND from the player is a 404', () async {
+        fake.assets = {};
+        expect((await ask('abc123/gone.glb')).status, 404);
+      });
+
+      test('an older player is a 503', () async {
+        fake.streamMethods.remove('GetLightingAsset');
+        expect((await ask(rig)).status, 503);
+        expect(assets.tooOld, isTrue);
+      });
     });
   });
 

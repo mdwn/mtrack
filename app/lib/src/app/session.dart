@@ -21,8 +21,10 @@ import '../protocol/playback_clock.dart';
 import '../protocol/player_client.dart';
 import '../protocol/player_exception.dart';
 import '../protocol/transport.dart';
+import 'asset_cache.dart';
 import 'failure.dart';
 import 'levels.dart';
+import 'lighting_assets.dart';
 import 'player_link.dart';
 import 'playlist_edit.dart';
 import 'ports.dart';
@@ -119,7 +121,8 @@ typedef Monotonic = Duration Function();
 /// reaches the radio only through a [PlayerLink], so every decision in it is
 /// tested without one.
 class Session extends ChangeNotifier {
-  /// A session over [link], remembering its player in [store].
+  /// A session over [link], remembering its player in [store], and keeping
+  /// the lighting assets it fetches in [assetCache] (none kept when null).
   Session({
     required this._link,
     required this._store,
@@ -127,6 +130,7 @@ class Session extends ChangeNotifier {
     Monotonic? monotonic,
     this._backoff = reconnectBackoff,
     PlayerClient Function(PlayerTransport)? clientFactory,
+    LightingAssetCache? assetCache,
   }) : _monotonic = monotonic ?? _stopwatchClock(),
        _clientFactory = clientFactory ?? PlayerClient.new {
     clock = PlaybackClock(_monotonic);
@@ -142,6 +146,11 @@ class Session extends ChangeNotifier {
       lostIfUnanswered: _lostIfUnanswered,
       changed: _notify,
     );
+    lightingAssets = LightingAssets(
+      client: () => _client,
+      isReady: () => isReady,
+      cache: assetCache,
+    )..addListener(_assetsChanged);
   }
 
   final PlayerLink _link;
@@ -156,6 +165,10 @@ class Session extends ChangeNotifier {
 
   /// The output tracks' gains and mutes, for the Levels tab.
   late final Levels levels;
+
+  /// The player's lighting assets, for the 3D view of the Lights tab.
+  late final LightingAssets lightingAssets;
+  bool _assetsTooOld = false;
 
   late final StageWatch _stage;
 
@@ -250,7 +263,8 @@ class Session extends ChangeNotifier {
   /// for a sentence; empty when it has everything, or when nothing has been
   /// heard from a player yet. Each feature came with a field in the status,
   /// so a status without the field is from before the feature; the stage
-  /// view came with streams instead (see [stageMissingFromPlayer]).
+  /// view came with streams instead (see [stageMissingFromPlayer]), and its
+  /// 3D with `GetLightingAsset` (see [LightingAssets.tooOld]).
   List<String> get missingFromPlayer {
     final status = _status;
     if (status == null) {
@@ -261,7 +275,17 @@ class Session extends ChangeNotifier {
       if (!status.hasLocked()) 'playlist editing',
       if (!status.hasLocked()) 'the lock',
       if (_stage.missing) 'the light view',
+      if (!_stage.missing && lightingAssets.tooOld) 'the 3D light view',
     ];
+  }
+
+  /// The settings sheet names a player too old for the 3D view, so it
+  /// hears when that is learned or forgotten.
+  void _assetsChanged() {
+    if (lightingAssets.tooOld != _assetsTooOld) {
+      _assetsTooOld = lightingAssets.tooOld;
+      _notify();
+    }
   }
 
   /// True when the connected player is too old to show its stage: it has no
@@ -451,6 +475,7 @@ class Session extends ChangeNotifier {
     _endEdit();
     clock.reset();
     _stage.clear();
+    lightingAssets.clear();
     _setPhase(ConnectionPhase.noPlayer);
   }
 
@@ -1084,6 +1109,7 @@ class Session extends ChangeNotifier {
     _phase = phase;
     _updateWake();
     _stage.linkChanged(ready: phase == ConnectionPhase.ready);
+    lightingAssets.linkChanged(ready: phase == ConnectionPhase.ready);
     _notify();
     levels.check();
   }
@@ -1136,6 +1162,9 @@ class Session extends ChangeNotifier {
     }
     levels.dispose();
     _stage.dispose();
+    lightingAssets
+      ..removeListener(_assetsChanged)
+      ..dispose();
     _edit?.dispose();
     _edit = null;
     unawaited(_notices.close());

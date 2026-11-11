@@ -90,10 +90,11 @@ build-ui:
 	fi
 
 ## Build the stage-only page (the phone app's Lights tab: the web UI's stage plot, fed the
-## gRPC stage stream by its host; src/stage-main.ts) into dist-stage/. Skips if its inputs are
-## unchanged: the frontend's, and the page's own two files outside src/.
+## gRPC stage stream by its host; src/stage-main.ts) into dist-stage/. With MTRACK_STAGE_3D=1
+## it has its 3D view too (app-stage-assets builds it so). Skips if its inputs are unchanged:
+## the frontend's, the page's own two files outside src/, and whether it has 3D.
 STAGE_INPUTS := $(SVELTE_DIR)/stage.html $(SVELTE_DIR)/vite.stage.config.ts
-STAGE_HASH := $(shell (echo $(FRONTEND_HASH); cat $(STAGE_INPUTS) 2>/dev/null) | git hash-object --stdin)
+STAGE_HASH := $(shell (echo $(FRONTEND_HASH) 3d=$(MTRACK_STAGE_3D); cat $(STAGE_INPUTS) 2>/dev/null) | git hash-object --stdin)
 STAGE_STAMP := $(SVELTE_DIR)/dist-stage/.build-stamp
 
 build-stage-ui:
@@ -105,12 +106,14 @@ build-stage-ui:
 		echo "$(STAGE_HASH)" > "$(STAGE_STAMP)"; \
 	fi
 
-## Put the stage-only page among the phone app's assets (app/assets/stage, gitignored), where
-## the app's builds take it from: the Lights tab shows it in a web view. `flutter analyze` and
-## `flutter test` do not need it; `flutter build` and `flutter run` ship whatever is there.
+## Put the stage-only page, with its 3D view, among the phone app's assets (app/assets/stage,
+## gitignored), where the app's builds take it from: the Lights tab shows it in a web view.
+## `flutter analyze` and `flutter test` do not need it; `flutter build` and `flutter run` ship
+## whatever is there.
 APP_STAGE_DIR := $(ROOT_DIR)/app/assets/stage
 
-app-stage-assets: build-stage-ui
+app-stage-assets:
+	$(MAKE) build-stage-ui MTRACK_STAGE_3D=1
 	@# Everything but the .gitignore files that keep the two directories in a checkout.
 	find "$(APP_STAGE_DIR)" -type f ! -name .gitignore -delete
 	cp "$(SVELTE_DIR)/dist-stage/stage.html" "$(APP_STAGE_DIR)/"

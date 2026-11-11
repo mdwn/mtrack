@@ -13,9 +13,9 @@ light or dark setting.
 ## The Lights tab
 
 At the top is the ambient light's control (Auto, On, Off, and what the light is doing). Under it,
-filling the rest of the tab, is the player's stage plot, live: the web UI's own stage view, running
-in a web view from a copy of the page that ships inside the app, and fed the player's stage stream
-(`WatchStage`) over Bluetooth. The app draws nothing of it and decodes nothing: it hands each
+filling the rest of the tab, is the player's stage, live, as a plot or in 3D: the web UI's own stage
+view, running in a web view from a copy of the page that ships inside the app, and fed the player's
+stage stream (`WatchStage`) over Bluetooth. The app draws nothing of it and decodes nothing: it hands each
 message of the stream to the page. The design is
 [`design/bluetooth_light_view_design.md`](../design/bluetooth_light_view_design.md); its §8.1 is the
 contract between the app and the page.
@@ -26,17 +26,27 @@ contract between the app and the page.
   the lights." with a **Try again** when the page cannot be loaded; and, against a player from
   before the stage stream, that the player is too old to show its lights. While the link is down the
   last picture stays, dimmed, under the "Reconnecting…" banner.
-- The plot is a picture: no touch reaches the page.
+- Touches reach the page: its **Plot | 3D** switch, and the 3D view, which turns under a finger. The
+  plot itself takes no touch. The view shown is remembered for the next launch.
+- The 3D view draws each fixture from its model, which the app fetches from the player
+  (`GetLightingAsset`, one file at a time, gzipped) the first time it is needed and keeps in its
+  cache directory (`lib/src/app/asset_cache.dart`, at most 128 MiB, least recently used out first).
+  A model's path holds its content's hash, so the cache serves every player and never goes stale.
+  While models load the tab says so over the 3D view, with a bar; one that did not load is drawn as a
+  box, and the tab says so with a **Try again**. Against a player that cannot send models it says
+  the player is too old, and the models already in the cache still draw.
 - The page is served to the web view by a small HTTP server inside the app, on the phone's loopback
   address (`lib/src/app/stage_server.dart`): a web view will not load module scripts or streaming
   WebAssembly from a file. It listens on 127.0.0.1 only, on a port the system picks, serves only the
   bundled page's files, puts them under a random path made at each start, and refuses a request
-  whose `Host` is not its own. See [Network permission](#network-permission).
+  whose `Host` is not its own; the 3D view's models are answered under the same random path. See
+  [Network permission](#network-permission).
 
 ### The stage bundle
 
 The page is built from the web UI (`src/webui/svelte`, `make build-stage-ui`) and is not committed.
-`make app-stage-assets`, from the repository root, builds it and copies it to `assets/stage/`:
+`make app-stage-assets`, from the repository root, builds it with its 3D view
+(`MTRACK_STAGE_3D=1`) and copies it to `assets/stage/`:
 
 ```sh
 make app-stage-assets     # needs Node, Rust with the wasm32 target, wasm-pack, wasm-bindgen, wasm-opt
@@ -47,7 +57,8 @@ That is the web UI's toolchain (`./setup.sh` at the repository root installs it)
 `flutter test` do not need it: no test loads the real page. An app built without it works, and its
 Lights tab says "Could not show the lights." The two `.gitignore` files under `assets/stage/` keep
 the directories in a fresh checkout, so the asset entries in `pubspec.yaml` are true before the page
-is built; Flutter leaves hidden files out of the bundle. The page adds about 0.66 MB to the APK.
+is built; Flutter leaves hidden files out of the bundle. The page adds about 0.86 MB to the APK, of
+which 0.20 MB is the 3D view (three.js, mostly).
 
 ## Layout
 
@@ -55,7 +66,8 @@ is built; Flutter leaves hidden files out of the bundle. The page adds about 0.6
   (`frame_codec.dart`, a port of `src/controller/ble/codec.rs`), the `PlayerClient` that numbers,
   frames and matches calls and carries server streams (`openStream`: messages on the `stream`
   characteristic, a cancel, an id kept until the player's last response), the playback clock, and
-  `PlayerTransport`, the seam to the radio.
+  `PlayerTransport`, the seam to the radio. `asset_download.dart` joins and unpacks a lighting
+  asset as `GetLightingAsset` streams it.
 - `lib/src/app/` is the application layer, also with no plugin imports, and where every decision is
   made:
   - `Session` (a `ChangeNotifier`) owns the connection and everything the screens show: it finds the
@@ -75,8 +87,11 @@ is built; Flutter leaves hidden files out of the bundle. The page adds about 0.6
   - `stage_pusher.dart` hands that stream to the stage page, one JavaScript call at a time: nothing
     before the page is ready, resets and layouts in order and never dropped, the newest frame only,
     and the stream started over for a page that loads again.
-  - `stage_server.dart` is the loopback server the page is loaded from. It reads the files through
-    a function it is given, so its tests serve made-up files over real sockets.
+  - `stage_server.dart` is the loopback server the page is loaded from. It reads the files, and
+    the 3D view's lighting assets, through functions it is given, so its tests serve made-up files
+    over real sockets.
+  - `lighting_assets.dart` fetches the player's lighting assets for the 3D view, one at a time, and
+    `asset_cache.dart` keeps them on the phone.
 - `lib/src/ble/` (`ble_transport.dart`, `ble_link.dart`) is the only code that touches the Bluetooth
   plugin. `lib/src/platform/` holds the other plugin adapters: `shared_preferences`, `wakelock_plus`,
   and `webview_stage.dart`, the web view the Lights tab shows the stage page in (`webview_flutter`)
@@ -86,7 +101,8 @@ is built; Flutter leaves hidden files out of the bundle. The page adds about 0.6
   button (`hold_to_stop.dart`). No protocol logic. `stage_surface.dart` is the seam the Lights tab
   (`lights_screen.dart`) sees the web view through: `StageSurface` (load, run JavaScript, the page's
   messages, errors, a widget) and `StageHost` (where the page is, and a new surface).
-- `lib/main.dart` wires the real radio, store, wake lock and web view.
+- `lib/main.dart` wires the real radio, store, wake lock and web view, and puts the lighting asset
+  cache in the app's cache directory (`path_provider`).
 - `lib/gen/` is the protobuf messages, generated and not committed.
 - `assets/fonts/` holds Nunito, Inter and JetBrains Mono (variable fonts, SIL Open Font License; each
   `OFL.txt` is beside its font and shown on the app's licence page). They are bundled so the app needs
@@ -116,7 +132,8 @@ flutter test
 generator's version is pinned by `pubspec.lock`.
 
 The tests cover the connect sequence, reconnecting (with fake time), every action and its failures,
-the section arithmetic, the stage pusher, the loopback server (over real sockets), and each screen in
+the section arithmetic, the stage pusher, the loopback server (over real sockets), fetching and
+caching the lighting assets (the cache on a real temporary directory), and each screen in
 each state in both themes, at normal and 1.3x text, on a 360x640 phone, where a layout overflow fails
 the test. There are no golden-image tests: font
 rendering differs between machines.

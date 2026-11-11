@@ -22,9 +22,12 @@ import 'package:protobuf/well_known_types/google/protobuf/duration.pb.dart'
 
 import '../../gen/ble/v1/ble.pb.dart' as ble;
 import '../../gen/player/v1/player.pb.dart' as player;
+import 'asset_download.dart';
 import 'frame_codec.dart';
 import 'player_exception.dart';
 import 'transport.dart';
+
+export 'asset_download.dart' show AssetDownload, AssetProgress;
 
 /// Calls the player's `PlayerService` over a [PlayerTransport] and follows its
 /// status.
@@ -733,6 +736,26 @@ class PlayerClient {
     'WatchStage',
     player.WatchStageRequest(maxRate: maxRate).writeToBuffer(),
   );
+
+  /// Fetches the lighting asset at [path] (a path under the player's
+  /// `/api/lighting/assets/`), gzipped on the link and unpacked here. The
+  /// download starts at once; [onProgress] is told as its chunks arrive.
+  /// See [AssetDownload] for how it fails and how it is stopped.
+  ///
+  /// It is a stream, and takes one of the two a phone may have open until
+  /// [AssetDownload.freed]. Disposing of the client or losing the link ends
+  /// it with `UNAVAILABLE`.
+  AssetDownload getLightingAsset(String path, {AssetProgress? onProgress}) =>
+      AssetDownload(
+        openStream(
+          'GetLightingAsset',
+          player.GetLightingAssetRequest(
+            path: path,
+            gzip: true,
+          ).writeToBuffer(),
+        ),
+        onProgress: onProgress,
+      );
 }
 
 /// A stream the player has open for us, or is being asked for, or has been

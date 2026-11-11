@@ -12,11 +12,14 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
+import 'package:mtrack_remote/src/app/lighting_assets.dart';
 import 'package:mtrack_remote/src/ui/lights_screen.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 import 'package:mtrack_remote/src/ui/theme.dart';
@@ -363,22 +366,21 @@ void main() {
       expect(surface.calls, ['reset', 'L1', 'F1', 'F3']);
     });
 
-    appTest('is a picture to a screen reader, and takes no touches', (h) async {
-      await showLights(h);
+    appTest('takes touches, and is named to a screen reader', (h) async {
+      await h.openTab('Lights');
+      final surface = h.stage.surface;
       final view = find.byKey(const Key('stage-surface'));
+      // Under "Waiting for the lights…", the cover takes them.
+      await h.tester.tapAt(h.tester.getCenter(view));
+      expect(surface.touches, 0);
+
+      surface.ready();
+      await stream(h, stageLayout(1));
+      // The page's own: its Plot | 3D switch, and 3D turning under a finger.
+      await h.tester.tapAt(h.tester.getCenter(view));
+      await h.tester.dragFrom(h.tester.getCenter(view), const Offset(80, -40));
+      expect(surface.touches, 2);
       expect(find.bySemanticsLabel('Stage lights'), findsOneWidget);
-      expect(
-        h.tester.getSemantics(find.bySemanticsLabel('Stage lights')),
-        matchesSemantics(label: 'Stage lights', isImage: true),
-      );
-      expect(
-        find.ancestor(of: view, matching: find.byType(IgnorePointer)),
-        findsWidgets,
-      );
-      expect(
-        find.ancestor(of: view, matching: find.byType(ExcludeSemantics)),
-        findsWidgets,
-      );
       // Edge to edge, down to the tab bar.
       final box = h.tester.getRect(view);
       expect(box.left, 0);
@@ -601,6 +603,190 @@ void main() {
         findsOneWidget,
       );
     }, setup: (rig) => rig.player.hasStreams = false);
+  });
+
+  group('in 3D', () {
+    const rig = 'abc/rig-def-v2.json';
+
+    /// The page says it shows [view].
+    Future<void> view(AppHarness h, String view) async {
+      h.stage.surface.say(jsonEncode({'type': 'view', 'view': view}));
+      await h.settle();
+    }
+
+    /// The page asks for the asset at [path], as its 3D view does.
+    Uint8List? Function() ask(AppHarness h, String path) {
+      Uint8List? got;
+      Object? error;
+      var done = false;
+      h.session.lightingAssets
+          .get(path)
+          .then(
+            (bytes) {
+              got = bytes;
+              done = true;
+            },
+            onError: (Object e) {
+              error = e;
+              done = true;
+            },
+          );
+      return () {
+        expect(done, isTrue, reason: 'the asset came');
+        if (error != null) {
+          throw error!;
+        }
+        return got;
+      };
+    }
+
+    int assetStream(AppHarness h) => h.rig.player.openStreams.last;
+
+    appTest('starts in the view the phone showed last', (h) async {
+      await h.openTab('Lights');
+      expect(h.stage.surface.loads.single.queryParameters, {
+        'theme': 'dark',
+        'view': '3d',
+      });
+    }, stageView: '3d');
+
+    appTest('starts in the plot when nothing is remembered', (h) async {
+      await h.openTab('Lights');
+      expect(h.stage.surface.loads.single.queryParameters, {'theme': 'dark'});
+    });
+
+    appTest('remembers the view the page shows, and keeps it when the page '
+        'loads again', (h) async {
+      await showLights(h);
+      await view(h, 'plot');
+      await view(h, '3d');
+      expect(h.stage.remembered, ['plot', '3d']);
+      await h.lifecycle(AppLifecycleState.paused);
+      h.stage.page = Uri.parse('http://127.0.0.1:4001/other/stage.html');
+      await h.lifecycle(AppLifecycleState.resumed);
+      expect(h.stage.surface.loads.last.queryParameters['view'], '3d');
+    });
+
+    appTest('a view the page cannot be in is not remembered', (h) async {
+      await showLights(h);
+      await view(h, 'sideways');
+      expect(h.stage.remembered, isEmpty);
+    });
+
+    appTest('shows the models coming, over the 3D view', (h) async {
+      await showLights(h);
+      await view(h, '3d');
+      final one = ask(h, rig);
+      ask(h, 'abc/models/Base.glb');
+      await h.settle();
+      expect(find.byKey(const Key('models-loading')), findsOneWidget);
+      expect(find.text('$lightsModelsLoadingMessage 1 of 2'), findsOneWidget);
+      h.rig.player.sendAsset(
+        assetStream(h),
+        List.filled(100, 1),
+        chunk: 50,
+        end: false,
+      );
+      await h.settle();
+      final bar = h.tester.widget<LinearProgressIndicator>(
+        find.byType(LinearProgressIndicator),
+      );
+      expect(bar.value, 0.5);
+      h.rig.player.endStream(assetStream(h));
+      await h.settle();
+      expect(one(), hasLength(100));
+      expect(find.text('$lightsModelsLoadingMessage 2 of 2'), findsOneWidget);
+      h.rig.player.sendAsset(assetStream(h), List.filled(10, 1));
+      await h.settle();
+      expect(find.byKey(const Key('models-loading')), findsNothing);
+      // The stage page's own touches are not covered but where the note was.
+      expect(find.text(lightsWaitingMessage), findsNothing);
+    });
+
+    appTest('says nothing of models over the plot', (h) async {
+      await showLights(h);
+      await view(h, 'plot');
+      ask(h, rig);
+      await h.settle();
+      expect(find.byKey(const Key('models-loading')), findsNothing);
+    });
+
+    appTest('a model the player does not have is said, and can be asked for '
+        'again', (h) async {
+      h.rig.player.assets = {};
+      await showLights(h);
+      await view(h, '3d');
+      final got = ask(h, rig);
+      await h.settle();
+      expect(got(), isNull);
+      expect(find.text(lightsModelsMissingMessage), findsOneWidget);
+      // The plot still runs under it.
+      await stream(h, stageFrame(1));
+      expect(h.stage.surface.calls.last, 'F1');
+
+      await h.tester.tap(find.text('Try again'));
+      await h.settle();
+      expect(h.stage.surface.calls, contains('retry3d'));
+      expect(find.text(lightsModelsMissingMessage), findsNothing);
+    });
+
+    appTest('a model the link lost is said, and a new stream starts afresh', (
+      h,
+    ) async {
+      await showLights(h);
+      await view(h, '3d');
+      final got = ask(h, rig);
+      await h.settle();
+      h.rig.player.sendAsset(
+        assetStream(h),
+        List.filled(100, 1),
+        total: 1000,
+        end: false,
+      );
+      h.rig.player.disconnect();
+      await h.settle();
+      expect(got, throwsA(isA<AssetUnavailable>()));
+      await h.advance(const Duration(seconds: 5));
+      await h.settle();
+      // The page is fed the new stream from its start, and builds 3D anew.
+      await stream(h, stageLayout(2));
+      expect(find.text(lightsModelsFailedMessage), findsNothing);
+      ask(h, rig);
+      await h.settle();
+      h.rig.player.sendAsset(assetStream(h), List.filled(10, 1));
+      await h.settle();
+      expect(find.text(lightsModelsFailedMessage), findsNothing);
+    });
+
+    appTest('a failure while the link is up offers Try again', (h) async {
+      await showLights(h);
+      await view(h, '3d');
+      final got = ask(h, rig);
+      await h.settle();
+      h.rig.player.endStream(assetStream(h), code: 13, text: 'disk error');
+      await h.settle();
+      expect(got, throwsA(isA<AssetUnavailable>()));
+      expect(find.text(lightsModelsFailedMessage), findsOneWidget);
+      expect(find.text('Try again'), findsOneWidget);
+    });
+
+    appTest('an older player is told so, and named in the settings', (h) async {
+      h.rig.player.streamMethods.remove('GetLightingAsset');
+      await showLights(h);
+      await view(h, '3d');
+      ask(h, rig);
+      await h.settle();
+      expect(find.text(lightsModelsTooOldMessage), findsOneWidget);
+      expect(find.text('Try again'), findsNothing);
+      await openSettings(h);
+      expect(
+        find.text(
+          'This player runs an older mtrack, so the 3D light view is not '
+          'shown. Update mtrack on the player to use it.',
+        ),
+        findsOneWidget,
+      );
+    });
   });
 
   group('without the link', () {

@@ -26,7 +26,7 @@ abstract final class GrpcCode {
   /// The player did not answer in time.
   static const int deadlineExceeded = 4;
 
-  /// The named song, playlist or section does not exist.
+  /// The named song, playlist, section or lighting asset does not exist.
   static const int notFound = 5;
 
   /// The playlist to create already exists.
@@ -48,6 +48,10 @@ abstract final class GrpcCode {
 
   /// There is no link to the player.
   static const int unavailable = 14;
+
+  /// A lighting asset arrived short or damaged. The app's own: the player
+  /// sends what it has.
+  static const int dataLoss = 15;
 }
 
 /// A call that did not succeed: the player refused it, or no answer came.

@@ -256,9 +256,84 @@ As built (L3, app side):
   nothing to tap in this mode, and a web view that took gestures would
   scroll, zoom and select text. A screen reader is told "Stage lights", an
   image. 3D (L4) turns under a finger, and will need touches let through.
+  (L4 let them through: see below.)
 - **The web view is behind an interface** (`StageSurface`, `StageHost` in
   `app/lib/src/ui/stage_surface.dart`), with the real one in
   `app/lib/src/platform/webview_stage.dart`, the only part no test runs.
+
+As built (L4, app side):
+
+- **Fetching.** `PlayerClient.getLightingAsset` opens `GetLightingAsset`
+  with `gzip` set and returns an `AssetDownload`
+  (`app/lib/src/protocol/asset_download.dart`): the chunks joined as they
+  arrive, with progress, and unpacked at the end. Every chunk is taken the
+  moment it arrives, so the stream holds nothing for the listener and the
+  256 kB it would hold for a paused one is no limit on an asset. 64 MiB is
+  the most taken, as sent and once unpacked (the player's own cap); a total
+  over it is refused at the first chunk and the stream cancelled. Gzip is
+  unpacked a piece at a time and stopped at the cap, and its trailing length
+  is checked, since `dart:io` takes gzip that was cut short without a word.
+  An asset that arrives short of its total, or past it, is `DATA_LOSS`.
+- **One at a time.** `LightingAssets` (`app/lib/src/app/lighting_assets.dart`,
+  on the session) fetches in the order asked, and the next only once the
+  player has let go of the stream before, since the stage holds one of the
+  two a phone may have. Two asks for one path share a fetch. A download
+  that goes 30 seconds without a chunk is given up. Losing the link cancels
+  the one under way and fails those waiting.
+- **The cache** (`app/lib/src/app/asset_cache.dart`) is a directory of the
+  app's cache directory (`path_provider`, a new dependency), one file per
+  asset, named for its path with `/` written `%2F`. It is the app's, not a
+  player's: the path holds the content's hash. A file is written under a
+  temporary name and renamed, so a read never finds half of one. It is kept
+  under 128 MiB by deleting the least recently used after each write (a
+  read touches the file); a leftover temporary file over an hour old goes
+  too. Anything that fails there is a miss.
+- **Paths.** Only a path the player could have made is fetched, cached or
+  used as a file name: names of letters, digits, `.`, `_`, `-` and inner
+  spaces, none starting with a dot, no empty name, at most 200 characters,
+  and a `json`, `glb`, `png` or `svg` file. A mesh named with other
+  characters (GDTF does not forbid them) is not drawn.
+- **Serving.** The page asks for `api/lighting/assets/<path>` relative to
+  itself (§8), so under the server's random prefix; the server checks the
+  path, then answers from the cache or waits for the fetch: the player's
+  `NOT_FOUND` is a 404, anything else that keeps the asset from the phone
+  (no link, a lost link, too old) a 503. The type is the player's for the
+  kind, with `nosniff`. The prefix and the `Host` check stand as before.
+- **Touches reach the page.** The web view takes every touch on it at once
+  (an eager gesture recognizer). Nothing around it in the tab scrolls, and
+  the ambient card is above it, not under it, so nothing is fought over;
+  the covers over the page ("Waiting…", the dimmed picture) take the
+  touches they cover. In the plot the page has nothing to do with a touch
+  (the embedded card drags nothing), so a drag scrolls the page if it is
+  taller than the view; the page selects no text and shows no menu on a
+  long press. A screen reader is told "Stage lights" as a container, so the
+  Plot | 3D switch inside it can be reached; how the web view reads to one
+  is unverified.
+- **Progress and failure** are the app's, over the bottom of the 3D view,
+  since the app is what serves the files: while any are loading, "Loading
+  the 3D models…" with "n of m" and a bar; after a failure "Some 3D models
+  did not load, so they are drawn as boxes." (the 3D view draws a fixture
+  with no model as a box), or for `NOT_FOUND` only "The player does not
+  have some 3D models…", each with **Try again**, which calls the page's
+  `retry3d()`. A new stream (the page rebuilds its 3D view for it) and a
+  page load forget what failed. Over the plot nothing is said, and the plot
+  runs throughout.
+- **An older player.** Against a player with the stage stream but not
+  `GetLightingAsset` (it refuses the method as one it does not allow), the
+  switch stays: what the cache already holds still draws, since it is the
+  app's and not the player's. The tab says over 3D "This player runs an
+  older mtrack, so it cannot send the 3D models. Update mtrack on the player
+  to see them.", the settings sheet names "the 3D light view" among what
+  the player is too old for, and nothing more is asked of that player until
+  the link is made again.
+- **The view is remembered** across launches (`shared_preferences`,
+  `lights.view`): the page is loaded with `?view=3d` when 3D was showing,
+  and a page that loads again keeps the view it had.
+- **Size.** 3D adds three.js (639 kB, 160 kB gzipped), the scene (17 kB)
+  and the view (8 kB) to the bundle: about 170 kB gzipped, so the page is
+  about 285 kB gzipped besides the 462 kB rules module, near §3's 260 kB.
+  In the APK the page now takes 0.86 MB (2.33 MB of files), 0.20 MB more
+  than the plot alone.
 
 ## 8. What changes in the web UI
 
@@ -291,13 +366,32 @@ As built (L3, web UI side):
   kept, the card to the edges) and `threeD` (whether it offers 3D).
 - 3D is off in the stage build, and its code is left out of it. A build with
   `MTRACK_STAGE_3D=1` has the switch and the code: that is L4's to turn on,
-  once the app answers `/api/lighting/assets/`.
+  once the app answers `/api/lighting/assets/`. (L4 turned it on for the
+  app: below.)
 - The 3D view rebuilds only for metadata that differs from what its scene was
   built from. The comparison is in the view, not the stores: two pages of the
   web UI re-read from the server whenever metadata arrives, changed or not.
 - Size, gzipped: about 80 kB of script, 27 kB of strings (the web UI's whole
   English table, of which the page uses a handful), 6 kB of styles and the
   462 kB rules module, which still ships whole.
+
+As built (L4, web UI side):
+
+- `make app-stage-assets` builds the page with `MTRACK_STAGE_3D=1`; the
+  build stamp tells the two builds apart. `make build-stage-ui` and the
+  frontend checks still build it without.
+- The asset store's address is the 3D scene's `ASSETS`, now
+  `import.meta.env.VITE_STAGE_ASSET_BASE`, or `/api/lighting/assets/` when
+  that is not set. Only `vite.stage.config.ts` sets it, to
+  `api/lighting/assets/`, relative, so the page asks the host under
+  whatever path it was served from. The web UI's own build is as it was.
+- The show preview is left out of the stage build with or without 3D:
+  only the editing card opens it.
+- A card that is not editable takes `view` as the view it starts in, and
+  tells `onViewChange` when the person switches. The dashboard passes
+  neither and is as it was.
+- `StageOnly` builds its card again on `retry3d()`, in the view last
+  shown, so the 3D view starts from nothing and asks again for every file.
 
 ### 8.1 The host contract
 
@@ -319,14 +413,24 @@ window.mtrackStage = {
   /** Counters for the host's diagnostics: updates applied, frames dropped
    *  for a wrong layout id, decode errors, rendered frames a second. */
   stats(): { applied: number, dropped: number, errors: number, fps: number },
+  /** Build the 3D view again from nothing, asking again for every file it
+   *  could not have. Nothing happens in the plot or a page without 3D. */
+  retry3d(): void,
 };
 ```
 
 - The page tells the host things by
   `window.MtrackHost?.postMessage(JSON.stringify({type, ...}))`:
   `{type: 'ready'}` once, and `{type: 'error', message}` for an update that
-  does not decode and for uncaught errors and rejections. With no
+  does not decode and for uncaught errors and rejections. A page with 3D
+  also posts `{type: 'view', view}`, `'plot'` or `'3d'`: the view it starts
+  in, right after `ready`, and again whenever the person switches. With no
   `MtrackHost` it works the same.
+- A page with 3D starts in the plot, or in 3D when loaded with `?view=3d`.
+  Its 3D view asks the host for the player's lighting assets at
+  `api/lighting/assets/<path>`, relative to the page, and draws a fixture
+  whose model it could not have as a box. It takes touches: a drag turns
+  it.
 - `window.mtrackStage` exists once the page's script has run, which is before
   `ready`. The host waits for the page to load, or for `ready`, before its
   first call.
@@ -340,8 +444,8 @@ window.mtrackStage = {
   app's `surface` in both themes (`#FFFFFF`, `#231F20`).
 - With no layout, or a layout with no venue fixtures, or after `reset()`, the
   page says "No lights to show."
-- The page asks the network for nothing but its own files: no fonts, no API,
-  no websocket.
+- The page asks the network for nothing but its own files and, in 3D, the
+  lighting assets beside them: no fonts, no API, no websocket.
 
 On a desktop, with no phone: `npm run dev` in `src/webui/svelte`, then
 `/stage.html?dev=replay` plays the recorded stream and `/stage.html?dev=grpc`
@@ -362,7 +466,7 @@ the same either way.
 | L1 | `WatchStage` on gRPC, with tests against the websocket's messages |
 | L2 | Streams over Bluetooth: envelope, `stream` characteristic, newest wins |
 | L3 | The stage-only build, and the Lights tab with the plot |
-| L4 | `GetLightingAsset`, the cache, and 3D |
+| L4 | `GetLightingAsset`, the cache, and 3D (the app's side built; the player's in its own branch) |
 
 ## 11. Not verified
 
@@ -376,6 +480,15 @@ the same either way.
 - The stage-only build (§8) in a phone's web view: it has run in desktop
   Chromium only, from the dev server and from its built files. The spike that
   ran on a Pixel was fed JSON; this one decodes protobuf in the page.
+- 3D on a phone through the app (L4): the web view asking the app's server
+  for assets under the prefix, three.js from the bundle, a drag turning the
+  view in the web view rather than scrolling it, the progress note against
+  a real link, and `GetLightingAsset` against a real player (the app was
+  written against the proto; the player's side was built at the same time).
+  The built 3D page has run only in headless desktop Chromium, served under
+  a prefix by a stand-in server that answered no asset (every fixture a
+  box): it asked for its assets under the prefix, posted its views, and
+  asked again on `retry3d()`.
 - The Lights tab (§7) on a phone, all of it: the web view loading the page
   from the app's own server, the page's `ready` reaching the app, the plot
   drawing from the stream, and whether the server outlives the app's time in

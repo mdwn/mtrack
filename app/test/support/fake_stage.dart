@@ -26,15 +26,17 @@ List<int> stageLayout(int n) => [stageLayoutTag, n];
 List<int> stageFrame(int n) => [stageFrameTag, n];
 
 /// What a script the pusher ran does to the page, in order: `reset`,
-/// `theme:dark`, and `L3` or `F7` for an update made by [stageLayout] or
-/// [stageFrame].
+/// `theme:dark`, `retry3d`, and `L3` or `F7` for an update made by
+/// [stageLayout] or [stageFrame].
 List<String> stageCalls(String script) {
   final calls = <String>[];
-  final call = RegExp(r"s\.(reset|update|setTheme)\((?:'([^']*)')?\);");
+  final call = RegExp(r"s\.(reset|update|setTheme|retry3d)\((?:'([^']*)')?\);");
   for (final match in call.allMatches(script)) {
     switch (match.group(1)) {
       case 'reset':
         calls.add('reset');
+      case 'retry3d':
+        calls.add('retry3d');
       case 'setTheme':
         calls.add('theme:${match.group(2)}');
       default:
@@ -78,6 +80,21 @@ class FakeStageHost implements StageHost {
   @override
   Future<void> stop() async => stops++;
 
+  /// The view the host remembers, as [rememberView] last set it.
+  String? view;
+
+  /// Every view the tab asked to remember, in order.
+  final List<String> remembered = [];
+
+  @override
+  Future<String?> rememberedView() async => view;
+
+  @override
+  Future<void> rememberView(String view) async {
+    this.view = view;
+    remembered.add(view);
+  }
+
   @override
   StageSurface createSurface() {
     final surface = FakeStageSurface();
@@ -102,6 +119,9 @@ class FakeStageSurface implements StageSurface {
 
   /// True once the tab let go of it.
   bool disposed = false;
+
+  /// How many touches reached the page.
+  int touches = 0;
 
   final StreamController<String> _messages = StreamController.broadcast(
     sync: true,
@@ -145,7 +165,11 @@ class FakeStageSurface implements StageSurface {
   Stream<String> get errors => _errors.stream;
 
   @override
-  Widget get widget => const SizedBox.expand(key: Key('stage-surface'));
+  Widget get widget => Listener(
+    behavior: HitTestBehavior.opaque,
+    onPointerDown: (_) => touches++,
+    child: const SizedBox.expand(key: Key('stage-surface')),
+  );
 
   @override
   void dispose() {

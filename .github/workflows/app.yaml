@@ -157,7 +157,8 @@ jobs:
       run: |
         unzip -Z1 app/build/app/outputs/flutter-apk/app-debug.apk > apk-files.txt
         for wanted in 'stage/stage\.html$' 'stage/assets/stage-.*\.js$' \
-            'stage/assets/stage-.*\.css$' 'stage/assets/mtrack_rules_bg-.*\.wasm$'; do
+            'stage/assets/stage-.*\.css$' 'stage/assets/mtrack_rules_bg-.*\.wasm$' \
+            'stage/assets/Stage3DView-.*\.js$' 'stage/assets/three-.*\.js$'; do
           grep -Eq "assets/flutter_assets/assets/$wanted" apk-files.txt ||
             { echo "The APK has no $wanted"; exit 1; }
         done

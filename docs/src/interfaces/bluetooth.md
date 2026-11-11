@@ -296,6 +296,7 @@ on a phone. It finds a player, pairs, and then reconnects to it by itself. Its f
 the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
 current; switch to another playlist), the song's sections (tap to jump to one, hold to loop
 it), the output tracks' levels and mutes, and the lights: the ambient light's mode, and under it
-the stage plot the web UI draws, live from the [stage stream](#streams), to look at and not to
-touch. Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
+the stage the web UI draws, as a plot or in 3D, live from the [stage stream](#streams). The 3D
+view turns under a finger; its fixture models come from the player with `GetLightingAsset` and
+the app keeps them. Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
 Until the app is released, any client that follows the protocol above works.
