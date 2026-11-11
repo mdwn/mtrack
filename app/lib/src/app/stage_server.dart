@@ -17,12 +17,26 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'asset_cache.dart';
+import 'lighting_assets.dart';
+
 /// Reads one file of the stage bundle by its path inside it (`stage.html`,
 /// `assets/stage-abc.js`), or answers null when there is no such file.
 typedef StageAssetLoader = Future<Uint8List?> Function(String path);
 
+/// Answers the lighting asset at a path under the player's
+/// `/api/lighting/assets/` (one that passed [checkLightingAssetPath]): its
+/// bytes, null when the player has no such asset, or [AssetUnavailable]
+/// thrown when it cannot be had now.
+typedef LightingAssetSource = Future<Uint8List?> Function(String path);
+
 /// The page's file in the bundle.
 const String stagePageFile = 'stage.html';
+
+/// Where, under the server's prefix, the page asks for lighting assets: the
+/// stage build asks relative to itself (`VITE_STAGE_ASSET_BASE` in
+/// `vite.stage.config.ts`).
+const List<String> stageAssetRoute = ['api', 'lighting', 'assets'];
 
 /// The only kinds of file served, and what each is served as. The page loads
 /// its script as modules and its WebAssembly with `instantiateStreaming`,
@@ -59,12 +73,21 @@ final RegExp _segment = RegExp(r'^[A-Za-z0-9_-][A-Za-z0-9._-]*$');
 ///   resolves `.` and `..` in a path, and turns `\` into `/`, before it is
 ///   seen here; what is left must still start with the random name and be
 ///   made of plain names.)
+///
+/// The 3D view's lighting assets are asked for under the prefix, at
+/// `api/lighting/assets/<path>` ([stageAssetRoute]), and answered by
+/// [assets]: a path that is not an asset's ([checkLightingAssetPath]) is a
+/// 404 and never reaches it, an asset the player does not have is a 404, one
+/// that cannot be had now a 503. Such a request waits as long as its asset
+/// takes to come over the link.
 class StageServer {
-  /// A server of the files [load] reads. [random] makes the path's prefix.
-  StageServer({required this._load, Random? random})
+  /// A server of the files [load] reads, and of the lighting assets
+  /// [assets] answers (none without it). [random] makes the path's prefix.
+  StageServer({required this._load, this._assets, Random? random})
     : _random = random ?? Random.secure();
 
   final StageAssetLoader _load;
+  final LightingAssetSource? _assets;
   final Random _random;
 
   HttpServer? _server;
@@ -159,11 +182,25 @@ class StageServer {
         response.headers.set(HttpHeaders.allowHeader, 'GET, HEAD');
         return;
       }
-      final file = _fileFor(request.uri.path);
-      final type = file == null
-          ? null
-          : stageContentTypes[file.substring(file.lastIndexOf('.') + 1)];
-      final bytes = type == null ? null : await _load(file!);
+      final String? type;
+      final Uint8List? bytes;
+      final asset = _assetFor(request.uri);
+      if (asset != null) {
+        final source = _assets;
+        type = lightingAssetTypes[lightingAssetKind(asset)];
+        try {
+          bytes = source == null ? null : await source(asset);
+        } on AssetUnavailable {
+          response.statusCode = HttpStatus.serviceUnavailable;
+          return;
+        }
+      } else {
+        final file = _fileFor(request.uri.path);
+        type = file == null
+            ? null
+            : stageContentTypes[file.substring(file.lastIndexOf('.') + 1)];
+        bytes = type == null ? null : await _load(file!);
+      }
       if (bytes == null) {
         response.statusCode = HttpStatus.notFound;
         return;
@@ -187,6 +224,25 @@ class StageServer {
         // Nobody is there to hear it.
       }
     }
+  }
+
+  /// The lighting asset [uri] asks for, by its path under the player's
+  /// `/api/lighting/assets/`, or null when it asks for none: it is not under
+  /// the prefix and [stageAssetRoute], or the rest is not an asset's path.
+  /// Read from the decoded names, so a name the page had to escape (a
+  /// space) is the name the player gave.
+  String? _assetFor(Uri uri) {
+    final names = uri.pathSegments;
+    final lead = [_prefix, ...stageAssetRoute];
+    if (names.length <= lead.length) {
+      return null;
+    }
+    for (var i = 0; i < lead.length; i++) {
+      if (names[i] != lead[i]) {
+        return null;
+      }
+    }
+    return checkLightingAssetPath(names.skip(lead.length).join('/'));
   }
 
   /// The bundle's file a request path names, or null when it names none:

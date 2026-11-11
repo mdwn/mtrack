@@ -14,8 +14,10 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../app/stage_server.dart';
@@ -36,13 +38,40 @@ Future<Uint8List?> loadBundledStageAsset(String path) async {
 }
 
 /// The stage page as the app really shows it: the bundled files, served on
-/// the phone's loopback address, in a platform web view. Nothing here is
-/// run by a test; it is kept to what cannot be.
+/// the phone's loopback address with the lighting assets [assets] answers,
+/// in a platform web view. Nothing here is run by a test; it is kept to what
+/// cannot be.
 class WebViewStageHost implements StageHost {
-  /// A host that serves the bundled page.
-  WebViewStageHost() : _server = StageServer(load: loadBundledStageAsset);
+  /// A host that serves the bundled page, and the lighting assets [assets]
+  /// answers.
+  WebViewStageHost({
+    LightingAssetSource? assets,
+    SharedPreferencesAsync? preferences,
+  }) : _server = StageServer(load: loadBundledStageAsset, assets: assets),
+       _preferences = preferences ?? SharedPreferencesAsync();
+
+  static const String _viewKey = 'lights.view';
 
   final StageServer _server;
+  final SharedPreferencesAsync _preferences;
+
+  @override
+  Future<String?> rememberedView() async {
+    try {
+      return await _preferences.getString(_viewKey);
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> rememberView(String view) async {
+    try {
+      await _preferences.setString(_viewKey, view);
+    } on Object {
+      // Not remembered: the next launch starts in the plot.
+    }
+  }
 
   @override
   Future<Uri> serve() => _server.start();
@@ -150,8 +179,15 @@ class WebViewStageSurface implements StageSurface {
   @override
   Stream<String> get errors => _errors.stream;
 
+  /// Every touch on the web view is its own at once: nothing around it in
+  /// the app takes a drag, and the 3D view turns under one.
   @override
-  Widget get widget => WebViewWidget(controller: _controller);
+  Widget get widget => WebViewWidget(
+    controller: _controller,
+    gestureRecognizers: {
+      const Factory<OneSequenceGestureRecognizer>(EagerGestureRecognizer.new),
+    },
+  );
 
   @override
   void dispose() {

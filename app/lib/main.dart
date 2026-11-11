@@ -12,7 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
+import 'src/app/asset_cache.dart';
 import 'src/app/session.dart';
 import 'src/ble/ble_link.dart';
 import 'src/platform/preferences_store.dart';
@@ -28,7 +30,13 @@ void main() {
     link: BlePlayerLink(),
     store: PreferencesPlayerStore(),
     wake: const WakelockScreenWake(),
+    assetCache: LightingAssetCache(getApplicationCacheDirectory),
   );
   session.start();
-  runApp(MtrackApp(session: session, stage: WebViewStageHost()));
+  runApp(
+    MtrackApp(
+      session: session,
+      stage: WebViewStageHost(assets: session.lightingAssets.get),
+    ),
+  );
 }

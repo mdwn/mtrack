@@ -12,9 +12,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:fixnum/fixnum.dart';
 import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
+import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as player;
 import 'package:mtrack_remote/src/protocol/frame_codec.dart';
 import 'package:mtrack_remote/src/protocol/transport.dart';
 import 'package:protobuf/protobuf.dart';
@@ -105,8 +108,21 @@ class FakePlayer implements PlayerTransport {
     'SetLock',
   };
 
-  /// The stream methods a phone may open.
-  static const Set<String> streamMethods = {'WatchStage'};
+  /// The stream methods a phone may open. A test takes `GetLightingAsset`
+  /// out to play a player from before it.
+  final Set<String> streamMethods = {'WatchStage', 'GetLightingAsset'};
+
+  /// The lighting assets the player has, by path. With it set, a
+  /// `GetLightingAsset` stream is answered by itself: the file in chunks of
+  /// [assetChunk] bytes (gzipped when asked), or `NOT_FOUND`. Without it
+  /// the test answers, with [sendAsset].
+  Map<String, List<int>>? assets;
+
+  /// The size of the chunks [assets] are sent in.
+  int assetChunk = 400;
+
+  /// The paths asked for with `GetLightingAsset`, in order.
+  final List<String> assetsAsked = [];
 
   /// How many streams a phone may have open.
   static const int maxStreams = 2;
@@ -268,6 +284,24 @@ class FakePlayer implements PlayerTransport {
         );
       } else {
         openStreams.add(request.id);
+        if (request.method == 'GetLightingAsset') {
+          final asked = player.GetLightingAssetRequest.fromBuffer(
+            request.payload,
+          );
+          assetsAsked.add(asked.path);
+          final have = assets;
+          if (have != null) {
+            // A turn later, as a radio would: the client is still writing.
+            scheduleMicrotask(() {
+              final data = have[asked.path];
+              if (data == null) {
+                endStream(request.id, code: 5, text: 'no such asset');
+              } else {
+                sendAsset(request.id, data, gzip: asked.gzip);
+              }
+            });
+          }
+        }
         onStream?.call(request);
       }
       return;
@@ -322,6 +356,41 @@ class FakePlayer implements PlayerTransport {
       ble.Response(id: id, more: true, payload: payload),
       chunkSize: chunkSize,
     );
+  }
+
+  /// Sends [data] as lighting asset stream [id]'s chunks of [chunk] bytes
+  /// (gzipped first when [gzip]; [assetChunk] when not given), the first
+  /// saying the total ([total] in place of the true one), and ends the
+  /// stream unless [end] is false.
+  void sendAsset(
+    int id,
+    List<int> data, {
+    bool gzip = false,
+    int? chunk,
+    int? total,
+    bool end = true,
+  }) {
+    final sent = gzip ? GZipCodec().encode(data) : data;
+    final size = chunk ?? assetChunk;
+    for (var at = 0; at < sent.length || at == 0; at += size) {
+      final piece = sent.sublist(
+        at,
+        at + size > sent.length ? sent.length : at + size,
+      );
+      streamMessage(
+        id,
+        player.AssetChunk(
+          data: piece,
+          totalSize: at == 0 ? Int64(total ?? sent.length) : null,
+        ).writeToBuffer(),
+      );
+      if (sent.isEmpty) {
+        break;
+      }
+    }
+    if (end) {
+      endStream(id);
+    }
   }
 
   /// Ends stream [id] with its last response.

@@ -92,6 +92,7 @@ class AppHarness {
     bool known = true,
     Look look = const Look(Brightness.dark, 1.0),
     Size size = const Size(360, 640),
+    String? stageView,
   }) async {
     rig ??= Rig();
     tester.view.physicalSize = size * 3;
@@ -109,7 +110,7 @@ class AppHarness {
       wake: wake,
       monotonic: () => harness.now,
     );
-    final stage = FakeStageHost();
+    final stage = FakeStageHost()..view = stageView;
     harness = AppHarness._(tester, rig, store, wake, stage, session);
     rig.link.paired.add('p1');
     await tester.pumpWidget(MtrackApp(session: session, stage: stage));
@@ -157,7 +158,8 @@ class AppHarness {
 }
 
 /// A widget test over an [AppHarness], closed afterwards. [setup] shapes the
-/// rig before the app connects to it.
+/// rig before the app connects to it. [stageView] is the view of the Lights
+/// tab remembered from the last launch.
 void appTest(
   String name,
   Future<void> Function(AppHarness h) body, {
@@ -165,6 +167,7 @@ void appTest(
   Look look = const Look(Brightness.dark, 1.0),
   Size size = const Size(360, 640),
   bool known = true,
+  String? stageView,
 }) {
   testWidgets(name, (tester) async {
     await loadAppFonts();
@@ -177,6 +180,7 @@ void appTest(
       look: look,
       size: size,
       known: known,
+      stageView: stageView,
     );
     try {
       await body(harness);

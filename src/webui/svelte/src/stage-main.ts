@@ -52,12 +52,20 @@
 //     rendered frames a second (the page's animation frames, over the last
 //     second).
 //
+//   retry3d(): void
+//     Build the 3D view again from nothing, asking again for every file it
+//     could not have: for after a model did not load. Does nothing while
+//     the plot is showing, or in a page without 3D.
+//
 // The page to the host, when `window.MtrackHost` exists (a Flutter
 // JavaScript channel), as `window.MtrackHost.postMessage(JSON.stringify(m))`:
 //
 //   { type: 'ready' }            once, when `ready` turns true
 //   { type: 'error', message }   a decode error, an uncaught error or an
 //                                unhandled rejection
+//   { type: 'view', view }       a page with 3D only: 'plot' or '3d', the
+//                                view it starts in (right after `ready`)
+//                                and then whenever the person switches
 //
 // With no `MtrackHost` the page works the same and says nothing.
 //
@@ -68,9 +76,13 @@
 // before `ready`: a host waits for the page to load (or for the `ready`
 // message) before its first call, and may call `update` at once after that.
 //
-// 3D is off: the 3D view fetches the rig's models from the player's
-// /api/lighting/assets/, which a phone does not have yet. A build with
-// MTRACK_STAGE_3D=1 offers the Plot | 3D switch (vite.stage.config.ts).
+// 3D is in a build with MTRACK_STAGE_3D=1 only (vite.stage.config.ts),
+// which offers the Plot | 3D switch. The page then starts in the plot, or
+// in 3D when loaded as `stage.html?view=3d`. The 3D view asks the host for
+// the player's lighting assets (rig models, meshes, scenery) at
+// `api/lighting/assets/<path>`, relative to the page; the host answers
+// from wherever it has them. A file it cannot answer is drawn without:
+// a fixture as a plain box. The view takes touches: a drag turns it.
 
 import { waitLocale } from "./lib/i18n";
 import initRules from "./gen/rules/mtrack_rules";
@@ -88,6 +100,7 @@ export interface MtrackStage {
   reset(): void;
   setTheme(theme: string): void;
   stats(): { applied: number; dropped: number; errors: number; fps: number };
+  retry3d(): void;
 }
 
 declare global {
@@ -98,7 +111,12 @@ declare global {
   }
 }
 
-type HostMessage = { type: "ready" } | { type: "error"; message: string };
+type View = "plot" | "3d";
+
+type HostMessage =
+  | { type: "ready" }
+  | { type: "error"; message: string }
+  | { type: "view"; view: View };
 
 function tellHost(message: HostMessage): void {
   try {
@@ -129,7 +147,8 @@ window.addEventListener("unhandledrejection", (e) =>
 type Theme = "light" | "dark" | "system";
 const asTheme = (theme: string | null): Theme =>
   theme === "light" || theme === "dark" ? theme : "system";
-let theme = asTheme(new URLSearchParams(location.search).get("theme"));
+const query = new URLSearchParams(location.search);
+let theme = asTheme(query.get("theme"));
 const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)");
 function applyTheme(): void {
   const dark =
@@ -149,6 +168,8 @@ const counts = { applied: 0, dropped: 0, errors: 0 };
 let fps = 0;
 /** Updates given before the page was ready, oldest first. */
 let queued: string[] = [];
+/** The mounted page, once it is. */
+let page: { retry3d(): void } | null = null;
 
 function apply(base64: string): void {
   try {
@@ -176,6 +197,9 @@ const stage: MtrackStage = {
     applyTheme();
   },
   stats: () => ({ ...counts, fps }),
+  retry3d() {
+    page?.retry3d();
+  },
 };
 window.mtrackStage = stage;
 
@@ -205,18 +229,25 @@ async function start(): Promise<void> {
     target.textContent = "Could not load the player's rules module.";
     return;
   }
-  mount(StageOnly, {
+  const threeD = import.meta.env.VITE_STAGE_3D === "1";
+  const view: View = threeD && query.get("view") === "3d" ? "3d" : "plot";
+  page = mount(StageOnly, {
     target,
-    props: { threeD: import.meta.env.VITE_STAGE_3D === "1" },
+    props: {
+      threeD,
+      view,
+      onViewChange: (next: View) => tellHost({ type: "view", view: next }),
+    },
   });
   stage.ready = true;
   for (const base64 of queued.splice(0)) apply(base64);
   tellHost({ type: "ready" });
+  if (threeD) tellHost({ type: "view", view });
 
   // A desktop with no phone: `?dev=replay` or `?dev=grpc` on the dev server
   // (stage-dev.ts). Not in the built page.
   if (import.meta.env.DEV) {
-    const dev = new URLSearchParams(location.search).get("dev");
+    const dev = query.get("dev");
     if (dev) void import("./stage-dev").then((m) => m.startDev(dev));
   }
 }

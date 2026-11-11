@@ -301,6 +301,27 @@ void main() {
       expect(page.calls.last, ['theme:dark']);
     });
 
+    test('a 3D retry is sent by itself, once, and waits its turn', () async {
+      final page = ready()..layout(1);
+      page.pusher
+        ..retry3d()
+        ..retry3d();
+      expect(page.scripts, hasLength(1));
+      await page.returns();
+      expect(page.calls.last, ['retry3d']);
+      await page.returns();
+      expect(page.scripts, hasLength(2));
+    });
+
+    test('a 3D retry is not sent to a page that loaded again', () async {
+      final page = ready()..layout(1);
+      page.pusher.retry3d();
+      page.pusher.pageLoading();
+      page.pusher.pageReady();
+      await pumpEventQueue();
+      expect(page.all, isNot(contains('retry3d')));
+    });
+
     test('a call that fails is reported, and what waited is let go', () async {
       final page = ready()..layout(1);
       page.frame(1);

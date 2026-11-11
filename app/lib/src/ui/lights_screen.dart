@@ -38,6 +38,24 @@ const String lightsWaitingMessage = 'Waiting for the lights…';
 /// What the Lights tab says when the stage page could not be shown.
 const String lightsFailedMessage = 'Could not show the lights.';
 
+/// What the Lights tab says while the 3D view's models come from the player.
+const String lightsModelsLoadingMessage = 'Loading the 3D models…';
+
+/// What the Lights tab says when 3D models did not load and asking again
+/// may help.
+const String lightsModelsFailedMessage =
+    'Some 3D models did not load, so they are drawn as boxes.';
+
+/// What the Lights tab says when the player does not have some 3D models.
+const String lightsModelsMissingMessage =
+    'The player does not have some 3D models, so they are drawn as boxes.';
+
+/// What the Lights tab says in 3D against a player from before it could
+/// send the models, in the words of the settings sheet's note.
+const String lightsModelsTooOldMessage =
+    'This player runs an older mtrack, so it cannot send the 3D models. '
+    'Update mtrack on the player to see them.';
+
 /// How long the page may take to say it is ready before the tab gives up
 /// on it.
 const Duration stagePageTimeout = Duration(seconds: 20);
@@ -101,6 +119,16 @@ class _LightsScreenState extends State<LightsScreen>
   /// Moves with every load, so a load that was overtaken does nothing more.
   int _loads = 0;
 
+  /// The view the page shows, `plot` or `3d`, as it last said; null until
+  /// it has, and for a page without 3D, which never does.
+  String? _view;
+
+  /// The view remembered from the last launch, asked for as the tab is
+  /// made; [_rememberedKnown] once it has answered.
+  late final Future<String?> _remembered;
+  String? _rememberedView;
+  bool _rememberedKnown = false;
+
   Timer? _readyTimer;
   Timer? _errorWindow;
   int _pageErrors = 0;
@@ -112,6 +140,7 @@ class _LightsScreenState extends State<LightsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _foreground = _onScreen(WidgetsBinding.instance.lifecycleState);
+    _remembered = _askRememberedView();
   }
 
   /// Whether the app is on screen in [state]. `inactive` still is: the
@@ -251,15 +280,27 @@ class _LightsScreenState extends State<LightsScreen>
       return;
     }
     final load = ++_loads;
+    final assets = SessionScope.read(context).lightingAssets;
     bool overtaken() =>
         !mounted || load != _loads || !identical(surface, _surface);
     try {
+      // The page starts in the view it was showing, or failing that the
+      // one it showed when the app last ran. Asked for only the first time,
+      // and before then only if it has not answered yet.
+      if (_view == null && !_rememberedKnown) {
+        await _remembered;
+        if (overtaken()) {
+          return;
+        }
+      }
+      final view = _view ?? _rememberedView;
       final page = await widget.host.serve();
       if (overtaken() || (!force && page == _page)) {
         return;
       }
       _page = page;
       _pusher.pageLoading();
+      assets.clearFailures();
       _pageErrors = 0;
       _readyTimer?.cancel();
       _readyTimer = Timer(
@@ -270,12 +311,29 @@ class _LightsScreenState extends State<LightsScreen>
       if (overtaken()) {
         return;
       }
-      await surface.load(page.replace(queryParameters: {'theme': _themeName}));
+      await surface.load(
+        page.replace(
+          queryParameters: {
+            'theme': _themeName,
+            if (view == '3d') 'view': '3d',
+          },
+        ),
+      );
     } on Object catch (e) {
       if (!overtaken()) {
         _fail('could not load the page', e);
       }
     }
+  }
+
+  Future<String?> _askRememberedView() async {
+    try {
+      _rememberedView = await widget.host.rememberedView();
+    } on Object {
+      _rememberedView = null;
+    }
+    _rememberedKnown = true;
+    return _rememberedView;
   }
 
   void _listen(Session session) {
@@ -301,8 +359,13 @@ class _LightsScreenState extends State<LightsScreen>
   }
 
   void _onStage(StageEvent event) {
-    if (event is StageReset && _awaitingReset && mounted) {
-      setState(() => _awaitingReset = false);
+    if (event is StageReset && mounted) {
+      if (_awaitingReset) {
+        setState(() => _awaitingReset = false);
+      }
+      // The page builds its 3D view afresh for the new stream's layout, and
+      // asks again for what it lacks.
+      SessionScope.read(context).lightingAssets.clearFailures();
     }
     _pusher.add(event);
   }
@@ -321,6 +384,14 @@ class _LightsScreenState extends State<LightsScreen>
         _pusher.pageReady();
       case 'error':
         _pageError('${(message! as Map<String, dynamic>)['message']}');
+      case 'view':
+        final view = (message! as Map<String, dynamic>)['view'];
+        if ((view == 'plot' || view == '3d') && mounted) {
+          if (view != _view) {
+            setState(() => _view = view as String);
+          }
+          unawaited(widget.host.rememberView(view as String));
+        }
       default:
         debugPrint('Lights: the page said something unknown: $raw');
     }
@@ -353,6 +424,13 @@ class _LightsScreenState extends State<LightsScreen>
     _readyTimer?.cancel();
     setState(() => _failed = true);
     _sync();
+  }
+
+  /// "Try again" for 3D models that did not load: the page builds its 3D
+  /// view again, and asks again for each.
+  void _retryModels() {
+    SessionScope.read(context).lightingAssets.clearFailures();
+    _pusher.retry3d();
   }
 
   void _retry() {
@@ -403,7 +481,7 @@ class _LightsScreenState extends State<LightsScreen>
             child: Padding(
               padding: const EdgeInsets.only(top: 1),
               child: ListenableBuilder(
-                listenable: _pusher,
+                listenable: Listenable.merge([_pusher, session.lightingAssets]),
                 builder: (context, _) => _stageArea(context, session),
               ),
             ),
@@ -496,22 +574,93 @@ class _LightsScreenState extends State<LightsScreen>
     } else {
       over = null;
     }
+    final models = over == null && _view == '3d'
+        ? _modelsNote(context, session)
+        : null;
     return Stack(
       fit: StackFit.expand,
       children: [
         if (surface != null)
-          // A picture, not a control: the plot has nothing to tap, so no
-          // touch reaches the page, and a screen reader is told what it is
-          // instead of being walked through the page.
+          // Touches reach the page: its Plot | 3D switch is there, and 3D
+          // turns under a finger. The plot takes none for itself, so a drag
+          // on it scrolls the page, if the page has anywhere to scroll. A
+          // cover over it takes the touches it covers.
           Semantics(
             label: 'Stage lights',
-            image: true,
-            child: ExcludeSemantics(
-              child: IgnorePointer(child: surface.widget),
-            ),
+            container: true,
+            child: surface.widget,
           ),
         ?over,
+        if (models != null)
+          Positioned(left: 12, right: 12, bottom: 12, child: models),
       ],
+    );
+  }
+
+  /// What the tab says over the 3D view about its models, or null when
+  /// there is nothing to say: they are loading, the player is too old to
+  /// send them, or some did not load.
+  Widget? _modelsNote(BuildContext context, Session session) {
+    final colors = context.colors;
+    final assets = session.lightingAssets;
+    final Widget body;
+    if (assets.loading) {
+      body = Column(
+        key: const Key('models-loading'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            assets.count > 1
+                ? '$lightsModelsLoadingMessage '
+                      '${assets.done + 1} of ${assets.count}'
+                : lightsModelsLoadingMessage,
+            style: AppText.body.copyWith(color: colors.muted),
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: assets.fraction,
+            minHeight: 3,
+            color: colors.dim,
+            backgroundColor: colors.line,
+          ),
+        ],
+      );
+    } else if (assets.tooOld) {
+      body = Text(
+        lightsModelsTooOldMessage,
+        key: const Key('models-too-old'),
+        style: AppText.body.copyWith(color: colors.amber),
+      );
+    } else if (assets.failures > 0) {
+      body = Row(
+        key: const Key('models-failed'),
+        children: [
+          Expanded(
+            child: Text(
+              assets.onlyMissing
+                  ? lightsModelsMissingMessage
+                  : lightsModelsFailedMessage,
+              style: AppText.body.copyWith(color: colors.muted),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(onPressed: _retryModels, child: const Text('Try again')),
+        ],
+      );
+    } else {
+      return null;
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.line),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: body,
+      ),
     );
   }
 }

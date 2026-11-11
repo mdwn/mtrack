@@ -34,7 +34,9 @@ abstract class StageSurface {
   /// The page itself failing to load, described for a log.
   Stream<String> get errors;
 
-  /// The surface as a widget. It fills the box it is given.
+  /// The surface as a widget. It fills the box it is given, and takes every
+  /// touch on it: the page's Plot | 3D switch is pressed there, and the 3D
+  /// view turns under a finger.
   Widget get widget;
 
   /// Lets go of the page.
@@ -53,4 +55,11 @@ abstract class StageHost {
 
   /// A new surface to show the page in.
   StageSurface createSurface();
+
+  /// The view of the stage the page was last showing on this phone, `plot`
+  /// or `3d`, or null when none is remembered.
+  Future<String?> rememberedView();
+
+  /// Remembers [view] (`plot` or `3d`) for the next launch.
+  Future<void> rememberView(String view);
 }

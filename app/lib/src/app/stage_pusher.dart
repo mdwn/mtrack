@@ -81,6 +81,7 @@ class StagePusher extends ChangeNotifier {
   final List<_Kept> _kept = [];
   Uint8List? _frame;
   String? _theme;
+  bool _retry3d = false;
 
   bool _ready = false;
   bool _busy = false;
@@ -137,6 +138,7 @@ class StagePusher extends ChangeNotifier {
     _page++;
     _busy = false;
     _showing = false;
+    _retry3d = false;
     if (wasReady && _given) {
       _given = false;
       _kept.clear();
@@ -189,6 +191,18 @@ class StagePusher extends ChangeNotifier {
     _pump();
   }
 
+  /// The page is to build its 3D view again, asking again for the files it
+  /// could not have (`retry3d()`). Sent when the page is ready and no call
+  /// is out, like everything else; a page that loads again has no 3D view
+  /// to build again, so it is not sent to one.
+  void retry3d() {
+    if (_disposed) {
+      return;
+    }
+    _retry3d = true;
+    _pump();
+  }
+
   /// The stream was cancelled: what waited is of no use to the page. The
   /// page keeps what it shows until the next stream's reset.
   void clear() {
@@ -201,12 +215,14 @@ class StagePusher extends ChangeNotifier {
       return;
     }
     final theme = _theme;
+    final retry3d = _retry3d;
     final kept = List.of(_kept);
     final frame = _frame;
-    if (theme == null && kept.isEmpty && frame == null) {
+    if (theme == null && !retry3d && kept.isEmpty && frame == null) {
       return;
     }
     _theme = null;
+    _retry3d = false;
     _kept.clear();
     _frame = null;
 
@@ -214,6 +230,9 @@ class StagePusher extends ChangeNotifier {
     final script = StringBuffer('(function(){var s=window.mtrackStage;');
     if (theme != null) {
       script.write("s.setTheme('$theme');");
+    }
+    if (retry3d) {
+      script.write('s.retry3d();');
     }
     for (final item in kept) {
       script.write(
