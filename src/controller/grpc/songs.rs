@@ -525,6 +525,17 @@ fn key(name: &str) -> Yaml {
     Yaml::String(name.to_string())
 }
 
+/// A mapping key as the player reads it into a name: a string, or a
+/// number or a boolean written bare.
+fn key_text(key: &Yaml) -> Option<String> {
+    match key {
+        Yaml::String(s) | Yaml::Real(s) => Some(s.clone()),
+        Yaml::Integer(i) => Some(i.to_string()),
+        Yaml::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// Sets `name` in `map` to `value`, in its place when it is there; removes
 /// it for `None`.
 fn put(map: &mut Hash, name: &str, value: Option<Yaml>) {
@@ -674,12 +685,20 @@ fn apply(
             .unwrap_or_default();
         let mut next = Hash::new();
         // Those kept, in the file's order, then the new ones.
-        for (name, node) in &old_nodes {
-            let Some(name) = name.as_str() else { continue };
+        for (written, node) in &old_nodes {
+            let Some(name) = key_text(written) else {
+                continue;
+            };
             if let Some(sample) = wanted.iter().find(|s| s.original_name == name) {
                 let edited =
-                    edit_sample(node.clone(), config.samples().get(name), sample, &allowed)?;
-                next.insert(key(&sample.name), edited);
+                    edit_sample(node.clone(), config.samples().get(&name), sample, &allowed)?;
+                // A name kept is kept as written (`808:` stays a number).
+                let named = if sample.name == name {
+                    written.clone()
+                } else {
+                    key(&sample.name)
+                };
+                next.insert(named, edited);
             }
         }
         for sample in wanted.iter().filter(|s| s.original_name.is_empty()) {
@@ -1271,6 +1290,30 @@ notification_audio:
         let song = parse(&out).unwrap();
         assert_eq!(song.sample_triggers()[0].sample(), "kick");
         assert_same_but(FULL, &out, &["samples"]);
+    }
+
+    #[test]
+    fn a_sample_named_by_a_number_is_kept_as_written() {
+        let text =
+            "name: N\ntracks: []\nsamples:\n  808:\n    file: a.wav\n  snare:\n    file: b.wav\n";
+        let config = parse(text).unwrap();
+        let mut samples: Vec<SongSample> = config
+            .samples()
+            .iter()
+            .map(|(name, def)| sample_message(name, def))
+            .collect();
+        samples.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(samples[0].name, "808");
+        samples[1].retrigger = "polyphonic".into();
+        let req = UpdateSongSettingsRequest {
+            samples: Some(SongSamples { samples }),
+            ..Default::default()
+        };
+        let out = apply(text, &config, &req, &[]).unwrap();
+        let map = tree(&out);
+        let kept = map[&key("samples")].as_hash().unwrap();
+        assert!(kept.contains_key(&Yaml::Integer(808)), "{out}");
+        assert_eq!(parse(&out).unwrap().samples().len(), 2);
     }
 
     #[test]
