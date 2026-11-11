@@ -741,6 +741,23 @@ message StageFrame {
     uint32 layout = 7;
 }
 
+// GetLightingAssetRequest asks for one file of the lighting asset store.
+message GetLightingAssetRequest {
+    // The path under /api/lighting/assets/, as a layout names it (a
+    // fixture's rig, the venue's scenery) or as a rig or scenery file names
+    // a mesh beside it.
+    string path = 1;
+    // Send the file gzipped; the chunks join into one gzip stream.
+    bool gzip = 2;
+}
+
+// AssetChunk is one piece of a lighting asset, in order.
+message AssetChunk {
+    bytes data = 1;
+    // The first chunk only: the bytes all the chunks carry together.
+    uint64 total_size = 2;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -874,4 +891,10 @@ service PlayerService {
     // venue does. Open while locked. A player with no lighting sends an
     // empty layout and an empty frame, and the stream stays open.
     rpc WatchStage(WatchStageRequest) returns (stream StageUpdate);
+
+    // GetLightingAsset sends one file of the lighting asset store (rig
+    // models, meshes and scenery, the files the web UI's 3D view reads from
+    // /api/lighting/assets/) as a stream of chunks, in order. A file that is
+    // not there is NOT_FOUND.
+    rpc GetLightingAsset(GetLightingAssetRequest) returns (stream AssetChunk);
 }

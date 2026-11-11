@@ -1075,6 +1075,21 @@ impl PlayerService for PlayerServer {
         let watch = StageWatch::new(self.player.clone(), request.into_inner().max_rate);
         Ok(Response::new(watch.into_stream()))
     }
+
+    type GetLightingAssetStream = futures_util::stream::BoxStream<
+        'static,
+        Result<crate::proto::player::v1::AssetChunk, Status>,
+    >;
+
+    /// A stand-in: the real one lands with the player's side of the light
+    /// view's 3D (design/bluetooth_light_view_design.md §6). The phone app
+    /// takes UNIMPLEMENTED as a player too old to send the 3D models.
+    async fn get_lighting_asset(
+        &self,
+        _request: Request<crate::proto::player::v1::GetLightingAssetRequest>,
+    ) -> Result<Response<Self::GetLightingAssetStream>, Status> {
+        Err(Status::unimplemented("GetLightingAsset is not served yet"))
+    }
 }
 
 /// A playlist as `GetPlaylist` reports it.
