@@ -86,9 +86,15 @@ else, never against the frame before it, because a frame may be dropped (§5).
 That is why poses are sent as a difference from the layout, not from the last
 frame: a fixture that never moves costs nothing, and losing a frame loses
 nothing a later one does not say again.
+Each layout has an id and each frame names its layout's; a client drops a
+frame for a layout it does not hold.
 
-For the rig's eight fixtures that is about 40 bytes a frame against 1.4 kB of
-JSON. A frame for 50 fixtures of eight channels is under one packet.
+Measured on the implementation (#718), with nothing moving: 44 bytes for eight
+fixtures of five channels, against 827 of JSON; 405 bytes for 50 fixtures of
+eight channels, against 7 kB. Each mover pointing away from where the layout
+has it adds 43 bytes, so eight movers mid-sweep is about 390 bytes, and a
+large rig with moving heads takes more than one packet a frame. At ten frames
+a second that is still a few kB/s.
 
 Why a stream and not a format of its own:
 
@@ -201,7 +207,7 @@ the same either way.
 - Anything on iOS, where the link is assumed to carry a third of what the
   Pixel's does.
 - Movers, per-cell fixtures and scenery: the rig has none.
-- The frame sizes in §4 are worked out from the message shapes, not measured.
+- The frame sizes in §4 are measured on made-up fixtures, not on the rig.
 
 ## 12. Decisions
 
