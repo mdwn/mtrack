@@ -45,7 +45,6 @@ use super::pairing::{
     AdapterOps, BleHandle, DeviceInfo, Pairing, PairingState, FIRST_WINDOW, UNPAIRED_GRACE,
 };
 use super::session::{Link, PeerId, PUMP_DEPTH};
-use super::status;
 use super::stream::{self, Outbox, STREAM_RATE};
 use super::{REQUEST_UUID, RESPONSE_UUID, SERVICE_UUID, STATUS_UUID, STREAM_UUID};
 
@@ -294,7 +293,7 @@ pub(super) async fn run(
     ));
     let _status_poll = spawn_guarded({
         let link = link.clone();
-        status::poll(player, link.status_wanted(), move |status| {
+        crate::controller::remote_status::poll(player, link.status_wanted(), move |status| {
             link.publish_status(Instant::now(), status)
         })
     });

@@ -42,7 +42,8 @@ use futures_util::future::BoxFuture;
 use prost::Message;
 use tokio::sync::{mpsc, Notify};
 
-use crate::proto::ble::v1::{Request, Status};
+use crate::proto::ble::v1::Request;
+use crate::proto::player::v1::RemoteStatus;
 
 use super::codec::{chunks, Reassembler};
 use super::dispatch::{failure, stream_method, Dispatcher};
@@ -490,7 +491,7 @@ impl<H: Handler> Link<H> {
 
     /// Takes the player's status as just polled. It is what a read returns
     /// from now on, and goes to the status pump if it is due.
-    pub(crate) fn publish_status(&self, now: Instant, status: Status) {
+    pub(crate) fn publish_status(&self, now: Instant, status: RemoteStatus) {
         let encoded = self.status.lock().offer(now, status);
         let Some(encoded) = encoded else {
             return;
@@ -866,8 +867,8 @@ mod tests {
         }
     }
 
-    fn status(playing: bool, elapsed: i64) -> Status {
-        Status {
+    fn status(playing: bool, elapsed: i64) -> RemoteStatus {
+        RemoteStatus {
             playlist_name: "Set".into(),
             song_name: "Song".into(),
             song_duration: None,
@@ -896,7 +897,7 @@ mod tests {
         link.publish_status(start, status(false, 0));
         let first = pushed.try_recv().expect("the first status is pushed");
         assert_eq!(
-            Status::decode(reassemble(&first).as_slice()).unwrap(),
+            RemoteStatus::decode(reassemble(&first).as_slice()).unwrap(),
             status(false, 0)
         );
 
@@ -908,7 +909,10 @@ mod tests {
         assert!(pushed.try_recv().is_ok());
 
         let whole = link.status_read(peer(1), 23, 0);
-        assert_eq!(Status::decode(whole.as_slice()).unwrap(), status(true, 5));
+        assert_eq!(
+            RemoteStatus::decode(whole.as_slice()).unwrap(),
+            status(true, 5)
+        );
         // A long read continues where the last stopped, and past the end it
         // is empty.
         assert_eq!(link.status_read(peer(1), 23, 4), whole[4..]);

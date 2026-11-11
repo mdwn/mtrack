@@ -26,6 +26,7 @@ pub(crate) mod grpc;
 mod mcp;
 mod midi;
 mod osc;
+pub(crate) mod remote_status;
 
 pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
@@ -861,6 +862,28 @@ mod test {
         assert!(controller.statuses().iter().all(|s| s.status == "running"));
         controller.shutdown();
 
+        Ok(())
+    }
+
+    /// The player knows the port gRPC bound while it listens, for
+    /// `GetNetworkInfo`, and forgets it when the controller stops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_player_knows_the_port_grpc_listens_on() -> Result<(), Box<dyn Error>> {
+        let player = crate::testutil::player::assets_player().build()?;
+        player.await_hardware_ready().await;
+        assert_eq!(player.grpc_port(), None);
+
+        let grpc_config = config::GrpcController::new(0);
+        let controller =
+            super::Controller::new(vec![config::Controller::Grpc(grpc_config)], player.clone());
+        let bound = controller.bound_addr(0).get().await;
+        assert_eq!(player.grpc_port(), Some(bound.port()));
+        controller.shutdown();
+        crate::testutil::eventually_async(
+            || async { player.grpc_port().is_none() },
+            "the port outlived the controller",
+        )
+        .await;
         Ok(())
     }
 

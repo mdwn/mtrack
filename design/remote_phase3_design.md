@@ -367,6 +367,28 @@ speaks. Not chosen.
   app, the local-network permission prompt on iOS. Left for after the first
   two have been used.
 
+### 4.2.1 As built (player side)
+
+- `RemoteStatus` is in `player.proto` with the field numbers Bluetooth used for
+  `ble.v1.Status`, which is gone from `ble.proto`; the bytes on the air are
+  unchanged. `WatchStatusRequest` has no fields.
+- One reader serves both carriers: `controller/remote_status.rs` builds the
+  status from the player and decides when one is due. Bluetooth sends at
+  250 ms while playing, `WatchStatus` at one second. Each stream polls for
+  itself and keeps only the newest due status (a watch channel), so a slow
+  client skips ahead and never holds the player up. The poll ends when the
+  stream is dropped.
+- `WatchStatus` is open while locked and not on the Bluetooth allowlist.
+- `GetNetworkInfo(GetNetworkInfoRequest) returns (GetNetworkInfoResponse)`:
+  `hostname = 1`, `repeated string addresses = 2` (IPv4 first, then IPv6; no
+  loopback, link-local or multicast), `optional uint32 grpc_port = 3`. The
+  port is the one the gRPC controller bound, recorded on the player while it
+  listens and cleared when it stops, so a port of 0 in the config reports
+  what the OS gave. It is on the allowlist and open while locked. The
+  addresses come from the `if-addrs` crate.
+- Not done: a Wi-Fi interface is not told apart from any other, and the host
+  name is the one the config uses for profiles (`MTRACK_HOSTNAME` wins).
+
 ### 4.4 Which radio
 
 The app prefers Wi-Fi when the player answers there, and falls back to

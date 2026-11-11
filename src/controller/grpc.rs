@@ -14,6 +14,7 @@
 mod asset;
 mod playlist_settings;
 mod playlists;
+mod remote;
 mod songs;
 mod stage;
 
@@ -34,22 +35,23 @@ use crate::{
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
         GetActiveEffectsRequest, GetActiveEffectsResponse, GetConfigRequest, GetConfigResponse,
-        GetCuesRequest, GetCuesResponse, GetLightingAssetRequest, GetPlaylistRequest,
-        GetPlaylistResponse, GetSongRequest, GetSongResponse, GetTrackGainsRequest,
-        GetTrackGainsResponse, ListLightShowsRequest, ListLightShowsResponse, ListPlaylistsRequest,
-        ListPlaylistsResponse, ListSongsRequest, ListSongsResponse, LoopSectionRequest,
-        LoopSectionResponse, NavigateToSongRequest, NavigateToSongResponse, NextRequest,
-        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
-        PlaylistEntry, PreviousRequest, PreviousResponse, RemoveProfileRequest,
-        SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
-        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
-        SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
-        SetTrackMuteResponse, Song, StageFrame, StageLayout, StageUpdate, StatusRequest,
-        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
-        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
-        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
-        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
-        UpdateSongSettingsRequest, WatchStageRequest, FILE_DESCRIPTOR_SET,
+        GetCuesRequest, GetCuesResponse, GetLightingAssetRequest, GetNetworkInfoRequest,
+        GetNetworkInfoResponse, GetPlaylistRequest, GetPlaylistResponse, GetSongRequest,
+        GetSongResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListLightShowsRequest,
+        ListLightShowsResponse, ListPlaylistsRequest, ListPlaylistsResponse, ListSongsRequest,
+        ListSongsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
+        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
+        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
+        RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest, SectionAckResponse,
+        SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
+        SetAmbientModeResponse, SetLockRequest, SetLockResponse, SetTrackGainRequest,
+        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StageFrame,
+        StageLayout, StageUpdate, StatusRequest, StatusResponse, StopRequest, StopResponse,
+        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, UpdateSongSettingsRequest, WatchStageRequest, WatchStatusRequest,
+        FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -103,6 +105,13 @@ impl super::Driver for Driver {
                 info!("Starting gRPC server on {addr}");
             }
             bound.set(addr);
+            player.set_grpc_port(Some(addr.port()));
+            // Cleared when this task ends or is aborted, but only if the
+            // port is still this one's: a restart binds after this is gone.
+            let _listening = ListeningPort {
+                player: player.clone(),
+                port: addr.port(),
+            };
 
             Server::builder()
                 .add_service(reflection_service)
@@ -113,6 +122,20 @@ impl super::Driver for Driver {
                 .await
                 .map_err(io::Error::other)
         })
+    }
+}
+
+/// Tells the player its gRPC controller stopped listening, when dropped.
+struct ListeningPort {
+    player: Arc<Player>,
+    port: u16,
+}
+
+impl Drop for ListeningPort {
+    fn drop(&mut self) {
+        if self.player.grpc_port() == Some(self.port) {
+            self.player.set_grpc_port(None);
+        }
     }
 }
 
@@ -1125,6 +1148,24 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<Self::WatchStageStream>, Status> {
         let watch = StageWatch::new(self.player.clone(), request.into_inner().max_rate);
         Ok(Response::new(watch.into_stream()))
+    }
+
+    type WatchStatusStream = remote::StatusStream;
+
+    /// The compact status Bluetooth pushes, as a stream: see
+    /// [`remote::watch`]. A read, so open while locked.
+    async fn watch_status(
+        &self,
+        _request: Request<WatchStatusRequest>,
+    ) -> Result<Response<Self::WatchStatusStream>, Status> {
+        Ok(Response::new(remote::watch(self.player.clone())))
+    }
+
+    async fn get_network_info(
+        &self,
+        _request: Request<GetNetworkInfoRequest>,
+    ) -> Result<Response<GetNetworkInfoResponse>, Status> {
+        Ok(Response::new(remote::network_info(&self.player)))
     }
 
     type GetLightingAssetStream = asset::AssetStream;
