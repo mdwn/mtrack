@@ -18,8 +18,10 @@
 # root, and prints `name=true` or `name=false` lines in the form GitHub Actions
 # takes as step outputs:
 #
-#   ui    the web UI's Playwright tests against the mock server
+#   ui    the web UI's Playwright tests against the mock server, and the
+#         phone app's Android build, which ships the web UI's stage page
 #   rust  CodeQL's Rust analysis
+#   app   the phone app's own checks: format, analyze, test (and its build)
 #
 # The web UI is more than src/webui: its rules module is a WebAssembly build of
 # crates/mtrack-rules-wasm, which takes files from the player's own source by
@@ -48,6 +50,7 @@ wasm_sources() {
 
 ui=false
 rust=false
+app=false
 
 mapfile -t included < <(wasm_sources)
 if [ "${#included[@]}" -eq 0 ]; then
@@ -69,6 +72,14 @@ while IFS= read -r path; do
             ;;
     esac
 
+    # The app is its own sources, the protocol it speaks, and how it is built.
+    case "$path" in
+        app/* | src/proto/* | Makefile | scripts/install-protoc.sh | \
+            scripts/ci-changes.sh | .github/workflows/app.yaml)
+            app=true
+            ;;
+    esac
+
     # Either job's own definition changing is a reason to run it.
     case "$path" in
         .github/* | scripts/ci-changes.sh) rust=true ;;
@@ -83,3 +94,4 @@ done
 
 echo "ui=$ui"
 echo "rust=$rust"
+echo "app=$app"

@@ -1,6 +1,10 @@
 name: mtrack phone app
-# The Flutter app under app/. It runs only when the app or the protocol it speaks
-# changes, so a Rust or web UI PR pays nothing for it.
+# The Flutter app under app/. On a pull request its jobs run only when what
+# they are built from changes (scripts/ci-changes.sh), so a Rust or web UI PR
+# pays for no more of it than it touches: the app's own checks for the app
+# and the protocol it speaks, and the Android build for those and for the web
+# UI, whose stage page the app ships (the Lights tab). A push to main runs
+# them when any of the paths below changed.
 on:
   push:
     branches:
@@ -8,16 +12,19 @@ on:
     paths:
     - 'app/**'
     - 'src/proto/**'
+    # The stage page the app ships: the web UI, and the rules crate behind
+    # its WebAssembly module. The player sources that crate takes by #[path]
+    # are not listed; the pull request that changed them built the page
+    # (scripts/ci-changes.sh reads the list from the crate).
+    - 'src/webui/**'
+    - 'crates/**'
     - 'Makefile'
+    - 'scripts/install-protoc.sh'
+    - 'scripts/install-binaryen.sh'
     - '.github/workflows/app.yaml'
   pull_request:
     branches:
     - main
-    paths:
-    - 'app/**'
-    - 'src/proto/**'
-    - 'Makefile'
-    - '.github/workflows/app.yaml'
 
 permissions:
   contents: read
@@ -33,11 +40,44 @@ env:
   FLUTTER_VERSION: '3.47.9'
 
 jobs:
+  # Says which jobs a pull request's changes call for. A push to main was
+  # already chosen by its paths, and runs everything.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.classify.outputs.app }}
+      ui: ${{ steps.classify.outputs.ui }}
+    steps:
+    - uses: actions/checkout@v7
+    - id: classify
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        if [ "$EVENT" != "pull_request" ]; then
+          echo "app=true" >> "$GITHUB_OUTPUT"
+          echo "ui=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+          --jq '.[] | .filename, (.previous_filename // empty)' |
+          scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   # Format, analyze and test the app against the generated protobuf messages.
-  # The radio cannot run in CI, so everything the app decides is tested against
-  # fakes; the builds below only show that it still compiles into a package.
+  # The radio cannot run in CI, and neither can a web view, so everything the
+  # app decides is tested against fakes; the builds below only show that it
+  # still compiles into a package. It does not need the stage page: the tests
+  # never load it.
   app:
     name: Analyze and test the app
+    needs: changes
+    # Runs too when the detection itself failed: a skip must be a decision.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.app == 'true') }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
@@ -66,13 +106,34 @@ jobs:
   # An installable debug APK, so a phone can try the change from the PR: it is
   # uploaded as an artifact (Actions run page, Artifacts). Signed with the
   # debug key, so it is for trying, not for a store.
+  #
+  # The app ships the web UI's stage page (the Lights tab shows it in a web
+  # view), so this builds that first, and runs for a web UI change too: a
+  # change that breaks the page, or leaves it out of the package, fails here.
   android:
     name: Build the Android app
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.app == 'true' || needs.changes.outputs.ui == 'true') }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
     - name: Install protoc
       run: ./scripts/install-protoc.sh
+    # What the stage page is built with: Node for the web UI, and Rust with
+    # the wasm tools for its rules module, as the frontend checks have them.
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '22'
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
+    # Only the rules crate is built here, for wasm.
+    - uses: Swatinem/rust-cache@v2
     - uses: actions/setup-java@v5
       with:
         distribution: temurin
@@ -86,9 +147,20 @@ jobs:
         cache: true
     - name: Generate protobuf messages
       run: make gen-app-proto
+    - name: Build the stage page into the app's assets
+      run: make app-stage-assets
     - name: Build the APK
       working-directory: app
       run: flutter build apk --debug
+    - name: Check the APK has the stage page
+      # Its files have hashed names; the page and one of each kind will do.
+      run: |
+        unzip -Z1 app/build/app/outputs/flutter-apk/app-debug.apk > apk-files.txt
+        for wanted in 'stage/stage\.html$' 'stage/assets/stage-.*\.js$' \
+            'stage/assets/stage-.*\.css$' 'stage/assets/mtrack_rules_bg-.*\.wasm$'; do
+          grep -Eq "assets/flutter_assets/assets/$wanted" apk-files.txt ||
+            { echo "The APK has no $wanted"; exit 1; }
+        done
     - uses: actions/upload-artifact@v7
       with:
         name: mtrack-remote-debug-apk
@@ -97,7 +169,9 @@ jobs:
 
   # Checks that the iOS project still builds. Main only: a macOS runner costs
   # many times what a Linux one does, and PR time is a budget. Unsigned, so
-  # nothing here can be installed on a phone.
+  # nothing here can be installed on a phone. It builds without the stage
+  # page (the Android job is what checks that): the page's toolchain is not
+  # set up on macOS for an app nobody can install from here.
   ios:
     name: Build the iOS app
     if: github.event_name == 'push'
