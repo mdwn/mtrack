@@ -42,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view is fed: a layout (the venue's fixtures, their placement and channel names) and then a
   compact frame of channel values whenever something changes, with the layout sent again when
   the venue does. `max_rate` caps the frames a second. A read, open while the player is locked.
+- **The stage over Bluetooth**: a phone can open `WatchStage` through the Bluetooth controller,
+  the first server stream it carries. A stream's messages come on a fourth characteristic,
+  `stream`, so they never sit in front of a call's answer, and the player sends a stream one
+  packet at a time, with anything waiting on `response` or `status` going first. When the stage
+  changes faster than the link carries it the newest frame replaces the one waiting, so a slow
+  phone sees fewer frames instead of falling behind; a layout is never dropped. The envelope
+  gains `Response.more` and `Request.cancel`, which a client that opens no stream never sets or
+  sees. A phone may have two streams open. See [Bluetooth
+  Control](docs/src/interfaces/bluetooth.md#streams).
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the
