@@ -505,6 +505,73 @@ message PlaylistEntry {
     string song_name = 1;
     // How long the song plays. Absent for a song the player cannot load.
     google.protobuf.Duration duration = 2;
+    // The entry's own settings, as the playlist file has them. Always
+    // present, and empty for an entry with none; absent only from a player
+    // from before settings could be read, whose GetPlaylistResponse has no
+    // revision either.
+    EntrySettings settings = 3;
+}
+
+// EntrySettings are a playlist entry's transitions and ambient light, as
+// the playlist file has them. Each is absent when the entry does not set
+// it.
+message EntrySettings {
+    // How the song fades out when Play, Next or Previous leaves it while it
+    // loops: it plays on under the next song.
+    Fade fade_out = 1;
+    // How the song fades in when it starts under a song fading out.
+    Fade fade_in = 2;
+    // Whether the song starts by itself when the playlist reaches it.
+    // Absent: it waits for Play.
+    AutoPlay auto_play = 3;
+    // Ambient light in the gap before the song. Absent: the playlist's.
+    AmbientSetting ambient = 4;
+}
+
+// Fade is a fade as a playlist file has it. Lengths are the player's own
+// strings ("3s", "500ms", "6beats", "1measure", "0s" for none), which it
+// checks when they are saved.
+message Fade {
+    // The fade's length.
+    string length = 1;
+    // "equal_power" or "linear". Absent: equal power.
+    optional string curve = 2;
+    // The tracks that do not fade. Absent: the default (on a fade-out the
+    // song's loop_crossfade_cut tracks, on a fade-in none); present and
+    // empty: none.
+    TrackNames exclude = 3;
+    // On a fade-out only: how long the lights take to cross into the next
+    // song's show. Absent: the fade's length.
+    optional string lights = 4;
+}
+
+// TrackNames is a list of a song's tracks, which may be present and empty.
+message TrackNames {
+    repeated string names = 1;
+}
+
+// AutoPlay is an entry's auto play, when it has one.
+message AutoPlay {
+    // The gap before the song starts, as the player writes it ("2s",
+    // "1500ms"). Empty: at once.
+    string gap = 1;
+}
+
+// AmbientSetting is ambient light set on a playlist or an entry. Absent,
+// it is left to the level above: an entry's to its playlist's, a
+// playlist's to the player's profile.
+message AmbientSetting {
+    // False: no ambient light (the file's `ambient: false`). True: ambient
+    // light, the settings below overriding the level above's one by one.
+    bool on = 1;
+    // The .light file to play, relative to the project.
+    optional string show = 2;
+    // How long the last song's frame holds before ambient fades in.
+    optional string delay = 3;
+    // How long ambient takes to fade in.
+    optional string fade_in = 4;
+    // How long ambient takes to cross into a song's show.
+    optional string fade_out = 5;
 }
 
 // GetPlaylistResponse lists a playlist's entries in order.
@@ -516,6 +583,13 @@ message GetPlaylistResponse {
     // The index of the entry the playlist is on. Absent while the song
     // playing is one an edit took off the list.
     optional uint32 position = 3;
+    // The playlist's own ambient light. Absent: the profile's.
+    AmbientSetting ambient = 4;
+    // A short fingerprint of the songs and every setting above. Sent back
+    // as SavePlaylistRequest.expected_revision, it has a save refused when
+    // the playlist changed since it was read. Empty from a player from
+    // before settings could be read.
+    string revision = 5;
 }
 
 // SavePlaylistRequest replaces the songs of a playlist, or makes one.
@@ -537,6 +611,32 @@ message SavePlaylistRequest {
     // Refuse with ALREADY_EXISTS when the playlist exists. When unset, a
     // playlist that does not exist is NOT_FOUND.
     bool create = 5;
+    // Each song's settings, one per song in songs and in that order. Used
+    // only with set_settings; without it each entry keeps the settings it
+    // had, with its song.
+    repeated EntrySettings settings = 6;
+    // Whether to set the entries' settings from settings.
+    bool set_settings = 7;
+    // The playlist's own ambient light; absent leaves it to the profile.
+    // Used only with set_ambient; without it the playlist keeps its own.
+    AmbientSetting ambient = 8;
+    // Whether to set the playlist's ambient light from ambient.
+    bool set_ambient = 9;
+    // The revision GetPlaylist answered when the caller read the playlist.
+    // When check_expected is set and this is not empty, it is checked
+    // beside expected: the save is refused with FAILED_PRECONDITION when
+    // the playlist on the player, songs or settings, is not the one read.
+    string expected_revision = 10;
+}
+
+// ListLightShowsRequest asks for the light shows an ambient light can play.
+message ListLightShowsRequest {}
+
+// ListLightShowsResponse names the player's .light files.
+message ListLightShowsResponse {
+    // Each file's path relative to the project, as an ambient show is
+    // written; sorted.
+    repeated string paths = 1;
 }
 
 // DeletePlaylistRequest names the playlist to delete.
@@ -869,13 +969,18 @@ service PlayerService {
     // unknown name is NOT_FOUND.
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
 
-    // SavePlaylist sets a playlist's songs and their order, making the
-    // playlist when create is set, and answers with it as GetPlaylist
-    // would. Refused while the player is locked. A name the player refuses
-    // or a song it does not have is INVALID_ARGUMENT; a playlist that
-    // exists under create is ALREADY_EXISTS, and one that does not, without
-    // it, is NOT_FOUND.
+    // SavePlaylist sets a playlist's songs and their order, and with
+    // set_settings and set_ambient its settings, making the playlist when
+    // create is set, and answers with it as GetPlaylist would. Refused
+    // while the player is locked. A name the player refuses, a song it does
+    // not have, or a setting it would not load is INVALID_ARGUMENT, saying
+    // what is wrong; a playlist that exists under create is ALREADY_EXISTS,
+    // and one that does not, without it, is NOT_FOUND.
     rpc SavePlaylist(SavePlaylistRequest) returns (GetPlaylistResponse);
+
+    // ListLightShows names the .light files an ambient light can play, as
+    // the web UI's lighting list finds them. Open while locked.
+    rpc ListLightShows(ListLightShowsRequest) returns (ListLightShowsResponse);
 
     // DeletePlaylist deletes a playlist's file. Refused while the player
     // is locked. An unknown name is NOT_FOUND. The active playlist falls

@@ -144,7 +144,8 @@ pub(super) async fn get_playlist_by_name(
 }
 
 /// A gap as written in a playlist: whole seconds as `2s`, else `1500ms`.
-fn format_gap(gap: std::time::Duration) -> String {
+/// The web UI's playlist read and gRPC's.
+pub(crate) fn format_gap(gap: std::time::Duration) -> String {
     let ms = gap.as_millis();
     if ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)
