@@ -353,6 +353,10 @@ pub struct Player {
     /// State sampler watch sender. Shared so async init can start the sampler
     /// when the DMX engine becomes available, and restart it on reload.
     state_tx: StateTx,
+    /// The stage layout's revision, for the gRPC stage stream: bumped when
+    /// the venue or its fixtures may have changed, as the websocket's
+    /// `metadata` message is re-sent.
+    stage_layout_tx: Arc<tokio::sync::watch::Sender<u64>>,
     /// Transport-state watch channel. A low-rate poller refreshes this and
     /// uses `send_if_modified` so receivers (e.g. MCP `mtrack://status`
     /// subscribers) only wake on meaningful transitions, never on the
@@ -722,6 +726,7 @@ impl Player {
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
+            stage_layout_tx: Arc::new(tokio::sync::watch::channel(0).0),
             transport_tx: Arc::new(tokio::sync::watch::channel(TransportSnapshot::default()).0),
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
@@ -854,6 +859,7 @@ impl Player {
             // No receivers is fine: nobody is watching the stage right now.
             let _ = tx.send(metadata);
         }
+        self.bump_stage_layout();
         Ok(())
     }
 
@@ -872,7 +878,22 @@ impl Player {
         if let Some(tx) = self.broadcast_tx.lock().as_ref() {
             let _ = tx.send(metadata);
         }
+        self.bump_stage_layout();
         Ok(())
+    }
+
+    /// A receiver for the stage layout's revision: it changes whenever the
+    /// venue, its fixtures or the DMX engine itself may have (a venue or
+    /// fixture type reload, a hardware reload). The number means nothing;
+    /// a watcher rebuilds its layout when it moves.
+    pub fn stage_layout_rx(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.stage_layout_tx.subscribe()
+    }
+
+    /// Says the stage layout may have changed.
+    pub(crate) fn bump_stage_layout(&self) {
+        self.stage_layout_tx
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 
     /// Stores the broadcast channel and wires it to the DMX engine if one exists.
@@ -3937,8 +3958,13 @@ mod test {
         player.set_config_store(store);
 
         // Reload should swap hardware — audio device should now be None.
+        let stage_layouts = player.stage_layout_rx();
         player.reload_hardware().await?;
         player.await_hardware_ready().await;
+        assert!(
+            stage_layouts.has_changed()?,
+            "the DMX engine may be another: a stage watcher reads its layout again"
+        );
         assert!(
             player.audio_device().is_none(),
             "Audio device should be None after reload with no audio profile"

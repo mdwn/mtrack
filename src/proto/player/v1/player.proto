@@ -560,6 +560,179 @@ message SetLockResponse {
     bool locked = 1;
 }
 
+// WatchStageRequest opens the stage stream.
+message WatchStageRequest {
+    // The most frames a second the caller wants; 0 is the player's own rate
+    // (its sampler's 20 a second). Frames that arrive faster are dropped and
+    // the newest one sent.
+    uint32 max_rate = 1;
+}
+
+// StageUpdate is one message of the stage stream: the layout, or a frame
+// read against the layout most recently sent.
+message StageUpdate {
+    oneof update {
+        // What is on the stage. Sent first, and again whenever the venue,
+        // the fixtures or their channels change; every frame after it is
+        // read against it.
+        StageLayout layout = 1;
+        // What the stage looks like now.
+        StageFrame frame = 2;
+    }
+}
+
+// StageVec3 is a point, a direction or three angles, in the stage's axes.
+message StageVec3 {
+    float x = 1;
+    float y = 2;
+    float z = 3;
+}
+
+// StagePoint is a point on the deck (stage x, y), in meters.
+message StagePoint {
+    float x = 1;
+    float y = 2;
+}
+
+// StagePose is where a mover points.
+message StagePose {
+    // Pan and tilt, in degrees.
+    float pan = 1;
+    float tilt = 2;
+    // The beam direction in stage space, unit length.
+    StageVec3 aim = 3;
+    // Where the beam meets the deck, when it points down and the venue
+    // places the fixture; absent for a beam with no footprint.
+    StagePoint floor = 4;
+}
+
+// StageCell is a cell of a pixel fixture.
+message StageCell {
+    string name = 1;
+    // The cell's offset in the fixture's frame, in meters.
+    StageVec3 offset = 2;
+}
+
+// StageFixture is a fixture as the stage views draw it, and the names a
+// frame's bytes go by.
+message StageFixture {
+    string name = 1;
+    // The fixture's type. Empty for a fixture the player is driving that the
+    // venue does not list: it has channels and no placement.
+    string type = 2;
+    repeated string tags = 3;
+    // Stage position in meters; absent when the venue does not place the
+    // fixture.
+    StageVec3 position = 4;
+    // Mounting rotation in degrees about X, Y, Z; absent when the venue
+    // gives none.
+    StageVec3 rotation = 5;
+    // Degrees the venue says this unit really throws; absent for its type's
+    // own. A drawing hint only.
+    optional float beam_angle = 6;
+    // The rig model's path under the player's /api/lighting/assets/, when
+    // the type has one.
+    optional string rig = 7;
+    // What the fixture can do, as the web API names it: "color", "pan_tilt",
+    // "strobe", "cells", "dimmer", "white", "zoom", "focus", "gobo",
+    // "color_wheel".
+    repeated string capabilities = 8;
+    // The cells of a pixel fixture, in the manufacturer's order.
+    repeated StageCell cells = 9;
+    // The fixture's channel names, sorted. A frame's bytes for this fixture
+    // are in this order. Empty for a fixture the player is not driving, which
+    // takes no bytes in a frame.
+    repeated string channels = 10;
+    // Where the fixture pointed when the layout was built; absent when it
+    // had no pose. A frame says only the poses that differ from this.
+    StagePose pose = 11;
+}
+
+// StageVenue is the venue's name, points and scenery.
+message StageVenue {
+    string name = 1;
+    // The venue's focus points, by name, in meters.
+    map<string, StageVec3> focus_points = 2;
+    // The scenery file under the player's /api/lighting/assets/, when the
+    // venue came from an MVR.
+    optional string scenery = 3;
+    // Why the scenery is missing, when the venue should have had some.
+    optional string scenery_error = 4;
+}
+
+// StageLayout is everything about the stage that a frame does not repeat.
+message StageLayout {
+    // Every fixture of the venue and every fixture the player is driving,
+    // sorted by name. A frame names a fixture by its index here.
+    repeated StageFixture fixtures = 1;
+    // The current venue; absent when the player has none.
+    StageVenue venue = 2;
+}
+
+// StageStrobe is the rate a strobing fixture flashes at.
+message StageStrobe {
+    // Index into StageLayout.fixtures.
+    uint32 fixture = 1;
+    float hertz = 2;
+}
+
+// StagePoseChange is a fixture that points somewhere other than the layout
+// says.
+message StagePoseChange {
+    // Index into StageLayout.fixtures.
+    uint32 fixture = 1;
+    // Where it points now. Absent when the layout gave the fixture a pose
+    // and it has none now.
+    StagePose pose = 2;
+}
+
+// StageCellValues is one cell's bytes.
+message StageCellValues {
+    // The cell's name, as StageFixture.cells names it.
+    string name = 1;
+    // One byte for each of StageFixtureCells.channels, in that order.
+    bytes values = 2;
+}
+
+// StageFixtureCells is the per-cell values of a fixture a per-cell effect
+// is driving. It names its own channels, so it is read without the layout's.
+message StageFixtureCells {
+    // Index into StageLayout.fixtures.
+    uint32 fixture = 1;
+    // The cells' channel names, sorted.
+    repeated string channels = 2;
+    // The cells that have exactly those channels, sorted by name. A fixture
+    // whose cells do not all have the same channels is listed once for each
+    // set of channels.
+    repeated StageCellValues cells = 3;
+}
+
+// StageFrame is the stage at one instant. It is read against the layout
+// most recently sent and nothing else, never against the frame before it,
+// so a frame that is lost costs nothing a later one does not say again.
+message StageFrame {
+    // Every fixture's channel values, end to end: for each of
+    // StageLayout.fixtures in order, one byte for each of its
+    // StageFixture.channels in order. Its length is the number of channels
+    // in the layout; a fixture with no channels takes no bytes.
+    bytes channels = 1;
+    // The strobing fixtures, by index. A fixture not listed is not strobing.
+    repeated StageStrobe strobes = 2;
+    // The fixtures whose pose is not the layout's, by index. A fixture not
+    // listed points where the layout says, or has no pose there and none
+    // now.
+    repeated StagePoseChange poses = 3;
+    // The fixtures a per-cell effect is driving. A fixture not listed shows
+    // its own channels on every cell.
+    repeated StageFixtureCells cells = 4;
+    // The names of the effects running.
+    repeated string active_effects = 5;
+    // The fixtures a fixture test's output covers, as indexes into
+    // StageLayout.fixtures, ascending: their bytes, cells and poses are the
+    // test's.
+    repeated uint32 under_test = 6;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -687,4 +860,10 @@ service PlayerService {
     // SetLock locks or unlocks the player, as the web UI's lock does. Open
     // while locked, or nothing could unlock it.
     rpc SetLock(SetLockRequest) returns (SetLockResponse);
+
+    // WatchStage is a stream of what the stage looks like: the layout first,
+    // then a frame whenever something changes, and the layout again if the
+    // venue does. Open while locked. A player with no lighting sends an
+    // empty layout and an empty frame, and the stream stays open.
+    rpc WatchStage(WatchStageRequest) returns (stream StageUpdate);
 }
