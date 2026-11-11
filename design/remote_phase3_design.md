@@ -149,14 +149,29 @@ has about 50 songs, a few kB.
 rpc UpdateSongSettings(UpdateSongSettingsRequest) returns (GetSongResponse);
 ```
 
-The first version carries looping: `loop_playback`, `loop_crossfade`, and
-the tracks that cut over (`loop_crossfade_cut`). Each is optional in the
-request; what is absent is left alone.
+What it carries (Mike, 2026-11-11: "at least tracks, loops, crossfading,
+samples"; the timeline and lighting are "too far"):
+
+| Group | Settings | Notes |
+|---|---|---|
+| Looping | `loop_playback`, `loop_crossfade`, the tracks that cut over (`loop_crossfade_cut`) | Lengths as the player writes them, as in §2 |
+| Tracks | Each track's name, file and file channel; add and remove | The name is what routes a track to an output, so renaming is how a track is moved. A file is picked from the song's own directory: the phone uploads nothing |
+| Samples | The song's own samples: file, output, what a release and a retrigger do, the voice limit, the fade time; which MIDI event triggers which | Velocity layers are shown and kept, not edited |
+
+Not carried: the tempo map, sections, the metronome, pilot cues, MIDI
+playback, lighting shows, the timeline. The page shows that a song has
+them.
+
+Each group is its own optional part of the request; what is absent is left
+alone, and what the phone does not edit inside a group (velocity layers)
+travels through untouched. The answer carries a revision, as playlists do
+(§2), so an edit made elsewhere is caught.
 
 - **Why not the whole file.** The web UI's song editor writes YAML, and a
-  phone that can do that can break a song in the middle of a show. A named
-  setting is checked by the player and cannot damage what it does not name.
-- **The file keeps its shape.** The player changes the setting in the file
+  phone that can do that can break a song in the middle of a show. Typed
+  settings are checked by the player and cannot damage what they do not
+  name.
+- **The file keeps its shape.** The player changes the settings in the file
   it has and writes it back the way the web UI's save does, then reloads the
   songs.
 - **While playing.** The REST save reloads songs at once. Whether a change
@@ -164,10 +179,6 @@ request; what is absent is left alone.
   next play needs checking against the player before the screen promises
   anything; the app will say which.
 - Refused while locked.
-
-What else belongs in the list is Mike's to say (§8). Candidates the player
-already has as plain settings: sections (add, move, rename), the metronome
-on or off, a track's output. Each is its own field and can come later.
 
 ## 4. Wi-Fi
 
@@ -291,8 +302,9 @@ built beside them.
 2. **The app speaks gRPC over Wi-Fi, with a `WatchStatus` stream** (§4.2).
    Decided.
 3. **Song edits are named settings, not the file** (§3). Recommended: yes.
-4. **Which song settings beyond looping** (§3). Open: Mike's list.
-5. **The web UI's live feeds move to gRPC; its editing API stays REST**
-   (§5). Recommended: yes.
+4. **Which song settings** (§3): looping and its crossfade, tracks,
+   samples; not the timeline or lighting. Decided.
+5. **How far the web UI moves to gRPC** (§5). Open: Mike wants to talk it
+   through before deciding.
 6. **Finding the player: told over Bluetooth and by address first, mDNS
    browsing later** (§4.3). Recommended: yes.
