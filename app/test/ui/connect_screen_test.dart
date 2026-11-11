@@ -173,6 +173,28 @@ void main() {
       expect(find.text('READY · 1 OF 3'), findsOneWidget);
     }, known: false);
 
+    appTest('keeps its buttons above the navigation bar', (h) async {
+      // The system's bar at the bottom of a phone, 48 px tall.
+      h.tester.view.viewPadding = const FakeViewPadding(bottom: 48 * 3.0);
+      h.tester.view.padding = const FakeViewPadding(bottom: 48 * 3.0);
+      addTearDown(h.tester.view.resetViewPadding);
+      addTearDown(h.tester.view.resetPadding);
+      h.rig.link.paired.clear();
+      h.rig.link.pairingRefused = true;
+      h.rig.link.discover(near);
+      await h.settle();
+      await h.tester.tap(find.text('stage'));
+      await h.settle();
+      await h.tester.pump(const Duration(milliseconds: 100));
+      final screen =
+          h.tester.view.physicalSize.height / h.tester.view.devicePixelRatio;
+      final bar = 48 * 3.0 / h.tester.view.devicePixelRatio;
+      for (final label in ['Try again', 'Choose another player']) {
+        final bottom = h.tester.getRect(button(label)).bottom;
+        expect(bottom, lessThanOrEqualTo(screen - bar), reason: label);
+      }
+    }, known: false);
+
     appTest('lets the person choose another player after a refusal', (h) async {
       h.rig.link.paired.clear();
       h.rig.link.pairingRefused = true;

@@ -105,7 +105,9 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         (session.phase == ConnectionPhase.lost && session.status != null);
     return Scaffold(
       body: SafeArea(
-        bottom: false,
+        // The tab bar keeps itself above the system's bar; the connect
+        // screen has no tab bar, so its buttons need the room here.
+        bottom: !showTabs,
         child: showTabs ? const HomeShell() : const ConnectScreen(),
       ),
     );
