@@ -37,6 +37,6 @@ export default ts.config(
     },
   },
   {
-    ignores: ["dist/", "node_modules/", "src/gen/"],
+    ignores: ["dist/", "dist-stage/", "node_modules/", "src/gen/"],
   },
 );

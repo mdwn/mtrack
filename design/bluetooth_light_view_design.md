@@ -184,6 +184,10 @@ and the plot works meanwhile.
 - The stage card loses what means nothing here: the Edit link and the expand
   button. The plot fills the width.
 - Against an older player the tab says so, as the settings sheet does.
+- The app talks to the page through `window.mtrackStage` and hears from it on
+  a JavaScript channel named `MtrackHost` (§8.1). It passes each `StageUpdate`
+  of the stream through as it arrived, and calls `reset()` when the stream
+  ends or the player changes.
 
 ## 8. What changes in the web UI
 
@@ -198,6 +202,80 @@ and the plot works meanwhile.
 
 The app's build then depends on the web UI's. App CI builds the stage bundle
 first, and a web UI change runs the app's checks.
+
+As built (L3, web UI side):
+
+- `make build-stage-ui` builds `stage.html` and `src/stage-main.ts` into
+  `src/webui/svelte/dist-stage/` (`vite.stage.config.ts`). The page is
+  `dist-stage/stage.html`, with relative paths to its files in `assets/`.
+  The frontend checks in CI build it, so it cannot rot.
+- `lib/stage/feed.ts` reads a layout as the `metadata` message and a frame as
+  the `state` message; `applyStageMetadata` and `applyStageState` in
+  `lib/ws/stores.ts` are the two writes both sources end in. It is tested
+  against a stream the player's encoder wrote
+  (`e2e/fixtures/stage-stream.json`, held to the encoder by a test in
+  `src/controller/grpc/stage.rs`).
+- The websocket opens when `main.ts` calls `connect()`.
+- `StageView` has `embedded` (no Edit link, no maximize, nothing dragged or
+  kept, the card to the edges) and `threeD` (whether it offers 3D).
+- 3D is off in the stage build, and its code is left out of it. A build with
+  `MTRACK_STAGE_3D=1` has the switch and the code: that is L4's to turn on,
+  once the app answers `/api/lighting/assets/`.
+- The 3D view rebuilds only for metadata that differs from what its scene was
+  built from. The comparison is in the view, not the stores: two pages of the
+  web UI re-read from the server whenever metadata arrives, changed or not.
+- Size, gzipped: about 80 kB of script, 27 kB of strings (the web UI's whole
+  English table, of which the page uses a handful), 6 kB of styles and the
+  462 kB rules module, which still ships whole.
+
+### 8.1 The host contract
+
+What the app is written against. The page's side is the comment at the top of
+`src/webui/svelte/src/stage-main.ts`, and the two are kept the same.
+
+```ts
+window.mtrackStage = {
+  /** True once modules and wasm are loaded and the page can take updates. */
+  ready: boolean,
+  /** One serialized player.v1.StageUpdate, base64 (standard alphabet,
+   *  padded). Updates given before `ready` are queued and applied in order. */
+  update(base64: string): void,
+  /** Forget the layout and all state: the stream ended or the player
+   *  changed. Shows the empty state. Drops anything still queued. */
+  reset(): void,
+  /** 'light' | 'dark' | 'system'; anything else is 'system'. */
+  setTheme(theme: string): void,
+  /** Counters for the host's diagnostics: updates applied, frames dropped
+   *  for a wrong layout id, decode errors, rendered frames a second. */
+  stats(): { applied: number, dropped: number, errors: number, fps: number },
+};
+```
+
+- The page tells the host things by
+  `window.MtrackHost?.postMessage(JSON.stringify({type, ...}))`:
+  `{type: 'ready'}` once, and `{type: 'error', message}` for an update that
+  does not decode and for uncaught errors and rejections. With no
+  `MtrackHost` it works the same.
+- `window.mtrackStage` exists once the page's script has run, which is before
+  `ready`. The host waits for the page to load, or for `ready`, before its
+  first call.
+- A frame is read against the layout most recently given. A frame of any
+  other layout, or given when the page holds none, is dropped and counted.
+- An update that does not decode is counted, reported, and changes nothing
+  on screen. `reset()` keeps the counters.
+- The page starts as `system`, which follows `prefers-color-scheme`. For the
+  right theme at first paint the host can load `stage.html?theme=dark` (or
+  `light`). The page's background is the web UI's card colour, which is the
+  app's `surface` in both themes (`#FFFFFF`, `#231F20`).
+- With no layout, or a layout with no venue fixtures, or after `reset()`, the
+  page says "No lights to show."
+- The page asks the network for nothing but its own files: no fonts, no API,
+  no websocket.
+
+On a desktop, with no phone: `npm run dev` in `src/webui/svelte`, then
+`/stage.html?dev=replay` plays the recorded stream and `/stage.html?dev=grpc`
+plays a running player's `WatchStage` over gRPC-Web through the dev server's
+proxy (`VITE_PROXY_TARGET`). Neither is in the built page.
 
 ## 9. If the web view does not work on a phone
 

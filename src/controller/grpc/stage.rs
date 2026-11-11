@@ -776,6 +776,172 @@ mod test {
         }
     }
 
+    /// Standard base64, padded: how the web UI's stage page is handed an
+    /// update.
+    fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// A JSON value with every object's keys in order, so the text of it is
+    /// the same on every run (the snapshots' maps are hash maps).
+    fn in_key_order(value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::Object(map) => {
+                let sorted: BTreeMap<String, Value> =
+                    map.into_iter().map(|(k, v)| (k, in_key_order(v))).collect();
+                Value::Object(sorted.into_iter().collect())
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(in_key_order).collect()),
+            other => other,
+        }
+    }
+
+    /// A short stream as the web UI's stage reader is tested against
+    /// (src/webui/svelte/src/lib/stage/feed.ts): each update as it goes
+    /// over the wire, and beside it what the websocket says for the same
+    /// stage, which is what the reader must make of it.
+    fn recorded_stream() -> serde_json::Value {
+        use crate::proto::player::v1::{stage_update::Update, StageUpdate};
+        use serde_json::json;
+
+        let metadata = metadata();
+        let metadata_json = serde_json::to_value(wire::SocketMessage::Metadata(metadata.clone()))
+            .expect("the metadata message");
+        let state_json = |snapshot: &StateSnapshot| -> serde_json::Value {
+            serde_json::from_str(&crate::webui::state::build_state_json(snapshot))
+                .expect("the state message")
+        };
+        let layout_update = |layout: &StageLayout| {
+            base64(
+                &StageUpdate {
+                    update: Some(Update::Layout(layout.clone())),
+                }
+                .encode_to_vec(),
+            )
+        };
+        let frame_update = |snapshot: &StateSnapshot, layout: &StageLayout| {
+            assert!(fits(snapshot, layout));
+            base64(
+                &StageUpdate {
+                    update: Some(Update::Frame(stage_frame(snapshot, layout))),
+                }
+                .encode_to_vec(),
+            )
+        };
+
+        // The stage of `the_stream_and_the_websocket_say_the_same_thing`.
+        let first = snapshot();
+        let mut later = first.clone();
+        later.fixtures[0].channels.insert("pan".to_string(), 200);
+        later.fixtures[0].strobe_hz = None;
+        later.fixtures[1].strobe_hz = Some(3.0);
+        later.fixtures[2].cells.clear();
+        later.poses = vec![pointing("head", 120.0, None)];
+        later.under_test = vec!["bar".to_string(), "stray".to_string()];
+        later.active_effects.clear();
+        let mut still = later.clone();
+        still.poses.clear();
+        // Then a fixture the first layout does not list: a second layout.
+        let mut grown = first.clone();
+        grown.fixtures.push(fixture("extra", &[("dimmer", 9)]));
+
+        let mut one = stage_layout(&metadata, &first);
+        one.id = 1;
+        let mut two = stage_layout(&metadata, &grown);
+        two.id = 2;
+
+        in_key_order(json!({
+            "about": "A WatchStage stream as the player encodes it, with the websocket's \
+                      message for the same stage beside each update. Written by the test \
+                      the_web_uis_recorded_stream_is_what_the_encoder_says in \
+                      src/controller/grpc/stage.rs; do not edit by hand.",
+            "steps": [
+                {
+                    "what": "the first layout",
+                    "update": layout_update(&one),
+                    "metadata": metadata_json.clone(),
+                },
+                {
+                    "what": "a frame with nothing moved: the mover points where the layout says",
+                    "update": frame_update(&first, &one),
+                    "state": state_json(&first),
+                },
+                {
+                    "what": "values, the pose, the strobes, the cells and the test all change",
+                    "update": frame_update(&later, &one),
+                    "state": state_json(&later),
+                },
+                {
+                    "what": "the mover has no pose now, though the layout gave it one",
+                    "update": frame_update(&still, &one),
+                    "state": state_json(&still),
+                },
+                {
+                    "what": "a frame of a layout that has not arrived",
+                    "update": frame_update(&grown, &two),
+                    "dropped": true,
+                },
+                {
+                    "what": "the second layout: one more driven fixture, the same venue",
+                    "update": layout_update(&two),
+                    "metadata": metadata_json,
+                },
+                {
+                    "what": "a frame of the second layout",
+                    "update": frame_update(&grown, &two),
+                    "state": state_json(&grown),
+                },
+                {
+                    "what": "a late frame of the first layout",
+                    "update": frame_update(&first, &one),
+                    "dropped": true,
+                },
+            ],
+        }))
+    }
+
+    /// The web UI's reader is tested against real encoder output, kept in
+    /// its tree. This holds the file to the encoder: a change to the
+    /// messages fails here until the file is written again, and then the
+    /// web UI's tests read the new one.
+    #[test]
+    fn the_web_uis_recorded_stream_is_what_the_encoder_says() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/webui/svelte/e2e");
+        if !std::path::Path::new(dir).exists() {
+            // The published crate leaves the web UI's tests out.
+            return;
+        }
+        let path = &format!("{dir}/fixtures/stage-stream.json");
+        let mut text = serde_json::to_string_pretty(&recorded_stream()).unwrap();
+        text.push('\n');
+        if std::env::var_os("MTRACK_WRITE_STAGE_FIXTURE").is_some() {
+            std::fs::write(path, &text).expect("write the recorded stream");
+        }
+        let kept = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            kept == text,
+            "{path} is not what the encoder says now; write it again with \
+             MTRACK_WRITE_STAGE_FIXTURE=1 cargo test the_web_uis_recorded_stream"
+        );
+    }
+
     /// `fixtures` fixtures of `channels` channels each, lit, with nothing
     /// else going on: the frame an ordinary moment of a show sends.
     fn frame_size(fixtures: usize, channels: usize) -> (usize, usize) {

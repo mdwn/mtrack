@@ -18,12 +18,14 @@ import type {
   Playback,
   PoseSnapshot,
   ShowReload,
+  StageMetadata,
+  StageState,
   StageValues,
   VenueMetadata,
   Waveform,
 } from "../../gen/rules/mtrack_rules";
 import { writable } from "svelte/store";
-import { connect, on, onConnectionStatus } from "./connection";
+import { connect as openSocket, on, onConnectionStatus } from "./connection";
 
 /** The playback status, with `received_at`: performance.now() when the
  *  frame was received, so consumers extrapolate `elapsed_ms` smoothly
@@ -110,7 +112,12 @@ on("playback", (m) => {
   playbackStore.set({ ...IDLE, ...m, received_at: performance.now() });
 });
 
-on("state", (m) => {
+/**
+ * Puts the stage's state in the stores: the websocket's `state` message, or
+ * a frame of the gRPC stage stream read against its layout
+ * (lib/stage/feed.ts). The one place either is written from.
+ */
+export function applyStageState(m: Partial<StageState>): void {
   // Before the channels: a plot redraws on them and reads these.
   underTestStore.set(m.under_test ?? []);
   strobeRateStore.set(m.strobe_rates ?? {});
@@ -118,12 +125,20 @@ on("state", (m) => {
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
   cellStore.set(m.cells ?? {});
-});
+}
 
-on("metadata", (m) => {
+/**
+ * Puts what is on the stage in the stores: the websocket's `metadata`
+ * message, or a layout of the gRPC stage stream.
+ */
+export function applyStageMetadata(m: Partial<StageMetadata>): void {
   metadataStore.set(m.fixtures ?? {});
   venueStore.set(m.venue ?? null);
-});
+}
+
+on("state", applyStageState);
+
+on("metadata", applyStageMetadata);
 
 on("logs", (m) => {
   logStore.update((prev) => {
@@ -144,5 +159,12 @@ on("reload", (m) => {
   setTimeout(() => reloadStore.set(null), 3000);
 });
 
-// Connect on module load
-connect();
+/**
+ * Opens the websocket that fills these stores, and keeps it open. The app
+ * calls this once as it starts (main.ts). Importing this module opens
+ * nothing: a page fed another way (the stage-only page, which is given the
+ * gRPC stage stream) imports the stores and never calls it.
+ */
+export function connect(): void {
+  openSocket();
+}
