@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `Response.more` and `Request.cancel`, which a client that opens no stream never sets or
   sees. A phone may have two streams open. See [Bluetooth
   Control](docs/src/interfaces/bluetooth.md#streams).
+- **`GetLightingAsset` gRPC RPC**: a server stream of one file of the lighting asset store (the
+  rig description, models and scenery the stage layout names) in chunks of 8 KiB, under the same
+  rules as the web UI's `/api/lighting/assets/`: the same file types, size cap and containment
+  in the store. `gzip` sends it compressed. A read, open while the player is locked. A phone can
+  open it over Bluetooth beside `WatchStage`; none of its chunks is dropped, and the stage's
+  frames still go out between them.
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the

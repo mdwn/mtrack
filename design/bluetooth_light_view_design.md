@@ -175,7 +175,31 @@ a model per fixture type, and scenery if the venue has any.
 
 ```proto
 rpc GetLightingAsset(GetLightingAssetRequest) returns (stream AssetChunk);
+
+message GetLightingAssetRequest {
+  string path = 1;  // under /api/lighting/assets/, as the layout gives it
+  bool gzip = 2;    // send the file gzipped; the chunks join into a gzip stream
+}
+
+message AssetChunk {
+  bytes data = 1;
+  uint64 total_size = 2;  // first chunk only: the bytes all chunks carry
+}
 ```
+
+As built: the method reads the file the way the HTTP endpoint does (the
+same function: extension allowlist, 64 MiB cap, containment in the store),
+so a path that is not in the store, not a served type, or over the cap is
+`NOT_FOUND`, and one that escapes the store is `INVALID_ARGUMENT`. With
+`gzip` the whole file is compressed first and then cut, so `total_size` is
+the size sent. Chunks hold at most 8 KiB, which gives a phone at 16 kB/s a
+step every half second and sits far under the 64 KiB message cap. Open
+while locked. Over Bluetooth it is a stream no message of which is
+replaceable: each chunk waits in the slot until the one before it is on
+the radio, so the file is not queued ahead of the phone. The pump takes
+turns between streams a message at a time, so a `WatchStage` frame goes
+out after at most one chunk (half a second) and not after the file. A phone
+has two streams, so it fetches one asset at a time beside `WatchStage`.
 
 The player already stores these under a content hash, which is in the path.
 The app caches by that path and fetches only what it lacks; the page's own

@@ -64,6 +64,7 @@ pub(crate) const ALLOWED: &[&str] = &[
     "DeletePlaylist",
     "SetLock",
     "WatchStage",
+    "GetLightingAsset",
 ];
 
 /// An allowed method that is a server stream: it is answered on the stream
@@ -78,10 +79,16 @@ pub(crate) struct StreamMethod {
 
 /// The allowed methods that are server streams. Every other allowed method
 /// is unary; a test holds both halves to the service's descriptor.
-pub(crate) const STREAMS: &[StreamMethod] = &[StreamMethod {
-    name: "WatchStage",
-    replaceable: stage_update_is_a_frame,
-}];
+pub(crate) const STREAMS: &[StreamMethod] = &[
+    StreamMethod {
+        name: "WatchStage",
+        replaceable: stage_update_is_a_frame,
+    },
+    StreamMethod {
+        name: "GetLightingAsset",
+        replaceable: never_replaceable,
+    },
+];
 
 /// The allowed server stream called `method`, if it is one.
 pub(crate) fn stream_method(method: &str) -> Option<&'static StreamMethod> {
@@ -98,6 +105,12 @@ const STAGE_UPDATE_FRAME_TAG: u8 = (2 << 3) | 2;
 /// update with neither (no bytes) is not a frame, and is kept.
 fn stage_update_is_a_frame(message: &[u8]) -> bool {
     message.first() == Some(&STAGE_UPDATE_FRAME_TAG)
+}
+
+/// The chunks of an asset are each part of a file: none is worth less for
+/// a later one, and all arrive, in order.
+fn never_replaceable(_message: &[u8]) -> bool {
+    false
 }
 
 /// The allowed methods that write playlists: refused while the player is
@@ -730,6 +743,73 @@ mod tests {
             );
         }
         assert!(stream_method("WatchStage").is_some());
+        assert!(stream_method("GetLightingAsset").is_some());
+    }
+
+    /// The chunks of a file all arrive: none is replaceable, whatever it
+    /// holds.
+    #[test]
+    fn no_chunk_of_an_asset_is_replaceable() {
+        use crate::proto::player::v1::AssetChunk;
+        let replaceable = stream_method("GetLightingAsset")
+            .expect("a stream")
+            .replaceable;
+        for data in [vec![], vec![0x12], vec![0x12, 0x00], vec![7; 100]] {
+            let chunk = AssetChunk {
+                data,
+                total_size: 9,
+            };
+            assert!(!replaceable(&chunk.encode_to_vec()));
+        }
+        assert!(!replaceable(&[]));
+    }
+
+    /// An asset opens through the lock guard, locked or not, and its chunks
+    /// are read a message at a time.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asset_stream_opens_while_locked_and_reads_chunk_by_chunk() {
+        use crate::proto::player::v1::{AssetChunk, GetLightingAssetRequest};
+
+        let project = crate::testutil::player::playlist_project()
+            .await
+            .expect("a project");
+        let store = project.dir.path().join("lighting/.cache/assets");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("rig.json"), vec![b'x'; 9_000]).unwrap();
+        project.player.set_locked(true);
+        let dispatcher = Dispatcher::new(project.player.clone());
+        let stream = stream_method("GetLightingAsset").expect("a stream");
+
+        let request = |path: &str| {
+            GetLightingAssetRequest {
+                path: path.to_string(),
+                gzip: false,
+            }
+            .encode_to_vec()
+        };
+        let mut messages = dispatcher
+            .open(stream, &request("rig.json"))
+            .await
+            .expect("the stream opens");
+        let mut lengths = Vec::new();
+        let status = loop {
+            match messages.next().await {
+                Step::Message(message) => {
+                    let chunk = AssetChunk::decode(message.as_slice()).expect("a chunk");
+                    lengths.push((chunk.data.len(), chunk.total_size));
+                }
+                Step::End(status) => break status,
+            }
+        };
+        assert_eq!(lengths, [(8192, 9_000), (808, 0)]);
+        assert_eq!(status.code(), Code::Ok);
+
+        let refused = dispatcher
+            .open(stream, &request("nope.json"))
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), Code::NotFound);
     }
 
     /// The service's own encoding of the stage's messages, told apart by

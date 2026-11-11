@@ -22,7 +22,9 @@ use crate::controller::ble::notify;
 use crate::controller::ble::session::{Handler, Link, PUMP_DEPTH};
 use crate::player::Player;
 use crate::proto::ble::v1::Request;
-use crate::proto::player::v1::{stage_update::Update, StageUpdate, WatchStageRequest};
+use crate::proto::player::v1::{
+    stage_update::Update, AssetChunk, GetLightingAssetRequest, StageUpdate, WatchStageRequest,
+};
 
 const CANCELLED: u32 = Code::Cancelled as u32;
 const ALREADY_EXISTS: u32 = Code::AlreadyExists as u32;
@@ -1160,4 +1162,142 @@ async fn what_is_not_a_stream_is_answered_on_response_and_a_stream_never_is() {
     assert_eq!(radio.outbox.open_count(), 0);
     quiet().await;
     assert_eq!(radio.responses(On::Response).len(), 3);
+}
+
+// A file in chunks, as `GetLightingAsset` sends one: none replaceable.
+
+#[tokio::test]
+async fn every_message_of_a_stream_without_replaceables_arrives_in_order_and_its_reader_waits() {
+    let script = Script::default();
+    let (link, radio) = rig(script.clone());
+    radio.hold(On::Stream, true);
+    write(&link, peer(1), call(1, "Watch", vec![]));
+    let feed = script.feed(0).await;
+    let names: Vec<String> = (0..40).map(|n| format!("A{n:02}")).collect();
+    for name in &names {
+        say(&feed, message(name));
+    }
+    say(&feed, Step::End(Status::ok("")));
+
+    // The radio is busy: one chunk is on it, one waits in the slot, and the
+    // rest wait where they were, in the service's stream, not in a queue
+    // that grows.
+    quiet().await;
+    assert!(radio.outbox.accepted() <= 2, "{}", radio.outbox.accepted());
+
+    radio.hold(On::Stream, false);
+    let responses = radio.wait_for(On::Stream, names.len() + 1).await;
+    assert_eq!(told(&responses[..names.len()]), names);
+    assert!(!responses[names.len()].more);
+}
+
+#[tokio::test]
+async fn a_file_in_flight_does_not_hold_back_the_other_stream() {
+    let script = Script::default();
+    let (link, radio) = rig(script.clone());
+    radio.hold(On::Stream, true);
+    write(&link, peer(1), call(1, "Watch", vec![]));
+    write(&link, peer(1), call(2, "Watch", vec![]));
+    let file = script.feed(0).await;
+    let frames = script.feed(1).await;
+    for n in 0..8 {
+        say(&file, message(&format!("A{n}")));
+    }
+    say(&frames, message("F1"));
+    quiet().await;
+    radio.hold(On::Stream, false);
+
+    let responses = radio.wait_for(On::Stream, 9).await;
+    let order: Vec<(u32, String)> = responses
+        .iter()
+        .map(|r| (r.id, String::from_utf8(r.payload.clone()).unwrap()))
+        .collect();
+    let at = order
+        .iter()
+        .position(|(id, _)| *id == 2)
+        .expect("the frame");
+    // The streams take turns a message at a time: the frame goes after the
+    // chunk in flight and the one that follows, not after all eight.
+    assert!(at <= 2, "{order:?}");
+    let file_chunks: Vec<&str> = order
+        .iter()
+        .filter(|(id, _)| *id == 1)
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert_eq!(
+        file_chunks,
+        ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lighting_asset_streams_whole_beside_the_stage() {
+    let project = crate::testutil::player::playlist_project()
+        .await
+        .expect("a project");
+    let file: Vec<u8> = (0..45_000u32).map(|n| (n % 253) as u8).collect();
+    let store = project.dir.path().join("lighting/.cache/assets/abc");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("rig.json"), &file).unwrap();
+    // The stage, with a sender, so that there is a frame to send.
+    let (state_tx, _) = watch::channel(stage_of(&[("par", &[("red", 1)])]));
+    project.player.set_state_tx(state_tx);
+    // Locked: both are reads.
+    project.player.set_locked(true);
+    let (link, radio) = rig(Dispatcher::new(project.player.clone()));
+
+    radio.hold(On::Stream, true);
+    let asset = GetLightingAssetRequest {
+        path: "abc/rig.json".to_string(),
+        gzip: false,
+    };
+    write(
+        &link,
+        peer(1),
+        call(1, "GetLightingAsset", asset.encode_to_vec()),
+    );
+    quiet().await;
+    write(&link, peer(1), watch_stage(2));
+    quiet().await;
+    radio.hold(On::Stream, false);
+
+    // 45,000 bytes in 8 KiB chunks is 6, then the last response; and the
+    // stage's layout and frame.
+    let responses = radio.wait_for(On::Stream, 9).await;
+    let of = |id| responses.iter().filter(move |r| r.id == id);
+    let chunks: Vec<AssetChunk> = of(1)
+        .filter(|r| r.more)
+        .map(|r| AssetChunk::decode(r.payload.as_slice()).expect("a chunk"))
+        .collect();
+    assert_eq!(chunks.len(), 6);
+    assert_eq!(chunks[0].total_size, 45_000);
+    let joined: Vec<u8> = chunks.into_iter().flat_map(|c| c.data).collect();
+    assert_eq!(joined, file);
+    let end = of(1).next_back().expect("an end");
+    assert_eq!((end.more, end.code), (false, 0));
+    assert_eq!(
+        stage(&of(2).cloned().collect::<Vec<_>>()),
+        ["layout 1", "frame 1 [1]"]
+    );
+
+    // The stage got its turn while the file was still going.
+    let last_chunk = responses.iter().rposition(|r| r.id == 1 && r.more).unwrap();
+    let layout = responses.iter().position(|r| r.id == 2).unwrap();
+    assert!(layout < last_chunk, "the stage waited for the whole file");
+
+    // A path outside the store is the service's refusal, on stream.
+    let bad = GetLightingAssetRequest {
+        path: "../x.json".to_string(),
+        gzip: false,
+    };
+    write(
+        &link,
+        peer(1),
+        call(3, "GetLightingAsset", bad.encode_to_vec()),
+    );
+    let refused = until("a refusal", || {
+        radio.responses(On::Stream).into_iter().find(|r| r.id == 3)
+    })
+    .await;
+    assert_eq!(refused.code, Code::InvalidArgument as u32);
 }
