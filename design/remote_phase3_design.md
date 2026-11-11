@@ -6,7 +6,7 @@ his Pixel, plot and 3D. He asked for three things next: the playlist editor
 to reach the settings the web UI's does (transitions, ambient light), the
 song library with enough editing to debug on the fly (looping first), and
 Wi-Fi beside Bluetooth. This doc says what each needs, in what order, and
-what is his to decide (§7).*
+what is his to decide (§8).*
 
 ## 1. Where things stand
 
@@ -165,7 +165,7 @@ request; what is absent is left alone.
   anything; the app will say which.
 - Refused while locked.
 
-What else belongs in the list is Mike's to say (§7). Candidates the player
+What else belongs in the list is Mike's to say (§8). Candidates the player
 already has as plain settings: sections (add, move, rename), the metronome
 on or off, a track's output. Each is its own field and can come later.
 
@@ -180,40 +180,47 @@ Bluetooth keeps its pairing; it is the radio that reaches into a room.
 
 ### 4.2 How the app talks
 
-The app's seam is lower than it looked. `PlayerTransport` moves the
-Bluetooth envelope's bytes: requests out, answers, status and stream
-messages in. `PlayerClient` and everything above it know nothing of the
-radio.
+Decided (Mike, 2026-11-11): **the app speaks gRPC over Wi-Fi.**
 
-Two ways to add Wi-Fi:
+The messages the app sends over Bluetooth are already the gRPC messages,
+inside an envelope that names the method. So the app's seam moves up one
+level, from "send these bytes" to "call this method with these bytes", and
+a second transport makes the call for real on the player's gRPC port.
+Streams map the same way. Nothing above the seam changes, and the player
+needs no new route.
 
-| | A: the envelope over a websocket | B: a gRPC client in the app |
-|---|---|---|
-| Player | One new route on the web UI's port, feeding the dispatcher Bluetooth already uses | Nothing |
-| App | One new transport; no screen or client code changes | A second client for every call, a second status mapping, the gRPC library |
-| Status | Pushed, the same compact message | Polled, a different message |
-| Streams | The same code, without the pace | gRPC's own |
-| What the phone can call | The Bluetooth allowlist | Everything gRPC has |
+The one gap is status. Over Bluetooth the player pushes a compact status
+message. The gRPC `Status` is another message, and lacks four things the
+app uses: the playlist position, the looping section, the gains revision
+and the lock. So:
 
-**Recommended: A.** One protocol, two carriers. Every feature built for
-Bluetooth works over Wi-Fi the day it lands and the other way round, and
-the two cannot drift. The route lives on the web UI's port (8080), so there
-is no new port to open or document.
+```proto
+rpc WatchStatus(WatchStatusRequest) returns (stream RemoteStatus);
+```
 
-Over the websocket:
+`RemoteStatus` is the message Bluetooth pushes today, moved to the player's
+own proto so both carriers send one thing. It is sent when it changes and
+at least once a second while playing, for the clock. The app keeps one
+status path and polls nothing.
 
-- One websocket message is one envelope message; nothing is cut into
-  packets.
-- Streams run unpaced. The socket pushes back when the phone is slow, which
-  Bluetooth cannot do, and newest-wins still drops stale lighting frames.
-- The stage can ask for the full 20 frames a second; assets arrive in a
-  blink.
-- The lock applies as it does over Bluetooth.
+What differs from Bluetooth:
+
+- Streams run unpaced. gRPC pushes back when the phone is slow, which
+  Bluetooth cannot do. The stage can ask for the full 20 frames a second;
+  assets arrive in a blink.
+- The phone can call all of gRPC, not the Bluetooth allowlist. That matches
+  §4.1; the app uses what it uses over Bluetooth.
+- The lock applies as everywhere.
+
+The alternative considered was the Bluetooth envelope over a websocket on
+the web UI's port: no change to the app above its transport, but a new
+route on the player to secure and explain, and a protocol only the app
+speaks. Not chosen.
 
 ### 4.3 Finding the player
 
 - **Told over Bluetooth.** A phone connected by Bluetooth asks the player
-  for its addresses and the web port, and remembers them. This needs no
+  for its addresses and the gRPC port, and remembers them. This needs no
   discovery protocol and works on networks that block one.
 - **By name.** The Pi image already answers to `mtrack.local`. The app's
   connect screen gains "Enter an address", which takes a name or an IP.
@@ -240,34 +247,52 @@ survives those.
 - iOS: needs the local-network usage string. Unverified, like everything on
   iOS.
 
-## 5. Order
+## 5. The web UI and gRPC
+
+Mike asked whether the web UI should use gRPC too. Part of it does: the
+web server answers gRPC-Web on its own port, and the transport buttons,
+seek, section loops, track gains and the ambient mode already call
+`PlayerService` through it. What does not:
+
+| | Today | Over gRPC? |
+|---|---|---|
+| Live feeds: status, the stage | JSON on a websocket | **Yes.** `WatchStatus` and `WatchStage` are the same facts in one encoding, and the stage page already reads `WatchStage`. This retires the JSON twins the light view doc named as a debt |
+| Other websocket traffic: meters, logs, waveforms | JSON on the websocket | Later, one by one, when each has a reason |
+| Editing: config, songs, playlists, lighting files, uploads (67 REST routes) | REST | **No.** It works, it is tested, files and uploads suit HTTP, and a rewrite buys nothing a user would see |
+
+So: move the live feeds once `WatchStatus` exists, and leave the editing
+API alone. It is its own piece of work (P5) and nothing on the phone waits
+for it.
+
+## 6. Order
 
 | Phase | What | Size |
 |---|---|---|
 | P1 | Playlist settings: messages, player, the app's sheets | Medium |
 | P2 | Songs: list, a song's page, loop settings | Medium |
-| P3 | Wi-Fi: the websocket route, the transport, the address told over Bluetooth, "Enter an address" | Medium |
+| P3 | Wi-Fi: `WatchStatus`, the app's call-level seam and gRPC transport, the address told over Bluetooth, "Enter an address" | Medium |
+| P5 | The web UI's live feeds over gRPC (§5) | Medium, separate |
 | P4 | mDNS browsing | Small, optional |
 
 P1 and P2 are useful over Bluetooth today. P3 touches neither, so it can be
 built beside them.
 
-## 6. What is not known
+## 7. What is not known
 
 - How a song edit reaches a song that is playing (§3).
-- Whether the web UI's server can hold the websocket route without the
-  origin checks it applies to its own (§4.2): a phone app has no origin.
 - iOS, throughout.
 - Wi-Fi where the phone has mobile data and the player's network has no
   internet: Android may route the app's traffic to mobile data unless the
   socket is bound to the Wi-Fi network. To test early in P3.
 
-## 7. Decisions
+## 8. Decisions
 
 1. **Wi-Fi access matches the web UI** (§4.1). Decided.
-2. **The envelope over a websocket, not a gRPC client** (§4.2).
-   Recommended: yes.
+2. **The app speaks gRPC over Wi-Fi, with a `WatchStatus` stream** (§4.2).
+   Decided.
 3. **Song edits are named settings, not the file** (§3). Recommended: yes.
 4. **Which song settings beyond looping** (§3). Open: Mike's list.
-5. **Finding the player: told over Bluetooth and by address first, mDNS
+5. **The web UI's live feeds move to gRPC; its editing API stays REST**
+   (§5). Recommended: yes.
+6. **Finding the player: told over Bluetooth and by address first, mDNS
    browsing later** (§4.3). Recommended: yes.
