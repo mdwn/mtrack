@@ -936,19 +936,6 @@ pub(crate) fn validate_lighting_name_to_write(
 /// Path segments the lighting API uses as routes beside `{name}`.
 const RESERVED_NAMES: &[&str] = &["lock", "validate", "activate"];
 
-/// The file types the asset store serves, by extension. Everything in the
-/// store was written by mtrack itself from a GDTF archive; the allowlist
-/// keeps the endpoint from ever becoming a general file server.
-const ASSET_TYPES: &[(&str, &str)] = &[
-    ("json", "application/json"),
-    ("glb", "model/gltf-binary"),
-    ("png", "image/png"),
-    ("svg", "image/svg+xml"),
-];
-
-/// The largest asset served; the store's own caps are lower.
-const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
-
 /// GET /api/lighting/assets/{*path} — serves a file of the project's
 /// asset store (`lighting/.cache/assets/`, design §16.2): rig models,
 /// meshes and thumbnails for the 3D view. Paths are content-addressed, so
@@ -957,64 +944,24 @@ pub(super) async fn get_lighting_asset(
     State(state): State<WebUiState>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
+    use lighting::asset_store::{read_asset, AssetError};
 
-    let content_type = std::path::Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .and_then(|ext| {
-            ASSET_TYPES
-                .iter()
-                .find(|(known, _)| known.eq_ignore_ascii_case(ext))
-        })
-        .map(|(_, mime)| *mime);
-    let Some(content_type) = content_type else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Not an asset type"})),
-        )
-            .into_response());
-    };
-
-    let store = project_root(&state.config_path)?
-        .join("lighting")
-        .join(".cache")
-        .join(lighting::distill::ASSETS_DIR);
-    // No store yet (no referential fixture type has expanded) is a plain
-    // 404, not a server error.
-    let root = VerifiedRoot::new(&store).map_err(|_| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "No asset store"})),
-        )
-            .into_response()
-    })?;
-    let file = SafePath::validate_relative(&path, &root).map_err(|e| e.into_response())?;
-
-    let (bytes, len) = super::helpers::spawn_blocking_io("read asset", move || {
-        let meta = std::fs::metadata(&file)?;
-        if !meta.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "not a file",
-            ));
-        }
-        if meta.len() > MAX_ASSET_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "asset over the size cap",
-            ));
-        }
-        Ok((std::fs::read(&file)?, meta.len()))
-    })
-    .await
-    .map_err(|_| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Asset not found"})),
-        )
-            .into_response()
-    })?;
+    let project = project_root(&state.config_path)?;
+    let gone =
+        |error: &str| (StatusCode::NOT_FOUND, Json(json!({ "error": error }))).into_response();
+    let asset = tokio::task::spawn_blocking(move || read_asset(&project, &path))
+        .await
+        .map_err(|_| gone("Asset not found"))?
+        .map_err(|e| match e {
+            AssetError::NotAnAsset => gone("Not an asset type"),
+            // No store yet (no referential fixture type has expanded) is a
+            // plain 404, not a server error.
+            AssetError::NoStore => gone("No asset store"),
+            AssetError::Path(e) => e.into_response(),
+            AssetError::Unreadable => gone("Asset not found"),
+        })?;
+    let (bytes, content_type) = (asset.bytes, asset.content_type);
+    let len = bytes.len();
 
     // The bytes are a stranger's (copied out of a GDTF archive), so the
     // type is not to be sniffed, and an SVG — which may script — is served

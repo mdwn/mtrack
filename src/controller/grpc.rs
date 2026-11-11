@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+mod asset;
 mod playlists;
 mod stage;
 
@@ -31,20 +32,20 @@ use crate::{
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
         GetActiveEffectsRequest, GetActiveEffectsResponse, GetConfigRequest, GetConfigResponse,
-        GetCuesRequest, GetCuesResponse, GetPlaylistRequest, GetPlaylistResponse,
-        GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
-        LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest, NavigateToSongResponse,
-        NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
-        PlaylistEntry, PreviousRequest, PreviousResponse, RemoveProfileRequest,
-        SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
-        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
-        SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
-        SetTrackMuteResponse, Song, StageFrame, StageLayout, StageUpdate, StatusRequest,
-        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
-        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
-        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
-        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
-        WatchStageRequest, FILE_DESCRIPTOR_SET,
+        GetCuesRequest, GetCuesResponse, GetLightingAssetRequest, GetPlaylistRequest,
+        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest,
+        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
+        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
+        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
+        RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest, SectionAckResponse,
+        SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
+        SetAmbientModeResponse, SetLockRequest, SetLockResponse, SetTrackGainRequest,
+        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StageFrame,
+        StageLayout, StageUpdate, StatusRequest, StatusResponse, StopRequest, StopResponse,
+        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, WatchStageRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -1076,19 +1077,20 @@ impl PlayerService for PlayerServer {
         Ok(Response::new(watch.into_stream()))
     }
 
-    type GetLightingAssetStream = futures_util::stream::BoxStream<
-        'static,
-        Result<crate::proto::player::v1::AssetChunk, Status>,
-    >;
+    type GetLightingAssetStream = asset::AssetStream;
 
-    /// A stand-in: the real one lands with the player's side of the light
-    /// view's 3D (design/bluetooth_light_view_design.md §6). The phone app
-    /// takes UNIMPLEMENTED as a player too old to send the 3D models.
+    /// The web UI's `/api/lighting/assets/`, read the same way, in chunks.
     async fn get_lighting_asset(
         &self,
-        _request: Request<crate::proto::player::v1::GetLightingAssetRequest>,
+        request: Request<GetLightingAssetRequest>,
     ) -> Result<Response<Self::GetLightingAssetStream>, Status> {
-        Err(Status::unimplemented("GetLightingAsset is not served yet"))
+        let request = request.into_inner();
+        let project = self
+            .config_store
+            .as_ref()
+            .map(|store| crate::util::project_dir_of(store.path()));
+        let stream = asset::open(project, request.path, request.gzip).await?;
+        Ok(Response::new(stream))
     }
 }
 
@@ -2606,6 +2608,163 @@ mod test {
             || state_tx.receiver_count() == 0,
             "the stream outlived its client",
         );
+        Ok(())
+    }
+
+    /// A project with an asset store holding `files` (path under the store,
+    /// bytes), and a service over its config.
+    async fn asset_project(
+        files: &[(&str, Vec<u8>)],
+    ) -> (
+        crate::testutil::player::PlaylistProject,
+        super::PlayerServer,
+    ) {
+        let project = crate::testutil::player::playlist_project()
+            .await
+            .expect("a project");
+        let store = project.dir.path().join("lighting/.cache/assets");
+        for (path, bytes) in files {
+            let file = store.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        let server =
+            super::PlayerServer::with_config_store(project.player.clone(), project.store.clone());
+        (project, server)
+    }
+
+    /// Asks for an asset and reads the stream to its end.
+    async fn asset_chunks(
+        server: &super::PlayerServer,
+        path: &str,
+        gzip: bool,
+    ) -> Result<Vec<crate::proto::player::v1::AssetChunk>, tonic::Status> {
+        use futures_util::StreamExt;
+        let request = crate::proto::player::v1::GetLightingAssetRequest {
+            path: path.to_string(),
+            gzip,
+        };
+        let stream = super::PlayerService::get_lighting_asset(server, tonic::Request::new(request))
+            .await?
+            .into_inner();
+        stream.collect::<Vec<_>>().await.into_iter().collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asset_streams_in_chunks_that_rejoin_to_the_file() {
+        let file: Vec<u8> = (0..20_000u32).map(|n| (n % 251) as u8).collect();
+        let (_project, server) = asset_project(&[("abc/models/yoke.glb", file.clone())]).await;
+
+        let chunks = asset_chunks(&server, "abc/models/yoke.glb", false)
+            .await
+            .expect("the asset");
+        assert_eq!(chunks.len(), 3, "20,000 bytes in 8 KiB chunks");
+        assert!(chunks
+            .iter()
+            .all(|c| c.data.len() <= super::asset::CHUNK_SIZE));
+        assert_eq!(chunks[0].total_size, 20_000);
+        assert!(chunks[1..].iter().all(|c| c.total_size == 0));
+        let joined: Vec<u8> = chunks.into_iter().flat_map(|c| c.data).collect();
+        assert_eq!(joined, file);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gzipped_asset_joins_into_a_gzip_stream_of_the_file() {
+        use std::io::Read;
+        let file = "{\"rig\":\"par\"}".repeat(5_000).into_bytes();
+        let (_project, server) = asset_project(&[("abc/rig.json", file.clone())]).await;
+
+        let chunks = asset_chunks(&server, "abc/rig.json", true)
+            .await
+            .expect("the asset");
+        let joined: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+        // total_size is what is sent: the compressed size.
+        assert_eq!(chunks[0].total_size, joined.len() as u64);
+        assert!(joined.len() < file.len() / 10);
+        let mut unzipped = Vec::new();
+        flate2::read::GzDecoder::new(joined.as_slice())
+            .read_to_end(&mut unzipped)
+            .expect("gzip");
+        assert_eq!(unzipped, file);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_asset_is_one_empty_chunk() {
+        let (_project, server) = asset_project(&[("abc/empty.json", Vec::new())]).await;
+        let chunks = asset_chunks(&server, "abc/empty.json", false)
+            .await
+            .expect("the asset");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].data.is_empty());
+        assert_eq!(chunks[0].total_size, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asset_the_store_does_not_serve_is_refused() {
+        use tonic::Code;
+        let (project, server) = asset_project(&[
+            ("abc/rig.json", b"{}".to_vec()),
+            ("abc/notes.txt", b"no".to_vec()),
+        ])
+        .await;
+        std::fs::write(project.dir.path().join("lighting/secret.json"), "{}").unwrap();
+        let big = project
+            .dir
+            .path()
+            .join("lighting/.cache/assets/abc/big.glb");
+        std::fs::File::create(big)
+            .unwrap()
+            .set_len(crate::lighting::asset_store::MAX_ASSET_BYTES + 1)
+            .unwrap();
+
+        for (path, why, code) in [
+            ("abc/missing.json", "missing", Code::NotFound),
+            ("abc/notes.txt", "not an asset type", Code::NotFound),
+            ("abc", "a directory, and no type", Code::NotFound),
+            ("abc/big.glb", "over the size cap", Code::NotFound),
+            ("../secret.json", "traversal", Code::InvalidArgument),
+            ("abc/../../secret.json", "traversal", Code::InvalidArgument),
+        ] {
+            let status = asset_chunks(&server, path, false)
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{path} ({why}) was served"));
+            assert_eq!(status.code(), code, "{path} ({why}): {status}");
+        }
+
+        // No store at all, and no config to find one by.
+        let empty = tempfile::tempdir().unwrap();
+        let config_path = empty.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\n").unwrap();
+        let config = crate::config::Player::deserialize(&config_path).unwrap();
+        let store = Arc::new(crate::config::ConfigStore::new(config, config_path));
+        let server = super::PlayerServer::with_config_store(project.player.clone(), store);
+        let status = asset_chunks(&server, "abc/rig.json", false).await.err();
+        assert_eq!(status.map(|s| s.code()), Some(Code::NotFound));
+        let server = super::PlayerServer::new(project.player.clone());
+        let status = asset_chunks(&server, "abc/rig.json", false).await.err();
+        assert_eq!(status.map(|s| s.code()), Some(Code::NotFound));
+    }
+
+    /// Over the wire: assets are reads, open while the player is locked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asset_is_open_while_locked() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::GetLightingAssetRequest;
+        let (project, _server) = asset_project(&[("abc/rig.json", b"{\"v\":1}".to_vec())]).await;
+        project.player.set_locked(true);
+        let mut client = serve_grpc(project.player.clone()).await?;
+
+        let mut stream = client
+            .get_lighting_asset(GetLightingAssetRequest {
+                path: "abc/rig.json".to_string(),
+                gzip: false,
+            })
+            .await?
+            .into_inner();
+        let chunk = stream.message().await?.expect("a chunk");
+        assert_eq!(chunk.data, b"{\"v\":1}");
+        assert_eq!(chunk.total_size, 7);
+        assert!(stream.message().await?.is_none());
         Ok(())
     }
 }
