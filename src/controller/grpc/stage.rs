@@ -70,6 +70,7 @@ fn capability_name(capability: &crate::lighting::fit::Capability) -> String {
 /// a pose, one under test), sorted by name. A fixture only in the snapshot
 /// has channels and no placement; one only in the metadata has no channels.
 /// Each takes its channel names, sorted, and its pose from the snapshot.
+/// The layout's `id` is the stream's to give: it is 0 here.
 pub(crate) fn stage_layout(
     metadata: &wire::StageMetadata,
     snapshot: &StateSnapshot,
@@ -129,6 +130,7 @@ pub(crate) fn stage_layout(
         .collect();
 
     StageLayout {
+        id: 0,
         fixtures,
         // Without the venues directory: that is for saving edits back.
         venue: metadata.venue.as_ref().map(|venue| StageVenue {
@@ -188,8 +190,8 @@ pub(crate) fn fits(snapshot: &StateSnapshot, layout: &StageLayout) -> bool {
 }
 
 /// The frame for `snapshot`, read against `layout`, which it must fit
-/// ([`fits`]). Everything is in the layout's fixture order, so two frames of
-/// the same stage are equal.
+/// ([`fits`]), and whose id it carries. Everything is in the layout's
+/// fixture order, so two frames of the same stage are equal.
 pub(crate) fn stage_frame(snapshot: &StateSnapshot, layout: &StageLayout) -> StageFrame {
     let indexes = indexes(layout);
     let index_of = |name: &str| indexes.get(name).map(|&index| index as u32);
@@ -251,6 +253,7 @@ pub(crate) fn stage_frame(snapshot: &StateSnapshot, layout: &StageLayout) -> Sta
     under_test.dedup();
 
     StageFrame {
+        layout: layout.id,
         channels,
         strobes,
         poses,
@@ -473,6 +476,15 @@ mod test {
         assert_eq!(frame.channels, [255, 10, 1, 2, 3, 77]);
         let named: usize = layout.fixtures.iter().map(|f| f.channels.len()).sum();
         assert_eq!(frame.channels.len(), named);
+    }
+
+    #[test]
+    fn a_frame_names_the_layout_it_is_read_against() {
+        let snapshot = snapshot();
+        let mut layout = stage_layout(&metadata(), &snapshot);
+        assert_eq!(layout.id, 0, "the stream numbers its layouts");
+        layout.id = 7;
+        assert_eq!(stage_frame(&snapshot, &layout).layout, 7);
     }
 
     #[test]
@@ -780,7 +792,9 @@ mod test {
                 .collect(),
             ..Default::default()
         };
-        let layout = stage_layout(&empty(), &snapshot);
+        let mut layout = stage_layout(&empty(), &snapshot);
+        // As the stream sends it: a layout always has an id.
+        layout.id = 1;
         let frame = stage_frame(&snapshot, &layout);
         let json = crate::webui::state::build_state_json(&snapshot);
         (frame.encoded_len(), json.len())
@@ -795,8 +809,8 @@ mod test {
         let (big, big_json) = frame_size(50, 8);
         println!("8 fixtures x 5 channels: {rig} bytes (JSON state message: {rig_json})");
         println!("50 fixtures x 8 channels: {big} bytes (JSON state message: {big_json})");
-        assert_eq!(rig, 42);
-        assert_eq!(big, 403);
+        assert_eq!(rig, 44);
+        assert_eq!(big, 405);
 
         // What moving costs: a pose that differs from the layout's.
         let mut snapshot = StateSnapshot {

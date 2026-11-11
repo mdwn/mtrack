@@ -343,7 +343,9 @@ struct StageWatch {
     revision: u64,
     /// The least time between two sends; zero for the sampler's own rate.
     interval: std::time::Duration,
-    /// The layout the client holds; `None` before the first.
+    /// The layout the client holds; `None` before the first. Its id is how
+    /// many this stream has sent, so a frame can say which it is read
+    /// against.
     layout: Option<StageLayout>,
     /// The last frame sent, so one that says the same is not sent again.
     frame: Option<StageFrame>,
@@ -427,13 +429,16 @@ impl StageWatch {
                 }));
             }
 
-            let layout = match self.build_layout(snapshot.clone()).await {
+            let mut layout = match self.build_layout(snapshot.clone()).await {
                 Ok(layout) => layout,
                 Err(status) => {
                     self.done = true;
                     return Some(Err(status));
                 }
             };
+            // Never 0, which a client reads as no id at all.
+            let sent = self.layout.as_ref().map_or(0, |layout| layout.id);
+            layout.id = sent.wrapping_add(1).max(1);
             // A frame always follows a layout, whatever the last one said:
             // it is read against this layout, not that one.
             let frame = stage::stage_frame(&snapshot, &layout);
@@ -2384,7 +2389,10 @@ mod test {
         assert_eq!(names, ["bar", "par"]);
         assert_eq!(layout.fixtures[1].channels, ["dimmer", "red"]);
         assert_eq!(layout.venue, None, "no lighting system, no venue");
-        assert_eq!(next_frame(&mut stream).await.channels, [7, 200, 9]);
+        assert_eq!(layout.id, 1, "the stream's first layout");
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(frame.channels, [7, 200, 9]);
+        assert_eq!(frame.layout, 1);
     }
 
     /// A snapshot that changes something is a frame; one that says what the
@@ -2397,7 +2405,11 @@ mod test {
         assert_eq!(next_frame(&mut stream).await.channels, [1]);
 
         state_tx.send(stage_of(&[("par", &[("red", 2)])])).unwrap();
-        assert_eq!(next_frame(&mut stream).await.channels, [2]);
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([2].as_slice(), 1)
+        );
 
         // The same again, then a change: the next message is the change, so
         // the repeat was never sent.
@@ -2453,14 +2465,35 @@ mod test {
     /// it, though no value moved.
     #[tokio::test]
     async fn the_stage_stream_sends_the_layout_again_when_its_revision_moves() {
-        let (player, _state_tx, mut stream) =
+        let (player, state_tx, mut stream) =
             watch_stage(stage_of(&[("par", &[("red", 1)])]), 0).await;
         let first = next_layout(&mut stream).await;
         next_frame(&mut stream).await;
 
         player.bump_stage_layout();
-        assert_eq!(next_layout(&mut stream).await, first);
-        assert_eq!(next_frame(&mut stream).await.channels, [1]);
+        let second = next_layout(&mut stream).await;
+        assert_eq!((first.id, second.id), (1, 2));
+        assert_eq!(second.fixtures, first.fixtures);
+        // The frame after it is read against the new layout, and says so,
+        // as every frame does until the next layout.
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([1].as_slice(), 2)
+        );
+        state_tx.send(stage_of(&[("par", &[("red", 9)])])).unwrap();
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([9].as_slice(), 2)
+        );
+
+        // A layout the snapshot forces is numbered the same way.
+        state_tx
+            .send(stage_of(&[("bar", &[("dimmer", 3)])]))
+            .unwrap();
+        assert_eq!(next_layout(&mut stream).await.id, 3);
+        assert_eq!(next_frame(&mut stream).await.layout, 3);
     }
 
     /// Frames come no closer together than the caller asked, and the one
@@ -2502,8 +2535,19 @@ mod test {
     async fn the_stage_stream_of_a_player_with_no_lighting_is_an_empty_stage() {
         let player = crate::testutil::player::memory_player(&["Song A"]).build();
         let mut stream = open_stage(&player, 0).await;
-        assert_eq!(next_layout(&mut stream).await, Default::default());
-        assert_eq!(next_frame(&mut stream).await, Default::default());
+        let layout = next_layout(&mut stream).await;
+        assert_eq!(
+            (layout.id, layout.fixtures.len(), layout.venue),
+            (1, 0, None)
+        );
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame,
+            crate::proto::player::v1::StageFrame {
+                layout: 1,
+                ..Default::default()
+            }
+        );
 
         // Lighting comes up: a state sender, and the engine's install bumps
         // the layout.

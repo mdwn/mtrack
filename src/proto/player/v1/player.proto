@@ -667,6 +667,10 @@ message StageLayout {
     repeated StageFixture fixtures = 1;
     // The current venue; absent when the player has none.
     StageVenue venue = 2;
+    // Which layout of this stream this is: 1 for the first, and one more
+    // for each layout sent after it. A frame names the layout it is read
+    // against by this.
+    uint32 id = 3;
 }
 
 // StageStrobe is the rate a strobing fixture flashes at.
@@ -731,6 +735,10 @@ message StageFrame {
     // StageLayout.fixtures, ascending: their bytes, cells and poses are the
     // test's.
     repeated uint32 under_test = 6;
+    // The StageLayout.id of the layout this frame is read against. A client
+    // drops a frame whose layout is not the id of the layout it holds: its
+    // bytes and indexes are in another layout's order.
+    uint32 layout = 7;
 }
 
 // PlayerService is a service for controlling the mtrack player.
