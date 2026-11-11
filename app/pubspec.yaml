@@ -16,6 +16,7 @@ dependencies:
   shared_preferences: ^2.5.6
   wakelock_plus: ^1.8.2
   package_info_plus: ^10.2.2
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:
@@ -36,6 +37,12 @@ flutter:
     - assets/fonts/nunito/OFL.txt
     - assets/fonts/inter/OFL.txt
     - assets/fonts/jetbrains_mono/OFL.txt
+    # The stage page the Lights tab shows in a web view: the web UI's stage
+    # plot, built and copied here by `make app-stage-assets` (gitignored).
+    # Until then the two directories hold only a .gitignore, which is not
+    # bundled, and the app builds with a Lights tab that cannot load its page.
+    - assets/stage/
+    - assets/stage/assets/
   fonts:
     - family: Nunito
       fonts:

@@ -49,7 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes faster than the link carries it the newest frame replaces the one waiting, so a slow
   phone sees fewer frames instead of falling behind; a layout is never dropped. The envelope
   gains `Response.more` and `Request.cancel`, which a client that opens no stream never sets or
-  sees. A phone may have two streams open. See [Bluetooth
+  sees. A phone may have two streams open. The phone app shows it on a new **Lights** tab: the
+  web UI's stage plot, live, under the ambient light's Auto / On / Off control, which moved
+  there from the app's settings. Against a player older than this release the tab says the
+  player is too old to show its lights. See [Bluetooth
   Control](docs/src/interfaces/bluetooth.md#streams).
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the

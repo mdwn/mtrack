@@ -13,7 +13,6 @@
 //
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 
 import '../support/app_harness.dart';
@@ -30,23 +29,6 @@ Future<void> openSettings(AppHarness h) async {
 }
 
 void main() {
-  group('the tab bar', () {
-    appTest('has four tabs, in order', (h) async {
-      final centres = <double>[];
-      for (final label in ['Now', 'Playlist', 'Sections', 'Levels']) {
-        final bar = find
-            .text(label)
-            .evaluate()
-            .map((e) => h.tester.getCenter(find.byWidget(e.widget)))
-            .where((c) => c.dy > 560);
-        expect(bar, hasLength(1), reason: label);
-        centres.add(bar.single.dx);
-      }
-      expect([...centres]..sort(), centres);
-      expect(centres.toSet(), hasLength(4));
-    });
-  });
-
   group('the levels', () {
     appTest('are not fetched until the tab is opened', (h) async {
       expect(calls(h, 'GetTrackGains'), 0);
@@ -221,67 +203,6 @@ void main() {
       await h.openTab('Levels');
       expect(find.text('Loading the levels…'), findsNothing);
       expect(find.byType(Slider), findsNothing);
-      await h.advance(const Duration(seconds: 30));
-    });
-  });
-
-  group('the ambient light', () {
-    appTest('shows the mode and what it is doing', (h) async {
-      await openSettings(h);
-      expect(find.text('Ambient light'), findsOneWidget);
-      expect(find.text('playing'), findsOneWidget);
-      final auto = find.bySemanticsLabel('Ambient light Auto');
-      expect(auto, findsOneWidget);
-    }, setup: (rig) => rig.ambientState = 'playing');
-
-    appTest('says waiting for a pending show', (h) async {
-      await openSettings(h);
-      expect(find.text('waiting'), findsOneWidget);
-    }, setup: (rig) => rig.ambientState = 'pending');
-
-    appTest('is hidden when the player has none', (h) async {
-      await openSettings(h);
-      expect(find.text('Forget this player'), findsOneWidget);
-      expect(find.text('Ambient light'), findsNothing);
-    }, setup: (rig) => rig.ambientMode = null);
-
-    appTest('changes the mode when a segment is tapped', (h) async {
-      await openSettings(h);
-      await h.tester.tap(find.text('On'));
-      await h.settle();
-      await h.tester.pump(const Duration(milliseconds: 50));
-      final request = pp.SetAmbientModeRequest.fromBuffer(
-        h.rig.player.received
-            .lastWhere((r) => r.method == 'SetAmbientMode')
-            .payload,
-      );
-      expect(request.mode, 'on');
-      expect(h.rig.ambientMode, 'on');
-      expect(find.text('playing'), findsOneWidget);
-    });
-
-    appTest('says there is no ambient show when there is none', (h) async {
-      await openSettings(h);
-      await h.tester.tap(find.text('On'));
-      await h.settle();
-      await h.tester.pump(const Duration(milliseconds: 50));
-      expect(find.text('no ambient show'), findsOneWidget);
-      await h.tester.tap(find.text('Off'));
-      await h.settle();
-      await h.tester.pump(const Duration(milliseconds: 50));
-      expect(find.text('no ambient show'), findsNothing);
-      expect(find.text('off'), findsOneWidget);
-    }, setup: (rig) => rig.ambientShow = false);
-
-    appTest('cannot be changed without the player', (h) async {
-      await openSettings(h);
-      h.rig.link.connectFailures = 100;
-      h.rig.player.disconnect();
-      await h.settle();
-      await h.tester.pump(const Duration(milliseconds: 100));
-      await h.tester.tap(find.text('Off'));
-      await h.settle();
-      expect(calls(h, 'SetAmbientMode'), 0);
       await h.advance(const Duration(seconds: 30));
     });
   });

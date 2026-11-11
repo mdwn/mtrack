@@ -26,8 +26,8 @@ Future<String> Function() appVersion = () async {
   return '${info.version} (${info.buildNumber})';
 };
 
-/// Opens the settings: the connected player, forgetting it, the licences and
-/// the app's version.
+/// Opens the settings: the player's lock, the connected player, forgetting
+/// it, the licences and the app's version.
 Future<void> showSettingsSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
@@ -72,10 +72,6 @@ class _SettingsSheet extends StatelessWidget {
         children: [
           Text('Settings', style: AppText.heading.copyWith(color: colors.text)),
           const SizedBox(height: 16),
-          if (session.ambientMode != null) ...[
-            _AmbientCard(session: session),
-            SizedBox(height: session.lockAvailable ? 14 : 22),
-          ],
           if (session.lockAvailable) ...[
             const _LockCard(),
             const SizedBox(height: 22),
@@ -224,133 +220,6 @@ class _LockCardState extends State<_LockCard> {
               onPressed: usable ? () => session.setLock(true) : null,
             ),
         ],
-      ),
-    );
-  }
-}
-
-/// What the ambient light is doing, in a word or two; null when unknown.
-String? ambientStateLabel(String? state) => switch (state) {
-  'playing' => 'playing',
-  'pending' => 'waiting',
-  'off' => 'off',
-  'unavailable' => 'no ambient show',
-  _ => null,
-};
-
-const List<(String, String)> _ambientModes = [
-  ('auto', 'Auto'),
-  ('on', 'On'),
-  ('off', 'Off'),
-];
-
-class _AmbientCard extends StatelessWidget {
-  const _AmbientCard({required this.session});
-
-  final Session session;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final state = ambientStateLabel(session.ambientState);
-    final usable = session.isReady && !session.isBusy(ActionKind.setAmbient);
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color: colors.page,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(
-                'Ambient light',
-                style: AppText.bodyStrong.copyWith(color: colors.text),
-              ),
-              const SizedBox(width: 10),
-              if (state != null)
-                Expanded(
-                  child: Text(
-                    state,
-                    textAlign: TextAlign.end,
-                    style: AppText.small.copyWith(color: colors.muted),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Opacity(
-            opacity: usable ? 1 : 0.5,
-            child: Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                color: colors.raised,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  for (final (mode, label) in _ambientModes)
-                    Expanded(
-                      child: _Segment(
-                        label: label,
-                        selected: session.ambientMode == mode,
-                        onTap: usable
-                            ? () => session.setAmbientMode(mode)
-                            : null,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Segment extends StatelessWidget {
-  const _Segment({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return Semantics(
-      button: true,
-      selected: selected,
-      enabled: onTap != null,
-      label: 'Ambient light $label',
-      excludeSemantics: true,
-      onTap: onTap,
-      child: Material(
-        color: selected ? colors.cyan : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Container(
-            constraints: const BoxConstraints(minHeight: 48),
-            alignment: Alignment.center,
-            child: Text(
-              label,
-              style: AppText.bodyStrong.copyWith(
-                color: selected ? colors.page : colors.muted,
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

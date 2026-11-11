@@ -649,4 +649,546 @@ void main() {
       expect(read.playing, isTrue);
     });
   });
+
+  group('streams', () {
+    Future<void> pump() => Future<void>.delayed(Duration.zero);
+
+    Uint8List bytes(String text) => Uint8List.fromList(text.codeUnits);
+
+    /// Listens to [stream] and records what it says: each message as text,
+    /// `error:<code>` and `done`.
+    StreamSubscription<Uint8List> record(
+      Stream<Uint8List> stream,
+      List<String> into,
+    ) => stream.listen(
+      (message) => into.add(String.fromCharCodes(message)),
+      onError: (Object e) => into.add('error:${(e as PlayerException).code}'),
+      onDone: () => into.add('done'),
+    );
+
+    test('asks for the stream when listened to, not before', () async {
+      final stream = client.watchStage(maxRate: 7);
+      await pump();
+      expect(fake.received, isEmpty);
+      final seen = <String>[];
+      final sub = record(stream, seen);
+      await pump();
+      final request = fake.received.single;
+      expect(request.method, 'WatchStage');
+      expect(request.id, 1000);
+      expect(request.cancel, isFalse);
+      expect(player.WatchStageRequest.fromBuffer(request.payload).maxRate, 7);
+      expect(fake.openStreams, [1000]);
+      await sub.cancel();
+    });
+
+    test('messages arrive in order and a last response of 0 ends it', () async {
+      final seen = <String>[];
+      record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      fake
+        ..streamMessage(1000, bytes('layout'))
+        ..streamMessage(1000, bytes('frame 1'))
+        ..streamMessage(1000, bytes('frame 2'))
+        ..endStream(1000);
+      await pump();
+      expect(seen, ['layout', 'frame 1', 'frame 2', 'done']);
+      // The stream is over: nothing is cancelled, and its id means nothing.
+      fake.streamMessage(1000, bytes('late'));
+      await pump();
+      expect(seen.last, 'done');
+      expect(fake.cancels, isEmpty);
+    });
+
+    test('a last response with a code is an error, then the end', () async {
+      final errors = <PlayerException>[];
+      var done = false;
+      client
+          .openStream('WatchStage', Uint8List(0))
+          .listen(
+            (_) {},
+            onError: (Object e) => errors.add(e as PlayerException),
+            onDone: () => done = true,
+          );
+      await pump();
+      fake.endStream(1000, code: 13, text: 'the sampler stopped');
+      await pump();
+      expect(errors.single.code, 13);
+      expect(errors.single.message, 'the sampler stopped');
+      expect(done, isTrue);
+    });
+
+    test('a third stream is refused on the stream characteristic', () async {
+      final a = <String>[];
+      final b = <String>[];
+      final c = <String>[];
+      final first = record(client.openStream('WatchStage', Uint8List(0)), a);
+      final second = record(client.openStream('WatchStage', Uint8List(0)), b);
+      record(client.openStream('WatchStage', Uint8List(0)), c);
+      await pump();
+      expect(fake.openStreams, [1000, 1001]);
+      expect(c, ['error:${GrpcCode.resourceExhausted}', 'done']);
+      fake.streamMessage(1001, bytes('b'));
+      await pump();
+      expect(a, isEmpty);
+      expect(b, ['b']);
+      await first.cancel();
+      await second.cancel();
+    });
+
+    test('a chunked message reassembles while a unary response interleaves '
+        'on the other characteristic', () async {
+      fake.handlers['Play'] = (_) => FakeReply.drop();
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      final playing = client.play();
+      await pump();
+      final playId = fake.received.last.id;
+      expect(playId, isNot(1000));
+
+      const message = 'a layout far too long for one chunk of twenty bytes';
+      final streamPieces = chunks(
+        ble.Response(
+          id: 1000,
+          more: true,
+          payload: bytes(message),
+        ).writeToBuffer(),
+        20,
+      );
+      final responsePieces = chunks(
+        ble.Response(
+          id: playId,
+          payload: player.PlayResponse(
+            song: song('A song with a rather long name indeed'),
+          ).writeToBuffer(),
+        ).writeToBuffer(),
+        20,
+      );
+      expect(streamPieces.length, greaterThan(2));
+      expect(responsePieces.length, greaterThan(2));
+      final most = max(streamPieces.length, responsePieces.length);
+      for (var i = 0; i < most; i++) {
+        if (i < streamPieces.length) {
+          fake.sendStreamChunks([streamPieces[i]]);
+        }
+        if (i < responsePieces.length) {
+          fake.sendResponseChunks([responsePieces[i]]);
+        }
+      }
+      expect(
+        (await playing).song.name,
+        'A song with a rather long name indeed',
+      );
+      expect(seen, [message]);
+      await sub.cancel();
+    });
+
+    test('ignores ids it did not send, on both characteristics', () async {
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      fake
+        // Another phone's stream, and its end.
+        ..streamMessage(77, bytes('theirs'))
+        ..endStream(77, code: 1)
+        // Another phone's refusals.
+        ..sendResponse(ble.Response(id: 77, code: 6, message: 'theirs'))
+        ..sendResponse(ble.Response(id: 78, code: 7, message: 'theirs'))
+        ..streamMessage(1000, bytes('ours'));
+      await pump();
+      expect(seen, ['ours']);
+      await sub.cancel();
+    });
+
+    test('a unary answer never comes from the stream characteristic, nor a '
+        'message from the response one', () async {
+      fake.handlers['Play'] = (_) => FakeReply.drop();
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      var answered = false;
+      final playing = client.play().then((_) => answered = true);
+      await pump();
+      final playId = fake.received.last.id;
+      // The call's id on the stream characteristic answers nothing.
+      fake.sendStream(ble.Response(id: playId));
+      // A message on the response characteristic is not one, and an OK
+      // there does not end the stream.
+      fake
+        ..sendResponse(ble.Response(id: 1000, more: true, payload: bytes('no')))
+        ..sendResponse(ble.Response(id: 1000));
+      await pump();
+      expect(answered, isFalse);
+      expect(seen, isEmpty);
+      fake.sendResponse(ble.Response(id: playId));
+      await playing;
+      fake.streamMessage(1000, bytes('yes'));
+      await pump();
+      expect(seen, ['yes']);
+      await sub.cancel();
+    });
+
+    for (final (code, name) in [
+      (GrpcCode.alreadyExists, 'ALREADY_EXISTS'),
+      (GrpcCode.permissionDenied, 'PERMISSION_DENIED'),
+    ]) {
+      test('$name on the response characteristic ends the stream', () async {
+        // A player that answers the stream method there, as an old one does.
+        fake.onStream = (request) {
+          fake.openStreams.remove(request.id);
+          fake.sendResponse(
+            ble.Response(id: request.id, code: code, message: 'refused'),
+          );
+        };
+        final errors = <PlayerException>[];
+        var done = false;
+        client
+            .openStream('WatchStage', Uint8List(0))
+            .listen(
+              (_) {},
+              onError: (Object e) => errors.add(e as PlayerException),
+              onDone: () => done = true,
+            );
+        await pump();
+        expect(errors.single.code, code);
+        expect(errors.single.message, 'refused');
+        expect(done, isTrue);
+        expect(fake.cancels, isEmpty);
+      });
+    }
+
+    test('the real refusal of an open id leaves the open stream be', () async {
+      // The fake, like the player, refuses a second request under an open
+      // id on the response characteristic. The client never sends one, so
+      // this is written by hand, as another client's bug would.
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      await fake.write(
+        chunks(
+          ble.Request(id: 55, method: 'WatchStage').writeToBuffer(),
+          fake.maxChunk,
+        ).single,
+      );
+      await fake.write(
+        chunks(
+          ble.Request(id: 55, method: 'WatchStage').writeToBuffer(),
+          fake.maxChunk,
+        ).single,
+      );
+      fake.streamMessage(1000, bytes('still here'));
+      await pump();
+      expect(seen, ['still here']);
+      await sub.cancel();
+    });
+
+    test(
+      'a player with no stream characteristic is asked for nothing',
+      () async {
+        fake.hasStreams = false;
+        expect(client.hasStreams, isFalse);
+        final errors = <PlayerException>[];
+        var done = false;
+        client.watchStage().listen(
+          (_) {},
+          onError: (Object e) => errors.add(e as PlayerException),
+          onDone: () => done = true,
+        );
+        await pump();
+        expect(errors.single.code, GrpcCode.unimplemented);
+        expect(errors.single.isStreamTooOld, isTrue);
+        expect(done, isTrue);
+        expect(fake.writes, isEmpty);
+        // Calls are what they were.
+        await client.play();
+        expect(fake.received.single.method, 'Play');
+      },
+    );
+
+    test(
+      'opening while not connected fails at once and sends nothing',
+      () async {
+        fake.disconnect();
+        final seen = <String>[];
+        record(client.watchStage(), seen);
+        await pump();
+        expect(seen, ['error:${GrpcCode.unavailable}', 'done']);
+        expect(fake.writes, isEmpty);
+      },
+    );
+
+    test(
+      'cancelling sends the cancel and waits for the last response',
+      () async {
+        fake.holdCancels = true;
+        final seen = <String>[];
+        final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+        await pump();
+        fake.streamMessage(1000, bytes('before'));
+        await pump();
+
+        var freed = false;
+        final cancelled = sub.cancel().then((_) => freed = true);
+        await pump();
+        final cancel = fake.received.last;
+        expect(cancel.id, 1000);
+        expect(cancel.cancel, isTrue);
+        expect(cancel.method, isEmpty);
+        expect(fake.cancels, [1000]);
+        // The player has not let go of it yet: the id is still taken, and
+        // what it sent before it heard the cancel goes nowhere.
+        expect(freed, isFalse);
+        fake.streamMessage(1000, bytes('on its way'));
+        await pump();
+        expect(freed, isFalse);
+
+        fake.endStream(1000, code: GrpcCode.cancelled, text: 'cancelled');
+        await cancelled;
+        expect(freed, isTrue);
+        expect(seen, ['before']);
+        // One cancel, and only one.
+        expect(fake.cancels, [1000]);
+      },
+    );
+
+    withFakeTime('an id is not used again while its stream is open, the '
+        'wait for a cancelled one included', (async, f, c) {
+      // Ids wrap at 32 bits, so a client started just short of the wrap
+      // comes round to the ids of streams opened long before. Here the
+      // stream takes the first id and the counter is brought back to it.
+      f.holdCancels = true;
+      final first = c.openStream('WatchStage', Uint8List(0)).listen((_) {});
+      async.flushMicrotasks();
+      expect(f.openStreams, [100]);
+      c.debugNextId = 100;
+      unawaited(c.stop());
+      async.flushMicrotasks();
+      expect(f.received.last.id, 101);
+
+      unawaited(first.cancel());
+      async.flushMicrotasks();
+      c.debugNextId = 100;
+      unawaited(c.stop());
+      async.flushMicrotasks();
+      expect(f.received.last.id, 101);
+
+      f.endStream(100, code: GrpcCode.cancelled);
+      async.flushMicrotasks();
+      c.debugNextId = 100;
+      unawaited(c.stop());
+      async.flushMicrotasks();
+      expect(f.received.last.id, 100);
+    });
+
+    withFakeTime('a cancel the player never answers frees the id in the end', (
+      async,
+      f,
+      c,
+    ) {
+      f.holdCancels = true;
+      final sub = c.openStream('WatchStage', Uint8List(0)).listen((_) {});
+      async.flushMicrotasks();
+      var freed = false;
+      unawaited(sub.cancel().then((_) => freed = true));
+      async.elapse(
+        PlayerClient.cancelTimeout - const Duration(milliseconds: 1),
+      );
+      expect(freed, isFalse);
+      async.elapse(const Duration(milliseconds: 1));
+      expect(freed, isTrue);
+      expect(async.pendingTimers, isEmpty);
+    });
+
+    withFakeTime('a stream cancelled before its request was written sends '
+        'neither', (async, f, c) {
+      // A slow write ahead of it in the queue.
+      f.writeDelay = const Duration(milliseconds: 50);
+      unawaited(c.stop());
+      async.flushMicrotasks();
+      final sub = c.openStream('WatchStage', Uint8List(0)).listen((_) {});
+      async.flushMicrotasks();
+      var freed = false;
+      unawaited(sub.cancel().then((_) => freed = true));
+      async.elapse(const Duration(seconds: 1));
+      expect(f.received.map((r) => r.method), ['Stop']);
+      expect(f.cancels, isEmpty);
+      expect(freed, isTrue);
+      expect(async.pendingTimers, isEmpty);
+    });
+
+    withFakeTime('a request that cannot be written ends the stream as unsent', (
+      async,
+      f,
+      c,
+    ) {
+      f.refuseWrites = true;
+      final errors = <PlayerException>[];
+      var done = false;
+      c
+          .openStream('WatchStage', Uint8List(0))
+          .listen(
+            (_) {},
+            onError: (Object e) => errors.add(e as PlayerException),
+            onDone: () => done = true,
+          );
+      async.flushMicrotasks();
+      expect(errors.single.unsent, isTrue);
+      expect(done, isTrue);
+    });
+
+    withFakeTime('a lost link ends every stream as it fails a call, and '
+        'leaves nothing behind', (async, f, c) {
+      f.holdCancels = true;
+      final a = <String>[];
+      final b = <String>[];
+      PlayerException? lost;
+      c
+          .openStream('WatchStage', Uint8List(0))
+          .listen(
+            (m) => a.add(String.fromCharCodes(m)),
+            onError: (Object e) => lost = e as PlayerException,
+            onDone: () => a.add('done'),
+          );
+      // A second, cancelled and still waiting for the player.
+      final waiting = c.openStream('WatchStage', Uint8List(0)).listen((_) {});
+      async.flushMicrotasks();
+      var freed = false;
+      unawaited(waiting.cancel().then((_) => freed = true));
+      async.flushMicrotasks();
+      expect(freed, isFalse);
+      // Half a message is in the air when the link goes.
+      final cut = chunks(
+        ble.Response(
+          id: 100,
+          more: true,
+          payload: bytes('a message cut off by the link going down'),
+        ).writeToBuffer(),
+        20,
+      );
+      f.sendStreamChunks(cut.take(2));
+      async.flushMicrotasks();
+
+      f.disconnect();
+      async.flushMicrotasks();
+      expect(lost!.code, GrpcCode.unavailable);
+      expect(lost!.message, 'connection lost');
+      expect(a, ['done']);
+      expect(freed, isTrue);
+      expect(async.pendingTimers, isEmpty);
+
+      // The link comes back: the old ids mean nothing, the rest of the old
+      // message is not taken for the start of a new one, and a new stream
+      // works.
+      f.setState(TransportState.ready);
+      async.flushMicrotasks();
+      f
+        ..sendStreamChunks(cut.skip(2))
+        ..streamMessage(100, bytes('stale'));
+      record(c.openStream('WatchStage', Uint8List(0)), b);
+      async.flushMicrotasks();
+      final id = f.received.last.id;
+      expect(id, isNot(100));
+      f.streamMessage(id, bytes('fresh'));
+      async.flushMicrotasks();
+      expect(a, ['done']);
+      expect(b, ['fresh']);
+      expect(f.cancels, [101]);
+    });
+
+    test('dispose ends open streams and stops listening', () async {
+      final seen = <String>[];
+      record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      await client.dispose();
+      expect(seen, ['error:${GrpcCode.unavailable}', 'done']);
+      expect(fake.hasStreamListener, isFalse);
+    });
+
+    test(
+      'a paused listener gets what it missed, in order, when it resumes',
+      () async {
+        final seen = <String>[];
+        final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+        await pump();
+        fake.streamMessage(1000, bytes('one'));
+        await pump();
+        sub.pause();
+        fake
+          ..streamMessage(1000, bytes('two'))
+          ..streamMessage(1000, bytes('three'));
+        await pump();
+        expect(seen, ['one']);
+        sub.resume();
+        fake.streamMessage(1000, bytes('four'));
+        await pump();
+        expect(seen, ['one', 'two', 'three', 'four']);
+        expect(fake.cancels, isEmpty);
+        await sub.cancel();
+      },
+    );
+
+    test(
+      'the end waits its turn behind what a paused listener is owed',
+      () async {
+        final seen = <String>[];
+        final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+        await pump();
+        sub.pause();
+        fake
+          ..streamMessage(1000, bytes('held'))
+          ..endStream(1000);
+        await pump();
+        expect(seen, isEmpty);
+        sub.resume();
+        await pump();
+        expect(seen, ['held', 'done']);
+      },
+    );
+
+    test('a stalled listener is held a bounded amount, then the stream is '
+        'given up and cancelled', () async {
+      fake.holdCancels = true;
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      sub.pause();
+      // Far more than may be held, in messages of a kilobyte.
+      final big = Uint8List(1024);
+      const sent = 4 * PlayerClient.maxHeldStreamBytes ~/ 1024;
+      for (var i = 0; i < sent; i++) {
+        fake.streamMessage(1000, big, chunkSize: 512);
+      }
+      await pump();
+      // The player was told to stop as soon as the limit was passed.
+      expect(fake.cancels, [1000]);
+      expect(seen, isEmpty);
+      sub.resume();
+      await pump();
+      // Nothing of the backlog is delivered: only that it was too much.
+      expect(seen, ['error:${GrpcCode.resourceExhausted}']);
+      // And the end once the player has let go, with no second error.
+      fake.endStream(1000, code: GrpcCode.cancelled);
+      await pump();
+      expect(seen, ['error:${GrpcCode.resourceExhausted}', 'done']);
+    });
+
+    test('empty messages count against a stalled listener too', () async {
+      fake.holdCancels = true;
+      final seen = <String>[];
+      final sub = record(client.openStream('WatchStage', Uint8List(0)), seen);
+      await pump();
+      sub.pause();
+      final empty = chunks(
+        ble.Response(id: 1000, more: true).writeToBuffer(),
+        fake.maxChunk,
+      );
+      for (var i = 0; i < PlayerClient.maxHeldStreamBytes ~/ 8; i++) {
+        fake.sendStreamChunks(empty);
+      }
+      await pump();
+      expect(fake.cancels, [1000]);
+      await sub.cancel();
+    });
+  });
 }
