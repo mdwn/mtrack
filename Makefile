@@ -17,7 +17,7 @@ WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
 WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-stage-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-stage-ui app-stage-assets build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -104,6 +104,17 @@ build-stage-ui:
 		cd $(SVELTE_DIR) && npm run build:stage && \
 		echo "$(STAGE_HASH)" > "$(STAGE_STAMP)"; \
 	fi
+
+## Put the stage-only page among the phone app's assets (app/assets/stage, gitignored), where
+## the app's builds take it from: the Lights tab shows it in a web view. `flutter analyze` and
+## `flutter test` do not need it; `flutter build` and `flutter run` ship whatever is there.
+APP_STAGE_DIR := $(ROOT_DIR)/app/assets/stage
+
+app-stage-assets: build-stage-ui
+	@# Everything but the .gitignore files that keep the two directories in a checkout.
+	find "$(APP_STAGE_DIR)" -type f ! -name .gitignore -delete
+	cp "$(SVELTE_DIR)/dist-stage/stage.html" "$(APP_STAGE_DIR)/"
+	cp "$(SVELTE_DIR)"/dist-stage/assets/* "$(APP_STAGE_DIR)/assets/"
 
 ## Build the Rust binary
 build-rust:
@@ -255,3 +266,4 @@ docs-clean:
 clean: docs-clean
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml
 	rm -rf $(SVELTE_DIR)/dist $(SVELTE_DIR)/dist-stage $(WASM_GEN_DIR)
+	find "$(APP_STAGE_DIR)" -type f ! -name .gitignore -delete

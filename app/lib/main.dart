@@ -17,6 +17,7 @@ import 'src/app/session.dart';
 import 'src/ble/ble_link.dart';
 import 'src/platform/preferences_store.dart';
 import 'src/platform/wakelock_screen_wake.dart';
+import 'src/platform/webview_stage.dart';
 import 'src/ui/app.dart';
 import 'src/ui/licences.dart';
 
@@ -29,5 +30,5 @@ void main() {
     wake: const WakelockScreenWake(),
   );
   session.start();
-  runApp(MtrackApp(session: session));
+  runApp(MtrackApp(session: session, stage: WebViewStageHost()));
 }

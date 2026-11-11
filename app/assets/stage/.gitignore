@@ -1,0 +1,7 @@
+# The stage page the Lights tab shows: built from the web UI and copied here
+# by `make app-stage-assets`, never committed. This file and the one in
+# assets/ are all that is kept, so both directories exist on a fresh checkout
+# and pubspec.yaml's asset entries are true before the page is built.
+*
+!.gitignore
+!assets/

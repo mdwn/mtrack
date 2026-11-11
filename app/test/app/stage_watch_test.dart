@@ -503,7 +503,7 @@ void main() {
       h.connect();
       expect(h.session.phase, ConnectionPhase.ready);
       expect(h.session.stageMissingFromPlayer, isTrue);
-      expect(h.session.missingFromPlayer, ['the stage view']);
+      expect(h.session.missingFromPlayer, ['the light view']);
       expect(h.run(h.session.next), isNull);
       expect(h.count('Next'), 1);
 
@@ -539,7 +539,7 @@ void main() {
       final sub = watch(h, seen);
       h.settle();
       expect(h.session.stageMissingFromPlayer, isTrue);
-      expect(h.session.missingFromPlayer, contains('the stage view'));
+      expect(h.session.missingFromPlayer, contains('the light view'));
       expect(notified, greaterThan(0), reason: 'the screens are told');
       expect(seen, ['reset']);
       h.elapse(const Duration(minutes: 1));

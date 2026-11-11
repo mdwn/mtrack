@@ -260,7 +260,7 @@ class Session extends ChangeNotifier {
       if (!status.hasGainsRevision()) 'track levels',
       if (!status.hasLocked()) 'playlist editing',
       if (!status.hasLocked()) 'the lock',
-      if (_stage.missing) 'the stage view',
+      if (_stage.missing) 'the light view',
     ];
   }
 

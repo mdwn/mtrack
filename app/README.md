@@ -4,10 +4,50 @@ A Flutter app (Android and iOS) that controls a running mtrack player over Bluet
 protocol it speaks is documented in [`docs/src/interfaces/bluetooth.md`](../docs/src/interfaces/bluetooth.md)
 and the design in [`design/bluetooth_remote_design.md`](../design/bluetooth_remote_design.md).
 
-The app is not released: it is not in any store. It has three tabs: **Now** (the song, its time and
-the transport), **Playlist** (the songs, and a way to switch playlist) and **Sections** (tap a section
-to jump to it, hold to loop it), with a connect screen for the first run and a small settings sheet.
-It follows the phone's light or dark setting.
+The app is not released: it is not in any store. It has five tabs: **Now** (the song, its time and
+the transport), **Playlist** (the songs, and a way to switch playlist), **Sections** (tap a section
+to jump to it, hold to loop it), **Levels** (a fader and a mute for each output track) and **Lights**
+(below), with a connect screen for the first run and a small settings sheet. It follows the phone's
+light or dark setting.
+
+## The Lights tab
+
+At the top is the ambient light's control (Auto, On, Off, and what the light is doing). Under it,
+filling the rest of the tab, is the player's stage plot, live: the web UI's own stage view, running
+in a web view from a copy of the page that ships inside the app, and fed the player's stage stream
+(`WatchStage`) over Bluetooth. The app draws nothing of it and decodes nothing: it hands each
+message of the stream to the page. The design is
+[`design/bluetooth_light_view_design.md`](../design/bluetooth_light_view_design.md); its §8.1 is the
+contract between the app and the page.
+
+- The stream is open only while the Lights tab is the one showing, the app is on screen and the link
+  is up. Leaving the tab, backgrounding the app or losing the link cancels it.
+- The tab says "Waiting for the lights…" until the page is ready and has a layout; "Could not show
+  the lights." with a **Try again** when the page cannot be loaded; and, against a player from
+  before the stage stream, that the player is too old to show its lights. While the link is down the
+  last picture stays, dimmed, under the "Reconnecting…" banner.
+- The plot is a picture: no touch reaches the page.
+- The page is served to the web view by a small HTTP server inside the app, on the phone's loopback
+  address (`lib/src/app/stage_server.dart`): a web view will not load module scripts or streaming
+  WebAssembly from a file. It listens on 127.0.0.1 only, on a port the system picks, serves only the
+  bundled page's files, puts them under a random path made at each start, and refuses a request
+  whose `Host` is not its own. See [Network permission](#network-permission).
+
+### The stage bundle
+
+The page is built from the web UI (`src/webui/svelte`, `make build-stage-ui`) and is not committed.
+`make app-stage-assets`, from the repository root, builds it and copies it to `assets/stage/`:
+
+```sh
+make app-stage-assets     # needs Node, Rust with the wasm32 target, wasm-pack, wasm-bindgen, wasm-opt
+```
+
+That is the web UI's toolchain (`./setup.sh` at the repository root installs it). Run it before
+`flutter build` or `flutter run`, and again when the web UI changes. `flutter analyze` and
+`flutter test` do not need it: no test loads the real page. An app built without it works, and its
+Lights tab says "Could not show the lights." The two `.gitignore` files under `assets/stage/` keep
+the directories in a fresh checkout, so the asset entries in `pubspec.yaml` are true before the page
+is built; Flutter leaves hidden files out of the bundle. The page adds about 0.66 MB to the APK.
 
 ## Layout
 
@@ -30,19 +70,30 @@ It follows the phone's light or dark setting.
     when it seeks to or loops a section.
   - `stage_watch.dart` keeps the player's stage stream (`WatchStage`) open while anything listens
     to `Session.watchStage()`: one stream for every listener, opened again after a reconnect, with a
-    reset before each new stream. It hands on the serialized messages and decodes nothing. No
-    screen uses it yet.
+    reset before each new stream. It hands on the serialized messages and decodes nothing. The
+    Lights tab is its listener.
+  - `stage_pusher.dart` hands that stream to the stage page, one JavaScript call at a time: nothing
+    before the page is ready, resets and layouts in order and never dropped, the newest frame only,
+    and the stream started over for a page that loads again.
+  - `stage_server.dart` is the loopback server the page is loaded from. It reads the files through
+    a function it is given, so its tests serve made-up files over real sockets.
 - `lib/src/ble/` (`ble_transport.dart`, `ble_link.dart`) is the only code that touches the Bluetooth
-  plugin. `lib/src/platform/` holds the other two plugin adapters (`shared_preferences`,
-  `wakelock_plus`). None of these can be tested without a phone, so each is kept to translating calls.
+  plugin. `lib/src/platform/` holds the other plugin adapters: `shared_preferences`, `wakelock_plus`,
+  and `webview_stage.dart`, the web view the Lights tab shows the stage page in (`webview_flutter`)
+  with the reading of the bundled page from the app's assets. None of these can be tested without a
+  phone, so each is kept to translating calls.
 - `lib/src/ui/` is widgets only: the theme (`theme.dart`), the screens, and the press-and-hold Stop
-  button (`hold_to_stop.dart`). No protocol logic.
-- `lib/main.dart` wires the real radio, store and wake lock.
+  button (`hold_to_stop.dart`). No protocol logic. `stage_surface.dart` is the seam the Lights tab
+  (`lights_screen.dart`) sees the web view through: `StageSurface` (load, run JavaScript, the page's
+  messages, errors, a widget) and `StageHost` (where the page is, and a new surface).
+- `lib/main.dart` wires the real radio, store, wake lock and web view.
 - `lib/gen/` is the protobuf messages, generated and not committed.
 - `assets/fonts/` holds Nunito, Inter and JetBrains Mono (variable fonts, SIL Open Font License; each
   `OFL.txt` is beside its font and shown on the app's licence page). They are bundled so the app needs
   no network.
-- `test/` holds the tests. `test/support/fake_player.dart` is an in-memory player behind
+- `assets/stage/` is where the stage page goes (see [The stage bundle](#the-stage-bundle)).
+- `test/` holds the tests. `test/support/fake_stage.dart` is the fake `StageHost` and `StageSurface`
+  the widget tests run the Lights tab against. `test/support/fake_player.dart` is an in-memory player behind
   `PlayerTransport`; `fake_link.dart` is the fake `PlayerLink`; `rig.dart` is a player with songs and
   playlists that answers like the real one and sends the status. The frame tests read the golden vectors
   in `../src/proto/ble/v1/testdata/frames.json`, which the Rust codec's tests read too.
@@ -65,8 +116,9 @@ flutter test
 generator's version is pinned by `pubspec.lock`.
 
 The tests cover the connect sequence, reconnecting (with fake time), every action and its failures,
-the section arithmetic, and each screen in each state in both themes, at normal and 1.3x text, on a
-360x640 phone, where a layout overflow fails the test. There are no golden-image tests: font
+the section arithmetic, the stage pusher, the loopback server (over real sockets), and each screen in
+each state in both themes, at normal and 1.3x text, on a 360x640 phone, where a layout overflow fails
+the test. There are no golden-image tests: font
 rendering differs between machines.
 
 ## Building and installing
@@ -75,6 +127,7 @@ Building needs the Android SDK (platform and build tools, with its licences acce
 for an APK, or Xcode on a Mac for iOS. Neither is needed for the commands above.
 
 ```sh
+make app-stage-assets          # from the repository root: the Lights tab's page
 cd app
 flutter build apk --debug      # app/build/app/outputs/flutter-apk/app-debug.apk
 flutter run                    # on a connected phone
@@ -122,6 +175,16 @@ on a device:
   that the weight axis is applied), and how the screens look: they were checked in a rendered test
   at 360x640, not on a phone.
 - TalkBack and VoiceOver reading the screens and the Stop button's long-press action.
+- The Lights tab's web view, all of it (`lib/src/platform/webview_stage.dart` and everything it
+  stands for in the tests): that the web view loads the page from the loopback server on Android
+  (cleartext to 127.0.0.1, the `INTERNET` permission in a release build) and on iOS (the local
+  networking exception); that the page's modules and WebAssembly load from it and the page says
+  `ready`; that the plot draws from the stream, in both themes with no seam or flash around it; that
+  a JavaScript call carrying a layout of tens of kilobytes goes through; that touches do not reach
+  the page and the tab bar still works over it; that the server survives the app's time in the
+  background, or is replaced when it does not; what the web view does when the system kills its
+  renderer; and what a screen reader says for the stage. The iOS build in CI does not carry the
+  page.
 
 ## Identifiers
 
@@ -142,9 +205,23 @@ The app uses [`universal_ble`](https://pub.dev/packages/universal_ble) (BSD-3-Cl
 its Linux desktop backend pulls in `bluez` and `dbus` (MPL-2.0), which the app does not use but which
 ship in its licence notices. `PlayerLink` and `PlayerTransport` are all the rest of the app depends
 on, so the plugin can be replaced by rewriting `lib/src/ble/`. The others are `shared_preferences`
-(the remembered player), `wakelock_plus` (keeping the screen on) and `package_info_plus` (the version
-on the settings sheet, and already a dependency of `wakelock_plus`), all BSD-3-Clause. There is no
+(the remembered player), `wakelock_plus` (keeping the screen on), `package_info_plus` (the version
+on the settings sheet, and already a dependency of `wakelock_plus`) and `webview_flutter` (the Lights
+tab's web view), all BSD-3-Clause. There is no
 state-management package: `Session` is a plain `ChangeNotifier`.
+
+## Network permission
+
+The app talks to nothing but the player, over Bluetooth, and that has not changed. The Lights tab
+needs two declarations all the same, because its web view loads the bundled stage page over HTTP
+from a server inside the app (see [The Lights tab](#the-lights-tab)):
+
+- Android: `android.permission.INTERNET` in `AndroidManifest.xml`. Android gives an app no sockets
+  at all without it, loopback included. `res/xml/network_security_config.xml` allows cleartext HTTP
+  to `127.0.0.1` and nowhere else.
+- iOS: `NSAppTransportSecurity` with `NSAllowsLocalNetworking` in `Info.plist`, and nothing more.
+
+The page asks the network for nothing but its own files: no fonts, no API, no websocket.
 
 ## Bluetooth permissions
 
