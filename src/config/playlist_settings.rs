@@ -281,6 +281,21 @@ impl Ambient {
         self.show.as_deref()
     }
 
+    /// The delay, as written.
+    pub fn delay(&self) -> Option<&str> {
+        self.delay.as_deref()
+    }
+
+    /// The fade in, as written.
+    pub fn fade_in(&self) -> Option<&str> {
+        self.fade_in.as_deref()
+    }
+
+    /// The fade out, as written.
+    pub fn fade_out(&self) -> Option<&str> {
+        self.fade_out.as_deref()
+    }
+
     /// Checks the timings read, naming the first that does not.
     pub fn validate(&self) -> Result<(), String> {
         for (field, value) in [

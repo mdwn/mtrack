@@ -32,45 +32,101 @@ has:
 On the wire, lengths travel as the player writes them (`"2beats"`, `"1s"`),
 and the player checks them, so the app does not grow a second parser.
 
+As built:
+
 ```proto
 message PlaylistEntry {
   string song_name = 1;
   google.protobuf.Duration duration = 2;
-  EntrySettings settings = 3;      // absent from an older player
+  EntrySettings settings = 3;   // always sent, empty for none
 }
 
 message EntrySettings {
   Fade fade_out = 1;
   Fade fade_in = 2;
-  AutoPlay auto_play = 3;
-  AmbientSetting ambient = 4;
+  AutoPlay auto_play = 3;       // absent: waits for Play
+  AmbientSetting ambient = 4;   // absent: the playlist's
+}
+
+message Fade {
+  string length = 1;
+  optional string curve = 2;
+  TrackNames exclude = 3;       // absent: the default; empty: none
+  optional string lights = 4;
+}
+
+message TrackNames { repeated string names = 1; }
+
+message AutoPlay { string gap = 1; }   // empty: at once
+
+message AmbientSetting {
+  bool on = 1;                  // false: none
+  optional string show = 2;
+  optional string delay = 3;
+  optional string fade_in = 4;
+  optional string fade_out = 5;
+}
+
+message GetPlaylistResponse {
+  // 1–3 as before
+  AmbientSetting ambient = 4;   // absent: the profile's
+  string revision = 5;          // empty from an older player
 }
 
 message SavePlaylistRequest {
-  // 1–4 as today
-  repeated EntrySettings settings = 5;   // one per song, in order
-  bool set_settings = 6;                 // absent: keep them, as today
-  AmbientSetting ambient = 7;
-  bool set_ambient = 8;
+  // 1–5 as before (5 is create)
+  repeated EntrySettings settings = 6;   // one per song, in order
+  bool set_settings = 7;                 // unset: keep them, as before
+  AmbientSetting ambient = 8;            // absent: the profile's
+  bool set_ambient = 9;
+  string expected_revision = 10;
 }
+
+rpc ListLightShows(ListLightShowsRequest) returns (ListLightShowsResponse);
+message ListLightShowsResponse { repeated string paths = 1; }
 ```
 
 - **An older app is safe.** It does not set `set_settings`, and the player
-  does what it does today: each entry's settings stay with its song.
-- **An older player is visible.** `GetPlaylist` answers with no `settings`,
+  does what it did: each entry's settings stay with its song. A test holds
+  it.
+- **An older player is visible.** Its playlists come with no `revision`,
   and the app leaves the controls out and says the player is older, as it
-  does for the Lights tab.
-- **Someone else's edit** is caught as it is today (`expected`), widened to
-  cover settings: the app sends back what it last saw.
-- **Fade details the app does not show** (curve, excluded tracks, a
-  separate length for lights) travel through untouched: the message carries
-  them, the first version of the screen edits the length only.
+  does for the Lights tab. Every entry from a newer player carries
+  `settings`, empty when it has none, so the two cannot be confused.
+- **Someone else's edit** is caught by a revision, not by sending the
+  settings back. `revision` is the first 64 bits of a SHA-256 over the
+  songs and the settings as `GetPlaylist` reports them. A save with
+  `check_expected` and an `expected_revision` reads the file, works out its
+  revision the same way (auto play read as the player loads it, so `1.5s`
+  and `1500ms` are the same), and refuses a mismatch as "the playlist has
+  changed". It costs 16 bytes each way instead of every setting twice. An
+  older app sends no revision and is checked by names alone, as before.
+- **Fade details the app does not show** (curve, excluded tracks, lights)
+  travel through untouched: the message carries them, the screen edits the
+  length only, and a length changed keeps the rest.
+- **Checked as the web UI's save is.** Settings go through
+  `validate_for_write`; one it refuses is `INVALID_ARGUMENT` in its words
+  (a length it cannot read, a fade longer than its song, a track the song
+  does not have, a show outside the project). The app shows that message
+  in the editor until something changes.
+- **Only what changed is sent.** The app sets `set_settings` only when an
+  entry's settings were edited, and `set_ambient` only when the
+  playlist's was, so a reorder leaves the file's spellings alone.
 - Refused while locked, like every playlist write.
 
-The app gets a settings sheet per song in the editor, and one for the
-playlist. Ambient needs the list of `.light` files to pick a show from;
-`ListPlaylists` is not the place, so a small `ListAmbientShows` or a field
-on the playlist answer. To settle while building.
+The shows to pick from come from `ListLightShows`, open while locked and on
+the Bluetooth allowlist: the `.light` files under the songs directory (the
+web UI's lighting list) and in the project's `lighting/`, as
+project-relative paths, which is how an ambient show is written. The web
+UI's own ambient field is free text; the app's is too, with the list
+beside it.
+
+Sizes: fifty songs with every setting set and names padded long are about
+24 kB answered and 25 kB sent, under half the 64 KiB frame. A test holds it.
+
+The app's editor gains a settings button on each row, a line under the
+song's name saying what it sets, an "Ambient light" row above the songs,
+and a sheet for each, worded as the web UI's transitions panel.
 
 ## 3. Songs
 

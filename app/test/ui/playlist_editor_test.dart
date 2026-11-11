@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
+import 'package:mtrack_remote/src/app/playlist_settings.dart';
 import 'package:mtrack_remote/src/ui/hold_to_stop.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 
@@ -763,5 +764,315 @@ void main() {
       expect(find.text('+ NEW PLAYLIST'), findsNothing);
       expect(find.textContaining('Hold one to delete'), findsNothing);
     }, setup: (rig) => rig.oldPlayer = true);
+  });
+
+  group('settings', () {
+    void withSettings(Rig rig) {
+      rig.entrySettings['Set'] = [
+        pp.EntrySettings(),
+        pp.EntrySettings(
+          fadeOut: pp.Fade(
+            length: '2beats',
+            curve: 'linear',
+            exclude: pp.TrackNames(names: ['Click']),
+          ),
+          autoPlay: pp.AutoPlay(gap: '2s'),
+        ),
+        pp.EntrySettings(ambient: pp.AmbientSetting(on: false)),
+      ];
+      rig.playlistAmbient['Set'] = pp.AmbientSetting(
+        on: true,
+        show: 'lighting/ambient.light',
+      );
+    }
+
+    Finder settingsOf(String song) => find.byTooltip('Settings for $song');
+
+    Future<void> openSettingsOf(AppHarness h, String song) async {
+      await h.tester.tap(settingsOf(song));
+      await pumpFor(h);
+    }
+
+    Future<void> done(AppHarness h) async {
+      // A focused field keeps its caret on screen, scrolling back to it.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await h.tester.pump();
+      final button = find.text('DONE');
+      await h.tester.ensureVisible(button);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(button);
+      await pumpFor(h);
+    }
+
+    Finder field(String label) => find.widgetWithText(TextField, label).first;
+
+    appTest('rows say which songs have settings', (h) async {
+      await startEditing(h);
+      expect(find.text('fade out 2beats · auto play, 2s gap'), findsOneWidget);
+      expect(find.text('no ambient before'), findsOneWidget);
+      expect(settingsOf('First'), findsOneWidget);
+      // The playlist's own, above the songs.
+      expect(find.text('Ambient light'), findsOneWidget);
+      expect(find.text('ambient.light'), findsOneWidget);
+    }, setup: withSettings);
+
+    appTest("a song's sheet sets its fade in, and the save sends it", (
+      h,
+    ) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      expect(find.text('BEFORE THIS SONG'), findsOneWidget);
+      expect(find.textContaining('4beats, 1measure'), findsWidgets);
+      await h.tester.enterText(field('Length'), '1s');
+      await done(h);
+      expect(find.text('fade in 1s'), findsOneWidget);
+      await save(h);
+      final sent = lastSave(h);
+      expect(sent.setSettings, isTrue);
+      expect(sent.settings[0].fadeIn.length, '1s');
+      // What the app does not edit went back as it came.
+      expect(sent.settings[1].fadeOut.curve, 'linear');
+      expect(sent.settings[1].fadeOut.exclude.names, ['Click']);
+    }, setup: withSettings);
+
+    appTest('Cancel leaves the song as it was', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      await h.tester.enterText(field('Length'), '1s');
+      final cancel = find.text('CANCEL').last;
+      await h.tester.ensureVisible(cancel);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(cancel);
+      await pumpFor(h);
+      expect(find.text('fade in 1s'), findsNothing);
+      await h.tester.tap(find.text('SAVE'));
+      await pumpFor(h, 50);
+      expect(calls(h, 'SavePlaylist'), 0);
+    }, setup: withSettings);
+
+    appTest('details the app does not edit are shown and kept', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Second');
+      expect(
+        find.textContaining("linear curve, doesn't fade Click"),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextField, '2s'), findsOneWidget);
+      // Fade out is the last length on the sheet.
+      final fadeOut = find.widgetWithText(TextField, '2beats');
+      await h.tester.ensureVisible(fadeOut);
+      await h.tester.enterText(fadeOut, '4beats');
+      await done(h);
+      await save(h);
+      final out = lastSave(h).settings[1].fadeOut;
+      expect(out.length, '4beats');
+      expect(out.curve, 'linear');
+      expect(out.exclude.names, ['Click']);
+    }, setup: withSettings);
+
+    appTest('auto play turns on with a gap', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Third');
+      await h.tester.tap(find.byType(Switch));
+      await pumpFor(h, 50);
+      await h.tester.enterText(field('Gap'), '500ms');
+      await done(h);
+      expect(find.textContaining('auto play, 500ms gap'), findsOneWidget);
+      await save(h);
+      expect(lastSave(h).settings[2].autoPlay.gap, '500ms');
+    }, setup: withSettings);
+
+    appTest('a fade that cannot be a length keeps the sheet open', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      await h.tester.enterText(field('Length'), '2bananas');
+      await done(h);
+      expect(find.text(notALengthMessage), findsOneWidget);
+      expect(find.text('BEFORE THIS SONG'), findsOneWidget);
+      // Editing clears it; a good length lets Done close.
+      await h.tester.enterText(field('Length'), '2bananas!');
+      await h.tester.pumpAndSettle();
+      expect(find.text(notALengthMessage), findsNothing);
+      await h.tester.enterText(field('Length'), '4beats');
+      await done(h);
+      expect(find.text('BEFORE THIS SONG'), findsNothing);
+      expect(find.text('fade in 4beats'), findsOneWidget);
+    }, setup: withSettings);
+
+    appTest('a gap that cannot be a time keeps the sheet open', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Third');
+      await h.tester.tap(find.byType(Switch));
+      await pumpFor(h, 50);
+      await h.tester.enterText(field('Gap'), '4beats');
+      await done(h);
+      expect(find.text(notATimeMessage), findsOneWidget);
+      expect(find.text('BEFORE THIS SONG'), findsOneWidget);
+      await h.tester.enterText(field('Gap'), '1m30s');
+      await done(h);
+      expect(find.text('BEFORE THIS SONG'), findsNothing);
+      expect(find.textContaining('auto play, 1m30s gap'), findsOneWidget);
+    }, setup: withSettings);
+
+    appTest("a playlist's ambient timing is checked too", (h) async {
+      await startEditing(h);
+      await h.tester.tap(find.text('Ambient light'));
+      await pumpFor(h);
+      await h.tester.enterText(field('Delay'), '2bananas');
+      await done(h);
+      expect(find.text(notATimeMessage), findsOneWidget);
+      await h.tester.enterText(field('Delay'), '500ms');
+      await done(h);
+      expect(find.text(notATimeMessage), findsNothing);
+      expect(find.widgetWithText(TextField, '500ms'), findsNothing);
+    }, setup: withSettings);
+
+    appTest("a song's own ambient takes a show from the player's list", (
+      h,
+    ) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      await h.tester.tap(find.widgetWithText(ChoiceChip, 'Its own'));
+      await pumpFor(h, 50);
+      await h.tester.tap(find.byTooltip('Choose a show'));
+      await pumpFor(h);
+      await h.tester.tap(find.text('shows/encore.light'));
+      await pumpFor(h);
+      await h.tester.enterText(field('Fade in'), '6s');
+      await done(h);
+      expect(find.textContaining('own ambient'), findsOneWidget);
+      await save(h);
+      final ambient = lastSave(h).settings[0].ambient;
+      expect(ambient.on, isTrue);
+      expect(ambient.show, 'shows/encore.light');
+      expect(ambient.fadeIn, '6s');
+      expect(ambient.hasDelay(), isFalse);
+      expect(calls(h, 'ListLightShows'), 1);
+    }, setup: withSettings);
+
+    appTest("the playlist's ambient light is set from its own sheet", (
+      h,
+    ) async {
+      await startEditing(h);
+      await h.tester.tap(find.text('Ambient light'));
+      await pumpFor(h);
+      expect(find.widgetWithText(ChoiceChip, "The profile's"), findsOneWidget);
+      await h.tester.tap(find.widgetWithText(ChoiceChip, 'None'));
+      await pumpFor(h, 50);
+      await done(h);
+      expect(find.text('None'), findsOneWidget);
+      await save(h);
+      final sent = lastSave(h);
+      expect(sent.setAmbient, isTrue);
+      expect(sent.ambient.on, isFalse);
+      expect(sent.setSettings, isFalse);
+    }, setup: withSettings);
+
+    appTest("a refusal is shown in the player's words", (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      await h.tester.enterText(field('Length'), '-1s');
+      await done(h);
+      await save(h);
+      expect(
+        find.textContaining(
+          "The player would not save this: Invalid "
+          "transition: song First: fade_in: '-1s' is not a length",
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Editing'), findsOneWidget);
+    }, setup: withSettings);
+
+    appTest('an older player says so, and saves songs as before', (h) async {
+      await startEditing(h);
+      expect(find.textContaining('older mtrack, so fades'), findsOneWidget);
+      expect(settingsOf('First'), findsNothing);
+      expect(find.text('Ambient light'), findsNothing);
+      await h.tester.tap(remove('Second'));
+      await pumpFor(h, 50);
+      await save(h);
+      expect(lastSave(h).songs, ['First', 'Third']);
+      expect(lastSave(h).setSettings, isFalse);
+    }, setup: (rig) => rig.settingsTooOld = true);
+
+    for (final look in Look.all.followedBy([
+      const Look(Brightness.dark, 2.0),
+    ])) {
+      appTest(
+        'the sheets fit a small phone above the navigation bar, $look',
+        (h) async {
+          h.tester.view.viewPadding = const FakeViewPadding(bottom: 48 * 3.0);
+          h.tester.view.padding = const FakeViewPadding(bottom: 48 * 3.0);
+          addTearDown(h.tester.view.resetViewPadding);
+          addTearDown(h.tester.view.resetPadding);
+          final screen =
+              h.tester.view.physicalSize.height /
+              h.tester.view.devicePixelRatio;
+          final bar = 48 * 3.0 / h.tester.view.devicePixelRatio;
+          await startEditing(h);
+          Future<void> reachDone() async {
+            final button = find.text('DONE');
+            await h.tester.ensureVisible(button);
+            await h.tester.pumpAndSettle();
+            expect(
+              h.tester.getRect(button).bottom,
+              lessThanOrEqualTo(screen - bar),
+            );
+          }
+
+          Future<void> ownAmbient() async {
+            final own = find.widgetWithText(ChoiceChip, 'Its own');
+            await h.tester.ensureVisible(own);
+            await h.tester.pumpAndSettle();
+            await h.tester.tap(own);
+            await pumpFor(h, 50);
+          }
+
+          // The playlist's, from the top of the list.
+          await h.tester.tap(find.text('Ambient light'));
+          await pumpFor(h);
+          await ownAmbient();
+          await reachDone();
+          await h.tester.tap(find.text('DONE'));
+          await pumpFor(h);
+
+          // A song's, every field shown at once.
+          await h.tester.ensureVisible(settingsOf('Second'));
+          await h.tester.pumpAndSettle();
+          await openSettingsOf(h, 'Second');
+          expect(find.text('Second'), findsWidgets);
+          await ownAmbient();
+          await reachDone();
+
+          // Errors on the first and the last length, the last off screen:
+          // Done keeps the sheet and brings the first into view; both
+          // messages fit with the buttons still reachable.
+          final delay = find.widgetWithText(TextField, 'Delay');
+          await h.tester.ensureVisible(delay);
+          await h.tester.enterText(delay, '2bananas');
+          final fadeOut = find.widgetWithText(TextField, '2beats');
+          await h.tester.ensureVisible(fadeOut);
+          await h.tester.enterText(fadeOut, '3 bananas');
+          FocusManager.instance.primaryFocus?.unfocus();
+          await h.tester.pumpAndSettle();
+          final button = find.text('DONE');
+          await h.tester.ensureVisible(button);
+          await h.tester.pumpAndSettle();
+          await h.tester.tap(button);
+          await h.tester.pumpAndSettle();
+          expect(find.text(notATimeMessage), findsOneWidget);
+          expect(find.text(notALengthMessage), findsOneWidget);
+          final message = h.tester.getRect(find.text(notATimeMessage));
+          expect(message.top, greaterThanOrEqualTo(0));
+          expect(message.bottom, lessThanOrEqualTo(screen - bar));
+          await reachDone();
+          expect(h.tester.takeException(), isNull);
+        },
+        setup: withSettings,
+        look: look,
+        size: const Size(320, 480),
+      );
+    }
   });
 }

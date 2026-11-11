@@ -62,6 +62,7 @@ pub(crate) const ALLOWED: &[&str] = &[
     "SetAmbientMode",
     "SavePlaylist",
     "DeletePlaylist",
+    "ListLightShows",
     "SetLock",
     "WatchStage",
     "GetLightingAsset",

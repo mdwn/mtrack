@@ -16,10 +16,12 @@ import 'package:flutter/material.dart';
 import '../../gen/player/v1/player.pb.dart' as player;
 import '../app/failure.dart';
 import '../app/playlist_edit.dart';
+import '../app/playlist_settings.dart';
 import '../app/session.dart';
 import 'format.dart';
 import 'player_bar.dart';
 import 'playlist_dialogs.dart';
+import 'playlist_settings_sheet.dart';
 import 'session_scope.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -105,16 +107,21 @@ class _EditorBody extends StatelessWidget {
             onReorderItem: edit.saving ? (_, _) {} : edit.move,
             proxyDecorator: (child, _, _) =>
                 Material(type: MaterialType.transparency, child: child),
-            header: rows.isEmpty
-                ? Padding(
+            header: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _PlaylistSettings(edit: edit),
+                if (rows.isEmpty)
+                  Padding(
                     padding: const EdgeInsets.symmetric(vertical: 18),
                     child: Text(
                       'No songs yet.',
                       textAlign: TextAlign.center,
                       style: AppText.body.copyWith(color: colors.muted),
                     ),
-                  )
-                : null,
+                  ),
+              ],
+            ),
             footer: Padding(
               padding: const EdgeInsets.only(top: 2),
               child: ChunkyButton(
@@ -136,6 +143,9 @@ class _EditorBody extends StatelessWidget {
                 current: at != null && row.originalIndex == at,
                 locked: edit.saving,
                 onRemove: () => edit.removeAt(index),
+                onSettings: edit.supportsSettings
+                    ? () => showEntrySettings(context, edit, row)
+                    : null,
               );
             },
           ),
@@ -238,6 +248,10 @@ class _Problem extends StatelessWidget {
         ],
       ),
       EditProblem.locked => (lockedToSaveMessage, <Widget>[]),
+      EditProblem.refused => (
+        'The player would not save this: ${edit.refusal}',
+        <Widget>[],
+      ),
       EditProblem.exists => (
         nameTakenMessage,
         [
@@ -278,6 +292,68 @@ class _Problem extends StatelessWidget {
   }
 }
 
+/// The playlist's own settings, above its songs: its ambient light, or,
+/// against a player from before, a note that it has none to set.
+class _PlaylistSettings extends StatelessWidget {
+  const _PlaylistSettings({required this.edit});
+
+  final PlaylistEdit edit;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    if (!edit.supportsSettings) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: NoteBox(
+          child: Text(
+            olderPlayerSettingsNote,
+            style: AppText.small.copyWith(color: colors.amber, height: 1.45),
+          ),
+        ),
+      );
+    }
+    final summary = playlistAmbientSummary(edit.ambient);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: RowCard(
+        onTap: edit.saving ? null : () => showPlaylistAmbient(context, edit),
+        semanticLabel: 'Ambient light: $summary',
+        semanticHint: 'Opens the playlist\'s ambient light',
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Ambient light',
+                    style: AppText.bodyStrong.copyWith(color: colors.text),
+                  ),
+                  Text(
+                    summary,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.small.copyWith(color: colors.muted),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: colors.dim),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Said in the editor against a player that cannot set playlist settings.
+const String olderPlayerSettingsNote =
+    'This player runs an older mtrack, so fades, auto play and ambient light '
+    'are not shown here. Songs and their order still save. Update mtrack on '
+    'the player to set them from the phone.';
+
 class _EditRowTile extends StatelessWidget {
   const _EditRowTile({
     required this.index,
@@ -285,6 +361,7 @@ class _EditRowTile extends StatelessWidget {
     required this.current,
     required this.locked,
     required this.onRemove,
+    required this.onSettings,
     super.key,
   });
 
@@ -294,9 +371,13 @@ class _EditRowTile extends StatelessWidget {
   final bool locked;
   final VoidCallback onRemove;
 
+  /// Opens the row's settings; null against a player that has none.
+  final VoidCallback? onSettings;
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final summary = onSettings == null ? '' : entrySummary(row.settings);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: RowCard(
@@ -321,14 +402,33 @@ class _EditRowTile extends StatelessWidget {
             Expanded(
               child: Semantics(
                 container: true,
-                label: current ? '${row.name}, current song' : row.name,
-                excludeSemantics: true,
-                child: Text(
+                label: [
                   row.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: (current ? AppText.rowCurrent : AppText.row).copyWith(
-                    color: colors.text,
+                  if (current) 'current song',
+                  if (summary.isNotEmpty) summary,
+                ].join(', '),
+                excludeSemantics: true,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        row.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: (current ? AppText.rowCurrent : AppText.row)
+                            .copyWith(color: colors.text),
+                      ),
+                      // Which songs have settings, at a glance.
+                      if (summary.isNotEmpty)
+                        Text(
+                          summary,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.small.copyWith(color: colors.amber),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -343,6 +443,13 @@ class _EditRowTile extends StatelessWidget {
                 ).copyWith(color: colors.muted),
               ),
             ],
+            if (onSettings != null)
+              IconButton(
+                tooltip: 'Settings for ${row.name}',
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 48),
+                icon: Icon(Icons.tune, color: colors.muted),
+                onPressed: locked ? null : onSettings,
+              ),
             IconButton(
               tooltip: 'Remove ${row.name}',
               constraints: const BoxConstraints(minWidth: 48, minHeight: 48),

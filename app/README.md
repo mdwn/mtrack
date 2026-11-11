@@ -5,7 +5,8 @@ protocol it speaks is documented in [`docs/src/interfaces/bluetooth.md`](../docs
 and the design in [`design/bluetooth_remote_design.md`](../design/bluetooth_remote_design.md).
 
 The app is not released: it is not in any store. It has five tabs: **Now** (the song, its time and
-the transport), **Playlist** (the songs, and a way to switch playlist), **Sections** (tap a section
+the transport), **Playlist** (the songs, a way to switch playlist, and an editor for the playlists: songs and
+their order, each song's fades, auto play and ambient light, and the playlist's ambient light), **Sections** (tap a section
 to jump to it, hold to loop it), **Levels** (a fader and a mute for each output track) and **Lights**
 (below), with a connect screen for the first run and a small settings sheet. It follows the phone's
 light or dark setting.

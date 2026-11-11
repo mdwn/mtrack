@@ -175,6 +175,33 @@ class Rig {
   /// its status has no lock, and it refuses the three calls as not allowed.
   bool oldPlayer = false;
 
+  /// True for a player from before playlist settings: its playlists carry
+  /// no settings and no revision, a save's settings are unknown fields it
+  /// skips, and it refuses `ListLightShows` as not allowed. [oldPlayer]
+  /// implies it.
+  bool settingsTooOld = false;
+
+  /// Each playlist's entries' settings, in step with [playlists]; missing
+  /// or short means none.
+  final Map<String, List<pp.EntrySettings>> entrySettings = {};
+
+  /// Each playlist's own ambient light; missing is the profile's.
+  final Map<String, pp.AmbientSetting> playlistAmbient = {};
+
+  /// Bumped on every change to a playlist, its songs or its settings.
+  final Map<String, int> revisions = {};
+
+  /// The light shows `ListLightShows` names.
+  List<String> lightShows = ['lighting/ambient.light', 'shows/encore.light'];
+
+  bool get _noSettings => settingsTooOld || oldPlayer;
+
+  /// The settings of the playlist [name]'s entry at [index].
+  pp.EntrySettings settingsAt(String name, int index) {
+    final list = entrySettings[name] ?? const [];
+    return index < list.length ? list[index] : pp.EntrySettings();
+  }
+
   /// The output tracks, in the order the player lists them.
   List<RigTrack> tracks = [
     RigTrack('Click'),
@@ -246,19 +273,79 @@ class Rig {
       pp.GetPlaylistResponse(
         name: name,
         entries: [
-          for (final s in list)
+          for (var i = 0; i < list.length; i++)
             pp.PlaylistEntry(
-              songName: s.name,
-              duration: seconds(s.length.inSeconds),
+              songName: list[i].name,
+              duration: seconds(list[i].length.inSeconds),
+              settings: _noSettings ? null : settingsAt(name, i),
             ),
         ],
         position: name == playlist ? index : null,
+        ambient: _noSettings ? null : playlistAmbient[name],
+        revision: _noSettings ? null : 'r${revisions[name] ?? 0}',
       );
+
+  /// The settings [chosen] would have after a save of names alone: each
+  /// song's carried over from the first entry left of it, as the player's
+  /// does.
+  List<pp.EntrySettings> _carried(String name, List<RigSong> chosen) {
+    final before = playlists[name] ?? const <RigSong>[];
+    final taken = List<bool>.filled(before.length, false);
+    return [
+      for (final song in chosen)
+        () {
+          for (var i = 0; i < before.length; i++) {
+            if (!taken[i] && before[i].name == song.name) {
+              taken[i] = true;
+              return settingsAt(name, i);
+            }
+          }
+          return pp.EntrySettings();
+        }(),
+    ];
+  }
+
+  /// What another surface (the web UI) does: sets the settings of the
+  /// playlist [name]'s entry at [index].
+  void editSettingsElsewhere(
+    String name,
+    int index,
+    pp.EntrySettings settings,
+  ) {
+    final list = [
+      for (var i = 0; i < playlists[name]!.length; i++) settingsAt(name, i),
+    ];
+    list[index] = settings;
+    entrySettings[name] = list;
+    revisions[name] = (revisions[name] ?? 0) + 1;
+    publish();
+  }
+
+  static final RegExp _length = RegExp(r'^\d+(\.\d+)?(ms|s|beats?|measures?)$');
+
+  /// What the player would say of [settings] for [song], or null when it
+  /// would take them: only lengths are checked here.
+  static String? _refusal(String song, pp.EntrySettings settings) {
+    String? bad(String field, String text) => _length.hasMatch(text.trim())
+        ? null
+        : "Invalid transition: song $song: $field: '$text' is not a length "
+              '(e.g. 2s, 4beats)';
+    return (settings.hasFadeOut()
+            ? bad('fade_out', settings.fadeOut.length)
+            : null) ??
+        (settings.hasFadeIn() ? bad('fade_in', settings.fadeIn.length) : null);
+  }
 
   /// Sets the songs of [name] and, if it is the active playlist, keeps the
   /// current song current when it is still there.
-  void _store(String name, List<RigSong> chosen) {
+  void _store(
+    String name,
+    List<RigSong> chosen, {
+    List<pp.EntrySettings>? settings,
+  }) {
     final current = name == playlist && songs.isNotEmpty ? this.current : null;
+    entrySettings[name] = settings ?? _carried(name, chosen);
+    revisions[name] = (revisions[name] ?? 0) + 1;
     playlists[name] = chosen;
     if (name == playlist) {
       songs = chosen;
@@ -410,21 +497,60 @@ class Rig {
           }
           chosen.add(found.first);
         }
+        final changedSettings =
+            !_noSettings &&
+            req.expectedRevision.isNotEmpty &&
+            req.expectedRevision != 'r${revisions[name] ?? 0}';
         if (req.checkExpected &&
             have != null &&
-            !_sameNames([for (final s in have) s.name], req.expected)) {
+            (!_sameNames([for (final s in have) s.name], req.expected) ||
+                changedSettings)) {
           return FakeReply.error(
             9,
             'the playlist has changed: it no longer holds the songs that '
             'were read',
           );
         }
-        _store(name, chosen);
+        final setSettings = req.setSettings && !_noSettings;
+        if (setSettings) {
+          if (req.settings.length != req.songs.length) {
+            return FakeReply.error(
+              3,
+              'settings has ${req.settings.length} entries, but there are '
+              '${req.songs.length} songs: one for each',
+            );
+          }
+          for (var i = 0; i < req.songs.length; i++) {
+            final refusal = _refusal(req.songs[i], req.settings[i]);
+            if (refusal != null) {
+              return FakeReply.error(3, refusal);
+            }
+          }
+        }
+        if (req.setAmbient && !_noSettings) {
+          if (req.hasAmbient()) {
+            playlistAmbient[name] = req.ambient;
+          } else {
+            playlistAmbient.remove(name);
+          }
+        }
+        _store(
+          name,
+          chosen,
+          settings: setSettings ? List.of(req.settings) : null,
+        );
         return FakeReply.ok(
           _playlistResponse(name, name == playlist ? songs : chosen),
         );
       }),
     );
+    h['ListLightShows'] = (_) => _noSettings
+        ? FakeReply.error(
+            7,
+            'method ListLightShows is not available over '
+            'Bluetooth',
+          )
+        : FakeReply.ok(pp.ListLightShowsResponse(paths: lightShows));
     h['DeletePlaylist'] = (request) => oldGuard(
       'DeletePlaylist',
       () => guard(() {

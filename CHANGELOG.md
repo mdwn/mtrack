@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   except a device you have marked trusted in BlueZ yourself (a BLE MIDI pedal, say), which is
   left alone and not listed. The phone sends the performance calls of the gRPC service
   (transport, seek, playlists, section loops, track gains and mutes, the ambient mode) and receives a slim status, which says whether the player is locked.
-  It can also make, reorder and delete playlists (songs and their order only; each entry keeps its
-  fades and other settings), and lock and unlock the player to do so, since a player with no
+  It can also make, reorder and delete playlists, set each song's fade out, fade in, auto play
+  and ambient light and the playlist's own ambient light, as the web UI's playlist editor does
+  (the phone app edits a fade's length; its curve, the tracks it leaves out and its lights are
+  kept as they are), and lock and unlock the player to do so, since a player with no
   network would otherwise never be editable from a phone. The adapter must not be
   soft-blocked (`rfkill unblock bluetooth`); mtrack does not unblock it, and while the radio is blocked or
   missing only this controller waits, retrying until it is there. The Raspberry Pi image unblocks Bluetooth on first boot, which
@@ -30,13 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no Bluetooth support" for a configured `ble` controller. See [Bluetooth
   Control](docs/src/interfaces/bluetooth.md) for pairing and the protocol.
 - **`ListPlaylists` and `GetPlaylist` gRPC RPCs**: the first names the player's playlists and the
-  active one; the second returns a playlist's entries (each song's name and duration) and the
-  entry it is on, for the active playlist or one by name. Both are reads, open while the player
-  is locked.
+  active one; the second returns a playlist's entries (each song's name, duration and its fades,
+  auto play and ambient light as the file has them), the playlist's own ambient light, a
+  `revision` of all of it, and the entry it is on, for the active playlist or one by name. Both
+  are reads, open while the player is locked.
+- **`ListLightShows` gRPC RPC**: the `.light` files an ambient light can play, as paths relative
+  to the project, for a client that picks a playlist's ambient show. A read, open while the
+  player is locked, and allowed over Bluetooth.
 - **`SavePlaylist`, `DeletePlaylist` and `SetLock` gRPC RPCs**: the first sets a playlist's songs
-  and their order (or makes the playlist), keeping each entry's own settings with its song and
-  refusing a save made from a list that has since changed (`check_expected`); the second deletes
-  one; the third locks or unlocks the player. The playlist writes are refused while the player is
+  and their order (or makes the playlist), keeping each entry's own settings with its song, or,
+  with `set_settings` and `set_ambient`, setting them, checked as the web UI's save checks them
+  (one it would not load is `INVALID_ARGUMENT`, saying why); it refuses a save made from a
+  playlist that has since changed, songs or settings (`check_expected`, with `expected` and the
+  `revision` `GetPlaylist` answered); the second deletes one; the third locks or unlocks the
+  player. The playlist writes are refused while the player is
   locked, as the web UI's are; `SetLock` is open while locked.
 - **`WatchStage` gRPC RPC**: a server stream of what the stage looks like, as the web UI's stage
   view is fed: a layout (the venue's fixtures, their placement and channel names) and then a

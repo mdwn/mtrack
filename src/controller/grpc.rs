@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod asset;
+mod playlist_settings;
 mod playlists;
 mod stage;
 
@@ -33,19 +34,20 @@ use crate::{
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
         GetActiveEffectsRequest, GetActiveEffectsResponse, GetConfigRequest, GetConfigResponse,
         GetCuesRequest, GetCuesResponse, GetLightingAssetRequest, GetPlaylistRequest,
-        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListPlaylistsRequest,
-        ListPlaylistsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
-        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
-        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
-        RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest, SectionAckResponse,
-        SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
-        SetAmbientModeResponse, SetLockRequest, SetLockResponse, SetTrackGainRequest,
-        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StageFrame,
-        StageLayout, StageUpdate, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, WatchStageRequest, FILE_DESCRIPTOR_SET,
+        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListLightShowsRequest,
+        ListLightShowsResponse, ListPlaylistsRequest, ListPlaylistsResponse, LoopSectionRequest,
+        LoopSectionResponse, NavigateToSongRequest, NavigateToSongResponse, NextRequest,
+        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
+        PlaylistEntry, PreviousRequest, PreviousResponse, RemoveProfileRequest,
+        SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
+        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
+        SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
+        SetTrackMuteResponse, Song, StageFrame, StageLayout, StageUpdate, StatusRequest,
+        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
+        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
+        WatchStageRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -1043,6 +1045,17 @@ impl PlayerService for PlayerServer {
         Ok(Response::new(playlist_response(&playlist)?))
     }
 
+    async fn list_light_shows(
+        &self,
+        _: Request<ListLightShowsRequest>,
+    ) -> Result<Response<ListLightShowsResponse>, Status> {
+        let paths = match &self.config_store {
+            Some(store) => playlists::light_shows(&self.player, store).await?,
+            None => Vec::new(),
+        };
+        Ok(Response::new(ListLightShowsResponse { paths }))
+    }
+
     async fn delete_playlist(
         &self,
         request: Request<DeletePlaylistRequest>,
@@ -1097,10 +1110,12 @@ impl PlayerService for PlayerServer {
 /// A playlist as `GetPlaylist` reports it.
 #[allow(clippy::result_large_err)]
 fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylistResponse, Status> {
+    let settings = playlist_settings::Reported::of_loaded(playlist);
     let entries = playlist
         .songs()
         .iter()
-        .map(|song_name| {
+        .zip(settings.entries)
+        .map(|(song_name, settings)| {
             let duration = playlist
                 .get_song(song_name)
                 .map(|song| prost_types::Duration::try_from(song.length()))
@@ -1109,6 +1124,7 @@ fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylist
             Ok(PlaylistEntry {
                 song_name: song_name.clone(),
                 duration,
+                settings: Some(settings),
             })
         })
         .collect::<Result<Vec<_>, Status>>()?;
@@ -1116,6 +1132,8 @@ fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylist
         name: playlist.name().to_string(),
         entries,
         position: playlist.entry().map(|index| index as u32),
+        ambient: settings.ambient,
+        revision: settings.revision,
     })
 }
 

@@ -157,13 +157,19 @@ The calls a phone may make, and no others:
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
-`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`, and two streams,
+`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `ListLightShows`, `SetLock`, and
+two streams,
 `WatchStage` and `GetLightingAsset` (see [Streams](#streams)).
 
 `SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
 playlist editor does with only the songs: each entry keeps its own settings (fades, auto play,
-ambient). Set `check_expected` and `expected` on a save to refuse it if the playlist was edited
-since the phone read it (`FAILED_PRECONDITION`, "the playlist has changed"). Both are refused
+ambient). With `set_settings` and `set_ambient` a save sets those settings too, as `GetPlaylist`
+reports them, and the player checks them as the web UI's save does; `ListLightShows` names the
+`.light` files an ambient light can play. Set `check_expected`, `expected` and
+`expected_revision` (the `revision` `GetPlaylist` answered) on a save to refuse it if the
+playlist, its songs or its settings, was edited since the phone read it (`FAILED_PRECONDITION`,
+"the playlist has changed"). A playlist of 50 songs, every setting set, is some 25 kB either
+way, well inside a frame. Both are refused
 while the player is locked, and a player starts locked. A phone can lift the lock itself with
 `SetLock` (`locked: false`), which is open while locked, and put it back when it is done. That
 is on purpose: a player with no network, which is what Bluetooth is for, would otherwise never
@@ -303,7 +309,8 @@ source repository. It is not released in any store; it builds as an Android APK 
 for a change to `app/` uploads one as an artifact) and as an iOS project that has not been run
 on a phone. It finds a player, pairs, and then reconnects to it by itself. Its five tabs show
 the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
-current; switch to another playlist), the song's sections (tap to jump to one, hold to loop
+current; switch to another playlist; make, edit and delete playlists, with each song's fades,
+auto play and ambient light and the playlist's own), the song's sections (tap to jump to one, hold to loop
 it), the output tracks' levels and mutes, and the lights: the ambient light's mode, and under it
 the stage the web UI draws, as a plot or in 3D, live from the [stage stream](#streams). The 3D
 view turns under a finger; its fixture models come from the player with `GetLightingAsset` and

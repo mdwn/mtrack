@@ -86,6 +86,70 @@ void main() {
       expect(fake.received.single.id, 1000);
     });
 
+    test('a playlist save carries settings only when given them', () async {
+      final settings = [
+        player.EntrySettings(
+          fadeOut: player.Fade(
+            length: '2beats',
+            curve: 'linear',
+            exclude: player.TrackNames(names: ['Click']),
+          ),
+        ),
+        player.EntrySettings(),
+      ];
+      await client.savePlaylist(
+        'Set',
+        ['One', 'Two'],
+        expected: ['Two', 'One'],
+        expectedRevision: 'abc',
+        settings: settings,
+        setAmbient: true,
+        ambient: player.AmbientSetting(on: true, show: 'a.light'),
+      );
+      // As an app from before settings saved: names and order alone.
+      await client.savePlaylist('Set', ['One'], expected: ['One']);
+      // A new playlist checks nothing, so sends no revision either.
+      await client.savePlaylist(
+        'New',
+        ['One'],
+        expectedRevision: 'abc',
+        create: true,
+      );
+      await client.listLightShows();
+
+      final sent = [
+        for (final r in fake.received.where((r) => r.method == 'SavePlaylist'))
+          player.SavePlaylistRequest.fromBuffer(r.payload),
+      ];
+      expect(sent[0].settings, settings);
+      expect(sent[0].setSettings, isTrue);
+      expect(sent[0].setAmbient, isTrue);
+      expect(sent[0].ambient.show, 'a.light');
+      expect(sent[0].checkExpected, isTrue);
+      expect(sent[0].expectedRevision, 'abc');
+      expect(sent[1].settings, isEmpty);
+      expect(sent[1].setSettings, isFalse);
+      expect(sent[1].setAmbient, isFalse);
+      expect(sent[1].hasAmbient(), isFalse);
+      expect(sent[1].expectedRevision, isEmpty);
+      expect(sent[2].checkExpected, isFalse);
+      expect(sent[2].expectedRevision, isEmpty);
+      expect(fake.received.last.method, 'ListLightShows');
+      expect(
+        player.ListLightShowsRequest.fromBuffer(fake.received.last.payload),
+        player.ListLightShowsRequest(),
+      );
+    });
+
+    test('a save that clears the playlist ambient sends none', () async {
+      await client.savePlaylist('Set', ['One'], setAmbient: true);
+      final sent = player.SavePlaylistRequest.fromBuffer(
+        fake.received.single.payload,
+      );
+      expect(sent.setAmbient, isTrue);
+      expect(sent.hasAmbient(), isFalse);
+    });
+
     test('ids increment and wrap at 32 bits', () async {
       await client.dispose();
       client = PlayerClient(fake, random: FixedRandom(0xfffffffe));
