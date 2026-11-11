@@ -157,8 +157,8 @@ The calls a phone may make, and no others:
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
-`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`, and one stream,
-`WatchStage` (see [Streams](#streams)).
+`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `SetLock`, and two streams,
+`WatchStage` and `GetLightingAsset` (see [Streams](#streams)).
 
 `SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
 playlist editor does with only the songs: each entry keeps its own settings (fades, auto play,
@@ -183,14 +183,23 @@ requests waiting has the excess dropped.
 
 ### Streams
 
-`WatchStage` is a server stream: one request, answered by many messages. It is the only one a
-phone may open. Everything about a stream arrives on the `stream` characteristic, framed and
-chunked like a response, and nothing about it arrives on `response`.
+`WatchStage` and `GetLightingAsset` are server streams: one request, answered by many messages.
+They are the only ones a phone may open. Everything about a stream arrives on the `stream`
+characteristic, framed and chunked like a response, and nothing about it arrives on `response`.
 
 **Opening.** Write a `Request` to `request` as for any call: `method` is `WatchStage`, `payload`
 its `WatchStageRequest`, and `id` an id you have no stream open under. Each message of the stream
 then arrives on `stream` as a `Response` with your `id`, `more` set, `code` 0 and the message
 (a `StageUpdate`) in `payload`.
+
+**`GetLightingAsset`** sends one file of the lighting asset store (the rig description, models and
+scenery that the stage layout names), as `AssetChunk`s of at most 8 KiB that join, in order, into
+the file. The first carries `total_size`, for a progress bar. `gzip` has the whole file gzipped
+first, and the chunks then join into a gzip stream. A path that is not in the store or not a type
+it serves ends the stream with `NOT_FOUND`, and one that leaves the store with
+`INVALID_ARGUMENT`. Unlike `WatchStage`, none of its messages is ever dropped: the player waits
+for the radio, and the stream shares the link with `WatchStage` a message at a time. A phone may
+have two streams open, so fetch one file at a time. Open while locked.
 
 **The end.** A stream ends with one `Response` that has `more` unset. It carries the call's gRPC
 status in `code` and `message`, and no payload. On `stream`, a `Response` without `more` always
@@ -200,7 +209,7 @@ exception below):
 
 | `code` | Why |
 |---|---|
-| 0 (`OK`) | The player ended the stream. `WatchStage` does not, short of a failure. |
+| 0 (`OK`) | The player ended the stream. `WatchStage` does not, short of a failure; `GetLightingAsset` does after the last chunk. |
 | 1 (`CANCELLED`) | You cancelled it. |
 | 8 (`RESOURCE_EXHAUSTED`) | You have two streams open, which is the most one phone may have; or a message of the stream was too large for a frame, which ends it. |
 | any other | The call's own refusal or failure, as gRPC would report it: a `WatchStageRequest` that does not parse, for one. |

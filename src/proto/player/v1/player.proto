@@ -581,6 +581,23 @@ message StageUpdate {
     }
 }
 
+// GetLightingAssetRequest asks for one file of the lighting asset store.
+message GetLightingAssetRequest {
+    // The path under /api/lighting/assets/, as the stage layout and the rig
+    // description give it.
+    string path = 1;
+    // Send the file gzipped. The chunks then join into a gzip stream.
+    bool gzip = 2;
+}
+
+// AssetChunk is one piece of a lighting asset; the chunks, in order, join
+// into the file.
+message AssetChunk {
+    bytes data = 1;
+    // On the first chunk only: how many bytes all the chunks carry together.
+    uint64 total_size = 2;
+}
+
 // StageVec3 is a point, a direction or three angles, in the stage's axes.
 message StageVec3 {
     float x = 1;
@@ -874,4 +891,10 @@ service PlayerService {
     // venue does. Open while locked. A player with no lighting sends an
     // empty layout and an empty frame, and the stream stays open.
     rpc WatchStage(WatchStageRequest) returns (stream StageUpdate);
+
+    // GetLightingAsset streams a file of the lighting asset store (the rig
+    // description, models and scenery the stage layout names), as the web
+    // UI's /api/lighting/assets/ serves it, in chunks. NOT_FOUND for a path
+    // that is not in the store or not a type it serves. Open while locked.
+    rpc GetLightingAsset(GetLightingAssetRequest) returns (stream AssetChunk);
 }

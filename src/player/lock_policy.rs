@@ -112,6 +112,7 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "ListPlaylists"),
     (Grpc, "GetPlaylist"),
     (Grpc, "WatchStage"),
+    (Grpc, "GetLightingAsset"),
     // The lock itself: the phone's only way to unlock. SavePlaylist and
     // DeletePlaylist are playlist writes and stay locked out, as the web
     // UI's are.

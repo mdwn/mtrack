@@ -13,6 +13,7 @@
 //
 
 pub mod analyze;
+pub mod asset_store;
 pub mod channels;
 #[cfg(test)]
 mod consistency_tests;
