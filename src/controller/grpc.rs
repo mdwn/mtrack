@@ -14,6 +14,7 @@
 mod asset;
 mod playlist_settings;
 mod playlists;
+mod songs;
 mod stage;
 
 use crate::config::store::ConfigSection;
@@ -34,8 +35,9 @@ use crate::{
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
         GetActiveEffectsRequest, GetActiveEffectsResponse, GetConfigRequest, GetConfigResponse,
         GetCuesRequest, GetCuesResponse, GetLightingAssetRequest, GetPlaylistRequest,
-        GetPlaylistResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListLightShowsRequest,
-        ListLightShowsResponse, ListPlaylistsRequest, ListPlaylistsResponse, LoopSectionRequest,
+        GetPlaylistResponse, GetSongRequest, GetSongResponse, GetTrackGainsRequest,
+        GetTrackGainsResponse, ListLightShowsRequest, ListLightShowsResponse, ListPlaylistsRequest,
+        ListPlaylistsResponse, ListSongsRequest, ListSongsResponse, LoopSectionRequest,
         LoopSectionResponse, NavigateToSongRequest, NavigateToSongResponse, NextRequest,
         NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
         PlaylistEntry, PreviousRequest, PreviousResponse, RemoveProfileRequest,
@@ -47,7 +49,7 @@ use crate::{
         StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
         SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
         UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
-        WatchStageRequest, FILE_DESCRIPTOR_SET,
+        UpdateSongSettingsRequest, WatchStageRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -1054,6 +1056,41 @@ impl PlayerService for PlayerServer {
             None => Vec::new(),
         };
         Ok(Response::new(ListLightShowsResponse { paths }))
+    }
+
+    async fn list_songs(
+        &self,
+        request: Request<ListSongsRequest>,
+    ) -> Result<Response<ListSongsResponse>, Status> {
+        let root = songs::listing_root(&self.player, self.config_store.as_deref()).await;
+        Ok(Response::new(songs::list(
+            &self.player,
+            root.as_deref(),
+            request.into_inner().start,
+            songs::PAGE_BUDGET,
+        )))
+    }
+
+    async fn get_song(
+        &self,
+        request: Request<GetSongRequest>,
+    ) -> Result<Response<GetSongResponse>, Status> {
+        let name = request.into_inner().name;
+        let song = songs::get(&self.player, self.config_store.as_deref(), &name).await?;
+        Ok(Response::new(song))
+    }
+
+    async fn update_song_settings(
+        &self,
+        request: Request<UpdateSongSettingsRequest>,
+    ) -> Result<Response<GetSongResponse>, Status> {
+        let song = songs::update(
+            &self.player,
+            self.config_store.as_deref(),
+            request.into_inner(),
+        )
+        .await?;
+        Ok(Response::new(song))
     }
 
     async fn delete_playlist(

@@ -75,15 +75,22 @@ Future<void> _showSheet(BuildContext context, WidgetBuilder builder) =>
 
 /// A sheet's frame: its content scrolling above Cancel and Done, clear of
 /// the keyboard and of the system's navigation bar.
-class _SheetFrame extends StatelessWidget {
-  const _SheetFrame({
+class SheetFrame extends StatelessWidget {
+  /// A sheet called [title] showing [children], with [note] under the
+  /// title: by default, that nothing is sent until the playlist is saved.
+  const SheetFrame({
     required this.title,
     required this.children,
     required this.onDone,
+    this.note = sheetSavesWithPlaylist,
+    super.key,
   });
 
   final String title;
   final List<Widget> children;
+
+  /// Said under the title.
+  final String note;
 
   /// Called on Done; false keeps the sheet open (a field has an error).
   final bool Function() onDone;
@@ -104,10 +111,7 @@ class _SheetFrame extends StatelessWidget {
         children: [
           Text(title, style: AppText.heading.copyWith(color: colors.text)),
           const SizedBox(height: 4),
-          Text(
-            sheetSavesWithPlaylist,
-            style: AppText.small.copyWith(color: colors.muted),
-          ),
+          Text(note, style: AppText.small.copyWith(color: colors.muted)),
           ...children,
           const SizedBox(height: 22),
           Row(
@@ -148,7 +152,7 @@ class _SheetFrame extends StatelessWidget {
 
 /// Brings the first of [fields] that is on the tree into view, once the
 /// error just set under it has been laid out.
-void _showFirst(BuildContext context, Iterable<GlobalKey?> fields) {
+void showFirstField(BuildContext context, Iterable<GlobalKey?> fields) {
   final target = fields
       .map((key) => key?.currentContext)
       .whereType<BuildContext>()
@@ -168,8 +172,9 @@ void _showFirst(BuildContext context, Iterable<GlobalKey?> fields) {
 }
 
 /// A section's small uppercase heading.
-class _Eyebrow extends StatelessWidget {
-  const _Eyebrow(this.text);
+class SheetEyebrow extends StatelessWidget {
+  /// A heading saying [text].
+  const SheetEyebrow(this.text, {super.key});
 
   final String text;
 
@@ -184,8 +189,9 @@ class _Eyebrow extends StatelessWidget {
 }
 
 /// A setting's name and what it does.
-class _Label extends StatelessWidget {
-  const _Label(this.title, this.hint);
+class SheetLabel extends StatelessWidget {
+  /// A label: [title], with [hint] under it.
+  const SheetLabel(this.title, this.hint, {super.key});
 
   final String title;
   final String hint;
@@ -210,9 +216,10 @@ class _Label extends StatelessWidget {
   }
 }
 
-/// A text field for a length or a time, which the player reads.
-class _LengthField extends StatelessWidget {
-  const _LengthField({
+/// A text field for a length, a time or a name, which the player reads.
+class SheetField extends StatelessWidget {
+  /// A field editing [controller].
+  const SheetField({
     required this.controller,
     required this.label,
     required this.placeholder,
@@ -221,6 +228,9 @@ class _LengthField extends StatelessWidget {
     this.suffix,
     this.errorText,
     this.fieldKey,
+    this.keyboardType,
+    this.enabled = true,
+    super.key,
   });
 
   final TextEditingController controller;
@@ -237,6 +247,12 @@ class _LengthField extends StatelessWidget {
   /// Names the field, to scroll it into view.
   final GlobalKey? fieldKey;
 
+  /// The keyboard to bring up; text by default.
+  final TextInputType? keyboardType;
+
+  /// Whether the field takes input.
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -245,6 +261,8 @@ class _LengthField extends StatelessWidget {
       child: TextField(
         controller: controller,
         onChanged: onChanged,
+        keyboardType: keyboardType,
+        enabled: enabled,
         autocorrect: false,
         enableSuggestions: false,
         decoration: InputDecoration(
@@ -333,7 +351,7 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
     final ambientBad = _ambientKey.currentState?.check() ?? false;
     final bad = _gapBad || ambientBad || _fadeInBad || _fadeOutBad;
     if (bad) {
-      _showFirst(context, [
+      showFirstField(context, [
         if (_gapBad) _gapKey,
         if (ambientBad) _ambientKey.currentState?.firstBadKey,
         if (_fadeInBad) _fadeInKey,
@@ -362,7 +380,7 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final details = fadeDetails(_fadeOut);
-    return _SheetFrame(
+    return SheetFrame(
       title: widget.song,
       onDone: () {
         if (!_check()) {
@@ -372,8 +390,8 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
         return true;
       },
       children: [
-        const _Eyebrow('BEFORE THIS SONG'),
-        const _Label(
+        const SheetEyebrow('BEFORE THIS SONG'),
+        const SheetLabel(
           'Auto play',
           'Start this song by itself when the playlist reaches it: the '
               'song before it ending, or Next/Previous while stopped.',
@@ -388,7 +406,7 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
           onChanged: (on) => setState(() => _autoPlay = on),
         ),
         if (_autoPlay)
-          _LengthField(
+          SheetField(
             controller: _gap,
             label: 'Gap',
             placeholder: 'at once',
@@ -407,12 +425,12 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
           shows: widget.edit,
           onChanged: (ambient) => setState(() => _ambient = ambient),
         ),
-        const _Label(
+        const SheetLabel(
           'Fade in',
           'When this song starts under a song fading out. No effect '
               'otherwise.',
         ),
-        _LengthField(
+        SheetField(
           controller: _fadeInText,
           label: 'Length',
           placeholder: 'none (e.g. 1measure)',
@@ -426,14 +444,14 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
             _fadeIn = withFadeLength(_initialIn, text);
           }),
         ),
-        const _Eyebrow('AFTER THIS SONG'),
-        const _Label(
+        const SheetEyebrow('AFTER THIS SONG'),
+        const SheetLabel(
           'Fade out',
           'Only for loop breaks: when Play, Next or Previous leaves this '
               'song while it loops, it plays on and fades out under the next '
               'one. A song that ends by itself just ends.',
         ),
-        _LengthField(
+        SheetField(
           controller: _fadeOutText,
           label: 'Length',
           placeholder: 'none (e.g. 1measure)',
@@ -494,12 +512,12 @@ class _PlaylistAmbientSheetState extends State<PlaylistAmbientSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return _SheetFrame(
+    return SheetFrame(
       title: widget.name,
       onDone: () {
         final fields = _ambientKey.currentState;
         if (fields != null && fields.check()) {
-          _showFirst(context, [fields.firstBadKey]);
+          showFirstField(context, [fields.firstBadKey]);
           return false;
         }
         widget.onDone(_ambient);
@@ -647,7 +665,7 @@ class _AmbientFieldsState extends State<_AmbientFields> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _Label(widget.label, widget.hint),
+            SheetLabel(widget.label, widget.hint),
             Wrap(
               spacing: 8,
               runSpacing: 4,
@@ -665,7 +683,7 @@ class _AmbientFieldsState extends State<_AmbientFields> {
               ],
             ),
             if (choice == AmbientChoice.own) ...[
-              _LengthField(
+              SheetField(
                 controller: _text[AmbientField.show]!,
                 label: 'Show',
                 placeholder: widget.inheritPlaceholder,
@@ -684,7 +702,7 @@ class _AmbientFieldsState extends State<_AmbientFields> {
                 (AmbientField.fadeIn, 'Fade in'),
                 (AmbientField.fadeOut, 'Fade out'),
               ])
-                _LengthField(
+                SheetField(
                   controller: _text[field]!,
                   label: label,
                   placeholder: widget.inheritPlaceholder,

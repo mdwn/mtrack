@@ -15,6 +15,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app/ports.dart';
 import '../app/session.dart';
 import 'connect_screen.dart';
 import 'home_shell.dart';
@@ -29,6 +30,7 @@ class MtrackApp extends StatelessWidget {
   const MtrackApp({
     required this.session,
     required this.stage,
+    required this.views,
     this.themeMode,
     super.key,
   });
@@ -39,6 +41,10 @@ class MtrackApp extends StatelessWidget {
   /// Where the Lights tab's stage page comes from. Tests replace it, as
   /// they do the session's link: a web view does not run in a test.
   final StageHost stage;
+
+  /// Where choices of view (the Library tab's side) are kept across
+  /// launches.
+  final ViewStore views;
 
   /// Overrides the phone's light or dark setting. Null follows it.
   final ThemeMode? themeMode;
@@ -53,7 +59,7 @@ class MtrackApp extends StatelessWidget {
       themeMode: themeMode ?? ThemeMode.system,
       home: SessionScope(
         session: session,
-        child: _Root(stage: stage),
+        child: _Root(stage: stage, views: views),
       ),
     );
   }
@@ -62,9 +68,10 @@ class MtrackApp extends StatelessWidget {
 /// Chooses between the connect screen and the tabs, reports whether the app
 /// is in the foreground, and shows the session's notices.
 class _Root extends StatefulWidget {
-  const _Root({required this.stage});
+  const _Root({required this.stage, required this.views});
 
   final StageHost stage;
+  final ViewStore views;
 
   @override
   State<_Root> createState() => _RootState();
@@ -120,12 +127,16 @@ class _RootState extends State<_Root> with WidgetsBindingObserver {
         session.phase == ConnectionPhase.ready ||
         (session.phase == ConnectionPhase.lost && session.status != null);
     return Scaffold(
+      // The keyboard comes up over the tabs, not into them: a tab that
+      // was squeezed would squeeze every tab kept built under it. The one
+      // field among them, the library's search, keeps its list clear of it.
+      resizeToAvoidBottomInset: !showTabs,
       body: SafeArea(
         // The tab bar keeps itself above the system's bar; the connect
         // screen has no tab bar, so its buttons need the room here.
         bottom: !showTabs,
         child: showTabs
-            ? HomeShell(stage: widget.stage)
+            ? HomeShell(stage: widget.stage, views: widget.views)
             : const ConnectScreen(),
       ),
     );

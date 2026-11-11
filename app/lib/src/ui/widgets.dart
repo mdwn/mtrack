@@ -418,3 +418,112 @@ class ScrollingColumn extends StatelessWidget {
     );
   }
 }
+
+/// Two or more views of one place, side by side, the one showing marked:
+/// the app's version of the web UI's Plot | 3D switch, each choice a
+/// bordered button and the chosen one tinted and edged in the accent.
+class ViewSwitch<T> extends StatelessWidget {
+  /// A switch among [choices] (each a value and its label), showing
+  /// [selected]; a tap on another calls [onChanged] with it.
+  const ViewSwitch({
+    required this.choices,
+    required this.selected,
+    required this.onChanged,
+    this.semanticLabel,
+    super.key,
+  });
+
+  /// The views, in order: each a value and the word for it.
+  final List<(T, String)> choices;
+
+  /// The view showing.
+  final T selected;
+
+  /// Called with the view tapped, when it is not the one showing.
+  final ValueChanged<T> onChanged;
+
+  /// What a screen reader calls the switch as a whole.
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Semantics(
+      container: true,
+      label: semanticLabel,
+      child: Row(
+        children: [
+          for (var i = 0; i < choices.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              child: _ViewChoice(
+                label: choices[i].$2,
+                selected: choices[i].$1 == selected,
+                colors: colors,
+                onTap: choices[i].$1 == selected
+                    ? null
+                    : () => onChanged(choices[i].$1),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ViewChoice extends StatelessWidget {
+  const _ViewChoice({
+    required this.label,
+    required this.selected,
+    required this.colors,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final AppColors colors;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(12);
+    return Semantics(
+      button: true,
+      selected: selected,
+      inMutuallyExclusiveGroup: true,
+      label: label,
+      excludeSemantics: true,
+      // The one showing is not disabled, only already chosen.
+      onTap: onTap ?? () {},
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onTap,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 48),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected ? colors.currentTint : null,
+              borderRadius: radius,
+              border: Border.all(
+                color: selected ? colors.cyan : colors.line,
+                width: 1.5,
+              ),
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.bodyStrong.copyWith(
+                color: selected ? colors.cyan : colors.muted,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

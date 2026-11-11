@@ -42,6 +42,33 @@ abstract class PlayerStore {
   Future<void> clear();
 }
 
+/// Small choices about how the app looks that it keeps across launches,
+/// such as which side of a tab was showing, each under a key.
+abstract class ViewStore {
+  /// The choice kept under [key], or null when there is none (or it could
+  /// not be read).
+  Future<String?> read(String key);
+
+  /// Keeps [value] under [key]. A failure is not reported: the choice is
+  /// only not kept.
+  Future<void> write(String key, String value);
+}
+
+/// A [ViewStore] that keeps its choices for as long as it lives.
+class MemoryViewStore implements ViewStore {
+  /// A store holding [initial].
+  MemoryViewStore([Map<String, String>? initial]) : values = {...?initial};
+
+  /// What it holds.
+  final Map<String, String> values;
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+}
+
 /// Keeps the screen on, for as long as the app asks.
 abstract class ScreenWake {
   /// Turns keeping the screen on on or off.

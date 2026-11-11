@@ -55,9 +55,9 @@ Future<void> hold(AppHarness h, Finder target, {bool full = true}) async {
   await pumpFor(h, 50);
 }
 
-/// Opens the Playlist tab and starts editing.
+/// Opens the Library tab on its playlist and starts editing.
 Future<void> startEditing(AppHarness h) async {
-  await h.openTab('Playlist');
+  await h.openTab('Library');
   await h.tester.tap(find.text('Edit'));
   await pumpFor(h);
 }
@@ -72,7 +72,7 @@ Future<void> save(AppHarness h) async {
 void main() {
   group('the lock pill', () {
     appTest('says Unlocked on every screen', (h) async {
-      for (final tab in ['Now', 'Playlist', 'Sections', 'Levels']) {
+      for (final tab in ['Now', 'Library', 'Sections', 'Levels']) {
         await h.openTab(tab);
         expect(find.text('Unlocked'), findsOneWidget, reason: tab);
         expect(find.text('Locked'), findsNothing, reason: tab);
@@ -196,7 +196,7 @@ void main() {
 
   group('the way to edit', () {
     appTest('is Edit while unlocked', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('Edit'), findsOneWidget);
       expect(find.text('Unlock to edit'), findsNothing);
       expect(find.text('change'), findsOneWidget);
@@ -205,7 +205,7 @@ void main() {
     appTest('is "Unlock to edit" while locked, and opens the settings', (
       h,
     ) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('Edit'), findsNothing);
       appVersion = () async => '0.1.0 (1)';
       await h.tester.tap(find.text('Unlock to edit'));
@@ -214,7 +214,7 @@ void main() {
     }, setup: (rig) => rig.locked = true);
 
     appTest('is not there for a player that has no lock', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('Edit'), findsNothing);
       expect(find.text('Unlock to edit'), findsNothing);
       expect(find.text('change'), findsOneWidget);
@@ -223,7 +223,7 @@ void main() {
     appTest(
       'is not there for all_songs, locked or not',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         expect(find.text('Edit'), findsNothing);
         expect(find.text('Unlock to edit'), findsNothing);
       },
@@ -234,7 +234,7 @@ void main() {
     );
 
     appTest('appears when the player is unlocked', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('Unlock to edit'), findsOneWidget);
       h.rig.locked = false;
       h.rig.publish();
@@ -244,7 +244,7 @@ void main() {
 
     appTest('is a 48 px target', (h) async {
       final handle = h.tester.ensureSemantics();
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       final size = h.tester.getSize(find.bySemanticsLabel('Edit playlist'));
       expect(size.height, greaterThanOrEqualTo(48));
       handle.dispose();
@@ -620,7 +620,7 @@ void main() {
 
   group('new and deleted playlists', () {
     Future<void> openPicker(AppHarness h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('change'));
       await pumpFor(h);
     }

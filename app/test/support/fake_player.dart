@@ -106,6 +106,9 @@ class FakePlayer implements PlayerTransport {
     'SavePlaylist',
     'DeletePlaylist',
     'ListLightShows',
+    'ListSongs',
+    'GetSong',
+    'UpdateSongSettings',
     'SetLock',
   };
 

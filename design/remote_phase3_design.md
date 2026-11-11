@@ -140,8 +140,9 @@ rpc GetSong(GetSongRequest) returns (GetSongResponse);
 ```
 
 A list row is a name, a duration and a few flags (loops, has lights, has
-MIDI, failed to load). The list is sent gzipped in one answer; production
-has about 50 songs, a few kB.
+MIDI, failed to load). The list was to be sent gzipped in one answer;
+it is paged instead (see "As built"). Production has about 50 songs, a few
+kB.
 
 **Writing** is a short list of named settings, not the song file:
 
@@ -177,8 +178,134 @@ travels through untouched. The answer carries a revision, as playlists do
 - **While playing.** The REST save reloads songs at once. Whether a change
   to the song that is playing takes hold now, at the next pass, or at the
   next play needs checking against the player before the screen promises
-  anything; the app will say which.
+  anything; the app will say which. (Checked: see "As built" below.)
 - Refused while locked.
+
+As built:
+
+```proto
+rpc ListSongs(ListSongsRequest) returns (ListSongsResponse);
+rpc GetSong(GetSongRequest) returns (GetSongResponse);
+rpc UpdateSongSettings(UpdateSongSettingsRequest) returns (GetSongResponse);
+
+message ListSongsRequest { uint32 start = 1; }
+message ListSongsResponse {
+  repeated SongListing songs = 1;   // name, duration, loops, has_lighting,
+                                    // has_midi, has_samples, failure,
+                                    // base_dir (8)
+  optional uint32 next = 2;         // more: ask again from here
+  uint32 total = 3;
+}
+
+message GetSongResponse {
+  string name = 1;
+  google.protobuf.Duration duration = 2;
+  optional string failure = 3;
+  optional string read_only = 4;    // no file, or one that does not read
+  SongLooping looping = 5;          // loop_playback, crossfade, cut
+  SongTracks tracks = 6;            // name, file, file_channel
+  SongSamples samples = 7;          // see below
+  repeated SongTrigger triggers = 8;  // in words, read only
+  SongOverview overview = 9;        // what the phone does not change
+  repeated SongFile files = 10;     // audio files beside it, with channels
+  string revision = 11;
+  bool playing = 12;
+  optional string base_dir = 13;    // as SongListing's
+}
+
+message SongSample {
+  string name = 1;
+  string original_name = 2;         // the name it was read as; empty: new
+  optional string file = 3;
+  repeated uint32 output_channels = 4;
+  optional string output_track = 5;
+  string release_behavior = 6;
+  string retrigger = 7;
+  optional uint32 max_voices = 8;
+  optional uint32 fade_time_ms = 9;
+  SampleVelocity velocity = 10;     // reported, ignored in an update
+}
+
+message UpdateSongSettingsRequest {
+  string name = 1;
+  string expected_revision = 2;
+  SongLooping looping = 3;          // each group: absent, left alone
+  SongTracks tracks = 4;
+  SongSamples samples = 5;
+}
+```
+
+- **Paged, not gzipped.** The Bluetooth envelope carries no compressed
+  message, and gzip guarantees no size. A page holds at most 48 KiB of
+  the 64 KiB frame; 200 songs with long names, each two long-named
+  folders down, are 47.6 kB, one page (22 kB before `base_dir`). A test
+  holds both. A bigger library takes more pages, not a bigger one.
+- **Folders, as the web UI has them.** The web UI's Songs page
+  (`SongList.svelte`) groups songs by `base_dir` from `GET /api/songs`
+  (the song's directory relative to the songs directory): each song goes
+  under its `base_dir` less the last part, so `Live/2026/Encore` is under
+  `Live/2026` and `Encore` is at the top. Every folder is one flat group
+  labelled with its whole path, not a tree; the top comes first with no
+  heading, the rest sorted by path (`localeCompare`); each heading shows
+  the path in capitals and a count, and closes and opens its group, kept
+  until the page goes. `ListSongs` and `GetSong` send `base_dir` as the
+  web UI computes it (one function, `songs_api::base_dir`, for both),
+  absent when the player has no songs directory to say it under.
+- **The file keeps its shape.** The player reads the file as a YAML tree,
+  changes only the keys whose values differ from what the file has, and
+  writes it back through the web UI's song save, under the lock the song
+  saves share, from the read to the reload. Key order, every other key,
+  and a sample's velocity come through; comments do not, as they do not
+  through the web UI's editor. A test round-trips a song with every
+  feature (tempo, sections, metronome, pilot, lighting, MIDI, notification
+  audio, velocity layers).
+- **A sample is matched by the name it was read as**, so a rename keeps
+  its velocity and anything else the phone does not show. Triggers are
+  shown in the web UI's words and not changed: the web UI's song editor
+  does not change them either.
+- **Files.** A track or a sample may point at a file the song already
+  names, or at an audio file in its folder, as `GetSong` lists them;
+  anything else is refused, so there is nothing to traverse.
+- **Checked as the player loads.** Besides the save's own checks, a song
+  that loads is loaded as it would be before it is written (a crossfade
+  it cannot read, a channel the file does not have, a file with several
+  channels and none named, a cut track it does not have), and each
+  playlist that plays it is checked to still load: a fade that leaves out
+  a track renamed away would drop the playlist on reload. A song that
+  failed to load already is written as asked, so it can be fixed from the
+  phone. Refusals are `INVALID_ARGUMENT` in the loader's words.
+- **While playing**, checked against the player: the web UI's save does
+  not refuse a song that is playing (only its delete does), and neither
+  does this. The file is written and the songs reloaded at once. The
+  playback holds the song it started with, so the pass playing keeps its
+  tracks, files, loop and crossfade (the audio engine takes them at play),
+  and samples load when a song is selected or played. What changes at
+  once is the transport: Play, Next and Stop ask the reloaded song whether
+  it loops. Turn looping off on a looping song and Next no longer breaks
+  out of it (Stop still ends it); turn it on on a song playing and Next
+  breaks out of it as if it looped. A player test holds the first. The
+  answer's `playing` says the song is the one playing, and the app says
+  when a change takes effect.
+- Reads are open while locked; the update is not.
+
+The app's second tab is the **Library**: a **Playlist | Songs** switch at
+its top, as the Lights tab switches between the plot and 3D, with the
+playlist on one side and the song library on the other. A sixth tab would
+shrink every label, and the library is the playlist's raw material: it is
+where the editor's "add songs" picks from. (It was first a **Songs**
+button beside **Edit**; Mike found a button in the playlist wonky.) The
+switch keeps the side last shown across launches (`library.view`, as
+`lights.view`), each side keeps its scroll while the other shows, and
+while a playlist is edited the editor covers the tab, switch and all. The
+Songs side groups songs as the web UI does, with folders that close and
+open (kept until the player is forgotten); a search lists the songs that
+match flat, each with its folder under its name; a player that sends no
+`base_dir` shows one list. The editor's "add songs" picker stays a flat,
+searched list, as the web UI's playlist editor's is. A song's page shows
+its folder under its name, then what it has first,
+then Looping (the switch on the page, the crossfade and its cut tracks in
+a sheet), Tracks and Samples, each item a sheet, worded as the web UI's
+song editor; one Save sends the groups changed, with the revision.
 
 ## 4. Wi-Fi
 
@@ -290,7 +417,9 @@ built beside them.
 
 ## 7. What is not known
 
-- How a song edit reaches a song that is playing (§3).
+- ~~How a song edit reaches a song that is playing (§3).~~ Checked: at
+  the next play, but its loop flag at once for the transport (§3, as
+  built).
 - iOS, throughout.
 - Wi-Fi where the phone has mobile data and the player's network has no
   internet: Android may route the app's traffic to mobile data unless the

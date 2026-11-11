@@ -62,7 +62,7 @@ void main() {
   }
 
   Future<void> startEditing(AppHarness h) async {
-    await h.openTab('Playlist');
+    await h.openTab('Library');
     await h.tester.tap(find.text('Edit'));
     await h.settle();
     await h.tester.pump(const Duration(milliseconds: 400));
@@ -125,7 +125,7 @@ void main() {
       appTest(
         'Playlist',
         (h) async {
-          await h.openTab('Playlist');
+          await h.openTab('Library');
           expect(find.text('Short'), findsOneWidget);
         },
         setup: sized,
@@ -135,7 +135,7 @@ void main() {
       appTest(
         'the playlist picker',
         (h) async {
-          await h.openTab('Playlist');
+          await h.openTab('Library');
           await h.tester.tap(find.text('change'));
           await h.settle();
           await h.tester.pump(const Duration(milliseconds: 400));
@@ -148,7 +148,7 @@ void main() {
       appTest(
         'Playlist, locked',
         (h) async {
-          await h.openTab('Playlist');
+          await h.openTab('Library');
           expect(find.text('Unlock to edit'), findsOneWidget);
           expect(find.text('Locked'), findsOneWidget);
         },
@@ -162,7 +162,7 @@ void main() {
       appTest(
         'the playlist picker, with a playlist to delete',
         (h) async {
-          await h.openTab('Playlist');
+          await h.openTab('Library');
           await h.tester.tap(find.text('change'));
           await h.settle();
           await h.tester.pump(const Duration(milliseconds: 400));
@@ -573,7 +573,7 @@ void main() {
     appTest(
       'the editor still fits',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         await h.tester.tap(find.text('Edit'));
         await h.settle();
         await h.tester.pump(const Duration(milliseconds: 400));
@@ -587,7 +587,7 @@ void main() {
     appTest(
       'Add songs still fits',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         await h.tester.tap(find.text('Edit'));
         await h.settle();
         await h.tester.pump(const Duration(milliseconds: 400));
@@ -604,7 +604,7 @@ void main() {
     appTest(
       'the playlist header still fits when locked',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         expect(find.text('Unlock to edit'), findsOneWidget);
       },
       setup: (rig) => rig.locked = true,

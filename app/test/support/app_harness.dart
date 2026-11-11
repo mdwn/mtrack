@@ -69,6 +69,7 @@ class AppHarness {
     this.store,
     this.wake,
     this.stage,
+    this.views,
     this.session,
   );
 
@@ -79,6 +80,9 @@ class AppHarness {
 
   /// What the Lights tab shows its stage page in.
   final FakeStageHost stage;
+
+  /// The view choices kept across launches.
+  final MemoryViewStore views;
   final Session session;
 
   /// The time the session's clock reads. Advances with [advance].
@@ -93,6 +97,7 @@ class AppHarness {
     Look look = const Look(Brightness.dark, 1.0),
     Size size = const Size(360, 640),
     String? stageView,
+    Map<String, String>? views,
   }) async {
     rig ??= Rig();
     tester.view.physicalSize = size * 3;
@@ -111,9 +116,12 @@ class AppHarness {
       monotonic: () => harness.now,
     );
     final stage = FakeStageHost()..view = stageView;
-    harness = AppHarness._(tester, rig, store, wake, stage, session);
+    final kept = MemoryViewStore(views);
+    harness = AppHarness._(tester, rig, store, wake, stage, kept, session);
     rig.link.paired.add('p1');
-    await tester.pumpWidget(MtrackApp(session: session, stage: stage));
+    await tester.pumpWidget(
+      MtrackApp(session: session, stage: stage, views: kept),
+    );
     unawaited(session.start());
     await harness.settle();
     return harness;
@@ -139,15 +147,37 @@ class AppHarness {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
-  /// Puts the app in the background or the foreground, as the system does.
+  /// Puts the app in the background or the foreground, as the system does:
+  /// through the states between, which a text field's listener insists on.
   Future<void> lifecycle(AppLifecycleState state) async {
-    tester.binding.handleAppLifecycleStateChanged(state);
+    _walkTo(state);
     await settle();
+  }
+
+  void _walkTo(AppLifecycleState state) {
+    const order = [
+      AppLifecycleState.resumed,
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+    ];
+    final from = order.indexOf(
+      tester.binding.lifecycleState ?? AppLifecycleState.resumed,
+    );
+    final to = order.indexOf(state);
+    if (from < 0 || to < 0) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+      return;
+    }
+    final step = to > from ? 1 : -1;
+    for (var i = from; i != to; i += step) {
+      tester.binding.handleAppLifecycleStateChanged(order[i + step]);
+    }
   }
 
   /// Ends the session and the app, so nothing is left running.
   Future<void> close() async {
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    _walkTo(AppLifecycleState.resumed);
     session.dispose();
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
@@ -159,7 +189,7 @@ class AppHarness {
 
 /// A widget test over an [AppHarness], closed afterwards. [setup] shapes the
 /// rig before the app connects to it. [stageView] is the view of the Lights
-/// tab remembered from the last launch.
+/// tab remembered from the last launch; [views] the view choices kept.
 void appTest(
   String name,
   Future<void> Function(AppHarness h) body, {
@@ -168,6 +198,7 @@ void appTest(
   Size size = const Size(360, 640),
   bool known = true,
   String? stageView,
+  Map<String, String>? views,
 }) {
   testWidgets(name, (tester) async {
     await loadAppFonts();
@@ -181,6 +212,7 @@ void appTest(
       size: size,
       known: known,
       stageView: stageView,
+      views: views,
     );
     try {
       await body(harness);

@@ -30,7 +30,7 @@ use crate::webui::api::playlists::{self, PLAYLIST_WRITES};
 
 /// A refusal of the web UI's playlist writers as a status, by the status
 /// the web API gives it and with its message.
-async fn status_of(response: axum::response::Response) -> Status {
+pub(super) async fn status_of(response: axum::response::Response) -> Status {
     let answer = Answer::of_response(response).await;
     let message = answer.message();
     match answer.status.as_u16() {

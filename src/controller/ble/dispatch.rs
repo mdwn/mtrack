@@ -63,6 +63,9 @@ pub(crate) const ALLOWED: &[&str] = &[
     "SavePlaylist",
     "DeletePlaylist",
     "ListLightShows",
+    "ListSongs",
+    "GetSong",
+    "UpdateSongSettings",
     "SetLock",
     "WatchStage",
     "GetLightingAsset",
@@ -114,10 +117,10 @@ fn never_replaceable(_message: &[u8]) -> bool {
     false
 }
 
-/// The allowed methods that write playlists: refused while the player is
+/// The allowed methods that write playlists and songs: refused while the player is
 /// locked, which the phone lifts with `SetLock`.
 #[cfg(test)]
-const LOCKED_WRITES: &[&str] = &["SavePlaylist", "DeletePlaylist"];
+const LOCKED_WRITES: &[&str] = &["SavePlaylist", "DeletePlaylist", "UpdateSongSettings"];
 
 /// The service name in a gRPC request path.
 const SERVICE: &str = <PlayerServiceServer<PlayerServer> as tonic::server::NamedService>::NAME;

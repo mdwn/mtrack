@@ -31,7 +31,7 @@ List<String> requests(AppHarness h, String method) => h.rig.player.received
 void main() {
   group('the list', () {
     appTest('lists the songs with their numbers and lengths', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('First'), findsWidgets);
       expect(find.text('Second'), findsOneWidget);
       expect(find.text('Third'), findsOneWidget);
@@ -45,7 +45,7 @@ void main() {
 
     appTest('marks the current song', (h) async {
       final handle = h.tester.ensureSemantics();
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(
         find.bySemanticsLabel(RegExp(r'^1, First, 1:40, current song$')),
         findsOneWidget,
@@ -55,7 +55,7 @@ void main() {
     });
 
     appTest('a tap makes a song current without playing it', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('Third'));
       await h.settle();
       expect(h.rig.index, 2);
@@ -66,14 +66,14 @@ void main() {
     });
 
     appTest('a tap on the current song sends nothing', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('First').last);
       await h.settle();
       expect(requests(h, 'NavigateToSong'), isEmpty);
     });
 
     appTest('sends the entry and the name it shows', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('Second'));
       await h.settle();
       final request = pp.NavigateToSongRequest.fromBuffer(
@@ -88,7 +88,7 @@ void main() {
     appTest('a playlist that changed is shown as such and refreshed', (
       h,
     ) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       h.rig.songs[2] = RigSong('Swapped', lengthSeconds: 30);
       await h.tester.tap(find.text('Third'));
       await h.settle();
@@ -101,7 +101,7 @@ void main() {
 
     appTest('says why when the player refuses', (h) async {
       h.rig.locked = true;
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('Third'));
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 100));
@@ -114,7 +114,7 @@ void main() {
     appTest(
       'is inert while a song plays',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         expect(find.text('Stop the song to choose another.'), findsOneWidget);
         final card = h.tester.widget<RowCard>(row('Third'));
         expect(card.onTap, isNull);
@@ -137,7 +137,7 @@ void main() {
       h.rig.songs = [];
       h.rig.publish();
       await h.settle();
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('This playlist is empty'), findsOneWidget);
     });
   });
@@ -150,7 +150,7 @@ void main() {
     appTest(
       'opens with the current song in view',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         final current = find.text('Song 61');
         expect(current, findsOneWidget);
         final rect = h.tester.getRect(current);
@@ -168,7 +168,7 @@ void main() {
     appTest(
       'keeps the current song in view when it changes',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         expect(find.text('Song 1'), findsOneWidget);
         h.rig.index = 40;
         h.rig.publish();
@@ -189,7 +189,7 @@ void main() {
     appTest(
       'keeps its scroll position while another tab shows',
       (h) async {
-        await h.openTab('Playlist');
+        await h.openTab('Library');
         await h.tester.drag(find.byType(ListView), const Offset(0, -600));
         await h.tester.pump();
         final before = h.tester.state<ScrollableState>(
@@ -219,7 +219,7 @@ void main() {
     }
 
     appTest('lists the playlists, the active one marked', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('change'));
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 400));
@@ -233,7 +233,7 @@ void main() {
     }, setup: others);
 
     appTest('switches to the one tapped and closes', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('change'));
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 400));
@@ -247,7 +247,7 @@ void main() {
     }, setup: others);
 
     appTest('stays open and says so when the switch is refused', (h) async {
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('change'));
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 400));
@@ -262,7 +262,7 @@ void main() {
 
     appTest('says when the playlists could not be loaded', (h) async {
       h.rig.player.handlers['ListPlaylists'] = (_) => FakeReply.error(14, 'x');
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       await h.tester.tap(find.text('change'));
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 400));
@@ -272,7 +272,7 @@ void main() {
     appTest('knows a playlist by what the player said', (h) async {
       // The status names the playlist; entries come from GetPlaylist.
       expect(pp.GetPlaylistResponse().entries, isEmpty);
-      await h.openTab('Playlist');
+      await h.openTab('Library');
       expect(find.text('Set'), findsWidgets);
     });
   });

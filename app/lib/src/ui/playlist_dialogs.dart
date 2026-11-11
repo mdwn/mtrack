@@ -103,15 +103,18 @@ class _NameDialogState extends State<_NameDialog> {
   }
 }
 
-/// Asks whether to throw away the changes made to a playlist. True to
-/// discard them.
-Future<bool> confirmDiscard(BuildContext context) async {
+/// Asks whether to throw away the changes made to a playlist, or with
+/// [unchanged] said, to something else. True to discard them.
+Future<bool> confirmDiscard(
+  BuildContext context, {
+  String unchanged = 'The playlist on the player has not been changed.',
+}) async {
   final colors = context.colors;
   final discard = await showDialog<bool>(
     context: context,
     builder: (dialog) => AlertDialog(
       title: const Text('Discard your changes?'),
-      content: const Text('The playlist on the player has not been changed.'),
+      content: Text(unchanged),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialog).pop(false),
