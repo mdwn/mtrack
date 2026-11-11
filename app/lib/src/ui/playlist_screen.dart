@@ -20,6 +20,7 @@ import 'player_bar.dart';
 import 'playlist_dialogs.dart';
 import 'session_scope.dart';
 import 'settings_sheet.dart';
+import 'songs_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -237,7 +238,7 @@ class _SongRow extends StatelessWidget {
 }
 
 /// The playlist's name, which opens the list of playlists, and beside it the
-/// way to edit this one.
+/// way to the song library and the way to edit this playlist.
 class _PlaylistHeader extends StatelessWidget {
   const _PlaylistHeader({required this.session});
 
@@ -246,23 +247,49 @@ class _PlaylistHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pick = _PlaylistPick(session: session);
-    final edit = _editAction(context);
-    if (edit == null) {
+    final actions = [?_songsAction(context), ?_editAction(context)];
+    if (actions.isEmpty) {
       return pick;
     }
-    // At a large text size the two do not fit side by side.
-    if (MediaQuery.textScalerOf(context).scale(10) > 11.5) {
+    // Two actions beside the name leave it no room on a phone, and one
+    // does not fit beside it at a large text size: they go under it.
+    if (actions.length > 1 ||
+        MediaQuery.textScalerOf(context).scale(10) > 11.5) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [pick, const SizedBox(height: 8), edit],
+        children: [
+          pick,
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              for (var i = 0; i < actions.length; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(child: actions[i]),
+              ],
+            ],
+          ),
+        ],
       );
     }
     return Row(
       children: [
         Expanded(child: pick),
-        const SizedBox(width: 8),
-        edit,
+        for (final action in actions) ...[const SizedBox(width: 8), action],
       ],
+    );
+  }
+
+  /// The song library, for a player that may have one.
+  Widget? _songsAction(BuildContext context) {
+    if (!session.songsAvailable) {
+      return null;
+    }
+    return _HeaderAction(
+      label: 'Songs',
+      semanticLabel: 'Songs',
+      semanticHint: 'Opens the song library',
+      color: context.colors.cyan,
+      onTap: session.isReady ? () => openSongs(context) : null,
     );
   }
 

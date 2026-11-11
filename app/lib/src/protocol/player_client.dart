@@ -694,6 +694,61 @@ class PlayerClient {
     player.GetPlaylistResponse.fromBuffer,
   );
 
+  /// A page of the song library from [start] (0 for the first): every song,
+  /// loaded or not, sorted by name. A page with `next` set has more after
+  /// it; see [listAllSongs].
+  Future<player.ListSongsResponse> listSongs({int start = 0}) => call(
+    'ListSongs',
+    player.ListSongsRequest(start: start),
+    player.ListSongsResponse.fromBuffer,
+  );
+
+  /// The whole song library, page after page.
+  Future<List<player.SongListing>> listAllSongs() async {
+    final songs = <player.SongListing>[];
+    var start = 0;
+    while (true) {
+      final page = await listSongs(start: start);
+      songs.addAll(page.songs);
+      // A page that names no further start, or one that does not move on,
+      // is the last.
+      if (!page.hasNext() || page.next <= start || page.songs.isEmpty) {
+        return songs;
+      }
+      start = page.next;
+    }
+  }
+
+  /// The song [name]'s settings, as its file has them.
+  Future<player.GetSongResponse> getSong(String name) => call(
+    'GetSong',
+    player.GetSongRequest(name: name),
+    player.GetSongResponse.fromBuffer,
+  );
+
+  /// Changes the song [name]'s looping, tracks or samples: each given is
+  /// set, and each left null is left as the song has it. With
+  /// [expectedRevision] (the revision `GetSong` answered), the change is
+  /// refused when the song's file has changed since. Answers with the song
+  /// as saved.
+  Future<player.GetSongResponse> updateSongSettings(
+    String name, {
+    String? expectedRevision,
+    player.SongLooping? looping,
+    player.SongTracks? tracks,
+    player.SongSamples? samples,
+  }) => call(
+    'UpdateSongSettings',
+    player.UpdateSongSettingsRequest(
+      name: name,
+      expectedRevision: expectedRevision,
+      looping: looping,
+      tracks: tracks,
+      samples: samples,
+    ),
+    player.GetSongResponse.fromBuffer,
+  );
+
   /// The `.light` files an ambient light can play, as paths relative to the
   /// player's project.
   Future<player.ListLightShowsResponse> listLightShows() => call(

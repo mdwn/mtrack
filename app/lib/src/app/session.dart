@@ -29,6 +29,7 @@ import 'player_link.dart';
 import 'playlist_edit.dart';
 import 'ports.dart';
 import 'sections.dart';
+import 'song_edit.dart';
 import 'stage_watch.dart';
 
 /// Where the connection to a player stands.
@@ -151,6 +152,11 @@ class Session extends ChangeNotifier {
       isReady: () => isReady,
       cache: assetCache,
     )..addListener(_assetsChanged);
+    songLibrary = SongLibrary(
+      client: () => _client,
+      isReady: () => isReady,
+      lostIfUnanswered: _lostIfUnanswered,
+    )..addListener(_libraryChanged);
   }
 
   final PlayerLink _link;
@@ -169,6 +175,10 @@ class Session extends ChangeNotifier {
   /// The player's lighting assets, for the 3D view of the Lights tab.
   late final LightingAssets lightingAssets;
   bool _assetsTooOld = false;
+
+  /// The player's songs, for the Songs screen.
+  late final SongLibrary songLibrary;
+  bool _libraryTooOld = false;
 
   late final StageWatch _stage;
 
@@ -285,8 +295,36 @@ class Session extends ChangeNotifier {
         'playlist settings',
       if (_stage.missing) 'the light view',
       if (!_stage.missing && lightingAssets.tooOld) 'the 3D light view',
+      // Known once the Songs screen has asked for them.
+      if (songLibrary.tooOld) 'the song library',
     ];
   }
+
+  /// The settings sheet names a player too old for the song library, so it
+  /// hears when that is learned or forgotten.
+  void _libraryChanged() {
+    if (songLibrary.tooOld != _libraryTooOld) {
+      _libraryTooOld = songLibrary.tooOld;
+      _notify();
+    }
+  }
+
+  /// Whether the Songs screen is offered: a player with the lock may have
+  /// the library (one that does not says so when it is asked); one without
+  /// is older still, and has not.
+  bool get songsAvailable => lockAvailable;
+
+  /// An edit of the song [name], for its page, which disposes of it. A
+  /// save tells the library what the song now has.
+  SongEdit editSong(String name) => SongEdit(
+    name: name,
+    client: () => _client,
+    isReady: () => isReady,
+    locked: () => locked,
+    notice: _notice,
+    lostIfUnanswered: _lostIfUnanswered,
+    saved: songLibrary.noteSaved,
+  );
 
   /// The settings sheet names a player too old for the 3D view, so it
   /// hears when that is learned or forgotten.
@@ -487,6 +525,7 @@ class Session extends ChangeNotifier {
     clock.reset();
     _stage.clear();
     lightingAssets.clear();
+    songLibrary.clear();
     _setPhase(ConnectionPhase.noPlayer);
   }
 
@@ -1202,6 +1241,9 @@ class Session extends ChangeNotifier {
     _stage.dispose();
     lightingAssets
       ..removeListener(_assetsChanged)
+      ..dispose();
+    songLibrary
+      ..removeListener(_libraryChanged)
       ..dispose();
     _edit?.dispose();
     _edit = null;

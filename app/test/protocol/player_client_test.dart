@@ -141,6 +141,85 @@ void main() {
       );
     });
 
+    test('the song library is read page after page', () async {
+      final names = ['A', 'B', 'C', 'D', 'E'];
+      fake.handlers['ListSongs'] = (request) {
+        final start = player.ListSongsRequest.fromBuffer(request.payload).start;
+        final end = (start + 2).clamp(0, names.length);
+        final page = player.ListSongsResponse(
+          songs: [
+            for (final n in names.sublist(start, end))
+              player.SongListing(name: n),
+          ],
+          total: names.length,
+        );
+        if (end < names.length) {
+          page.next = end;
+        }
+        return FakeReply.ok(page);
+      };
+      final songs = await client.listAllSongs();
+      expect([for (final s in songs) s.name], names);
+      expect(
+        [
+          for (final r in fake.received)
+            player.ListSongsRequest.fromBuffer(r.payload).start,
+        ],
+        [0, 2, 4],
+      );
+
+      // A page that does not move on ends the reading.
+      fake.received.clear();
+      fake.handlers['ListSongs'] = (_) => FakeReply.ok(
+        player.ListSongsResponse(
+          songs: [player.SongListing(name: 'A')],
+          next: 0,
+        ),
+      );
+      expect(await client.listAllSongs(), hasLength(1));
+      expect(fake.received, hasLength(1));
+    });
+
+    test('a song is read and its settings sent by group', () async {
+      fake.handlers['GetSong'] = (_) =>
+          FakeReply.ok(player.GetSongResponse(name: 'One', revision: 'abc'));
+      final read = await client.getSong('One');
+      expect(read.revision, 'abc');
+      expect(
+        player.GetSongRequest.fromBuffer(fake.received.single.payload).name,
+        'One',
+      );
+
+      await client.updateSongSettings(
+        'One',
+        expectedRevision: 'abc',
+        looping: player.SongLooping(loopPlayback: true, crossfade: '2s'),
+      );
+      await client.updateSongSettings(
+        'One',
+        tracks: player.SongTracks(
+          tracks: [player.SongTrack(name: 'click', file: 'click.wav')],
+        ),
+        samples: player.SongSamples(),
+      );
+      final sent = [
+        for (final r in fake.received.where(
+          (r) => r.method == 'UpdateSongSettings',
+        ))
+          player.UpdateSongSettingsRequest.fromBuffer(r.payload),
+      ];
+      expect(sent[0].name, 'One');
+      expect(sent[0].expectedRevision, 'abc');
+      expect(sent[0].looping.crossfade, '2s');
+      expect(sent[0].hasTracks(), isFalse);
+      expect(sent[0].hasSamples(), isFalse);
+      expect(sent[1].hasLooping(), isFalse);
+      expect(sent[1].tracks.tracks.single.file, 'click.wav');
+      // An empty list of samples is sent, not left out: it removes them.
+      expect(sent[1].hasSamples(), isTrue);
+      expect(sent[1].expectedRevision, isEmpty);
+    });
+
     test('a save that clears the playlist ambient sends none', () async {
       await client.savePlaylist('Set', ['One'], setAmbient: true);
       final sent = player.SavePlaylistRequest.fromBuffer(

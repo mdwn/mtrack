@@ -57,6 +57,51 @@ pp.Section section(
   endBeat: endBeat,
 );
 
+/// The song First with every group set, as `GetSong` answers it.
+pp.GetSongResponse fullSongSettings() => pp.GetSongResponse(
+  name: 'First',
+  duration: seconds(100),
+  looping: pp.SongLooping(
+    loopPlayback: true,
+    crossfade: '2measures',
+    cut: ['click'],
+  ),
+  tracks: pp.SongTracks(
+    tracks: [
+      pp.SongTrack(name: 'click', file: 'click.wav'),
+      pp.SongTrack(name: 'keys', file: 'keys.wav', fileChannel: 2),
+    ],
+  ),
+  samples: pp.SongSamples(
+    samples: [
+      pp.SongSample(
+        name: 'kick',
+        originalName: 'kick',
+        file: 'kick.wav',
+        outputChannels: [1, 2],
+        releaseBehavior: 'stop',
+        retrigger: 'cut',
+        fadeTimeMs: 50,
+        velocity: pp.SampleVelocity(mode: 'layers', layers: 2, scale: true),
+      ),
+    ],
+  ),
+  triggers: [
+    pp.SongTrigger(event: 'Note On, channel 10, key 36', sample: 'kick'),
+  ],
+  overview: pp.SongOverview(
+    tempo: '120 bpm, 4/4',
+    sections: ['verse', 'chorus'],
+    metronome: true,
+    lighting: ['show.light'],
+  ),
+  files: [
+    pp.SongFile(name: 'click.wav', channels: 1),
+    pp.SongFile(name: 'keys.wav', channels: 2),
+    pp.SongFile(name: 'bass.wav', channels: 1),
+  ],
+);
+
 /// A song of the fake rig.
 class RigSong {
   /// A song [name] that is [lengthSeconds] long.
@@ -195,6 +240,60 @@ class Rig {
   List<String> lightShows = ['lighting/ambient.light', 'shows/encore.light'];
 
   bool get _noSettings => settingsTooOld || oldPlayer;
+
+  /// True for a player from before the song library: it refuses
+  /// `ListSongs`, `GetSong` and `UpdateSongSettings` as not allowed.
+  /// [settingsTooOld] and [oldPlayer] imply it.
+  bool songsTooOld = false;
+
+  bool get _noSongs => songsTooOld || _noSettings;
+
+  /// How many songs a page of `ListSongs` holds.
+  int songsPage = 1000;
+
+  /// Each song's settings as `GetSong` answers them, by name; a song not
+  /// here has a click track and nothing else.
+  final Map<String, pp.GetSongResponse> songSettings = {};
+
+  /// Bumped on every change to a song's file.
+  final Map<String, int> songRevisions = {};
+
+  /// Every `UpdateSongSettings` the player took, in order.
+  final List<pp.UpdateSongSettingsRequest> songUpdates = [];
+
+  /// The song [name] as `GetSong` answers it now.
+  pp.GetSongResponse songOf(String name) {
+    final song = (songSettings[name] ?? _defaultSong(name)).deepCopy()
+      ..revision = 's${songRevisions[name] ?? 0}'
+      ..playing = playing && current.name == name;
+    return song;
+  }
+
+  pp.GetSongResponse _defaultSong(String name) => pp.GetSongResponse(
+    name: name,
+    duration: seconds(
+      library.where((s) => s.name == name).firstOrNull?.lengthSeconds ?? 0,
+    ),
+    looping: pp.SongLooping(),
+    tracks: pp.SongTracks(
+      tracks: [pp.SongTrack(name: 'click', file: 'click.wav')],
+    ),
+    samples: pp.SongSamples(),
+    overview: pp.SongOverview(),
+    files: [
+      pp.SongFile(name: 'click.wav', channels: 1),
+      pp.SongFile(name: 'keys.wav', channels: 2),
+    ],
+  );
+
+  /// What another surface (the web UI) does: changes the song [name]'s
+  /// file.
+  void editSongElsewhere(String name, void Function(pp.GetSongResponse) edit) {
+    final song = (songSettings[name] ?? _defaultSong(name)).deepCopy();
+    edit(song);
+    songSettings[name] = song;
+    songRevisions[name] = (songRevisions[name] ?? 0) + 1;
+  }
 
   /// The settings of the playlist [name]'s entry at [index].
   pp.EntrySettings settingsAt(String name, int index) {
@@ -551,6 +650,81 @@ class Rig {
             'Bluetooth',
           )
         : FakeReply.ok(pp.ListLightShowsResponse(paths: lightShows));
+    FakeReply songsGuard(String method, FakeReply Function() body) => _noSongs
+        ? FakeReply.error(7, 'method $method is not available over Bluetooth')
+        : body();
+    h['ListSongs'] = (request) => songsGuard('ListSongs', () {
+      final start = pp.ListSongsRequest.fromBuffer(request.payload).start;
+      final rows = [
+        for (final song in library)
+          pp.SongListing(
+            name: song.name,
+            duration: seconds(song.lengthSeconds),
+            loops: songOf(song.name).looping.loopPlayback,
+            hasSamples: songOf(song.name).samples.samples.isNotEmpty,
+          ),
+      ];
+      final end = (start + songsPage).clamp(0, rows.length);
+      final page = pp.ListSongsResponse(
+        songs: rows.sublist(start.clamp(0, rows.length), end),
+        total: rows.length,
+      );
+      if (end < rows.length) {
+        page.next = end;
+      }
+      return FakeReply.ok(page);
+    });
+    h['GetSong'] = (request) => songsGuard('GetSong', () {
+      final name = pp.GetSongRequest.fromBuffer(request.payload).name;
+      if (!library.any((s) => s.name == name)) {
+        return FakeReply.error(5, "Song '$name' not found");
+      }
+      return FakeReply.ok(songOf(name));
+    });
+    h['UpdateSongSettings'] = (request) => songsGuard(
+      'UpdateSongSettings',
+      () => guard(() {
+        final req = pp.UpdateSongSettingsRequest.fromBuffer(request.payload);
+        final name = req.name;
+        if (!library.any((s) => s.name == name)) {
+          return FakeReply.error(5, "Song '$name' not found");
+        }
+        if (req.expectedRevision.isNotEmpty &&
+            req.expectedRevision != 's${songRevisions[name] ?? 0}') {
+          return FakeReply.error(9, 'the song has changed since it was read');
+        }
+        // Only the crossfade is checked here, as the player's loader would.
+        if (req.hasLooping() &&
+            req.looping.crossfade.isNotEmpty &&
+            !RegExp(r'^\d+(\.\d+)?(ms|s|beats?|measures?)$')
+                .hasMatch(req.looping.crossfade)) {
+          return FakeReply.error(
+            3,
+            'song $name: loop_crossfade "${req.looping.crossfade}" is not a '
+            'length',
+          );
+        }
+        songUpdates.add(req);
+        final song = (songSettings[name] ?? _defaultSong(name)).deepCopy();
+        if (req.hasLooping()) {
+          song.looping = req.looping;
+        }
+        if (req.hasTracks()) {
+          song.tracks = req.tracks;
+        }
+        if (req.hasSamples()) {
+          song.samples = pp.SongSamples(
+            samples: [
+              for (final s in req.samples.samples)
+                s.deepCopy()..originalName = s.name,
+            ],
+          );
+        }
+        songSettings[name] = song;
+        songRevisions[name] = (songRevisions[name] ?? 0) + 1;
+        return FakeReply.ok(songOf(name));
+      }),
+    );
     h['DeletePlaylist'] = (request) => oldGuard(
       'DeletePlaylist',
       () => guard(() {
