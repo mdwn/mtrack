@@ -57,6 +57,17 @@ abstract class PlayerTransport {
   /// stream.
   Stream<Uint8List> get statusChunks;
 
+  /// Whether the player has a `stream` characteristic and the transport is
+  /// subscribed to it. False against a player from before streams, which is
+  /// connected to and called exactly as one with them is. Valid while the
+  /// state is [TransportState.ready].
+  bool get hasStreams;
+
+  /// Notifications on the `stream` characteristic, one chunk each: the
+  /// messages of server streams and their ends. A broadcast stream, silent
+  /// when [hasStreams] is false.
+  Stream<Uint8List> get streamChunks;
+
   /// Reads the `status` characteristic: a bare encoded `Status`, not chunked.
   Future<Uint8List> readStatus();
 
