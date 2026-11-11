@@ -1,0 +1,56 @@
+<!-- *     * Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+     *
+     * This program is free software: you can redistribute it and/or modify it under
+     * the terms of the GNU General Public License as published by the Free Software
+     * Foundation, version 3.
+     *
+     * This program is distributed in the hope that it will be useful, but WITHOUT
+     * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+     * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+     *
+     * You should have received a copy of the GNU General Public License along with
+     * this program. If not, see <https://www.gnu.org/licenses/>.
+     *
+     * -->
+<!doctype html>
+<html lang="en" class="nc">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>mtrack stage</title>
+    <!-- The stage-only page: the web UI's stage plot and nothing else, for
+         the phone app's web view (src/stage-main.ts has the contract). It
+         loads nothing from the network: no fonts, no API, no websocket. -->
+    <style>
+      /* The card's surface in each theme (app.css --card-bg), here so the
+         page is that colour before the stylesheet arrives. */
+      html {
+        background: #ffffff;
+      }
+      html.nc--dark {
+        background: #231f20;
+      }
+    </style>
+    <script>
+      // The theme before first paint: `?theme=light|dark` from the host,
+      // else the system's.
+      (function () {
+        var theme = new URLSearchParams(location.search).get("theme");
+        var dark =
+          theme === "dark" ||
+          (theme !== "light" &&
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("nc--dark");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/stage-main.ts"></script>
+  </body>
+</html>

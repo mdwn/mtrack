@@ -72,6 +72,7 @@
   import { lightingHref } from "../../lib/lightingRoute";
   import { wheelFixtureCount } from "../../lib/lighting/preview";
   import type { StageScene } from "../../lib/stage/scene3d";
+  import { sameData } from "../../lib/util/same";
 
   interface Props {
     /** The venue to show; null for the current venue. */
@@ -301,16 +302,41 @@
   });
 
   // The venue and its fixtures rebuild the scene; live state just feeds it.
-  // Only a different venue reframes the camera.
+  // Only a different venue reframes the camera. A rebuild empties the scene
+  // while the models load again, so metadata that says what the scene was
+  // built from (a reload that changed nothing, a stream's layout sent
+  // again) is not a reason for one.
   let framedFor: string | null | undefined = undefined;
+  let built:
+    | {
+        scene: StageScene;
+        key: string;
+        fixtures: Record<string, FixtureMetadata>;
+        venue: VenueMetadata | null;
+      }
+    | undefined = undefined;
+  /** Scene builds so far, for tests (`data-builds`). */
+  let builds = $state(0);
   $effect(() => {
     const fixtures = shownMeta;
     const shownV = shownVenue;
-    if (!scene) return;
+    const current = scene;
+    if (!current) return;
     const key = fromFile ? `file:${venue}` : `live:${shownV?.name ?? ""}`;
+    if (
+      built &&
+      built.scene === current &&
+      built.key === key &&
+      sameData(built.fixtures, fixtures) &&
+      sameData(built.venue, shownV)
+    ) {
+      return;
+    }
     const frame = untrack(() => framedFor !== key);
     framedFor = key;
-    void scene.setVenue(fixtures, shownV, frame);
+    built = { scene: current, key, fixtures, venue: shownV };
+    untrack(() => builds++);
+    void current.setVenue(fixtures, shownV, frame);
   });
   let sceneryPath: string | null | undefined = undefined;
   $effect(() => {
@@ -381,6 +407,7 @@
   data-selected={selection.join(",")}
   data-under-test={underTest.join(",")}
   data-transforms={transforms}
+  data-builds={builds}
   data-view={probe}
   data-fed={previewing ? JSON.stringify(shown) : undefined}
 >

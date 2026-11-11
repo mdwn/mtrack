@@ -1,4 +1,7 @@
 dist/
+dist-stage/
+# Written by the player's own encoder (src/controller/grpc/stage.rs).
+e2e/fixtures/
 src/gen/
 test-results/
 playwright-report/

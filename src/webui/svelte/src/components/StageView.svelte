@@ -111,6 +111,14 @@
     previewMode?: "live" | "preview";
     previewSong?: string | null;
     previewTime?: number | null;
+    /** A view and nothing else, for a page that is only the stage (the
+     *  phone app's web view): no Edit link, no maximize button, nothing
+     *  dragged or remembered, the card filling its box, which must have a
+     *  height. It makes no request of the server. */
+    embedded?: boolean;
+    /** Whether the card offers its 3D view. The 3D view fetches the rig's
+     *  models from the server, so a page with no server turns it off. */
+    threeD?: boolean;
   }
 
   let {
@@ -127,6 +135,8 @@
     previewMode = "live",
     previewSong = null,
     previewTime = null,
+    embedded = false,
+    threeD = true,
   }: Props = $props();
 
   // --- Plot | 3D. On the editing card the view is the address, so Back, a
@@ -201,6 +211,8 @@
   const STORAGE_KEY = "mtrack-stage-positions";
 
   function loadManualPositions(): Record<string, Pt> {
+    // An embedded view is not arranged, and keeps nothing.
+    if (untrack(() => embedded)) return {};
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) return JSON.parse(stored);
@@ -392,7 +404,9 @@
       : $venueStore,
   );
   /** A plot for choosing fixtures (Fit shows) stays a plot. */
-  let canView3d = $derived(!!shownVenue && (editable || !onFixtureClick));
+  let canView3d = $derived(
+    threeD && !!shownVenue && (editable || !onFixtureClick),
+  );
   let is3d = $derived(canView3d && (editable ? view : localView) === "3d");
   let previewing = $derived(
     is3d && editable && !viewingFile && previewMode === "preview",
@@ -574,7 +588,12 @@
       ctx.lineTo(trayRect.x + trayRect.w, trayRect.y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillText(get(t)("stage.unplaced"), w / 2, trayRect.y + 12);
+      // Nothing is dragged in a view that is only a view.
+      ctx.fillText(
+        get(t)(embedded ? "stage.unplacedView" : "stage.unplaced"),
+        w / 2,
+        trayRect.y + 12,
+      );
     }
   }
 
@@ -863,8 +882,9 @@
   }
 
   function beginDrag(pt: Pt, shift = false, marqueeOk = false): boolean {
-    // A plot for choosing fixtures or placing a pin is not for dragging.
-    if (onFixtureClick || placeFocus) return false;
+    // A plot for choosing fixtures or placing a pin is not for dragging,
+    // and nor is a view that is only a view.
+    if (onFixtureClick || placeFocus || embedded) return false;
     const picking = selectable && frame !== null;
     const target = hit(pt.x, pt.y);
     if (picking && !target && marqueeOk) {
@@ -1246,7 +1266,9 @@
   let maximized = $state(false);
   /** A plot for choosing fixtures (Fit shows) stays in its column, and a
    *  card with nothing to show has nothing to enlarge. */
-  let canMaximize = $derived(editable ? !!venue : !onFixtureClick);
+  let canMaximize = $derived(
+    !embedded && (editable ? !!venue : !onFixtureClick),
+  );
   /** Where the navigation ends, pixels: the maximized card starts there. */
   let navBottom = $state(0);
   $effect(() => {
@@ -1367,7 +1389,9 @@
       canvasEl!.style.cursor = hit(pt.x, pt.y) ? "pointer" : "default";
     } else {
       canvasEl!.style.cursor =
-        hit(pt.x, pt.y) && (editable || !frame) ? "grab" : "default";
+        hit(pt.x, pt.y) && !embedded && (editable || !frame)
+          ? "grab"
+          : "default";
     }
   }
 
@@ -1453,6 +1477,7 @@
   class="card stage-card"
   class:stage-card--geometry={geometryMode}
   class:stage-card--max={maximized}
+  class:stage-card--embedded={embedded}
   style:--stage-max-top={maximized ? `${navBottom}px` : undefined}
 >
   <header class="stage-card__head">
@@ -1574,7 +1599,7 @@
           </svg>
         </button>
       {/if}
-      {#if !editable}
+      {#if !editable && !embedded}
         <a href="#/lighting/venues" class="btn btn-sm stage-card__edit">
           {$t("stage.editInVenues")}
         </a>
@@ -1923,6 +1948,28 @@
   .stage-card--max .stage-card__viewport,
   .stage-card--max.stage-card--geometry .stage-card__viewport {
     max-width: none;
+    height: auto;
+    max-height: none;
+  }
+  /* Embedded: the card is the page. No frame of its own, and the plot to
+     the edges of the box and as tall as the box allows. */
+  .stage-card--embedded {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    /* The box's height, not the content's: the plot's share of it is then
+       a height its canvas can fill. */
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .stage-card--embedded .stage-card__head {
+    padding: 10px 12px;
+  }
+  .stage-card--embedded .stage-card__viewport {
+    width: calc(100% - 16px);
+    max-width: none;
+    margin: 8px;
     height: auto;
     max-height: none;
   }
