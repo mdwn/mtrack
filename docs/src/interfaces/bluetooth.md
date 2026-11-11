@@ -157,8 +157,8 @@ The calls a phone may make, and no others:
 `Play`, `PlayFrom`, `PlaySongFrom`, `Stop`, `Next`, `Previous`, `NavigateToSong`, `Seek`,
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
-`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `ListLightShows`, `SetLock`, and
-two streams,
+`SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `ListLightShows`, `ListSongs`,
+`GetSong`, `UpdateSongSettings`, `SetLock`, and two streams,
 `WatchStage` and `GetLightingAsset` (see [Streams](#streams)).
 
 `SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
@@ -174,6 +174,15 @@ while the player is locked, and a player starts locked. A phone can lift the loc
 `SetLock` (`locked: false`), which is open while locked, and put it back when it is done. That
 is on purpose: a player with no network, which is what Bluetooth is for, would otherwise never
 be editable from a phone. Anyone paired can do it, as anyone paired can already play and stop.
+
+`ListSongs` and `GetSong` read the song library and a song's settings, and are open while the
+player is locked. `ListSongs` answers a page at a time, at most 48 KiB, and says where the next
+page starts (`next`); a library of 200 songs with long names is some 22 kB, one page.
+`UpdateSongSettings` changes a song's looping, tracks or its own samples, as `GetSong` reports
+them, writing the song's file as the web UI's song save does; send the `revision` `GetSong`
+answered as `expected_revision`, and a song edited since is refused (`FAILED_PRECONDITION`,
+"the song has changed"). It is refused while the player is locked, like the playlist writes. A
+change to the song that is playing takes effect the next time it plays.
 
 Anything else, every call that changes the configuration included, is refused with
 `PERMISSION_DENIED`. A response too large for a frame is replaced by a `RESOURCE_EXHAUSTED`
@@ -310,7 +319,8 @@ for a change to `app/` uploads one as an artifact) and as an iOS project that ha
 on a phone. It finds a player, pairs, and then reconnects to it by itself. Its five tabs show
 the song and the transport (play, stop, previous and next), the playlist (tap a song to make it
 current; switch to another playlist; make, edit and delete playlists, with each song's fades,
-auto play and ambient light and the playlist's own), the song's sections (tap to jump to one, hold to loop
+auto play and ambient light and the playlist's own; and, behind **Songs**, the song library, where
+a song's looping, tracks and samples can be changed), the song's sections (tap to jump to one, hold to loop
 it), the output tracks' levels and mutes, and the lights: the ambient light's mode, and under it
 the stage the web UI draws, as a plot or in 3D, live from the [stage stream](#streams). The 3D
 view turns under a finger; its fixture models come from the player with `GetLightingAsset` and

@@ -6,10 +6,34 @@ and the design in [`design/bluetooth_remote_design.md`](../design/bluetooth_remo
 
 The app is not released: it is not in any store. It has five tabs: **Now** (the song, its time and
 the transport), **Playlist** (the songs, a way to switch playlist, and an editor for the playlists: songs and
-their order, each song's fades, auto play and ambient light, and the playlist's ambient light), **Sections** (tap a section
+their order, each song's fades, auto play and ambient light, and the playlist's ambient light; and
+**Songs**, the song library, below), **Sections** (tap a section
 to jump to it, hold to loop it), **Levels** (a fader and a mute for each output track) and **Lights**
 (below), with a connect screen for the first run and a small settings sheet. It follows the phone's
 light or dark setting.
+
+## Songs
+
+The **Songs** button beside **Edit** in the Playlist tab opens the song library: every song on
+the player, with a search, each row saying whether it loops, has lights, MIDI or samples, or
+failed to load. It reads while the player is locked. Tapping a song opens its page: first what
+it has that the phone does not change (tempo map, sections, metronome, pilot hints, MIDI, light
+shows), then the settings it does, worded as the web UI's song editor words them:
+
+- **Looping**: Loop Playback, the loop crossfade (a length, checked loosely here and properly by
+  the player) and the tracks that switch at its midpoint.
+- **Tracks**: each track's name, its file (picked from the audio files in the song's folder,
+  with their channel counts) and the file's channel; add and remove.
+- **Samples**: the song's own samples, their file, output track or channels, release and
+  retrigger behaviour, voice limit and fade time. Velocity is shown and kept as the file has it;
+  the triggers are listed and not changed here.
+
+Changes are staged on the page and sent with **Save**, only the groups changed. A song changed
+elsewhere meanwhile offers **Save anyway** or **Discard my changes**; a change the player
+refuses is shown in its words. While the player is locked the page is read only. A change to
+the song that is playing is saved at once and takes effect the next time it plays; turning
+looping on or off changes at once whether Play and Next break out of it. A player too old for
+the library says so, and the settings sheet lists it.
 
 ## The Lights tab
 

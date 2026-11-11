@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It can also make, reorder and delete playlists, set each song's fade out, fade in, auto play
   and ambient light and the playlist's own ambient light, as the web UI's playlist editor does
   (the phone app edits a fade's length; its curve, the tracks it leaves out and its lights are
-  kept as they are), and lock and unlock the player to do so, since a player with no
+  kept as they are), read the song library and change a song's looping, tracks and samples (see
+  `UpdateSongSettings` below), and lock and unlock the player to do so, since a player with no
   network would otherwise never be editable from a phone. The adapter must not be
   soft-blocked (`rfkill unblock bluetooth`); mtrack does not unblock it, and while the radio is blocked or
   missing only this controller waits, retrying until it is there. The Raspberry Pi image unblocks Bluetooth on first boot, which
@@ -39,6 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ListLightShows` gRPC RPC**: the `.light` files an ambient light can play, as paths relative
   to the project, for a client that picks a playlist's ambient show. A read, open while the
   player is locked, and allowed over Bluetooth.
+- **`ListSongs`, `GetSong` and `UpdateSongSettings` gRPC RPCs**, also allowed over Bluetooth:
+  the first pages through the song library (loaded songs and failed ones, sorted, each with its
+  duration and whether it loops, has lights, MIDI or samples, or why it failed to load; a page
+  fits one Bluetooth message, a library of 200 songs one page); the second returns a song's
+  looping, tracks and samples as its file has them, what else it has (tempo, sections,
+  metronome, pilot, MIDI, light shows), its sample triggers in words, the audio files in its
+  folder with their channel counts, and a `revision` of its file; the third changes the looping
+  (`loop_playback`, `loop_crossfade`, `loop_crossfade_cut`), the tracks (name, file, channel) or
+  the song's own samples (file, output, release, retrigger, voices, fade time), each group
+  optional. It writes the song's file as the web UI's song save does, changing only what it
+  names (a sample's velocity and every other key stay as they are; comments do not survive, as
+  with the web UI's editor), refuses a file outside the song's folder, a change the song would
+  not load with, or one that would stop a playlist playing the song from loading
+  (`INVALID_ARGUMENT`, saying why), and a file changed since it was read (`FAILED_PRECONDITION`).
+  The reads are open while the player is locked; the change is not. A change to the song that
+  is playing is written at once and takes effect the next time it plays, as a web UI save does:
+  the pass playing keeps its tracks, loop and samples, but turning looping on or off changes at
+  once whether Play and Next break out of it.
 - **`SavePlaylist`, `DeletePlaylist` and `SetLock` gRPC RPCs**: the first sets a playlist's songs
   and their order (or makes the playlist), keeping each entry's own settings with its song, or,
   with `set_settings` and `set_ambient`, setting them, checked as the web UI's save checks them
