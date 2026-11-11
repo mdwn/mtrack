@@ -64,7 +64,12 @@ import {
 
 export type CameraPreset = "foh" | "top" | "side";
 
-const ASSETS = "/api/lighting/assets/";
+/**
+ * Where the asset store is: the player's own address, except in the
+ * stage-only build (vite.stage.config.ts), which asks the host that serves
+ * the page, beside the page itself.
+ */
+const ASSETS = import.meta.env.VITE_STAGE_ASSET_BASE || "/api/lighting/assets/";
 const BACKGROUND = 0x0b0e13;
 const BODY_COLOR = 0x9aa4b2;
 const LENS_COLOR = 0x222222;

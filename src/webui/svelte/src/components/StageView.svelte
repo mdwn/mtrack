@@ -104,8 +104,12 @@
     venuesDir?: string;
     /** `?view=3d` (the Venues page only): the card shows the venue in 3D
      *  in place of the plot; the inspector and the header stay. A card
-     *  that is not editable (the dashboard) keeps its view to itself. */
+     *  that is not editable (the dashboard) keeps its view to itself, and
+     *  takes this as the view it starts in. */
     view?: "plot" | "3d";
+    /** A card that is not editable: told when the person switches between
+     *  the plot and 3D. */
+    onViewChange?: (view: "plot" | "3d") => void;
     /** `?mode=preview&song=&t=`: the 3D view previews a song's show at a
      *  moment (the current venue only). */
     previewMode?: "live" | "preview";
@@ -132,6 +136,7 @@
     fileVenue = null,
     venuesDir = "",
     view = "plot",
+    onViewChange,
     previewMode = "live",
     previewSong = null,
     previewTime = null,
@@ -143,10 +148,13 @@
   // reload and a shared link keep it; leaving 3D drops a preview's moment
   // with it. A live card (the dashboard) switches where it is: its page
   // has no address for the view, and pressing 3D must not leave the page.
-  let localView = $state<"plot" | "3d">("plot");
+  let localView = $state<"plot" | "3d">(untrack(() => view));
   function setView(next: "plot" | "3d") {
     if (!editable) {
-      localView = next;
+      if (next !== localView) {
+        localView = next;
+        onViewChange?.(next);
+      }
       return;
     }
     window.location.hash = withParams(

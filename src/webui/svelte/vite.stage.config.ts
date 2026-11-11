@@ -20,16 +20,18 @@ import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 /**
- * MTRACK_STAGE_3D=1 builds the page with its Plot | 3D switch. Off until
- * the host can answer the 3D view's requests for /api/lighting/assets/.
+ * MTRACK_STAGE_3D=1 builds the page with its Plot | 3D switch, for a host
+ * that answers the 3D view's requests for the asset store (the phone app
+ * does). Without it the 3D code is left out.
  */
 const threeD = process.env.MTRACK_STAGE_3D === "1";
 
 /**
- * Leaves the 3D view and the show preview out of a build that never opens
- * them. The stage card loads both on demand, so they are chunks of their
- * own (three.js is most of a megabyte) that would ship and never be asked
- * for.
+ * Leaves out of the build what it never opens. The stage card loads the 3D
+ * view and the show preview on demand, so they are chunks of their own
+ * (three.js is most of a megabyte) that would ship and never be asked for.
+ * The preview is only ever opened by the editing card, so it is always
+ * left out; the 3D view is left out unless the build offers it.
  */
 function leaveOut(names: string[]): Plugin {
   const stub = "\0mtrack-stage-left-out";
@@ -47,15 +49,23 @@ function leaveOut(names: string[]): Plugin {
 
 export default defineConfig({
   plugins: [
-    ...(threeD
-      ? []
-      : [leaveOut(["Stage3DView.svelte", "PreviewPanel.svelte"])]),
+    leaveOut(
+      threeD
+        ? ["PreviewPanel.svelte"]
+        : ["Stage3DView.svelte", "PreviewPanel.svelte"],
+    ),
     svelte(),
   ],
   // Relative, so the page works from wherever the host serves it.
   base: "./",
   define: {
     "import.meta.env.VITE_STAGE_3D": JSON.stringify(threeD ? "1" : ""),
+    // The 3D view asks for the asset store relative to the page, so under
+    // whatever path its host serves the page at: the phone app serves it
+    // under a random prefix, and answers for the store beside it.
+    "import.meta.env.VITE_STAGE_ASSET_BASE": JSON.stringify(
+      "api/lighting/assets/",
+    ),
     // The stage page is not the web UI the server reports a build of.
     "import.meta.env.VITE_MTRACK_UI_BUILD": JSON.stringify(""),
   },
