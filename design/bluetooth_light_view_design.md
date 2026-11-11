@@ -312,6 +312,9 @@ the same either way.
   answer is while a layout streams, and what a weak link does.
 - Layouts are not yet gzipped (§4); one over 64 KiB ends the stream.
 - The frame sizes in §4 are measured on made-up fixtures, not on the rig.
+- The stage-only build (§8) in a phone's web view: it has run in desktop
+  Chromium only, from the dev server and from its built files. The spike that
+  ran on a Pixel was fed JSON; this one decodes protobuf in the page.
 
 ## 12. Decisions
 
