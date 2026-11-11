@@ -25,6 +25,7 @@ import type {
   Waveform,
 } from "../../gen/rules/mtrack_rules";
 import { writable } from "svelte/store";
+import { stageFeedState } from "../stage/grpc-feed";
 import { connect as openSocket, on, onConnectionStatus } from "./connection";
 
 /** The playback status, with `received_at`: performance.now() when the
@@ -125,6 +126,7 @@ export function applyStageState(m: Partial<StageState>): void {
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
   cellStore.set(m.cells ?? {});
+  stageFeedState.stateApplied();
 }
 
 /**
@@ -136,9 +138,15 @@ export function applyStageMetadata(m: Partial<StageMetadata>): void {
   venueStore.set(m.venue ?? null);
 }
 
-on("state", applyStageState);
+// With the gRPC stage feed chosen (lib/stage/grpc-feed.ts, a spike), the
+// websocket's stage messages are ignored: the stream is the only writer.
+on("state", (m) => {
+  if (stageFeedState.websocketStage()) applyStageState(m);
+});
 
-on("metadata", applyStageMetadata);
+on("metadata", (m) => {
+  if (stageFeedState.websocketStage()) applyStageMetadata(m);
+});
 
 on("logs", (m) => {
   logStore.update((prev) => {
