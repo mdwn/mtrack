@@ -30,7 +30,9 @@ message Request {
     // The call's id. The response carries it back, so a client matches
     // responses to its calls. A stream is open under its id from the Request
     // that asks for it until its last Response; the phone uses no id for two
-    // streams at once.
+    // streams at once. A Request for a stream under an id that is open is
+    // refused with ALREADY_EXISTS (6) on the response characteristic, not
+    // the stream one, and the open stream carries on.
     uint32 id = 1;
     // The bare name of a PlayerService method, such as Play.
     string method = 2;
@@ -46,7 +48,9 @@ message Request {
 
 // Response answers one Request. A call to a server-streaming method is
 // answered by several, on the stream characteristic: one for each message
-// of the stream, with more set, and a last one with the call's status.
+// of the stream, with more set, and a last one with the call's status. On
+// the stream characteristic a Response without more always ends the stream
+// with its id.
 message Response {
     // The id of the Request this answers.
     uint32 id = 1;

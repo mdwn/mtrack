@@ -854,27 +854,61 @@ async fn a_phone_has_two_streams_and_is_refused_a_third() {
 }
 
 #[tokio::test]
-async fn an_id_that_is_open_is_refused_and_the_open_stream_carries_on() {
+async fn an_id_that_is_open_is_refused_on_response_and_the_open_stream_carries_on() {
     let script = Script::default();
     let (link, radio) = rig(script.clone());
     write(&link, peer(1), call(1, "Watch", vec![]));
     let feed = script.feed(0).await;
     write(&link, peer(1), call(1, "Watch", vec![]));
 
-    let refused = radio.wait_for(On::Stream, 1).await;
+    // Refused where it cannot be read as the end of the stream that is open.
+    let refused = radio.wait_for(On::Response, 1).await;
     assert_eq!(
         (refused[0].id, refused[0].code, refused[0].more),
         (1, ALREADY_EXISTS, false)
     );
+    assert!(refused[0].payload.is_empty());
+    until("the refusal is counted out", || {
+        (radio.control.waiting() == 0).then_some(())
+    })
+    .await;
+    quiet().await;
+    assert_eq!(radio.sent(On::Stream), 0);
     assert_eq!(script.opened.lock().len(), 1);
+    assert_eq!(radio.outbox.open_count(), 1);
     assert!(!feed.is_closed());
+
+    // On `stream`, a response without `more` is the end of its stream and
+    // nothing else: the open one says what it has, and then ends once.
     say(&feed, message("F1"));
+    say(&feed, Step::End(Status::ok("")));
     let responses = radio.wait_for(On::Stream, 2).await;
-    assert_eq!(told(&responses[1..]), ["F1"]);
+    assert_eq!(told(&responses), ["F1", "end 0"]);
+
+    // It is refused the same way while a cancel's last response is still
+    // to go, and not once it has gone.
+    write(&link, peer(1), call(2, "Watch", vec![]));
+    let feed = script.feed(1).await;
+    radio.hold(On::Stream, true);
+    say(&feed, message("L1"));
+    until("the first chunk began", || {
+        (radio.tried(On::Stream) == 3).then_some(())
+    })
+    .await;
+    write(&link, peer(1), cancel(2));
+    write(&link, peer(1), call(2, "Watch", vec![]));
+    let refused = radio.wait_for(On::Response, 2).await;
+    assert_eq!((refused[1].id, refused[1].code), (2, ALREADY_EXISTS));
+    radio.hold(On::Stream, false);
+    let responses = radio.wait_for(On::Stream, 4).await;
+    assert_eq!(told(&responses[2..]), ["L1", &format!("end {CANCELLED}")]);
+    write(&link, peer(1), call(2, "Watch", vec![]));
+    script.feed(2).await;
 
     // The same id is another phone's to use.
-    write(&link, peer(2), call(1, "Watch", vec![]));
-    script.feed(1).await;
+    write(&link, peer(2), call(2, "Watch", vec![]));
+    script.feed(3).await;
+    assert_eq!(radio.responses(On::Response).len(), 2);
 }
 
 #[tokio::test]

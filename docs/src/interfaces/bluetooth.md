@@ -193,14 +193,15 @@ then arrives on `stream` as a `Response` with your `id`, `more` set, `code` 0 an
 (a `StageUpdate`) in `payload`.
 
 **The end.** A stream ends with one `Response` that has `more` unset. It carries the call's gRPC
-status in `code` and `message`, and no payload. That is how every stream ends that the phone is
-told about, and also how one that never opened is refused:
+status in `code` and `message`, and no payload. On `stream`, a `Response` without `more` always
+ends the stream with that `id`. That is how every stream ends that the phone is told about, and
+also how one that never opened is refused (its id is then no open stream's, with the one
+exception below):
 
 | `code` | Why |
 |---|---|
 | 0 (`OK`) | The player ended the stream. `WatchStage` does not, short of a failure. |
 | 1 (`CANCELLED`) | You cancelled it. |
-| 6 (`ALREADY_EXISTS`) | You already have a stream open under this `id`. That stream carries on; this request opened nothing. Since both answers carry the same id, do not reuse the id of a stream that is open. |
 | 8 (`RESOURCE_EXHAUSTED`) | You have two streams open, which is the most one phone may have; or a message of the stream was too large for a frame, which ends it. |
 | any other | The call's own refusal or failure, as gRPC would report it: a `WatchStageRequest` that does not parse, for one. |
 
@@ -208,12 +209,18 @@ A stream is open, and counts toward the two, from its request until its last `Re
 sent. So after a cancel, wait for the last `Response` before counting the stream closed or using
 its id again.
 
-Which characteristic answers depends only on `method`, so a client never has to listen on both
-for one call: a method on the list above that is a stream is answered on `stream`, its refusals
-included, and everything else is answered on `response`. A player from before streams does not
-know `WatchStage`, and answers it like any method it does not allow: `PERMISSION_DENIED` on
-`response`. A client that might meet one listens there for that one answer, or checks first
-whether the service has a `stream` characteristic.
+**An id that is already open** is the one refusal of a stream that comes on `response`: a
+request for a stream under an `id` you have a stream open under is answered there, with
+`ALREADY_EXISTS` (6), and the stream that is open carries on untouched. On `stream` that answer
+would carry the open stream's id with `more` unset, and read as its end. A client that never
+reuses an open id never sees this.
+
+So a stream method is answered on `stream`, the refusals of the call itself and of a third
+stream included, and everything else is answered on `response`; the only answers to a stream
+request that come on `response` are `ALREADY_EXISTS`, above, and an old player's: a player from
+before streams does not know `WatchStage`, and answers it like any method it does not allow,
+with `PERMISSION_DENIED`. A client that might meet one listens there for that answer, or checks
+first whether the service has a `stream` characteristic.
 
 **Cancelling.** Write a `Request` with the stream's `id` and `cancel` set; `method` and `payload`
 are ignored. The player drops its side of the stream at once, discards any message it had not
@@ -242,9 +249,19 @@ sending:
 
 A stream never holds up a call. The player sends a stream one chunk at a time, and before each
 chunk it sends anything waiting on `response` or `status` first: a Stop is answered ahead of the
-rest of a layout, however large the layout. It also sends a stream's chunks no faster than about
-16 kB a second in total, so that the radio's own queue, which nothing can overtake, stays short.
-The stage needs a fraction of that.
+rest of a layout, however large the layout.
+
+**The limit of this version.** The player cannot see how fast the link is. The Bluetooth adapter
+takes each chunk at once and queues it itself, and says nothing of when it leaves or how many
+wait; nothing handed to it can be overtaken or taken back. So the player paces streams at a
+fixed rate instead, 16 kB a second across all of them, whatever the phone: newest wins and
+calls-go-first both happen in the player, in front of that pacing. On a link that carries at
+least that much (the stage needs a fraction of it, and a phone at close range carries several
+times it) the adapter's queue stays about a chunk deep and all of the above holds. On a link
+slower than what a stream is sending (a phone at the edge of range, say) a backlog can build
+inside the adapter, where the player can neither see nor shorten it: frames then arrive late
+instead of being replaced, and a call's answer waits behind what is queued. A client that sees
+frames falling behind can ask for fewer (`max_rate`), or cancel the stream and open it again.
 
 Like every notification, a stream's reaches every phone subscribed to `stream`: ignore a
 `Response` whose id is not a stream of yours. If you subscribe in the middle of a frame, ignore

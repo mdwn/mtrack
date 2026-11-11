@@ -73,9 +73,9 @@ pub(crate) const MAX_STREAMS: usize = 2;
 /// stage stream needs a few thousand.
 pub(crate) const STREAM_RATE: u32 = 16_000;
 
-/// How many refusals of streams may wait for the pump. They are answers to
-/// requests that opened nothing, so past this they are dropped, as a
-/// phone's excess requests are.
+/// How many refusals of streams (a third one asked for) may wait for the
+/// pump. They are answers to requests that opened nothing, so past this
+/// they are dropped, as a phone's excess requests are.
 const NOTICE_DEPTH: usize = 8;
 
 /// How far behind its rate the pacer lets the pump catch up at once: about
@@ -104,7 +104,8 @@ pub(crate) trait Messages: Send + 'static {
 /// Why a stream was not opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Refused {
-    /// The phone has a stream open under the id already.
+    /// The phone has a stream open under the id already. The one refusal
+    /// answered on the response characteristic: see `Link::open`.
     Duplicate,
     /// The phone has [`MAX_STREAMS`] open.
     TooMany,

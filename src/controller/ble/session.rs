@@ -48,7 +48,7 @@ use super::codec::{chunks, Reassembler};
 use super::dispatch::{failure, stream_method, Dispatcher};
 use super::notify::Control;
 use super::status::StatusFeed;
-use super::stream::{self, ending, Messages, Outbox, Replaceable};
+use super::stream::{self, ending, Messages, Outbox, Refused, Replaceable};
 
 /// A central's Bluetooth address, which is all the stack tells us of it.
 pub(crate) type PeerId = [u8; 6];
@@ -353,7 +353,8 @@ impl<H: Handler> Link<H> {
 
     /// Serves one request frame of `peer`'s: the chunks of its response,
     /// for the response characteristic. A request that opens a stream or
-    /// cancels one has none: all there is to say about a stream is said on
+    /// cancels one has none, save a request for a stream under an id that
+    /// is open already: all there is to say about a stream is said on
     /// the stream characteristic.
     async fn serve(&self, peer: PeerId, alive: &AtomicBool, frame: &[u8]) -> Option<Vec<Vec<u8>>> {
         // A frame that is not a request is the handler's to refuse.
@@ -369,31 +370,43 @@ impl<H: Handler> Link<H> {
                 return None;
             }
             if let Some(replaceable) = self.handler.stream(&request.method) {
-                self.open(peer, alive, &request, replaceable).await;
-                return None;
+                let refusal = self.open(peer, alive, &request, replaceable).await?;
+                return chunks(&refusal, self.chunk_size()).ok();
             }
         }
         Some(self.respond(frame).await)
     }
 
-    /// Opens the stream `request` asks for. Whatever comes of it, the phone
+    /// Opens the stream `request` asks for. What comes of it the phone
     /// hears on the stream characteristic: the stream's messages, or a last
-    /// response saying why there are none.
+    /// response saying why there are none. With one exception, which is
+    /// what this returns, a response for the response characteristic: the
+    /// refusal of an id that is open already. On the stream characteristic
+    /// a response without `more` under that id would read as the end of the
+    /// stream that is open, which carries on.
     async fn open(
         &self,
         peer: PeerId,
         alive: &AtomicBool,
         request: &Request,
         replaceable: Replaceable,
-    ) {
+    ) -> Option<Vec<u8>> {
         let id = request.id;
         let slot = match self.outbox.open(peer, id, alive) {
             Ok(slot) => slot,
+            Err(Refused::Duplicate) => {
+                return Refused::Duplicate
+                    .status(id)
+                    .map(|status| ending(id, &status));
+            }
             Err(refused) => {
+                // Too many: the id is no open stream's (that was looked at
+                // first), so on the stream characteristic it ends nothing
+                // but itself.
                 if let Some(status) = refused.status(id) {
                     self.outbox.notice(ending(id, &status));
                 }
-                return;
+                return None;
             }
         };
         match self.handler.open(&request.method, &request.payload).await {
@@ -410,6 +423,7 @@ impl<H: Handler> Link<H> {
                 self.outbox.wake();
             }
         }
+        None
     }
 
     /// Takes one chunk written by `peer` and answers it: the chunks to send
