@@ -28,6 +28,49 @@ const String lengthUnitsHint =
 /// What a gap or an ambient timing may be: times only.
 const String timeUnitsHint = 'A time, such as 2s or 500ms.';
 
+/// Said under a fade's length that cannot be a length.
+const String notALengthMessage =
+    'Not a length. Try 2s, 500ms, 4beats or 1measure.';
+
+/// Said under a gap or an ambient timing that cannot be a time.
+const String notATimeMessage = 'Not a time. Try 2s or 500ms.';
+
+// A number as the player reads one: an optional sign, digits with an
+// optional point (`5.`, `.5`), an optional exponent (`1e3`).
+const String _number = r'[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?';
+
+// The player's clock units (config/length.rs): ms, s, m, h, and also ns,
+// us, d, w, y. Lower case only, as the player reads them.
+const String _clockUnit = '(?:ns|us|ms|s|m|h|d|w|y)';
+
+final RegExp _timePattern = RegExp('^(?:$_number$_clockUnit)+\$');
+
+final RegExp _musicalPattern = RegExp(
+  '^\\s*$_number\\s*(?:beats?|measures?)\\s*\$',
+);
+
+/// Whether [text] could be a time the player reads: one or more
+/// `<number><unit>` parts (`2s`, `500ms`, `1.5s`, `1m30s`, `.5s`, spaces
+/// anywhere between them), or a bare `0`. Empty (none, or the level
+/// above's) is always fine.
+///
+/// Deliberately lenient. The player's check is the real one, made when the
+/// playlist is saved; this only catches text that cannot be a time at all
+/// (`2bananas`), so it accepts every unit the player does and leaves the
+/// rest (negative, too long, nothing) to it.
+bool looksLikeTime(String text) {
+  // The player ignores whitespace anywhere in a time (`1 000ms`).
+  final value = text.replaceAll(RegExp(r'\s'), '');
+  return value.isEmpty || value == '0' || _timePattern.hasMatch(value);
+}
+
+/// Whether [text] could be a fade's length the player reads: a time (see
+/// [looksLikeTime]) or `<number>beat`, `beats`, `measure` or `measures`.
+/// Empty is always fine. Lenient in the same way: the player's check is
+/// the real one.
+bool looksLikeLength(String text) =>
+    looksLikeTime(text) || _musicalPattern.hasMatch(text.trim());
+
 /// Where an ambient light setting comes from.
 enum AmbientChoice {
   /// The level above's: the playlist's for a song, the profile's for a

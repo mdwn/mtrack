@@ -84,7 +84,9 @@ class _SheetFrame extends StatelessWidget {
 
   final String title;
   final List<Widget> children;
-  final VoidCallback onDone;
+
+  /// Called on Done; false keeps the sheet open (a field has an error).
+  final bool Function() onDone;
 
   @override
   Widget build(BuildContext context) {
@@ -130,8 +132,9 @@ class _SheetFrame extends StatelessWidget {
                   foreground: colors.onPlay,
                   borderColor: colors.shadow,
                   onPressed: () {
-                    onDone();
-                    Navigator.of(context).pop();
+                    if (onDone()) {
+                      Navigator.of(context).pop();
+                    }
                   },
                 ),
               ),
@@ -141,6 +144,27 @@ class _SheetFrame extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Brings the first of [fields] that is on the tree into view, once the
+/// error just set under it has been laid out.
+void _showFirst(BuildContext context, Iterable<GlobalKey?> fields) {
+  final target = fields
+      .map((key) => key?.currentContext)
+      .whereType<BuildContext>()
+      .firstOrNull;
+  if (target == null) {
+    return;
+  }
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (target.mounted) {
+      Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 200),
+        alignment: 0.1,
+      );
+    }
+  });
 }
 
 /// A section's small uppercase heading.
@@ -195,6 +219,8 @@ class _LengthField extends StatelessWidget {
     required this.helper,
     required this.onChanged,
     this.suffix,
+    this.errorText,
+    this.fieldKey,
   });
 
   final TextEditingController controller;
@@ -204,9 +230,17 @@ class _LengthField extends StatelessWidget {
   final ValueChanged<String> onChanged;
   final Widget? suffix;
 
+  /// Said in place of the helper when the text cannot be what the field
+  /// takes.
+  final String? errorText;
+
+  /// Names the field, to scroll it into view.
+  final GlobalKey? fieldKey;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
+      key: fieldKey,
       padding: const EdgeInsets.only(top: 8),
       child: TextField(
         controller: controller,
@@ -218,6 +252,8 @@ class _LengthField extends StatelessWidget {
           hintText: placeholder,
           helperText: helper,
           helperMaxLines: 3,
+          errorText: errorText,
+          errorMaxLines: 3,
           isDense: true,
           suffixIcon: suffix,
         ),
@@ -278,6 +314,34 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
   late final TextEditingController _gap = TextEditingController(
     text: _autoPlay ? autoPlayGap(widget.initial.autoPlay) : '',
   );
+  final _gapKey = GlobalKey();
+  final _fadeInKey = GlobalKey();
+  final _fadeOutKey = GlobalKey();
+  final _ambientKey = GlobalKey<_AmbientFieldsState>();
+  bool _gapBad = false;
+  bool _fadeInBad = false;
+  bool _fadeOutBad = false;
+
+  /// Checks the lengths for text that cannot be one; shows what is wrong
+  /// and brings the first into view.
+  bool _check() {
+    setState(() {
+      _gapBad = _autoPlay && !looksLikeTime(_gap.text);
+      _fadeInBad = !looksLikeLength(_fadeInText.text);
+      _fadeOutBad = !looksLikeLength(_fadeOutText.text);
+    });
+    final ambientBad = _ambientKey.currentState?.check() ?? false;
+    final bad = _gapBad || ambientBad || _fadeInBad || _fadeOutBad;
+    if (bad) {
+      _showFirst(context, [
+        if (_gapBad) _gapKey,
+        if (ambientBad) _ambientKey.currentState?.firstBadKey,
+        if (_fadeInBad) _fadeInKey,
+        if (_fadeOutBad) _fadeOutKey,
+      ]);
+    }
+    return !bad;
+  }
 
   @override
   void dispose() {
@@ -300,7 +364,13 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
     final details = fadeDetails(_fadeOut);
     return _SheetFrame(
       title: widget.song,
-      onDone: () => widget.onDone(_settings()),
+      onDone: () {
+        if (!_check()) {
+          return false;
+        }
+        widget.onDone(_settings());
+        return true;
+      },
       children: [
         const _Eyebrow('BEFORE THIS SONG'),
         const _Label(
@@ -323,9 +393,12 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
             label: 'Gap',
             placeholder: 'at once',
             helper: 'Empty starts it at once. $timeUnitsHint',
-            onChanged: (_) => setState(() {}),
+            fieldKey: _gapKey,
+            errorText: _gapBad ? notATimeMessage : null,
+            onChanged: (_) => setState(() => _gapBad = false),
           ),
         _AmbientFields(
+          key: _ambientKey,
           label: 'Ambient light',
           hint: 'What the rig plays in the gap before this song.',
           inheritLabel: "The playlist's",
@@ -344,10 +417,14 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
           label: 'Length',
           placeholder: 'none (e.g. 1measure)',
           helper: lengthUnitsHint,
+          fieldKey: _fadeInKey,
+          errorText: _fadeInBad ? notALengthMessage : null,
           // From the fade as read, so emptying the field and typing again
           // keeps what the app does not edit.
-          onChanged: (text) =>
-              setState(() => _fadeIn = withFadeLength(_initialIn, text)),
+          onChanged: (text) => setState(() {
+            _fadeInBad = false;
+            _fadeIn = withFadeLength(_initialIn, text);
+          }),
         ),
         const _Eyebrow('AFTER THIS SONG'),
         const _Label(
@@ -361,8 +438,12 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
           label: 'Length',
           placeholder: 'none (e.g. 1measure)',
           helper: lengthUnitsHint,
-          onChanged: (text) =>
-              setState(() => _fadeOut = withFadeLength(_initialOut, text)),
+          fieldKey: _fadeOutKey,
+          errorText: _fadeOutBad ? notALengthMessage : null,
+          onChanged: (text) => setState(() {
+            _fadeOutBad = false;
+            _fadeOut = withFadeLength(_initialOut, text);
+          }),
         ),
         if (details != null)
           Padding(
@@ -409,14 +490,24 @@ class PlaylistAmbientSheet extends StatefulWidget {
 
 class _PlaylistAmbientSheetState extends State<PlaylistAmbientSheet> {
   late player.AmbientSetting? _ambient = widget.initial;
+  final _ambientKey = GlobalKey<_AmbientFieldsState>();
 
   @override
   Widget build(BuildContext context) {
     return _SheetFrame(
       title: widget.name,
-      onDone: () => widget.onDone(_ambient),
+      onDone: () {
+        final fields = _ambientKey.currentState;
+        if (fields != null && fields.check()) {
+          _showFirst(context, [fields.firstBadKey]);
+          return false;
+        }
+        widget.onDone(_ambient);
+        return true;
+      },
       children: [
         _AmbientFields(
+          key: _ambientKey,
           label: 'Ambient light',
           hint: 'What the rig plays between songs with this playlist.',
           inheritLabel: "The profile's",
@@ -442,6 +533,7 @@ class _AmbientFields extends StatefulWidget {
     required this.value,
     required this.shows,
     required this.onChanged,
+    super.key,
   });
 
   final String label;
@@ -470,7 +562,48 @@ class _AmbientFieldsState extends State<_AmbientFields> {
     super.dispose();
   }
 
+  final Map<AmbientField, GlobalKey> _keys = {
+    for (final field in AmbientField.values) field: GlobalKey(),
+  };
+  final Set<AmbientField> _bad = {};
+
+  /// The timings that cannot be times, shown as errors; whether there are
+  /// any. Only an ambient of its own has any to check.
+  bool check() {
+    final own = ambientChoiceOf(widget.value) == AmbientChoice.own;
+    setState(() {
+      _bad
+        ..clear()
+        ..addAll(
+          own
+              ? [
+                  for (final field in _timings)
+                    if (!looksLikeTime(_text[field]!.text)) field,
+                ]
+              : const [],
+        );
+    });
+    return _bad.isNotEmpty;
+  }
+
+  /// The first timing with an error, for scrolling to.
+  GlobalKey? get firstBadKey {
+    for (final field in _timings) {
+      if (_bad.contains(field)) {
+        return _keys[field];
+      }
+    }
+    return null;
+  }
+
+  static const _timings = [
+    AmbientField.delay,
+    AmbientField.fadeIn,
+    AmbientField.fadeOut,
+  ];
+
   void _choose(AmbientChoice choice) {
+    _bad.clear();
     final next = ambientForChoice(choice, widget.value);
     // Fields shown again start from what the setting holds.
     for (final field in AmbientField.values) {
@@ -481,6 +614,9 @@ class _AmbientFieldsState extends State<_AmbientFields> {
 
   void _set(AmbientField field, String text) {
     final value = widget.value;
+    if (_bad.remove(field)) {
+      setState(() {});
+    }
     if (value == null || !value.on) {
       return;
     }
@@ -553,6 +689,8 @@ class _AmbientFieldsState extends State<_AmbientFields> {
                   label: label,
                   placeholder: widget.inheritPlaceholder,
                   helper: null,
+                  fieldKey: _keys[field],
+                  errorText: _bad.contains(field) ? notATimeMessage : null,
                   onChanged: (text) => _set(field, text),
                 ),
               Padding(

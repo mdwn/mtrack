@@ -118,4 +118,83 @@ void main() {
       'auto play · own ambient',
     );
   });
+
+  group('the shape check for a length', () {
+    test('lets every time the player reads through', () {
+      for (final text in [
+        '',
+        '  ',
+        '0',
+        ' 0 ',
+        '2s',
+        '500ms',
+        '1.5s',
+        '2.5ms',
+        '2m',
+        '1h',
+        '1m30s',
+        ' 1 m 30 s ',
+        '.5s',
+        '5.s',
+        '+2s',
+        '-0s',
+        '1e3ms',
+        '1e2s',
+        '1 000ms',
+        '7ns',
+        '250us',
+        '1d',
+        '2w',
+        '1y',
+        '1h30m',
+        '1d2h3m4s5ms',
+        '0s',
+        '00s',
+      ]) {
+        expect(looksLikeTime(text), isTrue, reason: '"$text"');
+        expect(looksLikeLength(text), isTrue, reason: '"$text"');
+      }
+    });
+
+    test('lets every musical length the player reads through', () {
+      for (final text in [
+        '4beats',
+        '1beat',
+        '1measure',
+        '2measures',
+        '8 beats',
+        ' 2.5 measures ',
+        '.5beat',
+        '1e1beats',
+      ]) {
+        expect(looksLikeLength(text), isTrue, reason: '"$text"');
+        // Not for a time-only field.
+        expect(looksLikeTime(text), isFalse, reason: '"$text"');
+      }
+    });
+
+    test('refuses text that cannot be a length', () {
+      for (final text in [
+        '2bananas',
+        'soon',
+        '2',
+        's',
+        'beats',
+        '1x',
+        '2 seconds',
+        '1s 30',
+        '1s,2s',
+        '1/2s',
+        '1.2.3s',
+        '1S',
+        '4Beats',
+        '4beatss',
+        'abeats',
+        '4 beats later',
+      ]) {
+        expect(looksLikeLength(text), isFalse, reason: '"$text"');
+        expect(looksLikeTime(text), isFalse, reason: '"$text"');
+      }
+    });
+  });
 }
