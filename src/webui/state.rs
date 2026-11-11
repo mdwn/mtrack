@@ -892,6 +892,18 @@ fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: u
 pub fn build_metadata_json(
     lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
 ) -> String {
+    to_json(&wire::SocketMessage::Metadata(stage_metadata(
+        lighting_system,
+    )))
+}
+
+/// The venue's fixtures and the venue itself, as the stage views need them:
+/// what the `metadata` message carries and what the gRPC stage stream's
+/// layout is built from, so the two cannot drift apart. Locks the lighting
+/// system while it reads.
+pub fn stage_metadata(
+    lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
+) -> wire::StageMetadata {
     let mut metadata = wire::StageMetadata {
         fixtures: Default::default(),
         venue: None,
@@ -936,7 +948,7 @@ pub fn build_metadata_json(
         }
     }
 
-    to_json(&wire::SocketMessage::Metadata(metadata))
+    metadata
 }
 
 /// A venue's points and scenery, as the stage views draw it.

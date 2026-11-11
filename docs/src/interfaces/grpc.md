@@ -42,7 +42,7 @@ The [command-line reference](../reference/cli.md) lists these alongside the othe
 
 ## RPCs
 
-The service has 32 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
+The service has 33 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
 empty cell means the RPC is available to gRPC clients only.
 
 | RPC | Purpose | CLI |
@@ -63,6 +63,7 @@ empty cell means the RPC is available to gRPC clients only.
 | `SavePlaylist` | Sets a playlist's songs and their order, as the web UI's save does when it sends only the songs: an existing file keeps each entry's own settings with its song, and the playlist's, and a song listed twice stays listed twice. `create` makes a new playlist and refuses (`ALREADY_EXISTS`) one that exists; without it, a playlist that does not exist is `NOT_FOUND`. A name the player refuses (`all_songs`, or one that is empty or not a plain name) or a song it does not have is `INVALID_ARGUMENT`; a file that does not read is `FAILED_PRECONDITION`, not written over. With `check_expected` set, `expected` is the songs the caller last saw, and a file that differs is `FAILED_PRECONDITION` with a message starting "the playlist has changed". Answers with the playlist as `GetPlaylist` now reports it. Refused while the player is locked; allowed while a song plays. | |
 | `DeletePlaylist` | Deletes a playlist's file, as the web UI does: an unknown name is `NOT_FOUND`, `all_songs` is `INVALID_ARGUMENT`, and the active playlist, if it was that one, falls back to `all_songs`. Refused while the player is locked. | |
 | `SetLock` | Locks (`locked: true`) or unlocks the player, as the web UI's lock does, and answers with the lock as it now stands. Open while locked. | |
+| `WatchStage` | A stream of what the stage looks like, for a client that draws it: first a `StageLayout` (every fixture by name with its type, tags, position, rotation, capabilities, cells and channel names, where it points, and the venue's name, focus points and scenery), then a `StageFrame` whenever something changes. A frame is read against the most recent layout and nothing else, never against the frame before it. Each layout has an `id` (1 for the stream's first, counting up) and each frame names its layout's in `layout`, so a client drops a frame whose `layout` is not the id of the layout it holds. `channels` is every fixture's channel values end to end, in the layout's fixture order and each fixture's channel order, and strobe rates, per-cell values, poses that differ from the layout's and fixtures under test are listed by fixture index. A new layout is sent, with a frame after it, when the venue or a fixture type is reloaded, the hardware is, or the fixtures or their channels change. `max_rate` is the most frames a second to send (0 for the player's own rate, 20 a second); frames that arrive faster are dropped and the newest sent. A player with no lighting sends an empty layout and an empty frame and keeps the stream open. Open while locked. | |
 | `GetCues` | Lists the cues in the current song's lighting timeline. | `cues` |
 | `GetActiveEffects` | Returns the running lighting effects as a formatted string. | `active-effects` |
 | `StopSamples` | Stops all triggered samples that are playing. | |

@@ -503,6 +503,9 @@ impl Player {
             if let Some(ref tx) = *self.broadcast_tx.lock() {
                 dmx_engine.set_broadcast_tx(tx.clone());
             }
+            // A new engine has its own lighting system: the stage stream's
+            // layout is to be read again.
+            self.bump_stage_layout();
             // Start the state sampler if a sender was provided. The cancel
             // token ensures this sampler stops when hardware is reloaded.
             if let Some(ref state_tx) = *self.state_tx.lock() {
@@ -971,6 +974,9 @@ impl Player {
             };
         }
         self.init_done_tx.send_modify(|v| *v = false);
+        // The DMX engine is gone, and its venue with it, until the new round
+        // installs one.
+        self.bump_stage_layout();
 
         // Spawn new async init, handing it the token captured above rather
         // than letting it read the shared cell when it is first polled.

@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod playlists;
+mod stage;
 
 use crate::config::store::ConfigSection;
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
@@ -38,11 +39,12 @@ use crate::{
         SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
         SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
         SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
-        SetTrackMuteResponse, Song, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        SetTrackMuteResponse, Song, StageFrame, StageLayout, StageUpdate, StatusRequest,
+        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest, UpdateConfigResponse,
+        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
+        WatchStageRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -326,6 +328,185 @@ impl PlayerServer {
         self.config_store
             .as_deref()
             .ok_or_else(|| Status::unimplemented("config store not available"))
+    }
+}
+
+/// One open stage stream: what it last sent, and what it waits on. It is
+/// the stream's whole state, so dropping the stream (the client went away)
+/// ends everything at once.
+struct StageWatch {
+    player: Arc<Player>,
+    /// The sampler's snapshots; `None` until the player has a state sender.
+    states: Option<tokio::sync::watch::Receiver<Arc<crate::state::StateSnapshot>>>,
+    /// The player's layout revision, and the one the layout was built at.
+    revisions: tokio::sync::watch::Receiver<u64>,
+    revision: u64,
+    /// The least time between two sends; zero for the sampler's own rate.
+    interval: std::time::Duration,
+    /// The layout the client holds; `None` before the first. Its id is how
+    /// many this stream has sent, so a frame can say which it is read
+    /// against.
+    layout: Option<StageLayout>,
+    /// The last frame sent, so one that says the same is not sent again.
+    frame: Option<StageFrame>,
+    /// The frame that follows a layout just sent.
+    queued: Option<StageFrame>,
+    sent_at: Option<tokio::time::Instant>,
+    done: bool,
+}
+
+impl StageWatch {
+    fn new(player: Arc<Player>, max_rate: u32) -> Self {
+        Self {
+            states: player.state_rx(),
+            revisions: player.stage_layout_rx(),
+            revision: 0,
+            interval: match max_rate {
+                0 => std::time::Duration::ZERO,
+                rate => std::time::Duration::from_secs(1) / rate,
+            },
+            layout: None,
+            frame: None,
+            queued: None,
+            sent_at: None,
+            done: false,
+            player,
+        }
+    }
+
+    /// The stream itself.
+    fn into_stream(self) -> futures_util::stream::BoxStream<'static, Result<StageUpdate, Status>> {
+        use futures_util::StreamExt;
+        futures_util::stream::unfold(self, |mut watch| async move {
+            watch.next().await.map(|update| (update, watch))
+        })
+        .boxed()
+    }
+
+    /// The next message: the layout and a frame at once on open, then a
+    /// frame for each snapshot that says something new, with a layout before
+    /// it when the venue changed or the snapshot no longer fits the one sent.
+    async fn next(&mut self) -> Option<Result<StageUpdate, Status>> {
+        use crate::proto::player::v1::stage_update::Update;
+        if self.done {
+            return None;
+        }
+        if let Some(frame) = self.queued.take() {
+            return Some(Ok(StageUpdate {
+                update: Some(Update::Frame(frame)),
+            }));
+        }
+        loop {
+            // The first pass sends what there is now; the rest wait for a
+            // change, and then for the caller's interval to pass, so the
+            // snapshot read below is the newest of however many arrived.
+            if self.layout.is_some() {
+                if !self.changed().await {
+                    return None;
+                }
+                if let Some(sent_at) = self.sent_at {
+                    tokio::time::sleep_until(sent_at + self.interval).await;
+                }
+            }
+
+            // The revision is read before the layout is built, so a venue
+            // change during the build is seen as one after it.
+            let revision = *self.revisions.borrow_and_update();
+            let snapshot = self.snapshot();
+            let current = self
+                .layout
+                .as_ref()
+                .filter(|layout| revision == self.revision && stage::fits(&snapshot, layout));
+            if let Some(layout) = current {
+                let frame = stage::stage_frame(&snapshot, layout);
+                if self.frame.as_ref() == Some(&frame) {
+                    continue;
+                }
+                self.frame = Some(frame.clone());
+                self.sent_at = Some(tokio::time::Instant::now());
+                return Some(Ok(StageUpdate {
+                    update: Some(Update::Frame(frame)),
+                }));
+            }
+
+            let mut layout = match self.build_layout(snapshot.clone()).await {
+                Ok(layout) => layout,
+                Err(status) => {
+                    self.done = true;
+                    return Some(Err(status));
+                }
+            };
+            // Never 0, which a client reads as no id at all.
+            let sent = self.layout.as_ref().map_or(0, |layout| layout.id);
+            layout.id = sent.wrapping_add(1).max(1);
+            // A frame always follows a layout, whatever the last one said:
+            // it is read against this layout, not that one.
+            let frame = stage::stage_frame(&snapshot, &layout);
+            self.revision = revision;
+            self.frame = Some(frame.clone());
+            self.queued = Some(frame);
+            self.layout = Some(layout.clone());
+            self.sent_at = Some(tokio::time::Instant::now());
+            return Some(Ok(StageUpdate {
+                update: Some(Update::Layout(layout)),
+            }));
+        }
+    }
+
+    /// Waits for a new snapshot or a new layout revision. False when the
+    /// player is gone and neither will come.
+    async fn changed(&mut self) -> bool {
+        let states = &mut self.states;
+        let snapshot = async {
+            match states {
+                Some(states) => states.changed().await.is_ok(),
+                None => std::future::pending().await,
+            }
+        };
+        let (state_closed, alive) = tokio::select! {
+            ok = snapshot => (!ok, true),
+            revision = self.revisions.changed() => (false, revision.is_ok()),
+        };
+        if state_closed {
+            // The player was given another state sender: follow that one.
+            self.states = self.player.state_rx();
+        }
+        alive
+    }
+
+    /// The newest snapshot, marked seen. A player with no state sender (no
+    /// sampler was ever wired) has an empty stage; one given a sender later
+    /// is picked up at the next layout revision.
+    fn snapshot(&mut self) -> Arc<crate::state::StateSnapshot> {
+        if self.states.is_none() {
+            self.states = self.player.state_rx();
+        }
+        match self.states.as_mut() {
+            Some(states) => states.borrow_and_update().clone(),
+            None => Arc::default(),
+        }
+    }
+
+    /// The layout for `snapshot`, from the lighting system the player has
+    /// now: read again each time, since a hardware reload replaces the
+    /// engine. On the blocking pool, because the lighting system's lock is
+    /// held across disk reads while a venue reloads.
+    async fn build_layout(
+        &self,
+        snapshot: Arc<crate::state::StateSnapshot>,
+    ) -> Result<StageLayout, Status> {
+        let player = self.player.clone();
+        tokio::task::spawn_blocking(move || {
+            let handles = player.broadcast_handles();
+            let metadata = crate::webui::state::stage_metadata(
+                handles
+                    .as_ref()
+                    .and_then(|handles| handles.lighting_system.as_ref()),
+            );
+            stage::stage_layout(&metadata, &snapshot)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("the stage layout could not be read: {e}")))
     }
 }
 
@@ -879,6 +1060,20 @@ impl PlayerService for PlayerServer {
         Ok(Response::new(SetLockResponse {
             locked: self.player.is_locked(),
         }))
+    }
+
+    type WatchStageStream = futures_util::stream::BoxStream<'static, Result<StageUpdate, Status>>;
+
+    /// A player with no lighting (no DMX engine, or no sampler wired) is not
+    /// an error, as it is not for `GetActiveEffects`: the stream opens with
+    /// an empty layout and an empty frame, and says more if lighting comes
+    /// up under it.
+    async fn watch_stage(
+        &self,
+        request: Request<WatchStageRequest>,
+    ) -> Result<Response<Self::WatchStageStream>, Status> {
+        let watch = StageWatch::new(self.player.clone(), request.into_inner().max_rate);
+        Ok(Response::new(watch.into_stream()))
     }
 }
 
@@ -2104,6 +2299,298 @@ mod test {
         client.stop_samples(StopSamplesRequest {}).await?;
         client.stop_section_loop(StopSectionLoopRequest {}).await?;
         assert!(player.is_locked());
+        Ok(())
+    }
+
+    type StageStream = <super::PlayerServer as super::PlayerService>::WatchStageStream;
+    type StateTx = Arc<tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>>;
+
+    /// A snapshot of fixtures, each with channels and their values.
+    fn stage_of(fixtures: &[(&str, &[(&str, u8)])]) -> Arc<crate::state::StateSnapshot> {
+        Arc::new(crate::state::StateSnapshot {
+            fixtures: fixtures
+                .iter()
+                .map(|(name, channels)| crate::state::FixtureSnapshot {
+                    name: name.to_string(),
+                    channels: channels.iter().map(|(c, v)| (c.to_string(), *v)).collect(),
+                    cells: Default::default(),
+                    strobe_hz: None,
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+
+    /// A player whose stage is `first`, its stage stream at `max_rate`, and
+    /// the sender the sampler would push snapshots through.
+    async fn watch_stage(
+        first: Arc<crate::state::StateSnapshot>,
+        max_rate: u32,
+    ) -> (Arc<Player>, StateTx, StageStream) {
+        let player = crate::testutil::player::memory_player(&["Song A"]).build();
+        let (state_tx, _state_rx) = tokio::sync::watch::channel(first);
+        player.set_state_tx(state_tx);
+        let state_tx = player.state_tx().expect("the sender just set");
+        let stream = open_stage(&player, max_rate).await;
+        (player, state_tx, stream)
+    }
+
+    async fn open_stage(player: &Arc<Player>, max_rate: u32) -> StageStream {
+        use crate::proto::player::v1::WatchStageRequest;
+        let server = super::PlayerServer::new(player.clone());
+        super::PlayerService::watch_stage(
+            &server,
+            tonic::Request::new(WatchStageRequest { max_rate }),
+        )
+        .await
+        .expect("the stream opens")
+        .into_inner()
+    }
+
+    async fn next_update(
+        stream: &mut StageStream,
+    ) -> crate::proto::player::v1::stage_update::Update {
+        use futures_util::StreamExt;
+        tokio::time::timeout(crate::testutil::PATIENCE, stream.next())
+            .await
+            .expect("the stream said nothing")
+            .expect("the stream ended")
+            .expect("the stream failed")
+            .update
+            .expect("an update")
+    }
+
+    async fn next_layout(stream: &mut StageStream) -> crate::proto::player::v1::StageLayout {
+        match next_update(stream).await {
+            crate::proto::player::v1::stage_update::Update::Layout(layout) => layout,
+            other => panic!("expected a layout, got {other:?}"),
+        }
+    }
+
+    async fn next_frame(stream: &mut StageStream) -> crate::proto::player::v1::StageFrame {
+        match next_update(stream).await {
+            crate::proto::player::v1::stage_update::Update::Frame(frame) => frame,
+            other => panic!("expected a frame, got {other:?}"),
+        }
+    }
+
+    /// A client joining an idle rig sees it at once: nothing has to change
+    /// first.
+    #[tokio::test]
+    async fn the_stage_stream_opens_with_the_layout_and_then_a_frame() {
+        let first = stage_of(&[
+            ("par", &[("red", 9), ("dimmer", 200)]),
+            ("bar", &[("dimmer", 7)]),
+        ]);
+        let (_player, _state_tx, mut stream) = watch_stage(first, 0).await;
+
+        let layout = next_layout(&mut stream).await;
+        let names: Vec<&str> = layout.fixtures.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["bar", "par"]);
+        assert_eq!(layout.fixtures[1].channels, ["dimmer", "red"]);
+        assert_eq!(layout.venue, None, "no lighting system, no venue");
+        assert_eq!(layout.id, 1, "the stream's first layout");
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(frame.channels, [7, 200, 9]);
+        assert_eq!(frame.layout, 1);
+    }
+
+    /// A snapshot that changes something is a frame; one that says what the
+    /// last frame said is nothing, though the sampler published it.
+    #[tokio::test]
+    async fn the_stage_stream_sends_a_frame_for_a_change_and_nothing_for_none() {
+        let (_player, state_tx, mut stream) =
+            watch_stage(stage_of(&[("par", &[("red", 1)])]), 0).await;
+        next_layout(&mut stream).await;
+        assert_eq!(next_frame(&mut stream).await.channels, [1]);
+
+        state_tx.send(stage_of(&[("par", &[("red", 2)])])).unwrap();
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([2].as_slice(), 1)
+        );
+
+        // The same again, then a change: the next message is the change, so
+        // the repeat was never sent.
+        state_tx.send(stage_of(&[("par", &[("red", 2)])])).unwrap();
+        let waited = tokio::time::timeout(Duration::from_millis(50), next_update(&mut stream));
+        assert!(waited.await.is_err(), "a repeat is not a frame");
+        state_tx.send(stage_of(&[("par", &[("red", 3)])])).unwrap();
+        assert_eq!(next_frame(&mut stream).await.channels, [3]);
+    }
+
+    /// A frame is bytes in the layout's order, so a fixture or a channel the
+    /// layout does not name is a new layout first.
+    #[tokio::test]
+    async fn the_stage_stream_sends_a_layout_before_a_frame_that_no_longer_fits() {
+        let (_player, state_tx, mut stream) =
+            watch_stage(stage_of(&[("par", &[("red", 1)])]), 0).await;
+        next_layout(&mut stream).await;
+        next_frame(&mut stream).await;
+
+        // A new fixture.
+        state_tx
+            .send(stage_of(&[
+                ("par", &[("red", 1)]),
+                ("bar", &[("dimmer", 5)]),
+            ]))
+            .unwrap();
+        let layout = next_layout(&mut stream).await;
+        let names: Vec<&str> = layout.fixtures.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["bar", "par"]);
+        assert_eq!(next_frame(&mut stream).await.channels, [5, 1]);
+
+        // A new channel.
+        state_tx
+            .send(stage_of(&[
+                ("par", &[("red", 1), ("green", 2)]),
+                ("bar", &[("dimmer", 5)]),
+            ]))
+            .unwrap();
+        let layout = next_layout(&mut stream).await;
+        assert_eq!(layout.fixtures[1].channels, ["green", "red"]);
+        assert_eq!(next_frame(&mut stream).await.channels, [5, 2, 1]);
+
+        // A fixture gone.
+        state_tx
+            .send(stage_of(&[("bar", &[("dimmer", 6)])]))
+            .unwrap();
+        assert_eq!(next_layout(&mut stream).await.fixtures.len(), 1);
+        assert_eq!(next_frame(&mut stream).await.channels, [6]);
+    }
+
+    /// The venue changing under the player (a venue or fixture type reload,
+    /// a hardware reload) is a layout, and the frame that is read against
+    /// it, though no value moved.
+    #[tokio::test]
+    async fn the_stage_stream_sends_the_layout_again_when_its_revision_moves() {
+        let (player, state_tx, mut stream) =
+            watch_stage(stage_of(&[("par", &[("red", 1)])]), 0).await;
+        let first = next_layout(&mut stream).await;
+        next_frame(&mut stream).await;
+
+        player.bump_stage_layout();
+        let second = next_layout(&mut stream).await;
+        assert_eq!((first.id, second.id), (1, 2));
+        assert_eq!(second.fixtures, first.fixtures);
+        // The frame after it is read against the new layout, and says so,
+        // as every frame does until the next layout.
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([1].as_slice(), 2)
+        );
+        state_tx.send(stage_of(&[("par", &[("red", 9)])])).unwrap();
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            (frame.channels.as_slice(), frame.layout),
+            ([9].as_slice(), 2)
+        );
+
+        // A layout the snapshot forces is numbered the same way.
+        state_tx
+            .send(stage_of(&[("bar", &[("dimmer", 3)])]))
+            .unwrap();
+        assert_eq!(next_layout(&mut stream).await.id, 3);
+        assert_eq!(next_frame(&mut stream).await.layout, 3);
+    }
+
+    /// Frames come no closer together than the caller asked, and the one
+    /// sent after the wait is the newest: the ones between are dropped.
+    #[tokio::test]
+    async fn the_stage_stream_keeps_to_the_callers_rate_and_sends_the_newest() {
+        let interval = Duration::from_millis(250);
+        let opened = tokio::time::Instant::now();
+        let (_player, state_tx, mut stream) =
+            watch_stage(stage_of(&[("par", &[("red", 0)])]), 4).await;
+        next_layout(&mut stream).await;
+        next_frame(&mut stream).await;
+
+        for value in 1..=3 {
+            state_tx
+                .send(stage_of(&[("par", &[("red", value)])]))
+                .unwrap();
+        }
+        assert_eq!(next_frame(&mut stream).await.channels, [3]);
+        assert!(
+            opened.elapsed() >= interval,
+            "sent before the interval was over"
+        );
+
+        // And again: the stream is not left a frame behind.
+        let sent = tokio::time::Instant::now();
+        for value in 4..=6 {
+            state_tx
+                .send(stage_of(&[("par", &[("red", value)])]))
+                .unwrap();
+        }
+        assert_eq!(next_frame(&mut stream).await.channels, [6]);
+        assert!(sent.elapsed() >= interval - Duration::from_millis(5));
+    }
+
+    /// No sampler wired is not an error, as no DMX engine is not for
+    /// GetActiveEffects: an empty stage, which fills in if lighting comes up.
+    #[tokio::test]
+    async fn the_stage_stream_of_a_player_with_no_lighting_is_an_empty_stage() {
+        let player = crate::testutil::player::memory_player(&["Song A"]).build();
+        let mut stream = open_stage(&player, 0).await;
+        let layout = next_layout(&mut stream).await;
+        assert_eq!(
+            (layout.id, layout.fixtures.len(), layout.venue),
+            (1, 0, None)
+        );
+        let frame = next_frame(&mut stream).await;
+        assert_eq!(
+            frame,
+            crate::proto::player::v1::StageFrame {
+                layout: 1,
+                ..Default::default()
+            }
+        );
+
+        // Lighting comes up: a state sender, and the engine's install bumps
+        // the layout.
+        let (state_tx, _state_rx) =
+            tokio::sync::watch::channel(stage_of(&[("par", &[("red", 4)])]));
+        player.set_state_tx(state_tx);
+        player.bump_stage_layout();
+        assert_eq!(next_layout(&mut stream).await.fixtures[0].name, "par");
+        assert_eq!(next_frame(&mut stream).await.channels, [4]);
+    }
+
+    /// Over the wire: the stream is a read, open while the player is locked,
+    /// and a client that goes away takes its watch with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_stage_stream_is_open_while_locked_and_ends_with_its_client(
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{stage_update::Update, WatchStageRequest};
+        let (player, mut client, _device) = setup_grpc().await?;
+        let (state_tx, state_rx) = tokio::sync::watch::channel(stage_of(&[("par", &[("red", 1)])]));
+        player.set_state_tx(state_tx);
+        drop(state_rx);
+        let state_tx = player.state_tx().expect("the sender just set");
+        player.set_locked(true);
+
+        let mut stream = client
+            .watch_stage(WatchStageRequest { max_rate: 0 })
+            .await?
+            .into_inner();
+        let Some(Update::Layout(layout)) = stream.message().await?.and_then(|u| u.update) else {
+            panic!("expected a layout first");
+        };
+        assert_eq!(layout.fixtures[0].name, "par");
+        let Some(Update::Frame(frame)) = stream.message().await?.and_then(|u| u.update) else {
+            panic!("expected a frame second");
+        };
+        assert_eq!(frame.channels, [1]);
+        assert_eq!(state_tx.receiver_count(), 1, "the stream's own");
+
+        drop(stream);
+        eventually(
+            || state_tx.receiver_count() == 0,
+            "the stream outlived its client",
+        );
         Ok(())
     }
 }

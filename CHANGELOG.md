@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusing a save made from a list that has since changed (`check_expected`); the second deletes
   one; the third locks or unlocks the player. The playlist writes are refused while the player is
   locked, as the web UI's are; `SetLock` is open while locked.
+- **`WatchStage` gRPC RPC**: a server stream of what the stage looks like, as the web UI's stage
+  view is fed: a layout (the venue's fixtures, their placement and channel names) and then a
+  compact frame of channel values whenever something changes, with the layout sent again when
+  the venue does. `max_rate` caps the frames a second. A read, open while the player is locked.
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the
