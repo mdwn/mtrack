@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/app/failure.dart';
 import 'package:mtrack_remote/src/app/playlist_edit.dart';
+import 'package:mtrack_remote/src/app/playlist_settings.dart';
 import 'package:mtrack_remote/src/app/session.dart';
 
 import '../support/fake_player.dart';
@@ -463,7 +464,10 @@ void main() {
       final edit = s.editing!;
       edit.addSongs(['Not in the library']);
       expect(h.run(() async => await edit.save() ? null : 'no'), 'no');
-      expect(notices, ["Song 'Not in the library' not found"]);
+      // Said in the editor, where it stays until something is changed.
+      expect(notices, isEmpty);
+      expect(edit.problem, EditProblem.refused);
+      expect(edit.refusal, "Song 'Not in the library' not found");
       expect(s.editing, same(edit));
       expect(names(edit), ['Not in the library']);
     });
@@ -585,6 +589,208 @@ void main() {
       });
       expect(s.editing, isNull);
     });
+  });
+
+  group('settings', () {
+    /// The fade-out every test starts Second with: more than the app edits.
+    pp.Fade fullFade() => pp.Fade(
+      length: '2beats',
+      curve: 'linear',
+      exclude: pp.TrackNames(names: ['Click']),
+      lights: '0s',
+    );
+
+    void withSettings(Rig rig) {
+      rig.entrySettings['Set'] = [
+        pp.EntrySettings(),
+        pp.EntrySettings(
+          fadeOut: fullFade(),
+          autoPlay: pp.AutoPlay(gap: '2s'),
+        ),
+        pp.EntrySettings(ambient: pp.AmbientSetting(on: false)),
+      ];
+      rig.playlistAmbient['Set'] = pp.AmbientSetting(
+        on: true,
+        show: 'lighting/ambient.light',
+      );
+      rig.revisions['Set'] = 7;
+    }
+
+    scenario('are read with the playlist', (h, s, _) {
+      final edit = begin(h);
+      expect(edit.supportsSettings, isTrue);
+      expect(s.playlistSettingsAvailable, isTrue);
+      expect(s.missingFromPlayer, isEmpty);
+      expect(edit.revision, 'r7');
+      expect(edit.rows[1].settings.fadeOut, fullFade());
+      expect(edit.rows[1].settings.autoPlay.gap, '2s');
+      expect(edit.rows[2].settings.ambient.on, isFalse);
+      expect(edit.ambient!.show, 'lighting/ambient.light');
+      expect(edit.dirty, isFalse);
+    }, setup: withSettings);
+
+    scenario('a changed length keeps the fade details the app does not edit', (
+      h,
+      s,
+      _,
+    ) {
+      final edit = begin(h);
+      final row = edit.rows[1];
+      edit.setSettings(
+        row.id,
+        row.settings.deepCopy()
+          ..fadeOut = withFadeLength(row.settings.fadeOut, '4beats')!,
+      );
+      expect(edit.dirty, isTrue);
+      expect(h.run(() async => await edit.save() ? null : 'no'), isNull);
+      final sent = lastSave(h);
+      expect(sent.setSettings, isTrue);
+      expect(sent.expectedRevision, 'r7');
+      expect(sent.setAmbient, isFalse);
+      expect(sent.settings, hasLength(3));
+      expect(sent.settings[1].fadeOut, fullFade()..length = '4beats');
+      expect(sent.settings[1].autoPlay.gap, '2s');
+      expect(sent.settings[2].ambient.on, isFalse);
+      expect(h.rig.settingsAt('Set', 1).fadeOut.curve, 'linear');
+      expect(h.rig.settingsAt('Set', 1).fadeOut.lights, '0s');
+      expect(s.editing, isNull);
+    }, setup: withSettings);
+
+    scenario('songs and order alone leave the settings to the player', (
+      h,
+      s,
+      _,
+    ) {
+      final edit = begin(h);
+      edit.move(1, 0);
+      h.run(() async => await edit.save() ? null : 'no');
+      final sent = lastSave(h);
+      expect(sent.setSettings, isFalse);
+      expect(sent.settings, isEmpty);
+      expect(sent.setAmbient, isFalse);
+      // The player carried Second's settings with it.
+      expect(h.rig.settingsAt('Set', 0).fadeOut, fullFade());
+    }, setup: withSettings);
+
+    scenario('a setting put back as it was is no change', (h, s, _) {
+      final edit = begin(h);
+      final row = edit.rows[0];
+      edit.setSettings(row.id, pp.EntrySettings(fadeIn: pp.Fade(length: '1s')));
+      expect(edit.dirty, isTrue);
+      edit.setSettings(row.id, pp.EntrySettings());
+      expect(edit.dirty, isFalse);
+      edit.setAmbient(null);
+      expect(edit.dirty, isTrue);
+      edit.setAmbient(
+        pp.AmbientSetting(on: true, show: 'lighting/ambient.light'),
+      );
+      expect(edit.dirty, isFalse);
+    }, setup: withSettings);
+
+    scenario('the playlist ambient is sent when changed', (h, s, _) {
+      final edit = begin(h);
+      edit.setAmbient(pp.AmbientSetting(on: false));
+      h.run(() async => await edit.save() ? null : 'no');
+      final sent = lastSave(h);
+      expect(sent.setAmbient, isTrue);
+      expect(sent.ambient, pp.AmbientSetting(on: false));
+      expect(sent.setSettings, isFalse);
+      expect(h.rig.playlistAmbient['Set'], pp.AmbientSetting(on: false));
+    }, setup: withSettings);
+
+    scenario('a setting changed on the player is a conflict', (h, s, _) {
+      final edit = begin(h);
+      // The web UI changes a setting, not a song.
+      h.rig.editSettingsElsewhere(
+        'Set',
+        0,
+        pp.EntrySettings(fadeIn: pp.Fade(length: '1s')),
+      );
+      edit.removeAt(2);
+      expect(h.run(() async => await edit.save() ? null : 'no'), 'no');
+      expect(edit.problem, EditProblem.changed);
+      // Save anyway checks against what is there now, and keeps the
+      // setting this edit did not touch.
+      expect(h.run(() async => await edit.saveAnyway() ? null : 'no'), isNull);
+      expect(lastSave(h).expectedRevision, 'r8');
+      expect(h.rig.settingsAt('Set', 0).fadeIn.length, '1s');
+    }, setup: withSettings);
+
+    scenario('Discard my changes loads the settings as they are now', (
+      h,
+      s,
+      _,
+    ) {
+      final edit = begin(h);
+      h.rig.editSettingsElsewhere(
+        'Set',
+        0,
+        pp.EntrySettings(autoPlay: pp.AutoPlay()),
+      );
+      edit.removeAt(2);
+      h.run(() async => await edit.save() ? null : 'no');
+      h.run(() async => await edit.discardAndReload() ? null : 'no');
+      expect(edit.rows[0].settings.hasAutoPlay(), isTrue);
+      expect(edit.revision, 'r8');
+      expect(edit.dirty, isFalse);
+    }, setup: withSettings);
+
+    scenario('what the player refuses is said in its words, until changed', (
+      h,
+      s,
+      notices,
+    ) {
+      final edit = begin(h);
+      final row = edit.rows[0];
+      edit.setSettings(
+        row.id,
+        pp.EntrySettings(fadeOut: pp.Fade(length: 'soon')),
+      );
+      expect(h.run(() async => await edit.save() ? null : 'no'), 'no');
+      expect(edit.problem, EditProblem.refused);
+      expect(edit.refusal, contains("fade_out: 'soon' is not a length"));
+      expect(notices, isEmpty);
+      expect(s.editing, same(edit));
+      expect(edit.canSave, isTrue);
+      edit.setSettings(
+        row.id,
+        pp.EntrySettings(fadeOut: pp.Fade(length: '2s')),
+      );
+      expect(edit.problem, EditProblem.none);
+      expect(edit.refusal, isNull);
+      expect(h.run(() async => await edit.save() ? null : 'no'), isNull);
+    }, setup: withSettings);
+
+    scenario('the light shows are fetched once', (h, s, _) {
+      final edit = begin(h);
+      expect(edit.lightShows, isNull);
+      edit.loadLightShows();
+      h.settle();
+      edit.loadLightShows();
+      h.settle();
+      expect(edit.lightShows, ['lighting/ambient.light', 'shows/encore.light']);
+      expect(h.count('ListLightShows'), 1);
+    });
+
+    scenario('an older player edits songs and order only', (h, s, _) {
+      final edit = begin(h);
+      expect(edit.supportsSettings, isFalse);
+      expect(s.missingFromPlayer, contains('playlist settings'));
+      // Nothing to set, and nothing sent but names.
+      edit.setSettings(
+        edit.rows[0].id,
+        pp.EntrySettings(autoPlay: pp.AutoPlay()),
+      );
+      edit.setAmbient(pp.AmbientSetting(on: false));
+      expect(edit.dirty, isFalse);
+      edit.move(2, 0);
+      expect(h.run(() async => await edit.save() ? null : 'no'), isNull);
+      final sent = lastSave(h);
+      expect(sent.setSettings, isFalse);
+      expect(sent.setAmbient, isFalse);
+      expect(sent.expectedRevision, isEmpty);
+      expect(saved(h.rig, 'Set'), ['Third', 'First', 'Second']);
+    }, setup: (rig) => rig.settingsTooOld = true);
   });
 
   group('an older player', () {

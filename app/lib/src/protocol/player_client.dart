@@ -658,13 +658,24 @@ class PlayerClient {
 
   /// Sets the songs of the playlist [name] to [songs], in order. With
   /// [expected], the save is refused when the playlist on the player is no
-  /// longer those songs. With [create], the playlist must not exist yet.
-  /// Answers with the playlist as saved.
+  /// longer those songs, and with [expectedRevision] as well (the revision
+  /// `GetPlaylist` answered) when its settings changed. With [create], the
+  /// playlist must not exist yet.
+  ///
+  /// With [settings], one per song in order, each entry's settings are set
+  /// from them; without, each entry keeps its own, with its song. With
+  /// [setAmbient], the playlist's ambient light is set to [ambient] (null:
+  /// the profile's); without, it keeps its own. Answers with the playlist
+  /// as saved.
   Future<player.GetPlaylistResponse> savePlaylist(
     String name,
     List<String> songs, {
     List<String>? expected,
+    String? expectedRevision,
     bool create = false,
+    List<player.EntrySettings>? settings,
+    bool setAmbient = false,
+    player.AmbientSetting? ambient,
   }) => call(
     'SavePlaylist',
     player.SavePlaylistRequest(
@@ -672,10 +683,23 @@ class PlayerClient {
       songs: songs,
       expected: expected,
       checkExpected: expected != null,
+      expectedRevision: expected == null ? null : expectedRevision,
       // The generator suffixes the field's name; it is `create` on the wire.
       create_5: create,
+      settings: settings,
+      setSettings: settings != null,
+      ambient: setAmbient ? ambient : null,
+      setAmbient: setAmbient,
     ),
     player.GetPlaylistResponse.fromBuffer,
+  );
+
+  /// The `.light` files an ambient light can play, as paths relative to the
+  /// player's project.
+  Future<player.ListLightShowsResponse> listLightShows() => call(
+    'ListLightShows',
+    player.ListLightShowsRequest(),
+    player.ListLightShowsResponse.fromBuffer,
   );
 
   /// Deletes the playlist [name].

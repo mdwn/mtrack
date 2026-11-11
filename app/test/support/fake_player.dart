@@ -105,6 +105,7 @@ class FakePlayer implements PlayerTransport {
     'SetAmbientMode',
     'SavePlaylist',
     'DeletePlaylist',
+    'ListLightShows',
     'SetLock',
   };
 

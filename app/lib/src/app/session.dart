@@ -192,6 +192,8 @@ class Session extends ChangeNotifier {
   SongDetails? _details;
   String? _detailsName;
   List<player.PlaylistEntry> _entries = const [];
+  player.AmbientSetting? _entriesAmbient;
+  String _entriesRevision = '';
   String? _entriesPlaylist;
   String? _entriesAskedFor;
   PlaylistChoices? _choices;
@@ -262,7 +264,8 @@ class Session extends ChangeNotifier {
   /// What the app can do that the connected player is too old for, in words
   /// for a sentence; empty when it has everything, or when nothing has been
   /// heard from a player yet. Each feature came with a field in the status,
-  /// so a status without the field is from before the feature; the stage
+  /// so a status without the field is from before the feature; playlist
+  /// settings came with a revision on the playlist; the stage
   /// view came with streams instead (see [stageMissingFromPlayer]), and its
   /// 3D with `GetLightingAsset` (see [LightingAssets.tooOld]).
   List<String> get missingFromPlayer {
@@ -274,6 +277,12 @@ class Session extends ChangeNotifier {
       if (!status.hasGainsRevision()) 'track levels',
       if (!status.hasLocked()) 'playlist editing',
       if (!status.hasLocked()) 'the lock',
+      // Known once a playlist has come: one without a revision is from a
+      // player that edits songs and their order only.
+      if (status.hasLocked() &&
+          _entriesPlaylist != null &&
+          !playlistSettingsAvailable)
+        'playlist settings',
       if (_stage.missing) 'the light view',
       if (!_stage.missing && lightingAssets.tooOld) 'the 3D light view',
     ];
@@ -468,6 +477,8 @@ class Session extends ChangeNotifier {
     _details = null;
     _detailsName = null;
     _entries = const [];
+    _entriesAmbient = null;
+    _entriesRevision = '';
     _entriesPlaylist = null;
     _entriesAskedFor = null;
     _choices = null;
@@ -778,10 +789,24 @@ class Session extends ChangeNotifier {
     if (_disposed || _client != client) {
       return;
     }
-    _entries = response.entries;
+    _keepEntries(response);
     _entriesPlaylist = playlist;
     _notify();
   }
+
+  /// Keeps the active playlist as [response] has it: its entries, and for
+  /// the editor its ambient light and revision.
+  void _keepEntries(player.GetPlaylistResponse response) {
+    _entries = response.entries;
+    _entriesAmbient = response.hasAmbient() ? response.ambient : null;
+    _entriesRevision = response.revision;
+  }
+
+  /// Whether the player reads and sets playlist settings (each song's
+  /// fades, auto play and ambient light, and the playlist's): a playlist it
+  /// sent had a revision. A player from before sends none, and its editor
+  /// edits songs and their order only.
+  bool get playlistSettingsAvailable => _entriesRevision.isNotEmpty;
 
   /// Fetches the list of playlists, for the picker. Returns the failure in
   /// words, or null.
@@ -966,7 +991,13 @@ class Session extends ChangeNotifier {
     if (_entriesPlaylist != status.playlistName) {
       return _notice('The playlist has not loaded yet.');
     }
-    _beginEdit(status.playlistName, _entries, isNew: false);
+    _beginEdit(
+      status.playlistName,
+      _entries,
+      ambient: _entriesAmbient,
+      revision: _entriesRevision,
+      isNew: false,
+    );
     return null;
   }
 
@@ -992,10 +1023,17 @@ class Session extends ChangeNotifier {
     String name,
     List<player.PlaylistEntry> entries, {
     required bool isNew,
+    player.AmbientSetting? ambient,
+    String revision = '',
   }) {
     _edit = PlaylistEdit(
       name: name,
       entries: entries,
+      ambient: ambient,
+      revision: revision,
+      // Known from the playlist the player last sent, which a new playlist
+      // has not got.
+      supportsSettings: playlistSettingsAvailable,
       isNew: isNew,
       client: () => _client,
       isReady: () => isReady,
@@ -1024,7 +1062,7 @@ class Session extends ChangeNotifier {
 
   void _playlistSaved(PlaylistEdit edit, player.GetPlaylistResponse response) {
     if (!edit.isNew && response.name == _status?.playlistName) {
-      _entries = response.entries;
+      _keepEntries(response);
       _entriesPlaylist = response.name;
     }
     _choices = null;

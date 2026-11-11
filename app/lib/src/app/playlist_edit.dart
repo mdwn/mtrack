@@ -66,8 +66,15 @@ List<player.PlaylistEntry> filterSongs(
 class EditRow {
   /// A row. [id] tells it from another row of the same song, [originalIndex]
   /// is where the player had it when editing began, or null for a song added
-  /// since.
-  const EditRow(this.id, this.name, this.duration, this.originalIndex);
+  /// since. [settings] are its own (fades, auto play, ambient light); not to
+  /// be changed in place.
+  EditRow(
+    this.id,
+    this.name,
+    this.duration,
+    this.originalIndex, [
+    player.EntrySettings? settings,
+  ]) : settings = settings ?? player.EntrySettings();
 
   /// Unique within one edit.
   final int id;
@@ -80,6 +87,13 @@ class EditRow {
 
   /// Its place in the list as loaded.
   final int? originalIndex;
+
+  /// The entry's settings.
+  final player.EntrySettings settings;
+
+  /// This row with [settings] in place of its own.
+  EditRow withSettings(player.EntrySettings settings) =>
+      EditRow(id, name, duration, originalIndex, settings);
 }
 
 /// What stands in the way of a save, other than a plain failure.
@@ -95,6 +109,10 @@ enum EditProblem {
 
   /// A new playlist's name is taken.
   exists,
+
+  /// The player refused what was sent, saying why: a setting it cannot
+  /// read, say. See [PlaylistEdit.refusal].
+  refused,
 }
 
 /// A playlist being edited on the phone: the working list, what the player
@@ -103,11 +121,16 @@ enum EditProblem {
 /// Nothing reaches the player until [save]. The edit lives in the session, so
 /// a dropped link does not lose it.
 class PlaylistEdit extends ChangeNotifier {
-  /// An edit of the playlist [name], which held [entries] when read; or, with
-  /// [isNew], of a playlist that does not exist yet.
+  /// An edit of the playlist [name], which held [entries] and the ambient
+  /// light [ambient] when read, at [revision]; or, with [isNew], of a
+  /// playlist that does not exist yet. [supportsSettings] says whether the
+  /// player reads and sets entries' settings: one from before does not.
   PlaylistEdit({
     required this.name,
     required List<player.PlaylistEntry> entries,
+    player.AmbientSetting? ambient,
+    String revision = '',
+    this.supportsSettings = false,
     required this._client,
     required this._isReady,
     required this._locked,
@@ -116,7 +139,7 @@ class PlaylistEdit extends ChangeNotifier {
     required this._saved,
     this.isNew = false,
   }) {
-    _load(entries);
+    _load(entries, ambient, revision);
   }
 
   /// The playlist's name. Changeable only while [isNew].
@@ -124,6 +147,11 @@ class PlaylistEdit extends ChangeNotifier {
 
   /// Whether the playlist is yet to be made.
   final bool isNew;
+
+  /// Whether the player reads and sets each entry's settings and the
+  /// playlist's ambient light. False for a player from before, which edits
+  /// songs and their order only.
+  final bool supportsSettings;
 
   final PlayerClient? Function() _client;
   final bool Function() _isReady;
@@ -134,6 +162,15 @@ class PlaylistEdit extends ChangeNotifier {
 
   List<EditRow> _rows = [];
   List<String> _expected = [];
+  List<player.EntrySettings> _expectedSettings = [];
+  player.AmbientSetting? _ambient;
+  player.AmbientSetting? _expectedAmbient;
+  String _revision = '';
+  bool _settingsTouched = false;
+  bool _ambientTouched = false;
+  String? _refusal;
+  List<String>? _lightShows;
+  bool _loadingLightShows = false;
   int _nextId = 0;
   bool _saving = false;
   EditProblem _problem = EditProblem.none;
@@ -143,8 +180,16 @@ class PlaylistEdit extends ChangeNotifier {
   bool _loadingLibrary = false;
   bool _libraryFailed = false;
 
-  void _load(List<player.PlaylistEntry> entries) {
+  void _load(
+    List<player.PlaylistEntry> entries,
+    player.AmbientSetting? ambient,
+    String revision,
+  ) {
     _expected = [for (final e in entries) e.songName];
+    _expectedSettings = [
+      for (final e in entries)
+        e.hasSettings() ? e.settings : player.EntrySettings(),
+    ];
     _rows = [
       for (var i = 0; i < entries.length; i++)
         EditRow(
@@ -152,8 +197,14 @@ class PlaylistEdit extends ChangeNotifier {
           entries[i].songName,
           entries[i].hasDuration() ? entries[i].duration.toDart() : null,
           i,
+          _expectedSettings[i],
         ),
     ];
+    _ambient = ambient;
+    _expectedAmbient = ambient;
+    _revision = revision;
+    _settingsTouched = false;
+    _ambientTouched = false;
   }
 
   /// The rows, in the order they will be saved.
@@ -177,8 +228,32 @@ class PlaylistEdit extends ChangeNotifier {
     (sum, row) => sum + (row.duration ?? Duration.zero),
   );
 
-  /// Whether the list is not the one loaded.
-  bool get dirty => !listEquals([for (final r in _rows) r.name], _expected);
+  /// The playlist's own ambient light as it will be saved: null for the
+  /// profile's.
+  player.AmbientSetting? get ambient => _ambient;
+
+  /// The revision of the playlist as read, which a save sends back.
+  String get revision => _revision;
+
+  /// What the player said when it refused the last save, with
+  /// [EditProblem.refused].
+  String? get refusal => _problem == EditProblem.refused ? _refusal : null;
+
+  /// Whether the list or its settings are not the ones loaded.
+  bool get dirty {
+    if (!listEquals([for (final r in _rows) r.name], _expected)) {
+      return true;
+    }
+    if (!supportsSettings) {
+      return false;
+    }
+    for (var i = 0; i < _rows.length; i++) {
+      if (_rows[i].settings != _expectedSettings[i]) {
+        return true;
+      }
+    }
+    return _ambient != _expectedAmbient;
+  }
 
   /// Whether leaving would lose something: changes, or a new playlist with
   /// songs in it.
@@ -203,7 +278,7 @@ class PlaylistEdit extends ChangeNotifier {
       return;
     }
     _rows = List.of(_rows)..removeAt(index);
-    _changed();
+    _edited();
   }
 
   /// Moves the row at [oldIndex] so it sits at [newIndex] in the list that
@@ -219,7 +294,7 @@ class PlaylistEdit extends ChangeNotifier {
     final next = List.of(_rows);
     next.insert(to, next.removeAt(oldIndex));
     _rows = next;
-    _changed();
+    _edited();
   }
 
   /// Appends the songs named [songs], in that order. A song already in the
@@ -241,7 +316,59 @@ class PlaylistEdit extends ChangeNotifier {
       );
     }
     _rows = next;
-    _changed();
+    _edited();
+  }
+
+  /// Sets the settings of the row [id] (see [EditRow.id]). Nothing reaches
+  /// the player until [save].
+  void setSettings(int id, player.EntrySettings settings) {
+    final at = _rows.indexWhere((r) => r.id == id);
+    if (at < 0 || !supportsSettings) {
+      return;
+    }
+    _rows = List.of(_rows)..[at] = _rows[at].withSettings(settings);
+    _settingsTouched = true;
+    _edited();
+  }
+
+  /// Sets the playlist's own ambient light; null for the profile's.
+  void setAmbient(player.AmbientSetting? ambient) {
+    if (!supportsSettings) {
+      return;
+    }
+    _ambient = ambient;
+    _ambientTouched = true;
+    _edited();
+  }
+
+  /// The `.light` files the player has, for an ambient show; null until
+  /// fetched, or when they could not be.
+  List<String>? get lightShows => _lightShows;
+
+  /// Fetches [lightShows], once. A failure leaves them null: a show can
+  /// still be typed.
+  Future<void> loadLightShows() async {
+    final client = _client();
+    if (_lightShows != null ||
+        _loadingLightShows ||
+        client == null ||
+        !_isReady()) {
+      return;
+    }
+    _loadingLightShows = true;
+    try {
+      final response = await client.listLightShows();
+      if (!_disposed) {
+        _lightShows = List.unmodifiable(response.paths);
+      }
+    } on Object catch (e) {
+      if (!_disposed) {
+        _lostIfUnanswered(client, e);
+      }
+    } finally {
+      _loadingLightShows = false;
+      _changed();
+    }
   }
 
   /// Gives a new playlist another name. Returns what is wrong with it, or
@@ -339,7 +466,11 @@ class PlaylistEdit extends ChangeNotifier {
       if (_disposed) {
         return false;
       }
-      _load(current.entries);
+      _load(
+        current.entries,
+        current.hasAmbient() ? current.ambient : null,
+        current.revision,
+      );
       _problem = EditProblem.none;
       return true;
     } on Object catch (e) {
@@ -371,13 +502,24 @@ class PlaylistEdit extends ChangeNotifier {
         if (_disposed) {
           return false;
         }
+        // Saved over what is there now: the songs and the settings this
+        // edit did not touch are the player's, and the check is against it.
         _expected = [for (final e in current.entries) e.songName];
+        _revision = current.revision;
       }
       final response = await client.savePlaylist(
         name,
         [for (final r in _rows) r.name],
         expected: isNew ? null : _expected,
+        expectedRevision: _revision.isEmpty ? null : _revision,
         create: isNew,
+        // Only what was changed is sent: what was not stays as the player
+        // has it, written as it was.
+        settings: supportsSettings && _settingsTouched
+            ? [for (final r in _rows) r.settings]
+            : null,
+        setAmbient: supportsSettings && _ambientTouched,
+        ambient: _ambient,
       );
       if (_disposed) {
         return false;
@@ -413,6 +555,13 @@ class PlaylistEdit extends ChangeNotifier {
         _problem = EditProblem.exists;
         return;
       }
+      // The player's own words say what it would not take: a length it
+      // cannot read, a fade longer than its song.
+      if (e.code == GrpcCode.invalidArgument && e.message.isNotEmpty) {
+        _problem = EditProblem.refused;
+        _refusal = e.message;
+        return;
+      }
       if ((e.code == GrpcCode.failedPrecondition && said.contains('locked')) ||
           (e.isPermissionDenied && _locked() == true)) {
         _problem = EditProblem.locked;
@@ -427,6 +576,15 @@ class PlaylistEdit extends ChangeNotifier {
   void noteStatus() {
     if (_problem == EditProblem.locked && _locked() != true) {
       _problem = EditProblem.none;
+    }
+    _changed();
+  }
+
+  /// The user changed something: a refusal was about what was sent before.
+  void _edited() {
+    if (_problem == EditProblem.refused) {
+      _problem = EditProblem.none;
+      _refusal = null;
     }
     _changed();
   }
