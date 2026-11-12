@@ -143,7 +143,7 @@ void main() {
       await h.settle();
       await h.tester.pump(const Duration(milliseconds: 400));
       expect(find.text('Settings'), findsWidgets);
-      expect(find.text('Connected'), findsOneWidget);
+      expect(find.text('Connected over Bluetooth'), findsOneWidget);
       expect(find.text('mtrack remote 1.2.3 (4)'), findsOneWidget);
       expect(find.text('Open-source licences'), findsOneWidget);
       await h.tester.tap(find.text('Open-source licences'));

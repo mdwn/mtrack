@@ -21,6 +21,7 @@ import 'package:mtrack_remote/src/app/lighting_assets.dart';
 import 'package:mtrack_remote/src/app/stage_server.dart';
 import 'package:mtrack_remote/src/protocol/player_client.dart';
 
+import '../support/client.dart';
 import '../support/fake_player.dart';
 
 /// An answer read off a socket.
@@ -479,7 +480,7 @@ void main() {
 
       setUp(() {
         fake = FakePlayer();
-        client = PlayerClient(fake);
+        client = clientOver(fake);
         assets = LightingAssets(client: () => client, isReady: () => true)
           ..linkChanged(ready: true);
         source = assets.get;

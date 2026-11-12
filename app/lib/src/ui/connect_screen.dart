@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../app/player_link.dart';
 import '../app/session.dart';
+import '../app/wifi_address.dart';
 import 'session_scope.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -32,6 +33,27 @@ class ConnectScreen extends StatefulWidget {
 
 class _ConnectScreenState extends State<ConnectScreen> {
   bool _scanned = false;
+  final TextEditingController _address = TextEditingController();
+  bool _entering = false;
+  String? _problem;
+
+  @override
+  void dispose() {
+    _address.dispose();
+    super.dispose();
+  }
+
+  void _connectToAddress(Session session) {
+    final WifiAddress address;
+    try {
+      address = parseWifiAddress(_address.text);
+    } on FormatException catch (e) {
+      setState(() => _problem = e.message);
+      return;
+    }
+    setState(() => _problem = null);
+    session.connectToAddress(address);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,11 +70,25 @@ class _ConnectScreenState extends State<ConnectScreen> {
           _scanned = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
-              session.startScan();
+              session.startScan(keepError: true);
             }
           });
         }
-        content = _Finder(session: session);
+        content = _Finder(
+          session: session,
+          address: _AddressEntry(
+            controller: _address,
+            entering: _entering,
+            problem: _problem,
+            onOpen: () => setState(() => _entering = true),
+            onChanged: () {
+              if (_problem != null) {
+                setState(() => _problem = null);
+              }
+            },
+            onConnect: () => _connectToAddress(session),
+          ),
+        );
       case ConnectionPhase.connecting:
       case ConnectionPhase.lost:
         _scanned = false;
@@ -232,9 +268,10 @@ class _Refused extends StatelessWidget {
 }
 
 class _Finder extends StatelessWidget {
-  const _Finder({required this.session});
+  const _Finder({required this.session, required this.address});
 
   final Session session;
+  final Widget address;
 
   @override
   Widget build(BuildContext context) {
@@ -264,6 +301,8 @@ class _Finder extends StatelessWidget {
           const SizedBox(height: 12),
         ],
         results,
+        const SizedBox(height: 14),
+        address,
         const SizedBox(height: 14),
         const NoteBox(
           child: Text.rich(
@@ -438,6 +477,76 @@ class _Results extends StatelessWidget {
               ),
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// "Enter an address": the way to a player over Wi-Fi when it has not been
+/// paired by Bluetooth, or Bluetooth is not to be had.
+class _AddressEntry extends StatelessWidget {
+  const _AddressEntry({
+    required this.controller,
+    required this.entering,
+    required this.problem,
+    required this.onOpen,
+    required this.onChanged,
+    required this.onConnect,
+  });
+
+  final TextEditingController controller;
+  final bool entering;
+  final String? problem;
+  final VoidCallback onOpen;
+  final VoidCallback onChanged;
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    if (!entering) {
+      return ChunkyButton(
+        height: 52,
+        fontSize: 16,
+        label: 'Enter an address',
+        semanticLabel: 'Enter an address',
+        fill: colors.surface,
+        borderColor: colors.cyan,
+        foreground: colors.cyan,
+        onPressed: onOpen,
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: controller,
+          autofocus: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          keyboardType: TextInputType.url,
+          textInputAction: TextInputAction.go,
+          onSubmitted: (_) => onConnect(),
+          onChanged: (_) => onChanged(),
+          decoration: InputDecoration(
+            labelText: 'Player address',
+            hintText: 'mtrack.local',
+            helperText:
+                'A name or number, such as mtrack.local or 192.168.1.40. '
+                'Add :port if the player uses a port other than 43234.',
+            helperMaxLines: 3,
+            errorText: problem,
+            errorMaxLines: 3,
+          ),
+        ),
+        const SizedBox(height: 12),
+        ChunkyButton(
+          height: 52,
+          fontSize: 16,
+          label: 'Connect',
+          semanticLabel: 'Connect to this address',
+          onPressed: onConnect,
+        ),
       ],
     );
   }

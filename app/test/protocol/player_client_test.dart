@@ -19,6 +19,7 @@ import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as player;
+import 'package:mtrack_remote/src/protocol/envelope_channel.dart';
 import 'package:mtrack_remote/src/protocol/frame_codec.dart';
 import 'package:mtrack_remote/src/protocol/player_client.dart';
 import 'package:mtrack_remote/src/protocol/player_exception.dart';
@@ -26,6 +27,7 @@ import 'package:mtrack_remote/src/protocol/transport.dart';
 import 'package:protobuf/well_known_types/google/protobuf/duration.pb.dart'
     as pb;
 
+import '../support/client.dart';
 import '../support/fake_player.dart';
 
 /// A random source whose `nextInt` always returns [value].
@@ -55,7 +57,7 @@ void withFakeTime(
   test(description, () {
     fakeAsync((async) {
       final fake = FakePlayer(maxChunk: 20);
-      final client = PlayerClient(fake, random: FixedRandom(100));
+      final client = clientOver(fake, random: FixedRandom(100));
       body(async, fake, client);
       async.flushMicrotasks();
       unawaited(client.dispose());
@@ -69,7 +71,7 @@ void main() {
 
   setUp(() {
     fake = FakePlayer();
-    client = PlayerClient(fake, random: FixedRandom(1000));
+    client = clientOver(fake, random: FixedRandom(1000));
   });
 
   tearDown(() async {
@@ -231,7 +233,7 @@ void main() {
 
     test('ids increment and wrap at 32 bits', () async {
       await client.dispose();
-      client = PlayerClient(fake, random: FixedRandom(0xfffffffe));
+      client = clientOver(fake, random: FixedRandom(0xfffffffe));
       await client.stop();
       await client.stop();
       await client.stop();
@@ -241,8 +243,8 @@ void main() {
     test('the default id source differs between clients', () async {
       final first = FakePlayer();
       final second = FakePlayer();
-      final a = PlayerClient(first);
-      final b = PlayerClient(second);
+      final a = clientOver(first);
+      final b = clientOver(second);
       await a.stop();
       await b.stop();
       // 2^-32 odds of a false failure.
@@ -463,7 +465,7 @@ void main() {
     test('matches responses that arrive out of order', () async {
       fakeAsync((async) {
         final f = FakePlayer();
-        final c = PlayerClient(f, random: FixedRandom(10));
+        final c = clientOver(f, random: FixedRandom(10));
         f.handlers['Play'] = (_) => FakeReply.ok(
           player.PlayResponse(song: song('slow')),
           delay: const Duration(seconds: 2),
@@ -500,7 +502,7 @@ void main() {
       fakeAsync((async) {
         final f = FakePlayer(maxChunk: 20)
           ..writeDelay = const Duration(milliseconds: 5);
-        final c = PlayerClient(f, random: FixedRandom(10));
+        final c = clientOver(f, random: FixedRandom(10));
         final results = <String>[];
         unawaited(
           c
@@ -1105,21 +1107,21 @@ void main() {
       final first = c.openStream('WatchStage', Uint8List(0)).listen((_) {});
       async.flushMicrotasks();
       expect(f.openStreams, [100]);
-      c.debugNextId = 100;
+      setNextId(c, 100);
       unawaited(c.stop());
       async.flushMicrotasks();
       expect(f.received.last.id, 101);
 
       unawaited(first.cancel());
       async.flushMicrotasks();
-      c.debugNextId = 100;
+      setNextId(c, 100);
       unawaited(c.stop());
       async.flushMicrotasks();
       expect(f.received.last.id, 101);
 
       f.endStream(100, code: GrpcCode.cancelled);
       async.flushMicrotasks();
-      c.debugNextId = 100;
+      setNextId(c, 100);
       unawaited(c.stop());
       async.flushMicrotasks();
       expect(f.received.last.id, 100);
@@ -1136,7 +1138,7 @@ void main() {
       var freed = false;
       unawaited(sub.cancel().then((_) => freed = true));
       async.elapse(
-        PlayerClient.cancelTimeout - const Duration(milliseconds: 1),
+        EnvelopeChannel.cancelTimeout - const Duration(milliseconds: 1),
       );
       expect(freed, isFalse);
       async.elapse(const Duration(milliseconds: 1));
@@ -1299,7 +1301,7 @@ void main() {
       sub.pause();
       // Far more than may be held, in messages of a kilobyte.
       final big = Uint8List(1024);
-      const sent = 4 * PlayerClient.maxHeldStreamBytes ~/ 1024;
+      const sent = 4 * EnvelopeChannel.maxHeldStreamBytes ~/ 1024;
       for (var i = 0; i < sent; i++) {
         fake.streamMessage(1000, big, chunkSize: 512);
       }
@@ -1327,7 +1329,7 @@ void main() {
         ble.Response(id: 1000, more: true).writeToBuffer(),
         fake.maxChunk,
       );
-      for (var i = 0; i < PlayerClient.maxHeldStreamBytes ~/ 8; i++) {
+      for (var i = 0; i < EnvelopeChannel.maxHeldStreamBytes ~/ 8; i++) {
         fake.sendStreamChunks(empty);
       }
       await pump();

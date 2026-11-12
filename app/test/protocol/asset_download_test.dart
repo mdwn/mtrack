@@ -19,9 +19,11 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as player;
 import 'package:mtrack_remote/src/protocol/asset_download.dart';
+import 'package:mtrack_remote/src/protocol/envelope_channel.dart';
 import 'package:mtrack_remote/src/protocol/player_client.dart';
 import 'package:mtrack_remote/src/protocol/player_exception.dart';
 
+import '../support/client.dart';
 import '../support/fake_player.dart';
 
 /// A random source whose `nextInt` always returns [value].
@@ -57,7 +59,7 @@ void main() {
 
   setUp(() {
     fake = FakePlayer();
-    client = PlayerClient(fake, random: FixedRandom(1000));
+    client = clientOver(fake, random: FixedRandom(1000));
   });
 
   tearDown(() async {
@@ -123,7 +125,7 @@ void main() {
   test('one larger than a stream holds for a listener arrives whole', () async {
     final download = client.getLightingAsset('scenery/abc/models/Hall.glb');
     await pump();
-    final data = noise(PlayerClient.maxHeldStreamBytes + 50 * 1024);
+    final data = noise(EnvelopeChannel.maxHeldStreamBytes + 50 * 1024);
     fake.sendAsset(1000, data, chunk: 4000);
     expect(await download.bytes, data);
   });

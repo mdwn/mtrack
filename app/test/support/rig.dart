@@ -220,6 +220,14 @@ class Rig {
   /// Whether the player is locked (it refuses what a locked player refuses).
   bool locked = false;
 
+  /// What `GetNetworkInfo` answers; null for a player from before it, which
+  /// says it does not have the method.
+  pp.GetNetworkInfoResponse? networkInfo;
+
+  /// Told the status each time the player publishes it, as a `WatchStatus`
+  /// stream would be.
+  final List<void Function(pp.RemoteStatus)> watchers = [];
+
   /// True for a player from before a phone could lock it or edit playlists:
   /// its status has no lock, and it refuses the three calls as not allowed.
   bool oldPlayer = false;
@@ -485,6 +493,9 @@ class Rig {
     if (player.hasStatusListener) {
       player.emitStatus(status);
     }
+    for (final watcher in List.of(watchers)) {
+      watcher(status);
+    }
   }
 
   void _install() {
@@ -492,6 +503,12 @@ class Rig {
     FakeReply guard(FakeReply Function() body) => locked
         ? FakeReply.error(9, 'Player is locked. Unlock to make changes.')
         : body();
+    h['GetNetworkInfo'] = (_) {
+      final info = networkInfo;
+      return info == null
+          ? FakeReply.error(12, 'unimplemented')
+          : FakeReply.ok(info);
+    };
     h['Status'] = (_) => FakeReply.ok(
       pp.StatusResponse(
         playlistName: playlist,

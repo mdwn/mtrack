@@ -14,6 +14,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../protocol/player_channel.dart';
 import '../protocol/player_client.dart';
 import '../protocol/player_exception.dart';
 
@@ -48,6 +49,13 @@ final class StageBytes extends StageEvent {
   /// The serialized `StageUpdate`.
   final Uint8List bytes;
 }
+
+/// For a listener's rate: whatever the link carries best. See
+/// `StageWatch.watch`.
+const int stageRateAuto = -1;
+
+/// The rate [stageRateAuto] comes to over Bluetooth, in frames a second.
+const int stageRateBluetooth = 10;
 
 class _Watcher {
   _Watcher(this.maxRate);
@@ -124,7 +132,7 @@ class StageWatch {
   /// The stream begins when it is listened to and does not end until the
   /// watch is disposed: while the link is down, or the player is too old, it
   /// is silent. Cancel it when the stage is not showing.
-  Stream<StageEvent> watch({int maxRate = 10}) {
+  Stream<StageEvent> watch({int maxRate = stageRateAuto}) {
     final watcher = _Watcher(maxRate);
     watcher.controller = StreamController<StageEvent>(
       sync: true,
@@ -232,7 +240,7 @@ class StageWatch {
     _heard = true;
     _probe = Timer.periodic(stageProbeInterval, (_) => _checkLink(client));
     _stream = client
-        .watchStage(maxRate: _rate())
+        .watchStage(maxRate: _rate(client))
         .listen(
           (bytes) {
             _heard = true;
@@ -245,15 +253,20 @@ class StageWatch {
   }
 
   /// The highest rate any listener asked for; 0, the player's own, is the
-  /// highest there is.
-  int _rate() {
+  /// highest there is. A listener that asked for [stageRateAuto] wants what
+  /// the link can carry: the player's own rate over Wi-Fi, which pushes back
+  /// when the phone is slow, and a tenth of a second's worth over Bluetooth.
+  int _rate(PlayerClient client) {
     var rate = 1;
     for (final watcher in _watchers) {
-      if (watcher.maxRate <= 0) {
+      final asked = watcher.maxRate == stageRateAuto
+          ? (client.carrier == Carrier.wifi ? 0 : stageRateBluetooth)
+          : watcher.maxRate;
+      if (asked <= 0) {
         return 0;
       }
-      if (watcher.maxRate > rate) {
-        rate = watcher.maxRate;
+      if (asked > rate) {
+        rate = asked;
       }
     }
     return rate;

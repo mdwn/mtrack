@@ -110,6 +110,7 @@ class FakePlayer implements PlayerTransport {
     'GetSong',
     'UpdateSongSettings',
     'SetLock',
+    'GetNetworkInfo',
   };
 
   /// The stream methods a phone may open. A test takes `GetLightingAsset`

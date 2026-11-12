@@ -18,10 +18,13 @@
     <!-- The Lights tab shows the stage page, which ships inside the app, in a
          web view, and serves it to that web view from 127.0.0.1 (see
          lib/src/app/stage_server.dart). Android gives an app no sockets at
-         all, loopback included, without INTERNET. The app still talks to
-         nothing but the player, over Bluetooth: the network security config
-         allows cleartext to 127.0.0.1 and nowhere else, and the page asks for
-         nothing but its own files. -->
+         all, loopback included, without INTERNET. It is also what lets the app
+         reach the player over Wi-Fi: gRPC on the player's own port, from Dart
+         sockets, which the network security config below does not govern (it
+         limits the platform's HTTP stacks and the web view). The app still
+         talks to nothing but the player: the config allows cleartext in the web
+         view to 127.0.0.1 and nowhere else, and the page asks for nothing but
+         its own files. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
