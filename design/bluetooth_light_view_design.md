@@ -134,6 +134,9 @@ then the JSON `metadata` and `state` messages are the ones to retire. Until
 then there are two encodings of one thing, and that is a debt this doc names
 rather than hides.
 
+*Since retired: the web UI reads the stream, and the JSON `metadata` and
+`state` messages are gone (`remote_phase3_design.md` §5).*
+
 ## 5. Carrying a stream over Bluetooth
 
 Today a request has one answer. A stream needs three things added to the

@@ -17,7 +17,7 @@ WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
 WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-stage-ui app-stage-assets build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-app-proto gen-wasm install-ui build-ui build-stage-ui app-stage-assets build-rust test test-unit test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -124,8 +124,12 @@ build-rust:
 	cargo build --release --manifest-path $(ROOT_DIR)/Cargo.toml
 
 ## Run all tests (the player's, the harness's and the rules crate's equality test)
-test: test-ui
+test: test-unit test-ui
 	cargo test --workspace --manifest-path $(ROOT_DIR)/Cargo.toml
+
+## Run the web UI's unit tests (vitest)
+test-unit:
+	cd $(SVELTE_DIR) && npm run test:unit
 
 ## Run Playwright UI tests (mock server)
 test-ui:

@@ -104,8 +104,10 @@ impl super::Driver for Driver {
                 let _enter = span!(Level::INFO, "gRPC Server").entered();
                 info!("Starting gRPC server on {addr}");
             }
-            bound.set(addr);
+            // The port first: whoever waits on `bound` may ask the player for
+            // it at once.
             player.set_grpc_port(Some(addr.port()));
+            bound.set(addr);
             // Cleared when this task ends or is aborted, but only if the
             // port is still this one's: a restart binds after this is gone.
             let _listening = ListeningPort {

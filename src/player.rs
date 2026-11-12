@@ -354,8 +354,7 @@ pub struct Player {
     /// when the DMX engine becomes available, and restart it on reload.
     state_tx: StateTx,
     /// The stage layout's revision, for the gRPC stage stream: bumped when
-    /// the venue or its fixtures may have changed, as the websocket's
-    /// `metadata` message is re-sent.
+    /// the venue or its fixtures may have changed.
     stage_layout_tx: Arc<tokio::sync::watch::Sender<u64>>,
     /// Transport-state watch channel. A low-rate poller refreshes this and
     /// uses `send_if_modified` so receivers (e.g. MCP `mtrack://status`
@@ -847,8 +846,8 @@ impl Player {
     }
 
     /// Re-reads the venues from disk, re-registers the current venue's
-    /// fixtures with the running DMX engine, and tells every web client
-    /// the stage geometry changed. The venue file is the durable truth;
+    /// fixtures with the running DMX engine, and tells every stage watcher
+    /// (`WatchStage`) the geometry changed. The venue file is the durable truth;
     /// this is how an edit to it (positions, focus points, tags) reaches a
     /// running player without a hardware reload. A player with no DMX
     /// engine has nothing to reload, which is not an error.
@@ -857,32 +856,19 @@ impl Player {
             return Ok(());
         };
         engine.reload_current_venue().map_err(|e| e.to_string())?;
-        let metadata = crate::webui::state::build_metadata_json(
-            engine.broadcast_handles().lighting_system.as_ref(),
-        );
-        if let Some(tx) = self.broadcast_tx.lock().as_ref() {
-            // No receivers is fine: nobody is watching the stage right now.
-            let _ = tx.send(metadata);
-        }
         self.bump_stage_layout();
         Ok(())
     }
 
     /// [`Self::reload_current_venue`] for an edit to a fixture type: re-reads
     /// the types and the venues, re-registers the current venue's fixtures
-    /// and tells every web client the stage changed. No DMX engine is not an
+    /// and tells every stage watcher the stage changed. No DMX engine is not an
     /// error.
     pub fn reload_fixture_types(&self) -> Result<(), String> {
         let Some(engine) = self.dmx_engine() else {
             return Ok(());
         };
         engine.reload_fixture_types().map_err(|e| e.to_string())?;
-        let metadata = crate::webui::state::build_metadata_json(
-            engine.broadcast_handles().lighting_system.as_ref(),
-        );
-        if let Some(tx) = self.broadcast_tx.lock().as_ref() {
-            let _ = tx.send(metadata);
-        }
         self.bump_stage_layout();
         Ok(())
     }

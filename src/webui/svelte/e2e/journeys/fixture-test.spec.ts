@@ -13,6 +13,11 @@
 //
 
 import { type Page, type Response } from "@playwright/test";
+import { createClient } from "@connectrpc/connect";
+import { createGrpcWebTransport } from "@connectrpc/connect-web";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import type { StageState } from "../../src/gen/rules/mtrack_rules";
+import { StageReader } from "../../src/lib/stage/feed";
 import { api, expect, synthGdtf, test, type Project } from "./harness";
 
 // Testing a fixture from its page, against the real binary with its DMX
@@ -135,25 +140,34 @@ test.describe("a venue fixture under test", () => {
     },
   });
 
-  interface StateMsg {
-    type: string;
-    fixtures: Record<string, Record<string, number>>;
-    under_test?: string[];
-  }
-
-  test("the state stream shows the test's bytes on it, and the show again after Stop", async ({
+  test("the stage stream shows the test's bytes on it, and the show again after Stop", async ({
     project,
   }) => {
-    const states: StateMsg[] = [];
-    const ws = new WebSocket(`${project.url.replace(/^http/, "ws")}/ws`);
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(String(e.data)) as StateMsg;
-      if (msg.type === "state") states.push(msg);
-    };
-    await new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = reject;
+    // The stage as the web UI reads it: the player's gRPC stream
+    // `WatchStage`, over gRPC-Web, into the stage's state.
+    const states: StageState[] = [];
+    const reader = new StageReader({
+      metadata: () => {},
+      state: (state) => states.push(state),
     });
+    const stream = new AbortController();
+    const client = createClient(
+      PlayerService,
+      createGrpcWebTransport({ baseUrl: project.url }),
+    );
+    void (async () => {
+      try {
+        for await (const update of client.watchStage(
+          {},
+          { signal: stream.signal },
+        )) {
+          reader.take(update);
+        }
+      } catch {
+        // Ended with the test.
+      }
+    })();
+    await expect.poll(() => states.length).toBeGreaterThan(0);
     const latest = () => states.at(-1);
 
     try {
@@ -201,7 +215,7 @@ test.describe("a venue fixture under test", () => {
       expect(latest()!.fixtures.Front?.green ?? 0).toBe(0);
       expect(latest()!.fixtures.Front?.red ?? 0).toBe(0);
     } finally {
-      ws.close();
+      stream.abort();
     }
   });
 });

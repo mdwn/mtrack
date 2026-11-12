@@ -37,7 +37,7 @@
   let error = $state<string | null>(null);
 
   // A refresh that arrives while one is running is folded into a single
-  // follow-up: a reload sends both a reload and a metadata message, and the
+  // follow-up: a reload sends both a reload and a new stage layout, and the
   // second answer is the one that matters.
   let inflight = false;
   let again = false;

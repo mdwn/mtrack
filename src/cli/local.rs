@@ -261,7 +261,6 @@ pub async fn start(
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
                 player: player.clone(),
-                state_rx: state_rx.clone(),
                 broadcast_tx,
                 config_path: player_path.to_path_buf(),
                 profiles_dir,

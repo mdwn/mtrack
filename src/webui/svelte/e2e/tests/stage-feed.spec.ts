@@ -12,9 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The gRPC stage stream read into what the websocket says (no browser):
+// The gRPC stage stream read into the stage's stores (no browser):
 // lib/stage/feed.ts against a stream the player's own encoder wrote, each
-// update beside the websocket message for the same stage
+// update beside the stage it describes
 // (e2e/fixtures/stage-stream.json, written and held to the encoder by a
 // test in src/controller/grpc/stage.rs).
 
@@ -34,6 +34,7 @@ import {
 } from "../../src/gen/player/v1/player_pb";
 import {
   base64Bytes,
+  f32,
   frameState,
   layoutMetadata,
   StageReader,
@@ -55,10 +56,10 @@ interface Step {
   what: string;
   /** One serialized StageUpdate, base64: what a host hands the page. */
   update: string;
-  /** The websocket's `metadata` message for the same stage (a layout). */
-  metadata?: { type: "metadata" } & StageMetadata;
-  /** The websocket's `state` message for the same stage (a frame). */
-  state?: { type: "state" } & StageState;
+  /** The stage's metadata that a layout describes. */
+  metadata?: StageMetadata;
+  /** The stage's state that a frame describes. */
+  state?: StageState;
   /** A frame of a layout the reader does not hold. */
   dropped?: boolean;
 }
@@ -70,11 +71,12 @@ const steps: Step[] = JSON.parse(
   ),
 ).steps;
 
-/** The stream's geometry and rates are 32-bit floats; the JSON's are not.
- *  Every number of a JSON message narrowed to what the stream can say (a
- *  channel's byte is the same either way). */
+/** The stream's geometry and rates are 32-bit floats; the player's are not.
+ *  Every number narrowed to what the stream can say, and read the way the
+ *  reader reads it: as the shortest decimal that is that float (a channel's
+ *  byte is the same either way). */
 function narrowed<T>(value: T): T {
-  if (typeof value === "number") return Math.fround(value) as T;
+  if (typeof value === "number") return f32(Math.fround(value)) as T;
   if (Array.isArray(value)) return value.map(narrowed) as T;
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -84,19 +86,13 @@ function narrowed<T>(value: T): T {
   return value;
 }
 
-/** What a `metadata` message leaves in the stores, as the stream can say
- *  it: narrowed, and without the venues directory, which stays home. */
+/** What a layout leaves in the stores, as the stream can say it. */
 function ofMetadata(message: NonNullable<Step["metadata"]>): StageMetadata {
-  return narrowed({
-    fixtures: message.fixtures,
-    venue: message.venue && { ...message.venue, dir: null },
-  });
+  return narrowed(message);
 }
 
 function ofState(message: NonNullable<Step["state"]>): StageState {
-  const { type: _type, ...state } = message;
-  void _type;
-  return narrowed(state);
+  return narrowed(message);
 }
 
 function decode(step: Step) {
@@ -132,7 +128,7 @@ function reading() {
 
 const [first, unmoved, changed, unposed, early, second, , late] = steps;
 
-test.describe("the stage stream, read as the websocket's messages", () => {
+test.describe("the stage stream, read into the stage's metadata and state", () => {
   test("the recording is the one these tests were written for", () => {
     expect(steps.map((s) => s.what)).toEqual([
       "the first layout",
@@ -146,7 +142,7 @@ test.describe("the stage stream, read as the websocket's messages", () => {
     ]);
   });
 
-  test("every update of the stream reads as the websocket's message for the same stage", () => {
+  test("every update of the stream reads as the stage it describes", () => {
     const { reader, seen } = reading();
     for (const step of steps) {
       const writes = seen.writes;
@@ -165,13 +161,13 @@ test.describe("the stage stream, read as the websocket's messages", () => {
     }
   });
 
-  test("a layout is the metadata message: the venue's fixtures and the venue", () => {
+  test("a layout is the metadata: the venue's fixtures and the venue", () => {
     const layout = layoutOf(first);
     const metadata = layoutMetadata(layout);
     expect(metadata).toEqual(ofMetadata(first.metadata!));
 
     // The layout also lists a fixture the player drives that the venue
-    // does not; the metadata message has only the venue's.
+    // does not; the metadata has only the venue's.
     expect(layout.fixtures.map((f) => f.name)).toEqual([
       "bar",
       "head",
@@ -193,7 +189,7 @@ test.describe("the stage stream, read as the websocket's messages", () => {
       capabilities: ["color", "pan_tilt", "color_wheel"],
       cells: [],
     });
-    // What the venue does not give is null, as the JSON has it.
+    // What the venue does not give is null.
     expect(metadata.fixtures.spare).toEqual({
       tags: [],
       type: "Par",
@@ -210,13 +206,12 @@ test.describe("the stage stream, read as the websocket's messages", () => {
     ]);
     expect(metadata.venue).toEqual({
       name: "club",
-      dir: null,
       focus_points: { drummer: [0, 2.75, 1.5] },
       scenery: "scenery/club.glb",
       scenery_error: null,
     });
-    // The JSON said where the venues are kept; the stream does not.
-    expect(first.metadata!.venue!.dir).toBe("/somewhere/venues");
+    // Where the venues are kept is not the stream's to say.
+    expect(metadata.venue).not.toHaveProperty("dir");
   });
 
   test("a layout with no venue is metadata with none", () => {
@@ -226,7 +221,7 @@ test.describe("the stage stream, read as the websocket's messages", () => {
     expect(layoutMetadata(layout)).toEqual({ fixtures: {}, venue: null });
   });
 
-  test("a frame is the state message: bytes by the layout's channel names", () => {
+  test("a frame is the state: bytes by the layout's channel names", () => {
     const state = frameState(layoutOf(first), frameOf(unmoved));
     expect(state).toEqual(ofState(unmoved.state!));
     expect(state!.fixtures).toEqual({
@@ -338,7 +333,7 @@ test.describe("the stage stream, read as the websocket's messages", () => {
   });
 });
 
-test.describe("the stage stores, from either source", () => {
+test.describe("the stage stores, from the stream", () => {
   const stores = () => ({
     metadata: get(metadataStore),
     venue: get(venueStore),
@@ -352,7 +347,7 @@ test.describe("the stage stores, from either source", () => {
 
   // Importing the stores opened no websocket: there is none to open here
   // (no `location`), and the import at the top of this file did not throw.
-  test("the stream and the websocket end in the same store writes", () => {
+  test("the stream ends in the same store writes as the stage it describes", () => {
     const reader = new StageReader({
       metadata: applyStageMetadata,
       state: applyStageState,
@@ -367,14 +362,8 @@ test.describe("the stage stores, from either source", () => {
       reader.takeBytes(base64Bytes(step.update));
       const fromStream = stores();
 
-      // The same stage as the websocket says it, through the handlers'
-      // own functions.
-      if (step.metadata) {
-        applyStageMetadata({
-          ...step.metadata,
-          venue: step.metadata.venue && { ...step.metadata.venue, dir: null },
-        });
-      }
+      // The same stage, through the stores' own functions.
+      if (step.metadata) applyStageMetadata(step.metadata);
       if (step.state) applyStageState(step.state);
       expect(fromStream, step.what).toEqual(narrowed(stores()));
     }

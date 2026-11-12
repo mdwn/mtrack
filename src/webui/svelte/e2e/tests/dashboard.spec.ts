@@ -89,8 +89,11 @@ test.describe("Dashboard", () => {
   test("play button triggers gRPC call", async ({ page }) => {
     await stubPlayerService(page);
 
-    const requestPromise = page.waitForRequest((req) =>
-      req.url().includes("player.v1.PlayerService"),
+    const requestPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("player.v1.PlayerService") &&
+        // The stage stream is open on the page; a call is the other.
+        !req.url().endsWith("/WatchStage"),
     );
     await dashboard.playButton.click();
     await requestPromise;

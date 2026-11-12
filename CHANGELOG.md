@@ -109,6 +109,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playlist where it is while a song plays, and it is open while the player is locked. A position
   past the end is `OUT_OF_RANGE`; a name that is not the entry's is `FAILED_PRECONDITION`.
 
+### Changed
+
+- **The web UI's light view reads the gRPC stream `WatchStage`**: the stage plot, the 3D view,
+  the fixture test and the lighting editor's live plan now take the stage (the venue's fixtures,
+  their values, poses and cells) from the same gRPC-Web stream the phone app uses, instead of the
+  websocket's JSON. The stream is opened when a page first shows the stage and closed a few seconds
+  after the last page that does goes away, so the Songs and Config pages do not hold it open.
+  Frames arrive at the player's own rate (20 a second). Arrival timing can be read in the browser
+  console with `?stageTiming=1` (`window.__stageTiming.summary()`).
+
+### Removed
+
+- **Breaking: the websocket's `metadata` and `state` messages**: `/ws` no longer sends the stage,
+  on connect or after. Anything that read them (a script, a dashboard of your own) should open the
+  `WatchStage` gRPC stream instead (see [gRPC](docs/src/interfaces/grpc.md)). The websocket still
+  carries the playback status, log lines, waveforms and reload notices. The venues directory the
+  `metadata` message named is not on the stream: a client that saves venue edits reads and writes
+  the venue through `/api/lighting/venues/<name>`, which uses the configured directory when none
+  is given.
+
 ## [0.18.1] - 2026-11-09
 
 ### Fixed

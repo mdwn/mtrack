@@ -16,7 +16,7 @@
   import type {
     FixtureMetadata,
     StageValues,
-    VenueMetadata,
+    StageVenue,
     VenueScene,
   } from "../../gen/rules/mtrack_rules";
   import type { SceneStats, SceneryStats } from "../../lib/stage/scene3d";
@@ -173,12 +173,8 @@
         )
       : $metadataStore,
   );
-  const shownVenue = $derived<VenueMetadata | null>(
-    fromFile
-      ? fileScene
-        ? { ...fileScene.venue, dir: null }
-        : null
-      : $venueStore,
+  const shownVenue = $derived<StageVenue | null>(
+    fromFile ? (fileScene ? fileScene.venue : null) : $venueStore,
   );
   /** A file view's fixtures are lit a neutral white, so lenses and beam
    *  directions read without pretending to be a show. */
@@ -312,7 +308,7 @@
         scene: StageScene;
         key: string;
         fixtures: Record<string, FixtureMetadata>;
-        venue: VenueMetadata | null;
+        venue: StageVenue | null;
       }
     | undefined = undefined;
   /** Scene builds so far, for tests (`data-builds`). */

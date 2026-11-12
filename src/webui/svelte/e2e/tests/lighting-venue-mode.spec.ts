@@ -14,7 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 // The venue inspector's mode select and patch strip (venue-exchange design
 // §21). Every test routes its own venue file, fixture types, archive and
@@ -194,7 +194,7 @@ async function open(page: Page, change: (v: VenueBody) => void = () => {}) {
   const served = await routeAll(page, name, venue);
   await page.goto(`/?wsId=${name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
-  await sendWs(page, name, {
+  await sendStage(page, name, {
     type: "metadata",
     fixtures: Object.fromEntries(
       venue.fixtures.map((f) => [
@@ -208,7 +208,7 @@ async function open(page: Page, change: (v: VenueBody) => void = () => {}) {
         },
       ]),
     ),
-    venue: { name, dir: null, focus_points: {} },
+    venue: { name, focus_points: {} },
   });
   await expect(page.locator(".inspector")).toBeVisible();
   await page
@@ -335,7 +335,7 @@ test("a fixture ganged on the same addresses is not a collision", async ({
   const { puts } = await routeAll(page, name, venue);
   await page.goto(`/?wsId=${name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
-  await sendWs(page, name, {
+  await sendStage(page, name, {
     type: "metadata",
     fixtures: Object.fromEntries(
       venue.fixtures.map((f) => [
@@ -349,7 +349,7 @@ test("a fixture ganged on the same addresses is not a collision", async ({
         },
       ]),
     ),
-    venue: { name, dir: null, focus_points: {} },
+    venue: { name, focus_points: {} },
   });
   await page
     .locator(".inspector")
