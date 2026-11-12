@@ -773,6 +773,7 @@ fn merge_into(cues: &mut Vec<Cue>, base: Option<usize>, cue: Cue) {
             cues[i].layer_commands.extend(cue.layer_commands);
             cues[i].stop_sequences.extend(cue.stop_sequences);
             cues[i].start_sequences.extend(cue.start_sequences);
+            cues[i].pass_restarts.extend(cue.pass_restarts);
         }
         None => cues.push(cue),
     }
@@ -878,7 +879,10 @@ impl<'a> Passes<'a> {
 /// tempo-aware rates and durations in beats or measures read at the tempo
 /// where it plays (#525, #529). Under a sequence's `name`, each pass after
 /// the first stops the one before it, so its effects do not pile up; the
-/// first starts the sequence afresh after any earlier `stop sequence`; and
+/// first starts the sequence afresh after any earlier `stop sequence`
+/// (the later passes' stops are marked as pass restarts, so the timeline
+/// does not take them for a `stop sequence` even on a pass whose first
+/// cue starts nothing); and
 /// an effect belongs to every sequence it is started through, this one
 /// after the ones inside it. An inline loop has no name: its passes are
 /// plain cues.
@@ -890,6 +894,7 @@ fn place_passes(passes: &Passes, name: Option<&str>, cues: &mut Vec<Cue>, base: 
             if let Some(name) = name.filter(|_| index == 0) {
                 if iteration > 0 {
                     cue.stop_sequences.push(name.to_string());
+                    cue.pass_restarts.push(name.to_string());
                 } else {
                     cue.start_sequences.push(name.to_string());
                 }
@@ -1080,6 +1085,7 @@ fn parse_cue(
         layer_commands: Vec::new(),
         stop_sequences: Vec::new(),
         start_sequences: Vec::new(),
+        pass_restarts: Vec::new(),
     };
     for stop_pair in stop_sequence_pairs {
         let seq_name = stop_pair

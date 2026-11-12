@@ -2691,6 +2691,7 @@ mod test {
                 layer_commands: Vec::<LayerCommand>::new(),
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             }
         }
 
@@ -4906,6 +4907,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             };
             {
                 let mut timeline = engine.current_song_timeline.lock();
@@ -5002,6 +5004,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             };
 
             {
@@ -5096,6 +5099,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             };
 
             let mut timeline = engine.current_song_timeline.lock();

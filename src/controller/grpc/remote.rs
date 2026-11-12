@@ -299,19 +299,43 @@ mod tests {
         assert!(more.is_err(), "an older status was queued: {more:?}");
     }
 
+    /// The player's count of strong references with only its own tasks
+    /// holding it: the transport poller holds one while it refreshes, every
+    /// 200 ms, so the least seen over a little more than one of its periods.
+    async fn resting_count(player: &Arc<Player>) -> usize {
+        let until = tokio::time::Instant::now() + Duration::from_millis(500);
+        let mut least = Arc::strong_count(player);
+        while tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            least = least.min(Arc::strong_count(player));
+        }
+        least
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn dropping_the_stream_ends_the_poll() {
         let player = crate::testutil::player::assets_player()
             .build()
             .expect("player");
         player.await_hardware_ready().await;
-        let before = Arc::strong_count(&player);
+        // The init round holds a clone for a moment after the hardware is
+        // ready, and the transport poller one while it refreshes: counted
+        // into the baseline, either let the count fall below it for good.
+        crate::testutil::eventually(
+            || player.init_round_finished(),
+            "the init round never ended",
+        );
+        let resting = resting_count(&player).await;
         let mut stream = watch(player.clone());
         next(&mut stream).await;
-        assert!(Arc::strong_count(&player) > before, "the poll holds it");
+        crate::testutil::eventually_async(
+            || async { Arc::strong_count(&player) > resting },
+            "the poll never held the player",
+        )
+        .await;
         drop(stream);
         crate::testutil::eventually_async(
-            || async { Arc::strong_count(&player) == before },
+            || async { Arc::strong_count(&player) == resting },
             "the poll outlived its client",
         )
         .await;

@@ -232,3 +232,29 @@ fn replay_a_full_clear_does_not_carry_the_show_end() {
                @00:05.000\n    master(layer: foreground, intensity: 50%)\n}\n";
     assert_eq!(end_of(src), Duration::from_secs(1));
 }
+
+/// A sequence opened with an empty cue: its passes after the first carry
+/// the iteration-boundary stop on a cue with none of the sequence's
+/// effects, which must not read as an explicit `stop sequence` and silence
+/// the passes after it. A pass runs from the empty cue to the end of the
+/// effect, 1.5 s.
+const EMPTY_ANCHOR: &str = "sequence \"x\" {\n    @00:00.000\n    @00:00.500\n    \
+    spots: static red: 100%, duration: 1s\n}\n\n\
+    show \"s\" {\n    @00:00.000\n    sequence \"x\", loop: 3\n}\n";
+
+#[test]
+fn passes_after_an_empty_anchor_cue_still_play() {
+    for (t, expect) in [
+        (1000, "spots@500ms"),
+        (2500, "spots@2s"),
+        (4000, "spots@3.5s"),
+    ] {
+        let t = Duration::from_millis(t);
+        let live = live_running_at(EMPTY_ANCHOR, t);
+        assert_eq!(live, vec![expect.to_string()], "live at {t:?}");
+        assert_eq!(seek_running_at(EMPTY_ANCHOR, t), live, "seek at {t:?}");
+    }
+    // And the show runs to the last pass's end, not the first's.
+    let tl = LightingTimeline::new(parse(EMPTY_ANCHOR));
+    assert_eq!(tl.show_end(), Duration::from_millis(4500));
+}

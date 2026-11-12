@@ -761,6 +761,17 @@ impl Player {
         }
     }
 
+    /// Whether the hardware init round's task has ended, and with it the
+    /// clone of the player it holds: `await_hardware_ready` returns while
+    /// it is still letting go.
+    #[cfg(test)]
+    pub(crate) fn init_round_finished(&self) -> bool {
+        self.init_round
+            .lock()
+            .as_ref()
+            .is_none_or(|round| round.is_finished())
+    }
+
     /// Gets the audio device currently in use by the player.
     #[cfg(test)]
     pub fn audio_device(&self) -> Option<Arc<dyn audio::Device>> {
