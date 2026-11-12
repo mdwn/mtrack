@@ -710,21 +710,22 @@ void main() {
   });
 
   group('status stream', () {
-    ble.Status status(String name, {bool playing = true}) => ble.Status(
-      playlistName: 'Friday',
-      songName: name,
-      playing: playing,
-      songDuration: pb.Duration.fromDart(const Duration(minutes: 3)),
-      elapsed: pb.Duration.fromDart(const Duration(seconds: 12)),
-      position: 2,
-      autoPlay: player.AutoPlayStatus(
-        song: 'Next one',
-        startsIn: pb.Duration.fromDart(const Duration(seconds: 4)),
-      ),
-    );
+    player.RemoteStatus status(String name, {bool playing = true}) =>
+        player.RemoteStatus(
+          playlistName: 'Friday',
+          songName: name,
+          playing: playing,
+          songDuration: pb.Duration.fromDart(const Duration(minutes: 3)),
+          elapsed: pb.Duration.fromDart(const Duration(seconds: 12)),
+          position: 2,
+          autoPlay: player.AutoPlayStatus(
+            song: 'Next one',
+            startsIn: pb.Duration.fromDart(const Duration(seconds: 4)),
+          ),
+        );
 
     test('decodes multi-chunk status frames', () async {
-      final seen = <ble.Status>[];
+      final seen = <player.RemoteStatus>[];
       final sub = client.statusStream.listen(seen.add);
       fake.emitStatus(
         status('A song with a rather long name indeed'),
@@ -743,7 +744,7 @@ void main() {
     });
 
     test('ignores continuation chunks before the first start', () async {
-      final seen = <ble.Status>[];
+      final seen = <player.RemoteStatus>[];
       final sub = client.statusStream.listen(seen.add);
       final cut = chunks(status('Cut').writeToBuffer(), 20);
       expect(cut.length, greaterThan(2));
@@ -758,7 +759,7 @@ void main() {
     });
 
     test('drops a malformed frame without ending the stream', () async {
-      final seen = <ble.Status>[];
+      final seen = <player.RemoteStatus>[];
       final errors = <Object>[];
       final sub = client.statusStream.listen(seen.add, onError: errors.add);
       // A well-framed message that is not a protobuf.
@@ -775,7 +776,7 @@ void main() {
     });
 
     test('a start mid-frame replaces the partial frame', () async {
-      final seen = <ble.Status>[];
+      final seen = <player.RemoteStatus>[];
       final sub = client.statusStream.listen(seen.add);
       final cut = chunks(status('Dropped').writeToBuffer(), 20);
       fake.emitStatusChunks(cut.take(2));

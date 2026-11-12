@@ -364,6 +364,10 @@ pub struct Player {
     /// When true, state-altering operations (config changes, song edits, etc.)
     /// are rejected. Playback controls always work. Locked by default on startup.
     locked: Arc<AtomicBool>,
+    /// The port the gRPC controller is listening on, or 0 while none is:
+    /// what `GetNetworkInfo` tells a phone. Set by the controller once it
+    /// has bound, and cleared when it stops.
+    grpc_port: Arc<std::sync::atomic::AtomicU16>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
     /// The transport's state machine, behind one lock: what a loop break
@@ -729,6 +733,7 @@ impl Player {
             transport_tx: Arc::new(tokio::sync::watch::channel(TransportSnapshot::default()).0),
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
+            grpc_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             transport: Arc::new(parking_lot::Mutex::new(TransportState::default())),
             loop_break: Arc::new(AtomicBool::new(false)),
@@ -1139,6 +1144,20 @@ impl Player {
     /// Returns true if the player is in locked mode (state-altering operations blocked).
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
+    }
+
+    /// The port the gRPC controller is listening on, when one is.
+    pub fn grpc_port(&self) -> Option<u16> {
+        match self.grpc_port.load(Ordering::Relaxed) {
+            0 => None,
+            port => Some(port),
+        }
+    }
+
+    /// Records the port the gRPC controller bound, or, with `None`, that it
+    /// no longer listens.
+    pub(crate) fn set_grpc_port(&self, port: Option<u16>) {
+        self.grpc_port.store(port.unwrap_or(0), Ordering::Relaxed);
     }
 
     /// Refuses a state-altering operation while the player is locked. Every
@@ -3316,7 +3335,7 @@ mod test {
         let song = player.navigate_to_song(2, Some("Song 1")).await?;
         assert_eq!(song.name(), "Song 1");
         assert_eq!(player.get_playlist().entry(), Some(2));
-        let status = crate::controller::ble::status::from_player(
+        let status = crate::controller::remote_status::from_player(
             &player.transport_status().await,
             player.gains_revision(),
             None,
@@ -5063,7 +5082,7 @@ mod test {
     /// until the loop is stopped, as the web UI marks it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_phones_status_names_the_looping_section() -> Result<(), Box<dyn Error>> {
-        use crate::controller::ble::status::from_player;
+        use crate::controller::remote_status::from_player;
 
         let (_dir, player) = two_section_songs_player().await?;
         let device = player.audio_device().expect("audio device").to_mock()?;

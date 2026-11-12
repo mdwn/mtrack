@@ -76,8 +76,8 @@ class PlayerClient {
   final Reassembler _statuses = Reassembler();
   final Map<int, _OpenStream> _streams = {};
   final Reassembler _streamFrames = Reassembler();
-  final StreamController<ble.Status> _statusController =
-      StreamController<ble.Status>.broadcast();
+  final StreamController<player.RemoteStatus> _statusController =
+      StreamController<player.RemoteStatus>.broadcast();
 
   int _nextId;
 
@@ -92,12 +92,12 @@ class PlayerClient {
   /// A frame that does not decode is dropped. Continuation chunks that arrive
   /// before the first start, as they can when subscribing in the middle of a
   /// frame, are ignored.
-  Stream<ble.Status> get statusStream => _statusController.stream;
+  Stream<player.RemoteStatus> get statusStream => _statusController.stream;
 
   /// Reads the `status` characteristic once and decodes it.
-  Future<ble.Status> readStatus() async {
+  Future<player.RemoteStatus> readStatus() async {
     final bytes = await _transport.readStatus();
-    return ble.Status.fromBuffer(bytes);
+    return player.RemoteStatus.fromBuffer(bytes);
   }
 
   /// Calls [method] (a bare `PlayerService` method name such as `Play`) with
@@ -505,7 +505,7 @@ class PlayerClient {
       return;
     }
     try {
-      _statusController.add(ble.Status.fromBuffer(frame));
+      _statusController.add(player.RemoteStatus.fromBuffer(frame));
     } on InvalidProtocolBufferException {
       return;
     }

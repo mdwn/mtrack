@@ -93,6 +93,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the store. `gzip` sends it compressed. A read, open while the player is locked. A phone can
   open it over Bluetooth beside `WatchStage`; none of its chunks is dropped, and the stage's
   frames still go out between them.
+- **`WatchStatus` gRPC RPC**: a server stream of the compact status the Bluetooth controller
+  pushes to a phone (`RemoteStatus`: the playlist and song, whether it plays and how far in, the
+  playlist position, the section loop, the track gains' revision, the ambient light and the lock).
+  The current status comes at once, then another whenever it changes and once a second while a
+  song plays; a client that reads slowly is sent the latest and skips the rest. A read, open
+  while the player is locked. The Bluetooth status message moved into the player's proto as
+  `RemoteStatus` with the same field numbers, so it is the same bytes on the air.
+- **`GetNetworkInfo` gRPC RPC**: the player's host name, its IPv4 and IPv6 addresses (not
+  loopback or link-local) and the port its gRPC controller listens on. A phone connected over
+  Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi.
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the
