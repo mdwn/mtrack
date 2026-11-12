@@ -56,7 +56,7 @@ describe("TimingRecorder", () => {
   });
 
   it("keeps the newest samples when the ring wraps, in order", () => {
-    const r = new TimingRecorder("ws", 4);
+    const r = new TimingRecorder("grpc", 4);
     for (let i = 0; i < 10; i++) r.record(i * 10);
     const s = r.summary();
     expect(s.count).toBe(4);

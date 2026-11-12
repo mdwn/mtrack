@@ -11,85 +11,26 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// SPIKE: the stage (plot and 3D) reading the player's gRPC stream
-// `WatchStage` over gRPC-Web instead of the websocket's `metadata` and
-// `state` messages, so the two can be timed against each other.
+// The stage (plot and 3D) read from the player's gRPC stream `WatchStage`
+// over gRPC-Web: the one feed the stage has. One stream per page, opened
+// when something first shows the stage and closed a while after the last
+// thing that does stops (a page that never shows it never opens it).
 //
-// To switch, load the web UI with `?stageFeed=grpc` (or `?stageFeed=ws` to
-// go back). The choice is remembered in localStorage; the default is the
-// websocket. Frame arrival timing is recorded when the switch has been used
-// or with `?stageTiming=1`: in the console, `window.__stageTiming.summary()`
-// and `.reset()`. Everything else on the websocket carries on either way.
+// Frame arrival timing is recorded with `?stageTiming=1`: in the console,
+// `window.__stageTiming.summary()` and `.reset()`.
 
 import type { StageUpdate } from "../../gen/player/v1/player_pb";
 import type { StageMetadata } from "../../gen/rules/mtrack_rules";
 import { StageReader, type StageSink } from "./feed";
-import { TimingRecorder } from "./timing";
+import { stageTiming, TimingRecorder } from "./timing";
 
-export type StageFeed = "ws" | "grpc";
+/** Backoff steps in ms between reconnects; the last repeats. */
+export const STAGE_BACKOFF = [250, 500, 1000, 2000];
 
-/** The frame rate asked of the stream: the player sends at its sampler's
- *  rate when that is lower (the request is a ceiling). */
-export const STAGE_MAX_RATE = 1000;
-
-const STORAGE_KEY = "mtrack.stageFeed";
-
-export interface FeedChoice {
-  feed: StageFeed;
-  /** Timing is recorded: the switch was used (now or before), or asked. */
-  timing: boolean;
-}
-
-interface KeyValueStore {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-const asFeed = (v: string | null | undefined): StageFeed | null =>
-  v === "grpc" || v === "ws" ? v : null;
-
-/** Reads the switch from the query (`search`) and the remembered choice;
- *  remembers a choice given in the query. Storage failures are ignored. */
-export function chooseStageFeed(
-  search: string,
-  storage: KeyValueStore | null,
-): FeedChoice {
-  const query = new URLSearchParams(search);
-  let stored: StageFeed | null = null;
-  try {
-    stored = asFeed(storage?.getItem(STORAGE_KEY));
-  } catch {
-    // No storage: the query and the default decide.
-  }
-  const asked = asFeed(query.get("stageFeed"));
-  if (asked && asked !== stored) {
-    try {
-      storage?.setItem(STORAGE_KEY, asked);
-    } catch {
-      // Not remembered.
-    }
-  }
-  const feed = asked ?? stored ?? "ws";
-  return {
-    feed,
-    timing:
-      asked !== null || stored !== null || query.get("stageTiming") === "1",
-  };
-}
-
-/** Gates the websocket's stage messages and records state arrivals. */
-export const stageFeedState = {
-  feed: "ws" as StageFeed,
-  timing: null as TimingRecorder | null,
-  /** Whether the websocket's `metadata` and `state` messages apply. */
-  websocketStage(): boolean {
-    return stageFeedState.feed === "ws";
-  },
-  /** Called for each stage state applied, from either feed. */
-  stateApplied(): void {
-    stageFeedState.timing?.record(performance.now());
-  },
-};
+/** How long the stream stays open after the last watcher leaves, in ms:
+ *  long enough that moving between two pages that show the stage (or a page
+ *  re-rendering) does not close and reopen it. */
+export const STAGE_GRACE_MS = 5000;
 
 /** The sink that skips a layout whose metadata is what was last applied, so
  *  a resent layout does not rebuild the 3D scene. */
@@ -138,7 +79,7 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  *  reconnecting; the backoff starts over after a connection that delivered. */
 export async function runStageStream(o: StreamOptions): Promise<void> {
   const sleep = o.sleep ?? abortableSleep;
-  const steps = o.backoff ?? [250, 500, 1000, 2000];
+  const steps = o.backoff ?? STAGE_BACKOFF;
   let attempt = 0;
   while (!o.signal.aborted) {
     const reader = new StageReader(o.sink);
@@ -157,46 +98,111 @@ export async function runStageStream(o: StreamOptions): Promise<void> {
   }
 }
 
-/** Starts the chosen feed for the page: installs `window.__stageTiming` when
- *  timing is on, and opens the gRPC stream when gRPC is chosen. Returns the
- *  choice. Call once, before the websocket connects. */
-export async function startStageFeed(
-  sink: StageSink,
-  win: Window & { __stageTiming?: unknown } = window,
-): Promise<FeedChoice> {
-  let storage: Storage | null = null;
-  try {
-    storage = win.localStorage;
-  } catch {
-    // Blocked storage.
+/** Timers a {@link FeedLease} waits with; the page's own, unless a test
+ *  gives others. */
+export interface LeaseTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+/**
+ * Shares one stream between everything that shows the stage: the first
+ * `acquire` starts it, and it stops `graceMs` after the last `release`
+ * (a new `acquire` in that time keeps it).
+ */
+export class FeedLease {
+  private holders = 0;
+  private stop: (() => void) | null = null;
+  private closing: unknown = null;
+  private readonly start: () => () => void;
+  private readonly graceMs: number;
+  private readonly timers: LeaseTimers;
+
+  /** `start` opens the stream and returns what closes it. */
+  constructor(
+    start: () => () => void,
+    graceMs = STAGE_GRACE_MS,
+    timers: LeaseTimers = {
+      set: (fn, ms) => setTimeout(fn, ms),
+      clear: (handle) => clearTimeout(handle as number),
+    },
+  ) {
+    this.start = start;
+    this.graceMs = graceMs;
+    this.timers = timers;
   }
-  // The query may sit before or after the hash (`/#/lights?stageFeed=grpc`).
-  const hashQuery = win.location.hash.split("?")[1] ?? "";
-  const choice = chooseStageFeed(
-    `${win.location.search}&${hashQuery}`,
-    storage,
-  );
-  stageFeedState.feed = choice.feed;
-  if (choice.timing) {
-    const recorder = new TimingRecorder(choice.feed);
-    stageFeedState.timing = recorder;
-    win.__stageTiming = {
-      feed: choice.feed,
-      reset: () => recorder.reset(),
-      summary: () => recorder.summary(),
+
+  /** Holds the stream open; the returned function lets go (once). */
+  acquire(): () => void {
+    this.holders++;
+    if (this.closing !== null) {
+      this.timers.clear(this.closing);
+      this.closing = null;
+    }
+    this.stop ??= this.start();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.holders > 0) return;
+      this.closing = this.timers.set(() => {
+        this.closing = null;
+        if (this.holders === 0) {
+          this.stop?.();
+          this.stop = null;
+        }
+      }, this.graceMs);
     };
   }
-  if (choice.feed === "grpc") {
+
+  /** Whether the stream is open. */
+  get open(): boolean {
+    return this.stop !== null;
+  }
+}
+
+/** Whether the page's URL asks for arrival timing (`?stageTiming=1`, before
+ *  or after the hash). */
+export function wantsStageTiming(
+  location: Pick<Location, "search" | "hash">,
+): boolean {
+  const query = `${location.search}&${location.hash.split("?")[1] ?? ""}`;
+  return new URLSearchParams(query).get("stageTiming") === "1";
+}
+
+/** Installs `window.__stageTiming` when the page's URL asks for it. */
+export function installStageTiming(
+  win: Window & { __stageTiming?: unknown } = window,
+): void {
+  if (!wantsStageTiming(win.location)) return;
+  const recorder = new TimingRecorder("grpc");
+  stageTiming.recorder = recorder;
+  win.__stageTiming = {
+    reset: () => recorder.reset(),
+    summary: () => recorder.summary(),
+  };
+}
+
+/** Opens the page's stage stream into `sink`; returns what closes it. The
+ *  player sends at its own rate. A page that goes away closes it. */
+export function openStageStream(
+  sink: StageSink,
+  win: Window = window,
+): () => void {
+  const abort = new AbortController();
+  const onHide = () => abort.abort();
+  win.addEventListener("pagehide", onHide, { once: true });
+  void (async () => {
     const { playerClient } = await import("../grpc/client");
-    const abort = new AbortController();
-    win.addEventListener("pagehide", () => abort.abort(), { once: true });
-    void runStageStream({
-      open: (signal) =>
-        playerClient.watchStage({ maxRate: STAGE_MAX_RATE }, { signal }),
+    await runStageStream({
+      open: (signal) => playerClient.watchStage({}, { signal }),
       sink: dedupingSink(sink),
       signal: abort.signal,
       onError: (e) => console.warn("stage stream:", e),
     });
-  }
-  return choice;
+  })();
+  return () => {
+    win.removeEventListener("pagehide", onHide);
+    abort.abort();
+  };
 }

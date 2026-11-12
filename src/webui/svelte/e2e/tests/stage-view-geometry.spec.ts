@@ -13,7 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 let testCounter = 0;
 
@@ -35,7 +35,6 @@ const geometryMetadata = (venueName: string) => ({
   },
   venue: {
     name: venueName,
-    dir: null,
     focus_points: { drummer: [0, 2.8, 1.4] },
   },
 });
@@ -61,10 +60,10 @@ test.describe("Stage View geometry", () => {
     // Editing positions and focus points lives on the Venues page.
     await page.goto(`/?wsId=${wsId}#/lighting/venues`);
     // The plot draws the current venue; this one has no geometry yet.
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       type: "metadata",
       fixtures: { "front-left": { tags: ["front"], type: "par" } },
-      venue: { name: venueName, dir: null },
+      venue: { name: venueName },
     });
     await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
   });
@@ -80,7 +79,7 @@ test.describe("Stage View geometry", () => {
   test("positional metadata switches the card to the stage plot", async ({
     page,
   }) => {
-    await sendWs(page, wsId, geometryMetadata(venueName));
+    await sendStage(page, wsId, geometryMetadata(venueName));
     await expect(page.locator(".stage-card--geometry")).toBeVisible();
     await expect(page.locator(".stage-card__placed")).toContainText(
       "1 of 2 placed",
@@ -96,7 +95,7 @@ test.describe("Stage View geometry", () => {
   });
 
   test("adding a focus point saves it back to the venue", async ({ page }) => {
-    await sendWs(page, wsId, geometryMetadata(venueName));
+    await sendStage(page, wsId, geometryMetadata(venueName));
     await expect(page.locator(".stage-card--geometry")).toBeVisible();
     await page.locator(".stage-card__add-focus").click();
     await expect(page.locator(".stage-card__reload")).toContainText("Saved");
@@ -114,7 +113,7 @@ test.describe("Stage View geometry", () => {
   });
 
   test("renaming a focus point saves the new name", async ({ page }) => {
-    await sendWs(page, wsId, geometryMetadata(venueName));
+    await sendStage(page, wsId, geometryMetadata(venueName));
     const input = page.locator(
       ".stage-card__focus input.stage-card__focus-name",
     );

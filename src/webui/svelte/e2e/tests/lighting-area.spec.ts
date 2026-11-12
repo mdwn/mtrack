@@ -13,7 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 import type { ProfileFileInfo } from "../../src/gen/rules/mtrack_rules";
 
 let testCounter = 0;
@@ -384,7 +384,7 @@ test.describe("Lighting area: Config and the dashboard link across", () => {
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       type: "metadata",
       fixtures: {
         "front-left": {
@@ -396,7 +396,6 @@ test.describe("Lighting area: Config and the dashboard link across", () => {
       },
       venue: {
         name: `venue-${wsId}`,
-        dir: null,
         focus_points: { drummer: [0, 2.8, 1.4] },
       },
     });
@@ -424,7 +423,7 @@ test.describe("Lighting area: Venues stage plot", () => {
       },
       spare: { tags: [], type: "par", position: null },
     },
-    venue: { name, dir: null, focus_points: { drummer: [0, 2.8, 1.4] } },
+    venue: { name, focus_points: { drummer: [0, 2.8, 1.4] } },
   });
 
   test("with no current venue it says so instead of drawing a stage", async ({
@@ -446,7 +445,7 @@ test.describe("Lighting area: Venues stage plot", () => {
       await page.setViewportSize(size);
       await page.goto(`/?wsId=${wsId}#/lighting/venues`);
       const name = `venue-${wsId}`;
-      await sendWs(page, wsId, GEOMETRY(name));
+      await sendStage(page, wsId, GEOMETRY(name));
       await expect(page.locator(".stage-card--geometry")).toBeVisible();
       await expect(page.getByTestId("stage-venue-label")).toHaveText(
         `Current venue: ${name} · live`,

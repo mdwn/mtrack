@@ -12,8 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The stage as the gRPC stage stream says it: the websocket's `metadata`
-//! and `state` messages as a layout and frames. The layout names every
+//! The stage as the gRPC stage stream says it: a layout and frames. The layout names every
 //! fixture and its channels once; a frame is then bytes in the layout's
 //! order, with only what differs from the layout (poses) or is running
 //! (strobes, per-cell values) beside them. Pure conversion; the stream
@@ -65,7 +64,7 @@ fn capability_name(capability: &crate::lighting::fit::Capability) -> String {
     }
 }
 
-/// The layout for a snapshot: the venue's fixtures as `metadata` has them,
+/// The layout for a snapshot: the venue's fixtures as the metadata has them,
 /// and with them every fixture the snapshot names (one it carries, one with
 /// a pose, one under test), sorted by name. A fixture only in the snapshot
 /// has channels and no placement; one only in the metadata has no channels.
@@ -132,17 +131,15 @@ pub(crate) fn stage_layout(
     StageLayout {
         id: 0,
         fixtures,
-        // Without the venues directory: that is for saving edits back.
         venue: metadata.venue.as_ref().map(|venue| StageVenue {
-            name: venue.venue.name.clone(),
+            name: venue.name.clone(),
             focus_points: venue
-                .venue
                 .focus_points
                 .iter()
                 .map(|(name, point)| (name.clone(), vec3(*point)))
                 .collect(),
-            scenery: venue.venue.scenery.clone(),
-            scenery_error: venue.venue.scenery_error.clone(),
+            scenery: venue.scenery.clone(),
+            scenery_error: venue.scenery_error.clone(),
         }),
     }
 }
@@ -361,14 +358,11 @@ mod test {
                 ("bar".to_string(), bar),
                 ("spare".to_string(), placed("Par")),
             ]),
-            venue: Some(wire::VenueMetadata {
-                venue: wire::StageVenue {
-                    name: "club".to_string(),
-                    focus_points: BTreeMap::from([("drummer".to_string(), [0.0, 2.75, 1.5])]),
-                    scenery: Some("scenery/club.glb".to_string()),
-                    scenery_error: None,
-                },
-                dir: Some("/somewhere/venues".to_string()),
+            venue: Some(wire::StageVenue {
+                name: "club".to_string(),
+                focus_points: BTreeMap::from([("drummer".to_string(), [0.0, 2.75, 1.5])]),
+                scenery: Some("scenery/club.glb".to_string()),
+                scenery_error: None,
             }),
         }
     }
@@ -418,7 +412,7 @@ mod test {
     }
 
     #[test]
-    fn the_layout_carries_what_the_metadata_does_and_no_venues_directory() {
+    fn the_layout_carries_the_fixtures_and_the_venue() {
         let layout = stage_layout(&metadata(), &snapshot());
         let head = &layout.fixtures[1];
         assert_eq!(head.r#type, "Head");
@@ -456,10 +450,6 @@ mod test {
         assert_eq!(venue.focus_points["drummer"], vec3([0.0, 2.75, 1.5]));
         assert_eq!(venue.scenery.as_deref(), Some("scenery/club.glb"));
         assert_eq!(venue.scenery_error, None);
-        assert!(
-            !layout.encode_to_vec().windows(9).any(|w| w == b"somewhere"),
-            "the venues directory is for editing, and stays home"
-        );
 
         assert_eq!(
             stage_layout(&empty(), &StateSnapshot::default()).venue,
@@ -633,7 +623,7 @@ mod test {
     }
 
     /// What a client makes of a layout and a frame, in the shape the
-    /// websocket's `state` message has it.
+    /// stage's state has in the web UI's stores.
     #[derive(Debug, PartialEq, Default)]
     struct Read {
         fixtures: BTreeMap<String, HashMap<String, u8>>,
@@ -693,9 +683,10 @@ mod test {
         read
     }
 
-    /// The same, from the websocket's own message, with its geometry
-    /// narrowed to the stream's `f32`.
-    fn from_json(snapshot: &StateSnapshot) -> Read {
+    /// The same, from the frame the preview's evaluation is built with
+    /// (`webui::state::stage_frame`), with its geometry narrowed to the
+    /// stream's `f32`.
+    fn from_values(snapshot: &StateSnapshot) -> Read {
         let values = crate::webui::state::stage_frame(&snapshot.fixtures, &snapshot.poses);
         Read {
             fixtures: values.fixtures,
@@ -716,7 +707,7 @@ mod test {
     }
 
     #[test]
-    fn the_stream_and_the_websocket_say_the_same_thing() {
+    fn the_stream_and_the_previews_frames_say_the_same_thing() {
         let metadata = metadata();
         let first = snapshot();
         let layout = stage_layout(&metadata, &first);
@@ -726,7 +717,7 @@ mod test {
             let frame = stage_frame(snapshot, &layout).encode_to_vec();
             read(&layout, &StageFrame::decode(frame.as_slice()).unwrap())
         };
-        assert_eq!(through(&first), from_json(&first));
+        assert_eq!(through(&first), from_values(&first));
 
         // Later frames against the same layout: values, the pose, the
         // strobe, the cells and the test all move.
@@ -739,11 +730,11 @@ mod test {
         later.under_test = vec!["bar".to_string(), "stray".to_string()];
         later.active_effects.clear();
         assert!(fits(&later, &layout));
-        assert_eq!(through(&later), from_json(&later));
+        assert_eq!(through(&later), from_values(&later));
 
         let mut still = later.clone();
         still.poses.clear();
-        assert_eq!(through(&still), from_json(&still));
+        assert_eq!(through(&still), from_values(&still));
 
         // And the layout says what the metadata does, name for name.
         for (name, meta) in &metadata.fixtures {
@@ -815,18 +806,16 @@ mod test {
 
     /// A short stream as the web UI's stage reader is tested against
     /// (src/webui/svelte/src/lib/stage/feed.ts): each update as it goes
-    /// over the wire, and beside it what the websocket says for the same
-    /// stage, which is what the reader must make of it.
+    /// over the wire, and beside it the stage it describes, which is what
+    /// the reader must make of it.
     fn recorded_stream() -> serde_json::Value {
         use crate::proto::player::v1::{stage_update::Update, StageUpdate};
         use serde_json::json;
 
         let metadata = metadata();
-        let metadata_json = serde_json::to_value(wire::SocketMessage::Metadata(metadata.clone()))
-            .expect("the metadata message");
+        let metadata_json = serde_json::to_value(&metadata).expect("the metadata");
         let state_json = |snapshot: &StateSnapshot| -> serde_json::Value {
-            serde_json::from_str(&crate::webui::state::build_state_json(snapshot))
-                .expect("the state message")
+            serde_json::from_str(&state_text(snapshot)).expect("the state")
         };
         let layout_update = |layout: &StageLayout| {
             base64(
@@ -846,7 +835,7 @@ mod test {
             )
         };
 
-        // The stage of `the_stream_and_the_websocket_say_the_same_thing`.
+        // The stage of `the_stream_and_the_previews_frames_say_the_same_thing`.
         let first = snapshot();
         let mut later = first.clone();
         later.fixtures[0].channels.insert("pan".to_string(), 200);
@@ -868,9 +857,10 @@ mod test {
         two.id = 2;
 
         in_key_order(json!({
-            "about": "A WatchStage stream as the player encodes it, with the websocket's \
-                      message for the same stage beside each update. Written by the test \
-                      the_web_uis_recorded_stream_is_what_the_encoder_says in \
+            "about": "A WatchStage stream as the player encodes it, with what the web UI \
+                      should make of each update beside it (the stage's metadata and state, \
+                      before the stream narrowed their numbers to 32 bits). Written by the \
+                      test the_web_uis_recorded_stream_is_what_the_encoder_says in \
                       src/controller/grpc/stage.rs; do not edit by hand.",
             "steps": [
                 {
@@ -942,6 +932,16 @@ mod test {
         );
     }
 
+    /// A snapshot as the stage's state in the web UI's terms (JSON).
+    fn state_text(snapshot: &StateSnapshot) -> String {
+        serde_json::to_string(&wire::StageState {
+            frame: crate::webui::state::stage_frame(&snapshot.fixtures, &snapshot.poses),
+            active_effects: snapshot.active_effects.clone(),
+            under_test: snapshot.under_test.clone(),
+        })
+        .unwrap()
+    }
+
     /// `fixtures` fixtures of `channels` channels each, lit, with nothing
     /// else going on: the frame an ordinary moment of a show sends.
     fn frame_size(fixtures: usize, channels: usize) -> (usize, usize) {
@@ -962,7 +962,7 @@ mod test {
         // As the stream sends it: a layout always has an id.
         layout.id = 1;
         let frame = stage_frame(&snapshot, &layout);
-        let json = crate::webui::state::build_state_json(&snapshot);
+        let json = state_text(&snapshot);
         (frame.encoded_len(), json.len())
     }
 
@@ -973,8 +973,8 @@ mod test {
     fn a_frame_is_as_small_as_the_design_says() {
         let (rig, rig_json) = frame_size(8, 5);
         let (big, big_json) = frame_size(50, 8);
-        println!("8 fixtures x 5 channels: {rig} bytes (JSON state message: {rig_json})");
-        println!("50 fixtures x 8 channels: {big} bytes (JSON state message: {big_json})");
+        println!("8 fixtures x 5 channels: {rig} bytes (as JSON: {rig_json})");
+        println!("50 fixtures x 8 channels: {big} bytes (as JSON: {big_json})");
         assert_eq!(rig, 44);
         assert_eq!(big, 405);
 

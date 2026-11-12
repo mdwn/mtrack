@@ -14,7 +14,7 @@
 
 /**
  * The 3D view's Preview mode (lighting UI design, section 12.1): a show
- * evaluated offline at a moment, in the shape the live `state` message has,
+ * evaluated offline at a moment, in the shape of a live frame of the stage stream (`StageState`),
  * so the scene is fed the same way from either source.
  */
 

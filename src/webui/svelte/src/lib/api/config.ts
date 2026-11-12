@@ -801,8 +801,8 @@ export async function fetchVenuePatch(
   return res.json();
 }
 
-/** What the 3D view draws for a venue, from its files: the websocket's
- *  metadata shape, for a venue that is not the current one. */
+/** What the 3D view draws for a venue, from its files: the stage
+ *  metadata's shape, for a venue that is not the current one. */
 /** A venue the server does not have (404), told apart from a failed read. */
 export class VenueNotFoundError extends Error {}
 

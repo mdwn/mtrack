@@ -71,6 +71,7 @@ import {
   MVR_INSPECTION,
   MVR_EXPORT_SUMMARY,
 } from "./test-data.js";
+import { StageStream, type StageMessage } from "../support/stage-stream.js";
 
 const app = express();
 app.use(express.json());
@@ -1085,24 +1086,98 @@ app.post("/test/send-ws", async (req, res) => {
   }
 });
 
+// --- The stage: the player's gRPC stream WatchStage ---
+// The page reads the stage from a gRPC-Web server stream. Each page that
+// opens one is held open here, keyed by the wsId of the page it came from
+// (the browser names the page in the request's Referer, so the web UI has
+// no test hook for it), and written to as tests push (POST /test/send-stage,
+// see e2e/support/stage.ts). A page that reconnects starts from the default
+// stage again, as a reconnecting websocket gets its opening burst again.
+/** A page's open stage stream. */
+type StageSession = { res: express.Response; stream: StageStream };
+const stageSessions = new Map<string, StageSession>();
+
+/** The wsId in the query of the page a request came from, or "". */
+function wsIdOfReferer(referer: string | undefined): string {
+  try {
+    return new URL(referer ?? "").searchParams.get("wsId") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Writes `message` into a page's stream. */
+function writeStage(session: StageSession, message: StageMessage): void {
+  for (const frame of session.stream.push(message)) session.res.write(frame);
+}
+
+app.post("/player.v1.PlayerService/WatchStage", (req, res) => {
+  const wsId = wsIdOfReferer(req.headers.referer);
+  res.status(200).set({
+    "content-type": "application/grpc-web+proto",
+    "cache-control": "no-cache",
+    "x-accel-buffering": "no",
+  });
+  res.flushHeaders();
+  const session: StageSession = { res, stream: new StageStream() };
+  // The opening burst: the default venue, and unless the page asked for
+  // none ("-nostate": for a test that must see the page before the engine
+  // has reported anything), the default fixtures' state.
+  writeStage(session, METADATA_STATE);
+  if (!wsId.endsWith("-nostate")) writeStage(session, FIXTURE_STATE);
+  stageSessions.set(wsId, session);
+  // Only if this stream is still the registered one: a reconnect under the
+  // same wsId registers the new one first.
+  res.on("close", () => {
+    if (stageSessions.get(wsId) === session) stageSessions.delete(wsId);
+  });
+});
+
+async function waitForStage(wsId: string): Promise<StageSession | null> {
+  const deadline = Date.now() + WS_WAIT_MS;
+  for (;;) {
+    const session = stageSessions.get(wsId);
+    if (session && !session.res.writableEnded && !session.res.destroyed) {
+      return session;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+// Put a stage message (metadata or state) on the page identified by wsId, or
+// on every page without one. `sent` is how many streams it went to.
+app.post("/test/send-stage", async (req, res) => {
+  const { _wsId, ...message } = req.body;
+  const wsId = (_wsId as string | undefined) ?? "";
+  if (!wsId) {
+    for (const session of stageSessions.values()) {
+      writeStage(session, message as StageMessage);
+    }
+    res.json({ sent: stageSessions.size });
+    return;
+  }
+  const session = await waitForStage(wsId);
+  if (session) {
+    writeStage(session, message as StageMessage);
+    res.json({ sent: 1, wsId });
+  } else {
+    res.json({ sent: 0, wsId });
+  }
+});
+
 // --- HTTP + WebSocket server ---
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 // The opening burst every connection gets, in the same order as the real
-// server. Resolves once the last message is out: a test's own state push has
-// to land after it, or the burst overwrites what the test just set up.
-// A wsId ending in "-nostate" gets no fixture state: for a test that must
-// see the page before the engine has reported anything, which the burst
-// would otherwise win against on a fast machine.
-function sendInitialState(ws: WebSocket, wsId: string | null): Promise<void> {
-  ws.send(JSON.stringify(METADATA_STATE));
+// server. Resolves once the last message is out: a test's own push has to
+// land after it, or the burst overwrites what the test just set up. (The
+// stage is not here: it is the gRPC stream above.)
+function sendInitialState(ws: WebSocket): Promise<void> {
   const later: [number, unknown][] = [
     [50, PLAYBACK_STATE],
-    ...(wsId?.endsWith("-nostate")
-      ? []
-      : ([[100, FIXTURE_STATE]] as [number, unknown][])),
     [150, WAVEFORM_DATA],
     [200, LOG_LINES],
   ];
@@ -1123,7 +1198,7 @@ wss.on("connection", (ws, req) => {
   // Extract wsId from query parameter for test isolation.
   const url = new URL(req.url ?? "", "http://localhost");
   const wsId = url.searchParams.get("wsId");
-  const ready = sendInitialState(ws, wsId);
+  const ready = sendInitialState(ws);
   if (wsId) {
     wsConnections.set(wsId, { ws, ready });
     // Only if this socket is still the registered one: a reconnect under the

@@ -21,8 +21,8 @@
     Vec3,
     Venue,
     VenueError,
-    VenueMetadata,
   } from "../gen/rules/mtrack_rules";
+  import type { ShownVenue } from "../lib/stage/shown";
   import {
     concerns,
     fixtureTypeChanges,
@@ -276,7 +276,7 @@
   let saving = $state(false);
   let renaming = $state<Record<string, string>>({});
 
-  // --- What the plot shows: the live venue from the websocket, or (when
+  // --- What the plot shows: the live venue from the stage stream, or (when
   // the Venues page picked another one) that venue's file, read through the
   // venues API. A file view has no live colour and no engine poses.
   // A current venue that did not load has no live fixtures to draw, which
@@ -398,7 +398,7 @@
   let shownFixtures = $derived<Record<string, FixtureMetadata>>(
     viewingFile ? fileFixtures : $metadataStore,
   );
-  let shownVenue = $derived<VenueMetadata | null>(
+  let shownVenue = $derived<ShownVenue | null>(
     viewingFile
       ? fileView
         ? {
@@ -443,7 +443,7 @@
 
   function computeLayout(
     fixtures: Record<string, FixtureMetadata>,
-    venueMeta: VenueMetadata | null,
+    venueMeta: ShownVenue | null,
   ) {
     if (!canvasEl) return;
     const w = canvasEl.clientWidth;
@@ -606,7 +606,7 @@
   }
 
   function draw(fixtureStates: StageValues["fixtures"]) {
-    // Per-cell values and strobe rates ride the same state message as
+    // Per-cell values and strobe rates ride the same frame as
     // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);
     const strobeRates = get(strobeRateStore);
@@ -985,8 +985,11 @@
         return;
       }
       const [x, y] = toStage(activeFrame, focusPositions[finished.name]);
-      const z = focusPoints[finished.name]?.[2] ?? 0;
+      // Height: the file's own, never the plot's (the stream's numbers
+      // are 32-bit floats, and the file's are not).
+      const shownZ = focusPoints[finished.name]?.[2] ?? 0;
       await persist((v) => {
+        const z = v.focus_points?.[finished.name]?.[2] ?? shownZ;
         v.focus_points = {
           ...(v.focus_points ?? {}),
           [finished.name]: [x, y, z],
@@ -1002,10 +1005,12 @@
       return;
     }
     const [x, y] = toStage(activeFrame, dropped);
-    const z = shownFixtures[finished.name]?.position?.[2] ?? DEFAULT_TRIM_M;
+    // Trim height: the file's own, never the plot's (see the focus point).
+    const shownZ =
+      shownFixtures[finished.name]?.position?.[2] ?? DEFAULT_TRIM_M;
     await persist((v) => {
       const fixture = v.fixtures[finished.name];
-      if (fixture) fixture.position = [x, y, z];
+      if (fixture) fixture.position = [x, y, fixture.position?.[2] ?? shownZ];
     });
   }
 
@@ -1452,7 +1457,7 @@
   // effect, and it reads the live state, the selection and the venue; read
   // untracked, so a change to any of them does not tear the loop down and
   // set the canvas up again (which blanked the stage for a frame on every
-  // state message).
+  // frame).
   $effect(() => {
     let observer: ResizeObserver | undefined;
     if (canvasEl) {

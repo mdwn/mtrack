@@ -27,8 +27,11 @@ test.describe("Keyboard Shortcuts", () => {
   test("space bar triggers play via gRPC", async ({ page }) => {
     await stubPlayerService(page);
 
-    const requestPromise = page.waitForRequest((req) =>
-      req.url().includes("player.v1.PlayerService"),
+    const requestPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("player.v1.PlayerService") &&
+        // The stage stream is open on the page; a call is the other.
+        !req.url().endsWith("/WatchStage"),
     );
     await page.keyboard.press("Space");
     await requestPromise;

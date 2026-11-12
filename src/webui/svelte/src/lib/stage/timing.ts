@@ -11,9 +11,9 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Stage-state arrival timing, for judging how smooth a stage feed is. Pure:
-// no DOM, no clock of its own (the caller gives each timestamp). Part of the
-// gRPC stage feed spike (see grpc-feed.ts).
+// Stage-state arrival timing, for judging how smooth the stage feed is (with
+// `?stageTiming=1`, see grpc-feed.ts). Pure: no DOM, no clock of its own (the
+// caller gives each timestamp).
 
 /** The most arrivals kept; older ones are overwritten. */
 export const TIMING_CAPACITY = 20_000;
@@ -56,7 +56,7 @@ export class TimingRecorder {
   private recorded = 0;
   feed: string;
 
-  constructor(feed = "ws", capacity = TIMING_CAPACITY) {
+  constructor(feed = "grpc", capacity = TIMING_CAPACITY) {
     this.feed = feed;
     this.times = new Float64Array(capacity);
   }
@@ -104,3 +104,12 @@ export class TimingRecorder {
     };
   }
 }
+
+/** Where each stage state's arrival is noted, when timing is on. */
+export const stageTiming = {
+  recorder: null as TimingRecorder | null,
+  /** Called for each stage state applied. */
+  applied(): void {
+    stageTiming.recorder?.record(performance.now());
+  },
+};

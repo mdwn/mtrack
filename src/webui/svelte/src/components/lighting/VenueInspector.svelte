@@ -25,9 +25,9 @@
     FixtureTypeGdtf,
     Vec3,
     Venue,
-    VenueMetadata,
     VenuePatch,
   } from "../../gen/rules/mtrack_rules";
+  import type { ShownVenue } from "../../lib/stage/shown";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
@@ -79,7 +79,7 @@
      *  file's fixtures when the plan is a view of the file. */
     fixtures: Record<string, FixtureMetadata>;
     /** The venue the plan shows. */
-    venue: VenueMetadata | null;
+    venue: ShownVenue | null;
     /** Whether the plan is the running venue; a file view has no engine
      *  poses to refresh. */
     live?: boolean;
@@ -329,9 +329,21 @@
     rotationDraft.every((v) => typeof v === "number" && Number.isFinite(v)),
   );
 
+  /** Writes the typed rotation. An axis still showing what the plot holds
+   *  keeps the file's own number: the plot's are the stream's 32-bit
+   *  floats, and editing one axis must not rewrite the others. */
   function setRotation(rotation: Vec3) {
-    void apply(() => ({
-      changes: Object.fromEntries(picked.map((n) => [n, { rotation }])),
+    const shown = sharedRotation;
+    void apply((venue) => ({
+      changes: Object.fromEntries(
+        picked.map((n) => {
+          const file = venue.fixtures[n]?.rotation;
+          const merged = rotation.map((v, i) =>
+            shown && v === shown[i] && file ? file[i] : v,
+          ) as Vec3;
+          return [n, { rotation: merged }];
+        }),
+      ),
     }));
   }
 

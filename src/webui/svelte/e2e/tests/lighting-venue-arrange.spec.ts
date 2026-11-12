@@ -14,7 +14,7 @@
 
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 // The Venues plan's selection, arrange and aim tools (design §10). Every test
 // routes its own venue file, fixture types and metadata with `page.route` and
@@ -162,7 +162,7 @@ async function open(page: Page, venue: VenueBody = houseVenue()) {
   // The venue list above the plan loads late and pushes the plan down;
   // wait for it so clicks land where the plan is drawn.
   await expect(page.locator(".item-card").first()).toBeVisible();
-  await sendWs(page, wsId, {
+  await sendStage(page, wsId, {
     type: "metadata",
     fixtures: Object.fromEntries(
       venue.fixtures.map((f) => [
@@ -179,7 +179,7 @@ async function open(page: Page, venue: VenueBody = houseVenue()) {
         },
       ]),
     ),
-    venue: { name, dir: null, focus_points: venue.focus_points },
+    venue: { name, focus_points: venue.focus_points },
   });
   await expect(page.locator(".inspector")).toBeVisible();
   await expect

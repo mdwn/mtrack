@@ -2483,8 +2483,7 @@ pub(crate) async fn venue_error_of(
 }
 
 /// After a venue file changed on disk: if it is the venue the running engine
-/// is playing against, re-read it and push fresh stage metadata to every
-/// web client. Returns whether that happened. A reload failure is logged,
+/// is playing against, re-read it and tell every stage watcher. Returns whether that happened. A reload failure is logged,
 /// not returned — the save itself is durable and the loader will say the
 /// same thing at next startup.
 pub(super) async fn reload_if_current_venue(state: &WebUiState, name: &str) -> bool {
@@ -2657,7 +2656,7 @@ pub(super) async fn get_venue_patch(
 
 /// GET /api/lighting/venues/:name/scene — what the 3D view draws for a
 /// venue, read from the files with no engine needed: the shape of the
-/// websocket's metadata for the current venue (each fixture's type, mode,
+/// stage's metadata for the current venue (each fixture's type, mode,
 /// position, rotation and rig; the venue's focus points and scenery), so a
 /// venue that is not the current one can be looked at in 3D. Loading the
 /// system distils each (archive, mode) rig into the store, as the engine's

@@ -26,13 +26,12 @@ use futures_util::{SinkExt, StreamExt};
 use rust_embed::Embed;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, ServiceExt};
 use tracing::{debug, error, info};
 
 use crate::player::Player;
-use crate::state::StateSnapshot;
 
 use super::state as ws_state;
 
@@ -79,7 +78,6 @@ impl Default for WebConfig {
 #[derive(Clone)]
 pub struct WebUiState {
     pub player: Arc<Player>,
-    pub state_rx: watch::Receiver<Arc<StateSnapshot>>,
     pub broadcast_tx: broadcast::Sender<String>,
     /// Canonicalized path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
@@ -131,7 +129,6 @@ fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
 /// Parameters for constructing a [`WebUiState`].
 pub struct WebUiStateParams {
     pub player: Arc<Player>,
-    pub state_rx: watch::Receiver<Arc<StateSnapshot>>,
     pub broadcast_tx: broadcast::Sender<String>,
     pub config_path: PathBuf,
     pub profiles_dir: Option<PathBuf>,
@@ -143,7 +140,6 @@ impl WebUiState {
     pub fn new(params: WebUiStateParams) -> Self {
         WebUiState {
             player: params.player,
-            state_rx: params.state_rx,
             broadcast_tx: params.broadcast_tx,
             config_path: canonicalize_or_keep(params.config_path),
             profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
@@ -160,7 +156,6 @@ pub struct WebUiHandle {
     _shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
     playback_poller_handle: tokio::task::JoinHandle<()>,
-    state_poller_handle: tokio::task::JoinHandle<()>,
     log_poller_handle: tokio::task::JoinHandle<()>,
     waveform_poller_handle: tokio::task::JoinHandle<()>,
     waveform_prewarmer_handle: tokio::task::JoinHandle<()>,
@@ -182,7 +177,6 @@ impl Drop for WebUiHandle {
     fn drop(&mut self) {
         self.server_handle.abort();
         self.playback_poller_handle.abort();
-        self.state_poller_handle.abort();
         self.log_poller_handle.abort();
         self.waveform_poller_handle.abort();
         self.waveform_prewarmer_handle.abort();
@@ -232,10 +226,6 @@ pub async fn start(
     // Start background pollers that feed the broadcast channel
     let playback_poller_handle = tokio::spawn(ws_state::playback_poller(
         webui_state.player.clone(),
-        webui_state.broadcast_tx.clone(),
-    ));
-    let state_poller_handle = tokio::spawn(ws_state::state_poller(
-        webui_state.state_rx.clone(),
         webui_state.broadcast_tx.clone(),
     ));
     let log_poller_handle = tokio::spawn(ws_state::log_poller(webui_state.broadcast_tx.clone()));
@@ -288,7 +278,6 @@ pub async fn start(
         _shutdown_tx: shutdown_tx,
         server_handle,
         playback_poller_handle,
-        state_poller_handle,
         log_poller_handle,
         waveform_poller_handle,
         waveform_prewarmer_handle,
@@ -410,25 +399,11 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WebUiState>) -> im
 
 /// Handles a single WebSocket connection for the dashboard.
 ///
-/// Sends fixture metadata on connect, then streams playback, fixture state,
-/// and log messages from the broadcast channel.
+/// Sends the cached waveform on connect, then streams playback, log,
+/// waveform and reload messages from the broadcast channel. The stage is not
+/// here: it is the gRPC stream `WatchStage`.
 async fn handle_ws(socket: WebSocket, state: WebUiState) {
     let (mut sender, mut receiver) = socket.split();
-
-    // Send metadata on connect (fixture tags, types for stage layout).
-    // Computed on-demand so it reflects the current DMX engine state
-    // (which may have changed via hot-reload since startup).
-    let metadata_json = match state.player.broadcast_handles() {
-        Some(handles) => ws_state::build_metadata_json(handles.lighting_system.as_ref()),
-        None => ws_state::build_metadata_json(None),
-    };
-    if sender
-        .send(Message::Text(metadata_json.into()))
-        .await
-        .is_err()
-    {
-        return;
-    }
 
     // Send cached waveform for the current song on connect
     let waveform_msg = {
@@ -470,14 +445,6 @@ async fn handle_ws(socket: WebSocket, state: WebUiState) {
 
     // Subscribe to state broadcasts
     let mut rx = state.broadcast_tx.subscribe();
-
-    // Send the current fixture state snapshot. The poller only broadcasts on
-    // change, so an idle player would otherwise leave this client with no
-    // state at all until something moved.
-    let state_msg = ws_state::build_state_json(&state.state_rx.borrow().clone());
-    if sender.send(Message::Text(state_msg.into())).await.is_err() {
-        return;
-    }
 
     // Spawn a task to forward broadcasts to this client
     let mut send_task = tokio::spawn(async move {
@@ -873,12 +840,7 @@ mod test {
 
         let (_, mut read) = ws_stream.split();
 
-        // First message: metadata
-        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-            .await
-            .unwrap();
-
-        // Second message: waveform (from pre-populated cache)
+        // First message: waveform (from pre-populated cache)
         let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for waveform message")
@@ -895,32 +857,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn server_websocket_receives_metadata() {
-        use futures_util::StreamExt;
-
-        let (handle, _, _dir) = start_test_server().await;
-        let addr = handle.local_addr();
-        let ws_url = format!("ws://{}/ws", addr);
-
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("WebSocket connect failed");
-
-        let (_, mut read) = ws_stream.split();
-
-        // First message should be the metadata JSON
-        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-            .await
-            .expect("timed out waiting for WS message")
-            .expect("stream ended")
-            .expect("WS error");
-
-        let text = msg.into_text().expect("expected text message");
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed["type"], "metadata");
-    }
-
-    #[tokio::test]
     async fn server_websocket_receives_playback() {
         use futures_util::StreamExt;
 
@@ -934,12 +870,7 @@ mod test {
 
         let (_, mut read) = ws_stream.split();
 
-        // Skip the metadata message
-        let _ = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-            .await
-            .unwrap();
-
-        // Next messages should include a playback update (poller runs at 200ms)
+        // The messages should include a playback update (poller runs at 200ms)
         let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
             .await
             .expect("timed out waiting for playback message")
@@ -948,7 +879,7 @@ mod test {
 
         let text = msg.into_text().expect("expected text message");
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        // Could be playback, state, or waveform — just verify it's valid JSON
+        // Could be playback or waveform — just verify it's valid JSON
         assert!(parsed["type"].is_string());
     }
 }

@@ -23,14 +23,29 @@ import "./lib/theme";
 import "./app.css";
 import App from "./App.svelte";
 import { mount } from "svelte";
-import { applyStageMetadata, applyStageState, connect } from "./lib/ws/stores";
-import { startStageFeed } from "./lib/stage/grpc-feed";
+import {
+  applyStageMetadata,
+  applyStageState,
+  connect,
+  provideStageFeed,
+} from "./lib/ws/stores";
+import {
+  FeedLease,
+  installStageTiming,
+  openStageStream,
+} from "./lib/stage/grpc-feed";
 
 // The websocket that feeds the stores: opened here, before the rules module
 // has loaded, so the first messages are waiting when the app mounts.
-// The stage feed is chosen first (a spike: ?stageFeed=grpc reads the gRPC
-// stage stream instead of the websocket's stage messages).
-void startStageFeed({ metadata: applyStageMetadata, state: applyStageState });
+// The stage is not on the websocket: its stores read the gRPC stream
+// `WatchStage`, one stream for the page, opened when something first shows
+// the stage.
+installStageTiming();
+provideStageFeed(
+  new FeedLease(() =>
+    openStageStream({ metadata: applyStageMetadata, state: applyStageState }),
+  ),
+);
 connect();
 
 async function start() {

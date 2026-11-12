@@ -21,11 +21,12 @@ import type {
   StageMetadata,
   StageState,
   StageValues,
-  VenueMetadata,
+  StageVenue,
   Waveform,
 } from "../../gen/rules/mtrack_rules";
 import { writable } from "svelte/store";
-import { stageFeedState } from "../stage/grpc-feed";
+import type { FeedLease } from "../stage/grpc-feed";
+import { stageTiming } from "../stage/timing";
 import { connect as openSocket, on, onConnectionStatus } from "./connection";
 
 /** The playback status, with `received_at`: performance.now() when the
@@ -73,25 +74,44 @@ const IDLE: PlaybackState = {
 
 export const playbackStore = writable<PlaybackState>(IDLE);
 
-export const fixtureStore = writable<StageValues["fixtures"]>({});
-export const strobeRateStore = writable<StageValues["strobe_rates"]>({});
+// The stage's stores are filled by the gRPC stream `WatchStage`
+// (lib/stage/grpc-feed.ts), which one lease shares between everything that
+// shows the stage: the stream opens when one of these first has a
+// subscriber and closes a while after the last leaves. The app provides the
+// lease (main.ts); a page fed another way (the stage-only page, which is
+// handed the stream by its host) provides none and opens nothing.
+let stageLease: FeedLease | null = null;
+
+/** Says where the stage's stores are filled from. Call once, as the app
+ *  starts. */
+export function provideStageFeed(lease: FeedLease): void {
+  stageLease = lease;
+}
+
+/** A store of the stage: watching it holds the stage stream open. */
+function stageStore<T>(initial: T) {
+  return writable<T>(initial, () => stageLease?.acquire());
+}
+
+export const fixtureStore = stageStore<StageValues["fixtures"]>({});
+export const strobeRateStore = stageStore<StageValues["strobe_rates"]>({});
 /**
  * Per-cell values for fixtures a per-cell effect is driving this frame;
  * a fixture absent here shows its own channels on every cell.
  */
-export const cellStore = writable<StageValues["cells"]>({});
+export const cellStore = stageStore<StageValues["cells"]>({});
 
 /** Where a mover points, from the engine's pose memory. */
-export const poseStore = writable<Record<string, PoseSnapshot>>({});
+export const poseStore = stageStore<Record<string, PoseSnapshot>>({});
 /**
  * Venue fixtures a fixture test's output covers: their channels, cells and
  * poses in the stores above are the test's bytes, what leaves for olad.
  */
-export const underTestStore = writable<string[]>([]);
-export const metadataStore = writable<Record<string, FixtureMetadata>>({});
-export const venueStore = writable<VenueMetadata | null>(null);
+export const underTestStore = stageStore<string[]>([]);
+export const metadataStore = stageStore<Record<string, FixtureMetadata>>({});
+export const venueStore = stageStore<StageVenue | null>(null);
 
-export const effectsStore = writable<string[]>([]);
+export const effectsStore = stageStore<string[]>([]);
 
 const MAX_LOG_LINES = 200;
 export const logStore = writable<LogLine[]>([]);
@@ -114,9 +134,8 @@ on("playback", (m) => {
 });
 
 /**
- * Puts the stage's state in the stores: the websocket's `state` message, or
- * a frame of the gRPC stage stream read against its layout
- * (lib/stage/feed.ts). The one place either is written from.
+ * Puts the stage's state in the stores: a frame of the gRPC stage stream
+ * read against its layout (lib/stage/feed.ts).
  */
 export function applyStageState(m: Partial<StageState>): void {
   // Before the channels: a plot redraws on them and reads these.
@@ -126,27 +145,17 @@ export function applyStageState(m: Partial<StageState>): void {
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
   cellStore.set(m.cells ?? {});
-  stageFeedState.stateApplied();
+  stageTiming.applied();
 }
 
 /**
- * Puts what is on the stage in the stores: the websocket's `metadata`
- * message, or a layout of the gRPC stage stream.
+ * Puts what is on the stage in the stores: a layout of the gRPC stage
+ * stream.
  */
 export function applyStageMetadata(m: Partial<StageMetadata>): void {
   metadataStore.set(m.fixtures ?? {});
   venueStore.set(m.venue ?? null);
 }
-
-// With the gRPC stage feed chosen (lib/stage/grpc-feed.ts, a spike), the
-// websocket's stage messages are ignored: the stream is the only writer.
-on("state", (m) => {
-  if (stageFeedState.websocketStage()) applyStageState(m);
-});
-
-on("metadata", (m) => {
-  if (stageFeedState.websocketStage()) applyStageMetadata(m);
-});
 
 on("logs", (m) => {
   logStore.update((prev) => {

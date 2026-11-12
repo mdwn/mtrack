@@ -16,7 +16,7 @@
 // navigation, in place, until it is pressed again or Escape.
 
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 let testCounter = 0;
 
@@ -26,7 +26,7 @@ const METADATA = {
     left: { tags: ["front"], type: "par", position: [-2, 3, 4], rig: null },
     right: { tags: ["front"], type: "par", position: [2, 3, 4], rig: null },
   },
-  venue: { name: "test-venue", dir: null, focus_points: {} },
+  venue: { name: "test-venue", focus_points: {} },
 };
 
 const card = (page: Page) => page.locator(".stage-card");
@@ -68,7 +68,7 @@ test.describe("Stage card: maximize", () => {
     page,
   }) => {
     await page.goto(`/?wsId=${wsId}#/`);
-    await sendWs(page, wsId, METADATA);
+    await sendStage(page, wsId, METADATA);
     await expect(button(page)).toHaveAttribute("aria-pressed", "false");
     const before = (await boxes(page)).box;
     const plot = page.locator(".stage-card__viewport > canvas");
@@ -106,7 +106,7 @@ test.describe("Stage card: maximize", () => {
     page,
   }) => {
     await page.goto(`/?wsId=${wsId}#/`);
-    await sendWs(page, wsId, METADATA);
+    await sendStage(page, wsId, METADATA);
     await page.getByTestId("stage-view-3d").click();
     const viewport = page.locator(".stage3d__viewport");
     await expect(viewport).toHaveAttribute("data-renderer", /webgl|none/, {
@@ -145,7 +145,7 @@ test.describe("Stage card: maximize", () => {
     page,
   }) => {
     await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue`);
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       ...METADATA,
       venue: { ...METADATA.venue, focus_points: { drummer: [0, 2.8, 1.4] } },
     });
@@ -175,7 +175,7 @@ test.describe("Stage card: maximize", () => {
     page,
   }) => {
     await page.goto(`/?wsId=${wsId}#/`);
-    await sendWs(page, wsId, METADATA);
+    await sendStage(page, wsId, METADATA);
     await button(page).click();
     await expectMaximized(page);
     await page.locator(".topnav").getByRole("tab", { name: "Songs" }).click();

@@ -22,21 +22,12 @@ import {
 } from "../../gen/player/v1/player_pb";
 import type { StageMetadata, StageState } from "../../gen/rules/mtrack_rules";
 import {
-  chooseStageFeed,
   dedupingSink,
+  FeedLease,
   runStageStream,
-  stageFeedState,
+  wantsStageTiming,
+  type LeaseTimers,
 } from "./grpc-feed";
-
-class MemoryStorage {
-  data = new Map<string, string>();
-  getItem(k: string) {
-    return this.data.get(k) ?? null;
-  }
-  setItem(k: string, v: string) {
-    this.data.set(k, v);
-  }
-}
 
 function layout(id: number, venue = "v"): StageUpdate {
   return create(StageUpdateSchema, {
@@ -82,51 +73,103 @@ function recorder() {
   };
 }
 
-describe("chooseStageFeed", () => {
-  it("defaults to the websocket, with no timing", () => {
-    const store = new MemoryStorage();
-    expect(chooseStageFeed("", store)).toEqual({ feed: "ws", timing: false });
-    expect(store.data.size).toBe(0);
+describe("wantsStageTiming", () => {
+  it("is asked for with ?stageTiming=1, before or after the hash", () => {
+    expect(wantsStageTiming({ search: "", hash: "" })).toBe(false);
+    expect(wantsStageTiming({ search: "?stageTiming=1", hash: "" })).toBe(true);
+    expect(
+      wantsStageTiming({ search: "", hash: "#/lights?stageTiming=1" }),
+    ).toBe(true);
+    expect(wantsStageTiming({ search: "?stageTiming=0", hash: "" })).toBe(
+      false,
+    );
+    // The old switch is gone: it asks for nothing.
+    expect(wantsStageTiming({ search: "?stageFeed=grpc", hash: "" })).toBe(
+      false,
+    );
   });
+});
 
-  it("takes the query, remembers it, and times", () => {
-    const store = new MemoryStorage();
-    expect(chooseStageFeed("?stageFeed=grpc", store)).toEqual({
-      feed: "grpc",
-      timing: true,
-    });
-    // Remembered for a load with no query.
-    expect(chooseStageFeed("", store)).toEqual({ feed: "grpc", timing: true });
-    // And ?stageFeed=ws goes back.
-    expect(chooseStageFeed("?stageFeed=ws", store).feed).toBe("ws");
-    expect(chooseStageFeed("", store).feed).toBe("ws");
-  });
+/** Timers that run only when a test says. */
+function manualTimers() {
+  const pending = new Map<number, () => void>();
+  let next = 1;
+  const timers: LeaseTimers = {
+    set(fn) {
+      pending.set(next, fn);
+      return next++;
+    },
+    clear(handle) {
+      pending.delete(handle as number);
+    },
+  };
+  return {
+    timers,
+    pending: () => pending.size,
+    fire() {
+      const fns = [...pending.values()];
+      pending.clear();
+      fns.forEach((fn) => fn());
+    },
+  };
+}
 
-  it("ignores junk values and asks for timing alone", () => {
-    const store = new MemoryStorage();
-    store.data.set("mtrack.stageFeed", "bogus");
-    expect(chooseStageFeed("?stageFeed=nope", store)).toEqual({
-      feed: "ws",
-      timing: false,
-    });
-    expect(chooseStageFeed("?stageTiming=1", store)).toEqual({
-      feed: "ws",
-      timing: true,
-    });
-  });
-
-  it("works with storage that throws or is missing", () => {
-    const broken = {
-      getItem() {
-        throw new Error("blocked");
+describe("FeedLease", () => {
+  it("opens once for any number of holders, and closes after the grace", () => {
+    const t = manualTimers();
+    let opened = 0;
+    let closed = 0;
+    const lease = new FeedLease(
+      () => {
+        opened++;
+        return () => closed++;
       },
-      setItem() {
-        throw new Error("blocked");
+      5000,
+      t.timers,
+    );
+    expect(lease.open).toBe(false);
+    const a = lease.acquire();
+    const b = lease.acquire();
+    expect(opened).toBe(1);
+    expect(lease.open).toBe(true);
+
+    a();
+    a(); // letting go twice counts once
+    expect(t.pending()).toBe(0);
+    b();
+    expect(t.pending()).toBe(1);
+    expect(closed).toBe(0);
+    t.fire();
+    expect(closed).toBe(1);
+    expect(lease.open).toBe(false);
+  });
+
+  it("keeps the stream when someone holds it again within the grace", () => {
+    const t = manualTimers();
+    let opened = 0;
+    let closed = 0;
+    const lease = new FeedLease(
+      () => {
+        opened++;
+        return () => closed++;
       },
-    };
-    expect(chooseStageFeed("?stageFeed=grpc", broken).feed).toBe("grpc");
-    expect(chooseStageFeed("", broken).feed).toBe("ws");
-    expect(chooseStageFeed("?stageFeed=grpc", null).feed).toBe("grpc");
+      5000,
+      t.timers,
+    );
+    lease.acquire()();
+    expect(t.pending()).toBe(1);
+    const again = lease.acquire();
+    expect(t.pending()).toBe(0);
+    t.fire();
+    expect(opened).toBe(1);
+    expect(closed).toBe(0);
+
+    // And opens afresh after a close.
+    again();
+    t.fire();
+    expect(closed).toBe(1);
+    lease.acquire();
+    expect(opened).toBe(2);
   });
 });
 
@@ -228,7 +271,7 @@ describe("the stream into the stores' sink", () => {
   });
 });
 
-describe("the websocket's stage messages when gRPC is active", () => {
+describe("the stage stores", () => {
   type Sock = { onmessage?: (e: { data: string }) => void };
   let socket: Sock;
 
@@ -247,56 +290,74 @@ describe("the websocket's stage messages when gRPC is active", () => {
   });
   afterEach(() => {
     vi.unstubAllGlobals();
-    stageFeedState.feed = "ws";
-    stageFeedState.timing = null;
   });
 
   const send = (msg: object) =>
     socket.onmessage!({ data: JSON.stringify(msg) });
-  const get = async <T>(store: {
-    subscribe(f: (v: T) => void): () => void;
-  }) => {
+  const get = <T>(store: { subscribe(f: (v: T) => void): () => void }) => {
     let v!: T;
     store.subscribe((x) => (v = x))();
     return v;
   };
-  const stateMsg = {
-    type: "state",
-    fixtures: { a: { dimmer: 1 } },
-    poses: {},
-    cells: {},
-    strobe_rates: {},
-    active_effects: [],
-    under_test: [],
-  };
 
-  it("applies them on the websocket feed, ignores them on gRPC", async () => {
-    const grpc = await import("./grpc-feed");
+  it("ignore the websocket's old stage messages and are timed on the stream's writes", async () => {
     const stores = await import("../ws/stores");
     stores.connect();
 
-    grpc.stageFeedState.feed = "ws";
-    send(stateMsg);
+    send({
+      type: "state",
+      fixtures: { a: { dimmer: 1 } },
+      poses: {},
+      cells: {},
+      strobe_rates: {},
+      active_effects: [],
+      under_test: [],
+    });
     send({ type: "metadata", fixtures: { a: { type: "t" } }, venue: null });
-    expect(Object.keys(await get(stores.fixtureStore))).toEqual(["a"]);
-    expect(Object.keys(await get(stores.metadataStore))).toEqual(["a"]);
+    expect(get(stores.fixtureStore)).toEqual({});
+    expect(get(stores.metadataStore)).toEqual({});
 
-    grpc.stageFeedState.feed = "grpc";
-    send({ ...stateMsg, fixtures: { b: { dimmer: 2 } } });
-    send({ type: "metadata", fixtures: { b: { type: "t" } }, venue: null });
-    expect(Object.keys(await get(stores.fixtureStore))).toEqual(["a"]);
-    expect(Object.keys(await get(stores.metadataStore))).toEqual(["a"]);
-
-    // The stream's own writes still land, and are timed.
-    grpc.stageFeedState.timing = new (
-      await import("./timing")
-    ).TimingRecorder();
+    // (The modules are loaded afresh for each test: its own timing.)
+    const timing = await import("./timing");
+    timing.stageTiming.recorder = new timing.TimingRecorder();
     stores.applyStageState({ fixtures: { c: { dimmer: 3 } } });
-    expect(Object.keys(await get(stores.fixtureStore))).toEqual(["c"]);
-    expect(grpc.stageFeedState.timing.summary().count).toBe(1);
+    expect(Object.keys(get(stores.fixtureStore))).toEqual(["c"]);
+    expect(timing.stageTiming.recorder.summary().count).toBe(1);
 
     // Other websocket messages are untouched.
     send({ type: "logs", lines: [{ level: "INFO", message: "hi" }] });
-    expect((await get(stores.logStore)).length).toBe(1);
+    expect(get(stores.logStore).length).toBe(1);
+  });
+
+  it("hold the stream open while watched, and open nothing with no lease", async () => {
+    const stores = await import("../ws/stores");
+    // No lease provided (the stage-only page): watching opens nothing.
+    stores.metadataStore.subscribe(() => {})();
+
+    const t = manualTimers();
+    let opened = 0;
+    let closed = 0;
+    stores.provideStageFeed(
+      new FeedLease(
+        () => {
+          opened++;
+          return () => closed++;
+        },
+        5000,
+        t.timers,
+      ),
+    );
+    // A store that is not the stage's does not hold it.
+    stores.playbackStore.subscribe(() => {})();
+    expect(opened).toBe(0);
+
+    const stop1 = stores.metadataStore.subscribe(() => {});
+    const stop2 = stores.fixtureStore.subscribe(() => {});
+    expect(opened).toBe(1);
+    stop1();
+    stop2();
+    expect(closed).toBe(0);
+    t.fire();
+    expect(closed).toBe(1);
   });
 });

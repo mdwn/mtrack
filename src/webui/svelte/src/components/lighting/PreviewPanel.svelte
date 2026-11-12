@@ -17,7 +17,7 @@
    * The 3D view's Preview mode (lighting UI design, section 12.1): pick a
    * song, scrub through it, and see what its show does at that moment.
    * The show is evaluated offline; this panel hands the scene the same
-   * three maps the live state message carries and never touches the
+   * three maps the live stage frame carries and never touches the
    * engine, so a playing song plays on.
    */
   import type {

@@ -13,7 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 // Plot | 3D on the venue's stage card: the picture changes in place; the
 // venue, the selection, the inspector and the header stay. The current
@@ -33,7 +33,7 @@ const BUILT_IN = {
       rig: null,
     },
   },
-  venue: { name: "built-in", dir: null, focus_points: {} },
+  venue: { name: "built-in", focus_points: {} },
 };
 
 /** "club" as its file reads: one fixture placed, two not. */
@@ -81,7 +81,7 @@ async function withCurrentVenue(page: Page, path: string) {
     return r.fulfill({ json: CLUB_SCENE });
   });
   await page.goto(`/?wsId=${wsId}${path}`);
-  await sendWs(page, wsId, BUILT_IN);
+  await sendStage(page, wsId, BUILT_IN);
   return { wsId, reads: () => sceneReads };
 }
 
