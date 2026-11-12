@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../app/failure.dart';
 import '../app/session.dart';
 import 'hold_to_stop.dart';
 import 'session_scope.dart';
@@ -86,7 +87,9 @@ class _SettingsSheet extends StatelessWidget {
             ),
           ),
           Text(
-            session.isReady ? 'Connected' : 'Not connected',
+            session.carrier == null
+                ? 'Not connected'
+                : 'Connected over ${carrierName(session.carrier!)}',
             style: AppText.small.copyWith(color: colors.muted),
           ),
           if (session.missingFromPlayer.isNotEmpty) ...[

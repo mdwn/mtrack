@@ -59,7 +59,7 @@ void main() {
     ) {
       h.link.paired.clear();
       h.connect();
-      expect(h.link.calls, [
+      expect(h.link.calls.take(7), [
         'adapterState',
         'connect:p1',
         'isPaired:p1',
@@ -67,8 +67,13 @@ void main() {
         'subscribe:p1',
         'readStatus',
         'call:Status',
-        'call:GetPlaylist',
       ]);
+      // The rest go out together: the playlist, and (for the next time) where
+      // the player is on the network.
+      expect(
+        h.link.calls.skip(7),
+        unorderedEquals(['call:GetPlaylist', 'call:GetNetworkInfo']),
+      );
       expect(h.session.phase, ConnectionPhase.ready);
     });
 

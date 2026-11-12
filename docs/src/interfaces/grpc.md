@@ -7,7 +7,9 @@ The gRPC controller listens on port 43234 unless the profile's `grpc` controller
 
 Any number of clients can connect, including clients on other machines. That makes it a
 fallback for when a MIDI controller is not behaving: you can still start, stop and move
-through the playlist from a laptop or phone.
+through the playlist from a laptop or phone. The [phone app](bluetooth.md#over-wi-fi) uses this
+port over Wi-Fi, so the gRPC controller has to be enabled for it; there is no login on it, so
+anyone on the player's network can connect.
 
 ## The `mtrack` client
 

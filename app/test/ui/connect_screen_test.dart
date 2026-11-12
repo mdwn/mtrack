@@ -129,6 +129,28 @@ void main() {
     }, known: false);
   });
 
+  group('a connection that takes a while to fail', () {
+    appTest('keeps its reason on the screen after the connecting one', (
+      h,
+    ) async {
+      h.rig.link.connectFailures = 1;
+      h.rig.link.connectDelay = const Duration(seconds: 2);
+      h.rig.link.discover(near);
+      await h.settle();
+      await h.tester.tap(find.text('stage'));
+      await h.settle();
+      await h.tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('Connecting to stage…'), findsOneWidget);
+      await h.advance(const Duration(seconds: 3));
+      await h.settle();
+      await h.tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.textContaining('Could not reach that player'),
+        findsOneWidget,
+      );
+    }, known: false);
+  });
+
   group('pairing', () {
     appTest('shows pairing in progress and how to cancel it', (h) async {
       h.rig.link.paired.clear();

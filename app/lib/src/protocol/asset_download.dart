@@ -34,7 +34,7 @@ typedef AssetProgress = void Function(int received, int total);
 ///
 /// The chunks are consumed the moment they arrive, never paused for, so the
 /// stream holds nothing back for this listener and its limit on what it
-/// holds ([PlayerClient.maxHeldStreamBytes]) does not apply to an asset of
+/// holds (`EnvelopeChannel.maxHeldStreamBytes`) does not apply to an asset of
 /// any size; what is kept is the asset itself, up to [maxBytes].
 class AssetDownload {
   /// A download of the messages of a `GetLightingAsset` stream, each a

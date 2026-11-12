@@ -103,6 +103,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`GetNetworkInfo` gRPC RPC**: the player's host name, its IPv4 and IPv6 addresses (not
   loopback or link-local) and the port its gRPC controller listens on. A phone connected over
   Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi.
+- **The phone app can use Wi-Fi as well as Bluetooth**: it talks gRPC to the player's gRPC port
+  (the `grpc` controller must be enabled) and prefers the network when the player answers there,
+  falling back to Bluetooth after two seconds and moving back by itself when the player returns.
+  A phone connected by Bluetooth learns the player's addresses with `GetNetworkInfo` and
+  remembers them; **Enter an address** on the connect screen takes a host name or IP (and
+  optionally `:port`), such as `mtrack.local`, for a player never paired, which is then reached
+  over Wi-Fi alone. The app checks that the host name at a remembered address is the player's
+  before using it. Anyone on the player's network can connect over Wi-Fi, as they can to the
+  web UI; Bluetooth keeps its pairing, and the lock still guards edits. The app is not
+  released; see [Bluetooth Control](docs/src/interfaces/bluetooth.md#over-wi-fi).
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the

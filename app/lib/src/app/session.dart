@@ -16,7 +16,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../gen/player/v1/player.pb.dart' as player;
+import '../protocol/envelope_channel.dart';
 import '../protocol/playback_clock.dart';
+import '../protocol/player_channel.dart';
 import '../protocol/player_client.dart';
 import '../protocol/player_exception.dart';
 import '../protocol/transport.dart';
@@ -30,6 +32,7 @@ import 'ports.dart';
 import 'sections.dart';
 import 'song_edit.dart';
 import 'stage_watch.dart';
+import 'wifi_address.dart';
 
 /// Where the connection to a player stands.
 enum ConnectionPhase {
@@ -106,9 +109,25 @@ const List<Duration> reconnectBackoff = [
   Duration(seconds: 5),
 ];
 
+/// The most Wi-Fi addresses tried for a player before going to Bluetooth.
+const int maxWifiHosts = 3;
+
 /// How long to wait before asking again for song or playlist details that
 /// could not be fetched.
 const Duration detailsRetryDelay = Duration(seconds: 3);
+
+/// How long to wait for a player to answer over Wi-Fi before trying
+/// Bluetooth. A player that is on the network answers in a few hundred
+/// milliseconds; this is how long a connect is held up when it is not.
+const Duration wifiConnectTimeout = Duration(seconds: 2);
+
+/// How often, while connected by Bluetooth to a player that has Wi-Fi
+/// addresses, to see whether it answers there now.
+const Duration wifiRetryInterval = Duration(seconds: 20);
+
+/// How long a switch from Bluetooth to Wi-Fi waits for the calls in flight
+/// to finish before it gives the attempt up until the next interval.
+const Duration switchPatience = Duration(seconds: 10);
 
 /// A reading of a monotonic clock, as time since some fixed start.
 typedef Monotonic = Duration Function();
@@ -123,16 +142,19 @@ typedef Monotonic = Duration Function();
 class Session extends ChangeNotifier {
   /// A session over [link], remembering its player in [store], and keeping
   /// the lighting assets it fetches in [assetCache] (none kept when null).
+  /// With [wifi], a player is also reached over the network when it answers
+  /// there; without, over Bluetooth alone.
   Session({
     required this._link,
     required this._store,
     this._wake,
+    this._wifi,
     Monotonic? monotonic,
     this._backoff = reconnectBackoff,
-    PlayerClient Function(PlayerTransport)? clientFactory,
+    this._wifiTimeout = wifiConnectTimeout,
+    this._wifiInterval = wifiRetryInterval,
     LightingAssetCache? assetCache,
-  }) : _monotonic = monotonic ?? _stopwatchClock(),
-       _clientFactory = clientFactory ?? PlayerClient.new {
+  }) : _monotonic = monotonic ?? _stopwatchClock() {
     clock = PlaybackClock(_monotonic);
     levels = Levels(
       client: () => _client,
@@ -163,7 +185,9 @@ class Session extends ChangeNotifier {
   final ScreenWake? _wake;
   final Monotonic _monotonic;
   final List<Duration> _backoff;
-  final PlayerClient Function(PlayerTransport) _clientFactory;
+  final WifiLink? _wifi;
+  final Duration _wifiTimeout;
+  final Duration _wifiInterval;
 
   /// The song position to show, run between status messages.
   late final PlaybackClock clock;
@@ -191,6 +215,7 @@ class Session extends ChangeNotifier {
   AdapterState _adapter = AdapterState.ready;
 
   PlayerTransport? _transport;
+  PlayerChannel? _channel;
   PlayerClient? _client;
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
@@ -216,6 +241,10 @@ class Session extends ChangeNotifier {
   int _retries = 0;
   Timer? _retryTimer;
   Timer? _detailsTimer;
+  Timer? _wifiProbe;
+  bool _probing = false;
+  String? _wifiOldFor;
+  PlayerException? _wifiError;
   bool _syncing = false;
   bool _syncAgain = false;
 
@@ -239,6 +268,9 @@ class Session extends ChangeNotifier {
   /// Why the last attempt to connect to a new player failed, in words for a
   /// person; null otherwise.
   String? get connectError => _connectError;
+
+  /// Which radio the connection runs on, or null when not connected.
+  Carrier? get carrier => isReady ? _channel?.carrier : null;
 
   /// Whether Bluetooth can be used, as last checked.
   AdapterState get adapter => _adapter;
@@ -351,13 +383,15 @@ class Session extends ChangeNotifier {
   /// Several listeners share the one stream the player has open. When one
   /// joins, the stream is started over so that it gets the layout, and every
   /// listener sees the [StageReset]. [maxRate] is the most frames a second
-  /// this listener wants; the stream runs at the highest asked for.
+  /// this listener wants (0 for the player's own); the stream runs at the
+  /// highest asked for. The default asks for what the link carries: the
+  /// player's own rate over Wi-Fi, 10 over Bluetooth.
   ///
   /// Events are handed over as they arrive and never queued: a listener that
   /// cannot keep up keeps the newest frame itself, and never drops a layout.
   /// One that pauses its subscription is passed over, and gets a
   /// [StageReset] and a new stream when it resumes.
-  Stream<StageEvent> watchStage({int maxRate = 10}) =>
+  Stream<StageEvent> watchStage({int maxRate = stageRateAuto}) =>
       _stage.watch(maxRate: maxRate);
 
   /// Whether the active playlist may be edited now: the player is unlocked
@@ -457,11 +491,29 @@ class Session extends ChangeNotifier {
   // The connection.
 
   /// Connects to [chosen], which the person picked from the scan, and
-  /// remembers it once the connection is up.
-  Future<void> connectTo(DiscoveredPlayer chosen) {
+  /// remembers it once the connection is up. A player remembered already
+  /// keeps the Wi-Fi addresses it was told.
+  Future<void> connectTo(DiscoveredPlayer chosen) async {
     stopScan();
     _connectError = null;
-    final target = RememberedPlayer(id: chosen.id, name: chosen.name);
+    final prior = await _store.load();
+    if (_disposed) {
+      return;
+    }
+    final target = prior != null && prior.id == chosen.id
+        ? prior.copyWith(name: chosen.name)
+        : RememberedPlayer(id: chosen.id, name: chosen.name);
+    _target = target;
+    return _connect(target);
+  }
+
+  /// Connects to the player at [address], which the person typed, and
+  /// remembers it once the connection is up. Such a player is reached over
+  /// Wi-Fi alone.
+  Future<void> connectToAddress(WifiAddress address) {
+    stopScan();
+    _connectError = null;
+    final target = RememberedPlayer.byAddress(address);
     _target = target;
     return _connect(target);
   }
@@ -474,6 +526,7 @@ class Session extends ChangeNotifier {
       return Future<void>.value();
     }
     _retries = 0;
+    _wifiOldFor = null;
     return _connect(target);
   }
 
@@ -500,6 +553,7 @@ class Session extends ChangeNotifier {
     _cancelTimers();
     await _dropConnection();
     await _store.clear();
+    _wifiOldFor = null;
     _target = null;
     _connectError = null;
     _status = null;
@@ -536,6 +590,21 @@ class Session extends ChangeNotifier {
     }
     PlayerTransport? transport;
     try {
+      // Wi-Fi first, when there is anywhere to look: it is quicker, carries
+      // more, and needs no pairing. Bluetooth when nothing answers.
+      final wifi = await _tryWifi(target, epoch);
+      if (_stale(epoch)) {
+        await wifi?.channel.dispose();
+        return;
+      }
+      if (wifi != null) {
+        await _adopt(wifi.target, epoch, wifi.channel, null);
+        return;
+      }
+      if (!target.bluetooth) {
+        throw _wifiError ??
+            const PlayerException.unavailable('nothing answered over Wi-Fi');
+      }
       final adapter = await _link.adapterState();
       if (_stale(epoch)) {
         return;
@@ -568,28 +637,7 @@ class Session extends ChangeNotifier {
         await transport.close();
         return;
       }
-      final client = _clientFactory(transport);
-      _transport = transport;
-      _client = client;
-      _subscriptions
-        ..add(client.statusStream.listen(_onStatus))
-        ..add(transport.state.listen(_onTransportState));
-      final first = await client.readStatus();
-      if (_stale(epoch)) {
-        return;
-      }
-      _onStatus(first);
-      await _sync();
-      if (_stale(epoch)) {
-        return;
-      }
-      if (transport.currentState != TransportState.ready) {
-        throw const PlayerException.unavailable('connection lost');
-      }
-      await _store.save(target);
-      _retries = 0;
-      _connectError = null;
-      _setPhase(ConnectionPhase.ready);
+      await _adopt(target, epoch, EnvelopeChannel(transport), transport);
     } on PairingRefusedException {
       if (_stale(epoch)) {
         return;
@@ -606,13 +654,238 @@ class Session extends ChangeNotifier {
       if (await _store.load() == null) {
         // A first connection that did not work: back to the choice of
         // players, with the reason.
-        _connectError = describeConnectFailure(e, _adapter);
+        _connectError = target.bluetooth
+            ? describeConnectFailure(e, _adapter)
+            : describeWifiFailure(e, target);
         _target = null;
         _setPhase(ConnectionPhase.noPlayer);
       } else {
         _setPhase(ConnectionPhase.lost);
         _scheduleRetry();
       }
+    }
+  }
+
+  /// Makes [channel] the connection to [target]: follows its status, fetches
+  /// what the status leaves out, remembers the player and goes ready.
+  /// [transport] is the Bluetooth link under [channel], if there is one.
+  Future<void> _adopt(
+    RememberedPlayer target,
+    int epoch,
+    PlayerChannel channel,
+    PlayerTransport? transport,
+  ) async {
+    final client = PlayerClient(channel);
+    _target = target;
+    _transport = transport;
+    _channel = channel;
+    _client = client;
+    _subscriptions
+      ..add(client.statusStream.listen(_onStatus))
+      ..add(channel.state.listen(_onTransportState));
+    final first = await client.readStatus();
+    if (_stale(epoch)) {
+      return;
+    }
+    _onStatus(first);
+    await _sync();
+    if (_stale(epoch)) {
+      return;
+    }
+    if (channel.currentState != TransportState.ready) {
+      throw const PlayerException.unavailable('connection lost');
+    }
+    await _store.save(target);
+    _retries = 0;
+    _connectError = null;
+    _setPhase(ConnectionPhase.ready);
+    if (channel.carrier == Carrier.bluetooth) {
+      // Ask where the player is on the network, for the next time, and keep
+      // an eye out for it answering there.
+      unawaited(_learnAddresses(client, epoch));
+      _startWifiProbe();
+    }
+  }
+
+  // Wi-Fi.
+
+  /// Tries the Wi-Fi addresses [target] has, in order, for a player that
+  /// answers on one and is the player remembered. Returns the open channel,
+  /// with the target as it should now be remembered, or null: nothing
+  /// answered, the player is too old, or what answered was another device.
+  /// Why is left in [_wifiError].
+  Future<({PlayerChannel channel, RememberedPlayer target})?> _tryWifi(
+    RememberedPlayer target,
+    int epoch,
+  ) async {
+    final link = _wifi;
+    final port = target.port;
+    _wifiError = null;
+    if (link == null ||
+        port == null ||
+        !target.hasWifi ||
+        (target.bluetooth && _wifiOldFor == target.id)) {
+      return null;
+    }
+    for (final host in target.hosts.take(maxWifiHosts)) {
+      PlayerChannel? channel;
+      try {
+        channel = await link.connect(host, port, timeout: _wifiTimeout);
+        if (_stale(epoch)) {
+          await channel.dispose();
+          return null;
+        }
+        player.GetNetworkInfoResponse? info;
+        try {
+          info = await PlayerClient(channel)
+              .getNetworkInfo(timeout: _wifiTimeout);
+        } on PlayerException catch (e) {
+          if (e.isTimeout || e.isUnavailable) {
+            rethrow;
+          }
+          // A player that will not say who it is cannot be told from another
+          // at the same address, which only matters once it has been told.
+        }
+        final known = target.hostname;
+        if (known != null && (info == null || info.hostname != known)) {
+          // Another device has this address now (the lease moved), or the
+          // player was renamed: not the player this was remembered as.
+          await channel.dispose();
+          continue;
+        }
+        return (
+          channel: channel,
+          target: info == null ? target : target.learned(info, host),
+        );
+      } on Object catch (e) {
+        await channel?.dispose();
+        if (_stale(epoch)) {
+          return null;
+        }
+        final error = e is PlayerException
+            ? e
+            : PlayerException.unavailable('$e');
+        _wifiError = error;
+        if (error.code == GrpcCode.unimplemented) {
+          // A player from before Wi-Fi: Bluetooth only, and nothing to tell
+          // the person about.
+          _wifiOldFor = target.id;
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Asks the player, over Bluetooth, where it is on the network, and
+  /// remembers the answer with it. A player too old to know, or one that
+  /// does not answer, leaves what was remembered alone.
+  Future<void> _learnAddresses(PlayerClient client, int epoch) async {
+    final player.GetNetworkInfoResponse info;
+    try {
+      info = await client.getNetworkInfo(timeout: _wifiTimeout * 2);
+    } on Object {
+      return;
+    }
+    final target = _target;
+    if (_stale(epoch) || target == null || _client != client) {
+      return;
+    }
+    final learned = target.learned(info, null);
+    if (learned != target) {
+      _target = learned;
+      await _store.save(learned);
+    }
+    if (!_stale(epoch)) {
+      _startWifiProbe();
+    }
+  }
+
+  void _startWifiProbe() {
+    _wifiProbe?.cancel();
+    _wifiProbe = null;
+    final target = _target;
+    if (_wifi == null ||
+        _disposed ||
+        target == null ||
+        !target.hasWifi ||
+        _wifiOldFor == target.id ||
+        _channel?.carrier != Carrier.bluetooth) {
+      return;
+    }
+    _wifiProbe = Timer.periodic(_wifiInterval, (_) => unawaited(_probeWifi()));
+  }
+
+  /// Sees whether the player answers over Wi-Fi now, and moves over to it
+  /// when it does and nothing is waiting on the Bluetooth link.
+  Future<void> _probeWifi() async {
+    final target = _target;
+    if (_probing ||
+        target == null ||
+        _phase != ConnectionPhase.ready ||
+        _channel?.carrier != Carrier.bluetooth) {
+      return;
+    }
+    _probing = true;
+    final epoch = _epoch;
+    try {
+      final found = await _tryWifi(target, epoch);
+      if (found == null) {
+        return;
+      }
+      if (!await _idle(epoch)) {
+        await found.channel.dispose();
+        return;
+      }
+      await _switchTo(found.target, found.channel);
+    } on Object {
+      // Nothing was changed until the switch; one that failed part way is
+      // a lost link, which is handled.
+    } finally {
+      _probing = false;
+    }
+  }
+
+  /// Waits, up to [switchPatience], until no call is in flight. False when
+  /// calls kept coming, or the connection changed meanwhile.
+  Future<bool> _idle(int epoch) async {
+    final until = _monotonic() + switchPatience;
+    while (true) {
+      if (_stale(epoch) || _phase != ConnectionPhase.ready) {
+        return false;
+      }
+      if (_busy.isEmpty && !_syncing && (_client?.callsInFlight ?? 0) == 0) {
+        return true;
+      }
+      if (_monotonic() >= until) {
+        return false;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+  }
+
+  /// Moves the connection from Bluetooth to the open Wi-Fi [channel]: a
+  /// reconnect like any other, without the looking.
+  Future<void> _switchTo(RememberedPlayer target, PlayerChannel channel) async {
+    final epoch = ++_epoch;
+    _cancelTimers();
+    clock.hold();
+    _setPhase(ConnectionPhase.lost);
+    await _dropConnection(keepState: true);
+    if (_stale(epoch)) {
+      await channel.dispose();
+      return;
+    }
+    try {
+      await _adopt(target, epoch, channel, null);
+    } on Object {
+      if (_stale(epoch)) {
+        return;
+      }
+      await _dropConnection(keepState: true);
+      _retries = 0;
+      _setPhase(ConnectionPhase.lost);
+      _scheduleRetry();
     }
   }
 
@@ -678,6 +951,7 @@ class Session extends ChangeNotifier {
     final client = _client;
     final transport = _transport;
     _client = null;
+    _channel = null;
     _transport = null;
     _busy.clear();
     _syncing = false;
@@ -690,6 +964,8 @@ class Session extends ChangeNotifier {
   }
 
   void _cancelTimers() {
+    _wifiProbe?.cancel();
+    _wifiProbe = null;
     _retryTimer?.cancel();
     _retryTimer = null;
     _detailsTimer?.cancel();
@@ -868,11 +1144,16 @@ class Session extends ChangeNotifier {
   // Scanning.
 
   /// Starts a scan for players. Checks the adapter first, so Bluetooth being
-  /// off or refused shows as such instead of as an empty scan.
-  Future<void> startScan() async {
+  /// off or refused shows as such instead of as an empty scan. A scan the
+  /// person asked for clears the reason the last connection failed; one the
+  /// screen started by itself, on coming back to the choice of players
+  /// because of it, [keepError] does not.
+  Future<void> startScan({bool keepError = false}) async {
     stopScan();
     _found = const [];
-    _connectError = null;
+    if (!keepError) {
+      _connectError = null;
+    }
     final adapter = await _link.adapterState();
     if (_disposed) {
       return;
@@ -1220,6 +1501,7 @@ class Session extends ChangeNotifier {
     final client = _client;
     final transport = _transport;
     _client = null;
+    _channel = null;
     _transport = null;
     if (client != null) {
       unawaited(client.dispose());

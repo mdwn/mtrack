@@ -389,6 +389,34 @@ speaks. Not chosen.
 - Not done: a Wi-Fi interface is not told apart from any other, and the host
   name is the one the config uses for profiles (`MTRACK_HOSTNAME` wins).
 
+### 4.2.2 As built (the app)
+
+- The seam is `PlayerChannel` (`app/lib/src/protocol/player_channel.dart`): `call(method,
+  requestBytes, {timeout}) -> responseBytes`, `openStream(method, requestBytes)`, `statusStream` and
+  `readStatus()`, the link's `state`, `hasStreams`, `callsInFlight`, `carrier` and `dispose()`.
+  `EnvelopeChannel` is the old `PlayerClient` engine, unchanged in behaviour; `GrpcChannel` is the
+  new carrier; `PlayerClient` keeps the typed calls over either. Errors are `PlayerException`s with
+  the same gRPC codes on both, so the screens' messages did not change.
+- `GrpcChannel` is `package:grpc` 5.2.0 (Apache-2.0; it brings `http2`, BSD-3-Clause), plaintext,
+  with no generated stubs: a method is `/player.v1.PlayerService/<Name>` and its bytes. It opens
+  by taking the first message of `WatchStatus` (two seconds); that stream then stays open as the
+  app's one status path. gRPC's own keepalive was tried and left out: in 5.2.0 a ping timeout
+  `finish()`es the connection, which waits for the open streams that never end, so a dead link was
+  not noticed. A heartbeat takes its place (`GetNetworkInfo` every 8 s, 5 s to answer; a timeout
+  or a broken connection takes the channel down).
+- `RememberedPlayer` gained `hosts`, `port`, `hostname` and `bluetooth` (false for a player known
+  only by an address, whose id is `wifi:<host>:<port>`). Connecting tries up to three hosts for two
+  seconds each, then Bluetooth; a Bluetooth connection asks `GetNetworkInfo` and rewrites the hosts
+  (the player's numbers replace the old ones; a name the person typed stays, first). Every Wi-Fi
+  connection compares the reported host name with the remembered one and closes a mismatch. A
+  player that answers `UNIMPLEMENTED` is marked old for the run and not tried again. While on
+  Bluetooth with hosts known, a probe every 20 s connects in the background and, if it answers and
+  nothing is in flight (up to 10 s of patience), swaps the connection over as a reconnect.
+- The stage asks for the player's own rate over Wi-Fi (`max_rate` 0) and 10 over Bluetooth.
+  The bar shows a Wi-Fi or Bluetooth mark; the settings sheet says "Connected over ...".
+- Not done: binding to the Wi-Fi network on Android (§7); mDNS browsing; nothing here has run on a
+  phone.
+
 ### 4.4 Which radio
 
 The app prefers Wi-Fi when the player answers there, and falls back to

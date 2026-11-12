@@ -20,7 +20,7 @@ import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/app/session.dart';
 import 'package:mtrack_remote/src/app/stage_watch.dart';
-import 'package:mtrack_remote/src/protocol/player_client.dart';
+import 'package:mtrack_remote/src/protocol/player_channel.dart';
 import 'package:mtrack_remote/src/protocol/transport.dart';
 
 import '../support/fake_player.dart';
@@ -283,7 +283,7 @@ void main() {
       h.elapse(stageProbeInterval * 2);
       expect(h.count('ListPlaylists'), 1);
       expect(h.session.phase, ConnectionPhase.ready);
-      h.elapse(PlayerClient.defaultTimeout);
+      h.elapse(PlayerChannel.defaultTimeout);
       expect(h.session.phase, ConnectionPhase.lost);
 
       h.player.handlers.remove('ListPlaylists');
