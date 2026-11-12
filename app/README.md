@@ -1,7 +1,7 @@
 # mtrack phone app
 
-A Flutter app (Android and iOS) that controls a running mtrack player over Bluetooth LE. The
-protocol it speaks is documented in [`docs/src/interfaces/bluetooth.md`](../docs/src/interfaces/bluetooth.md)
+A Flutter app (Android and iOS) that controls a running mtrack player over Bluetooth LE, or over
+Wi-Fi when the player answers there (see [Wi-Fi](#wi-fi)). The protocol it speaks is documented in [`docs/src/interfaces/bluetooth.md`](../docs/src/interfaces/bluetooth.md)
 and the design in [`design/bluetooth_remote_design.md`](../design/bluetooth_remote_design.md).
 
 The app is not released: it is not in any store. It has five tabs: **Now** (the song, its time and
@@ -12,6 +12,43 @@ play and ambient light, and the playlist's ambient light; or **Songs**, the song
 to jump to it, hold to loop it), **Levels** (a fader and a mute for each output track) and **Lights**
 (below), with a connect screen for the first run and a small settings sheet. It follows the phone's
 light or dark setting.
+
+## Wi-Fi
+
+The app prefers the network when the player answers on it, and falls back to Bluetooth when it
+does not, without the person choosing. The seam is one level up from the radio:
+`lib/src/protocol/player_channel.dart` (`PlayerChannel`) is "call this method with these request
+bytes, get response bytes" and "open this server stream", plus the status and the state of the link.
+`EnvelopeChannel` implements it over Bluetooth with the envelope (framing, chunking, request ids,
+the two-stream limit and the cancel wait), and `GrpcChannel` implements it with real gRPC calls on
+the player's gRPC port: plaintext HTTP/2, no generated stubs (a method is a path and its bytes), a
+two second connect timeout, and a heartbeat (`GetNetworkInfo` every 8 s, 5 s to answer) because
+a link that vanishes is not known to TCP for minutes, and the `grpc` package's own keepalive does
+not end a connection that has a stream open. `PlayerClient` is the typed face: it knows
+`PlayerService`'s methods and nothing of which carrier is under it, and errors reach the screens as
+the same `PlayerException` with the same gRPC codes either way.
+
+- Status over Wi-Fi is `WatchStatus` (`RemoteStatus`, the message Bluetooth pushes); nothing is polled.
+- Where the player is: when connected by Bluetooth the app calls `GetNetworkInfo` and remembers the
+  addresses, the gRPC port and the host name with the player (`RememberedPlayer`, in the
+  preferences next to what Bluetooth needs); or **Enter an address** on the connect screen takes a
+  host name or IP with an optional `:port` (`lib/src/app/wifi_address.dart`), and the player it
+  makes is Wi-Fi only. No mDNS browsing.
+- Connecting tries Wi-Fi first for two seconds (up to three addresses), then Bluetooth. On
+  Bluetooth, with addresses known, it looks again every twenty seconds and moves over once the
+  player answers and no call is in flight (it waits up to ten seconds for that, then leaves it to
+  the next look). A Wi-Fi link that goes is reconnected like any other, Wi-Fi first.
+- The wrong player: the host name the player reports on Wi-Fi is compared with the one remembered,
+  and a different one is closed and ignored, falling back to Bluetooth (a Wi-Fi-only player keeps
+  waiting for its own). A player from before `WatchStatus` / `GetNetworkInfo` answers
+  `UNIMPLEMENTED` and simply stays on Bluetooth, with nothing said and no more tries.
+- Over Wi-Fi the stage asks for the player's own frame rate, where Bluetooth asks for 10 a second.
+- The top bar shows a small Wi-Fi or Bluetooth mark beside the player's name, and the settings sheet
+  says "Connected over Wi-Fi" or "Connected over Bluetooth".
+
+Wi-Fi is open to whoever is on the player's network, as the web UI is; Bluetooth keeps its pairing.
+See the [Bluetooth Control](../docs/src/interfaces/bluetooth.md#over-wi-fi) page and the design,
+[`design/remote_phase3_design.md`](../design/remote_phase3_design.md) §4.
 
 ## Songs
 
@@ -125,6 +162,10 @@ which 0.20 MB is the 3D view (three.js, mostly).
     over real sockets.
   - `lighting_assets.dart` fetches the player's lighting assets for the 3D view, one at a time, and
     `asset_cache.dart` keeps them on the phone.
+- `lib/src/protocol/` is the protocol without a radio: `player_channel.dart` is the seam,
+  `envelope_channel.dart` and `grpc_channel.dart` are its two carriers, `player_client.dart` the typed
+  calls, and `frame_codec.dart`, `asset_download.dart` and `playback_clock.dart` what they share.
+  `lib/src/platform/grpc_wifi_link.dart` opens `GrpcChannel`s for the session.
 - `lib/src/ble/` (`ble_transport.dart`, `ble_link.dart`) is the only code that touches the Bluetooth
   plugin. `lib/src/platform/` holds the other plugin adapters: `shared_preferences`, `wakelock_plus`,
   and `webview_stage.dart`, the web view the Lights tab shows the stage page in (`webview_flutter`)
@@ -219,6 +260,15 @@ on a device:
   to range, and the player restarting.
 - The remembered player surviving a launch, and the phone's per-app identifier for the player (a
   MAC address on Android, a per-phone UUID on iOS) staying the same.
+- Wi-Fi, all of it (`lib/src/protocol/grpc_channel.dart` and the session logic around it are tested
+  against an in-process gRPC server and a fake network, never a player): that gRPC to the Rust
+  player's port works from the phone (HTTP/2 framing, `WatchStatus` and the streams against tonic);
+  that `mtrack.local` resolves on Android (the system resolver does not always do mDNS, so a
+  typed name may not work where an IP does); that the heartbeat finds a phone leaving range in
+  about ten seconds and not falsely on a busy network; the Wi-Fi to Bluetooth fallback and the move
+  back, on a real network; iOS asking for local network access and what it does when refused; and
+  Android sending the app's sockets over mobile data when the Wi-Fi network has no internet
+  (see [Network permission](#network-permission)).
 - Keeping the screen on while connected (`wakelock_plus`), and releasing it in the background.
 - Haptics on Play and Stop, and the feel of the 600 ms hold under a real finger.
 - The bundled variable fonts' weights on a real device (the tests load the files but cannot show
@@ -255,23 +305,34 @@ The app uses [`universal_ble`](https://pub.dev/packages/universal_ble) (BSD-3-Cl
 its Linux desktop backend pulls in `bluez` and `dbus` (MPL-2.0), which the app does not use but which
 ship in its licence notices. `PlayerLink` and `PlayerTransport` are all the rest of the app depends
 on, so the plugin can be replaced by rewriting `lib/src/ble/`. The others are `shared_preferences`
-(the remembered player), `wakelock_plus` (keeping the screen on), `package_info_plus` (the version
+(the remembered player), `grpc` (Wi-Fi; Apache-2.0, with `http2` and a few of Google's auth packages it
+pulls in, BSD-3-Clause or Apache-2.0), `wakelock_plus` (keeping the screen on), `package_info_plus` (the version
 on the settings sheet, and already a dependency of `wakelock_plus`) and `webview_flutter` (the Lights
 tab's web view), all BSD-3-Clause. There is no
 state-management package: `Session` is a plain `ChangeNotifier`.
 
 ## Network permission
 
-The app talks to nothing but the player, over Bluetooth, and that has not changed. The Lights tab
-needs two declarations all the same, because its web view loads the bundled stage page over HTTP
-from a server inside the app (see [The Lights tab](#the-lights-tab)):
+The app talks to nothing but the player, over Bluetooth or, since [Wi-Fi](#wi-fi), gRPC on the
+player's own port. The network declarations are:
 
 - Android: `android.permission.INTERNET` in `AndroidManifest.xml`. Android gives an app no sockets
-  at all without it, loopback included. `res/xml/network_security_config.xml` allows cleartext HTTP
-  to `127.0.0.1` and nowhere else.
-- iOS: `NSAppTransportSecurity` with `NSAllowsLocalNetworking` in `Info.plist`, and nothing more.
+  at all without it, loopback included; Wi-Fi gRPC and the Lights tab's loopback server both need it.
+  `res/xml/network_security_config.xml` allows cleartext HTTP to `127.0.0.1` and nowhere else; it
+  governs the platform's HTTP stacks and the web view, not the Dart sockets the gRPC connection uses,
+  so it does not block plaintext gRPC to a LAN address, and the web view stays limited to loopback.
+- iOS: `NSAppTransportSecurity` with `NSAllowsLocalNetworking` in `Info.plist` for the stage
+  page, and `NSLocalNetworkUsageDescription` ("mtrack uses your local network to control your
+  mtrack player over Wi-Fi."), which makes iOS ask once before the app may reach a device on the
+  network. Not run on a phone.
 
-The page asks the network for nothing but its own files: no fonts, no API, no websocket.
+The stage page asks the network for nothing but its own files: no fonts, no API, no websocket.
+
+Not solved: on Android, when the Wi-Fi network has no internet (a player's own network) and the
+phone has mobile data, the system may send the app's sockets over mobile data and the player
+cannot be reached. Fixing it means binding the app's process to the Wi-Fi network
+(`ConnectivityManager.bindProcessToNetwork`), which needs platform code (a method channel in
+`android/`). Until then the app falls back to Bluetooth, and a phone can turn mobile data off.
 
 ## Bluetooth permissions
 

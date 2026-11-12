@@ -22,6 +22,7 @@ import 'package:mtrack_remote/src/ui/app.dart';
 
 import 'fake_link.dart';
 import 'fake_stage.dart';
+import 'fake_wifi.dart';
 import 'rig.dart';
 
 /// The bundled fonts, loaded so text measures as it does on a phone.
@@ -71,6 +72,7 @@ class AppHarness {
     this.stage,
     this.views,
     this.session,
+    this.wifi,
   );
 
   final WidgetTester tester;
@@ -85,6 +87,9 @@ class AppHarness {
   final MemoryViewStore views;
   final Session session;
 
+  /// The network, when the app was built with one.
+  final FakeWifi? wifi;
+
   /// The time the session's clock reads. Advances with [advance].
   Duration now = Duration.zero;
 
@@ -98,6 +103,8 @@ class AppHarness {
     Size size = const Size(360, 640),
     String? stageView,
     Map<String, String>? views,
+    bool withWifi = false,
+    RememberedPlayer? player,
   }) async {
     rig ??= Rig();
     tester.view.physicalSize = size * 3;
@@ -105,19 +112,32 @@ class AppHarness {
     tester.platformDispatcher.textScaleFactorTestValue = look.textScale;
     tester.platformDispatcher.platformBrightnessTestValue = look.brightness;
     final store = MemoryStore(
-      known ? const RememberedPlayer(id: 'p1', name: 'stage') : null,
+      known
+          ? (player ?? const RememberedPlayer(id: 'p1', name: 'stage'))
+          : null,
     );
     final wake = FakeWake();
     late final AppHarness harness;
+    final wifi = withWifi ? FakeWifi(rig) : null;
     final session = Session(
       link: rig.link,
       store: store,
       wake: wake,
+      wifi: wifi,
       monotonic: () => harness.now,
     );
     final stage = FakeStageHost()..view = stageView;
     final kept = MemoryViewStore(views);
-    harness = AppHarness._(tester, rig, store, wake, stage, kept, session);
+    harness = AppHarness._(
+      tester,
+      rig,
+      store,
+      wake,
+      stage,
+      kept,
+      session,
+      wifi,
+    );
     rig.link.paired.add('p1');
     await tester.pumpWidget(
       MtrackApp(session: session, stage: stage, views: kept),
@@ -199,6 +219,8 @@ void appTest(
   bool known = true,
   String? stageView,
   Map<String, String>? views,
+  bool withWifi = false,
+  RememberedPlayer? player,
 }) {
   testWidgets(name, (tester) async {
     await loadAppFonts();
@@ -213,6 +235,8 @@ void appTest(
       known: known,
       stageView: stageView,
       views: views,
+      withWifi: withWifi,
+      player: player,
     );
     try {
       await body(harness);

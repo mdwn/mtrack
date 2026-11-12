@@ -335,3 +335,32 @@ the stage the web UI draws, as a plot or in 3D, live from the [stage stream](#st
 view turns under a finger; its fixture models come from the player with `GetLightingAsset` and
 the app keeps them. Stop is a press and hold, and previous, next and choosing a song are off while a song plays.
 Until the app is released, any client that follows the protocol above works.
+
+### Over Wi-Fi
+
+The app can also reach a player over the network, and prefers to when the player answers there:
+it is quicker, streams are not paced, and the lights, their 3D models and the song library arrive
+at once. It speaks [gRPC](grpc.md) on the player's gRPC port directly (43234 unless the profile
+sets another), and gets its status from `WatchStatus`.
+
+- **The gRPC controller must be enabled** in the profile (`- kind: grpc`). A player without it
+  is reached by Bluetooth only, and the app says nothing about it.
+- **How the app finds the player.** Each time a phone connects over Bluetooth it asks the player
+  where it is on the network (`GetNetworkInfo`: its host name, its addresses and the gRPC port)
+  and remembers the answer with the player. Or you can tell it: on the connect screen, **Enter an
+  address** takes a host name or an IP, with an optional `:port`, such as `mtrack.local` (the
+  Raspberry Pi image answers to it) or `192.168.1.40:50051`. A player added that way is reached
+  over Wi-Fi alone, and is forgotten from the settings sheet like any other.
+- **Which radio is used.** On connecting, the app gives Wi-Fi two seconds, then uses Bluetooth if
+  the player did not answer. While it is on Bluetooth and knows the player's addresses it looks
+  again every twenty seconds, and moves over to Wi-Fi when the player answers, once no call is
+  waiting for an answer. If the Wi-Fi link goes, it reconnects over whichever answers. The top
+  bar and the settings sheet say which is in use.
+- **Another device at the address.** The app remembers the host name the player gave it, and
+  checks it against what answers on Wi-Fi each time. A different name (the address was given to
+  another device, or the player was renamed) is not used: the app goes to Bluetooth.
+- **Who may connect is different.** Bluetooth needs the phone to have paired; Wi-Fi does not.
+  The gRPC port has no login, so, as with the [web UI](web-ui.md), anyone on the player's network
+  can use the app against it. The player's [lock](web-ui.md) guards edits as it does there. Keep
+  the player on a network of its own, or one you trust.
+

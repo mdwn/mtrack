@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Cleartext HTTP is allowed to the phone's own loopback address and to
      nothing else: the Lights tab's web view loads the stage page from a
-     server inside the app, on 127.0.0.1 (lib/src/app/stage_server.dart). -->
+     server inside the app, on 127.0.0.1 (lib/src/app/stage_server.dart).
+     This does not reach the app's gRPC connection to the player over Wi-Fi
+     (lib/src/protocol/grpc_channel.dart): that is plain Dart sockets, to the
+     player's LAN address, which this config does not apply to. The web view
+     can still load nothing in cleartext but its own loopback server. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">

@@ -19,18 +19,27 @@ import 'package:mtrack_remote/src/app/session.dart';
 
 import 'fake_link.dart';
 import 'fake_player.dart';
+import 'fake_wifi.dart';
 import 'rig.dart';
 
 const RememberedPlayer remembered = RememberedPlayer(id: 'p1', name: 'stage');
 
 /// A session over a fake rig, driven by fake time.
 class Harness {
-  Harness(this.async, {bool known = true, Rig? rig}) : rig = rig ?? Rig() {
-    store = MemoryStore(known ? remembered : null);
+  Harness(
+    this.async, {
+    bool known = true,
+    Rig? rig,
+    bool withWifi = false,
+    RememberedPlayer? player,
+  }) : rig = rig ?? Rig() {
+    store = MemoryStore(known ? (player ?? remembered) : null);
+    wifi = withWifi ? FakeWifi(this.rig) : null;
     session = Session(
       link: this.rig.link,
       store: store,
       wake: wake,
+      wifi: wifi,
       monotonic: () => async.elapsed,
     );
     this.rig.link.paired.add('p1');
@@ -41,6 +50,9 @@ class Harness {
   late final MemoryStore store;
   final FakeWake wake = FakeWake();
   late final Session session;
+
+  /// The network, when the harness was made with one.
+  late final FakeWifi? wifi;
 
   FakeLink get link => rig.link;
   FakePlayer get player => rig.player;

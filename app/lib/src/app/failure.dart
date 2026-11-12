@@ -11,8 +11,10 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+import '../protocol/player_channel.dart';
 import '../protocol/player_exception.dart';
 import 'player_link.dart';
+import 'ports.dart';
 
 /// What to say when there is no connection to send a command on.
 const String notConnectedMessage = 'Not connected to a player.';
@@ -51,3 +53,20 @@ String describeConnectFailure(Object error, AdapterState adapter) {
       return 'Could not reach that player. Move closer and try again.';
   }
 }
+
+/// Why a first connection to a player known by [target]'s address did not
+/// work, in words for a person.
+String describeWifiFailure(Object error, RememberedPlayer target) {
+  if (error is PlayerException && error.code == GrpcCode.unimplemented) {
+    return 'That player is too old to connect over Wi-Fi. Update it, or '
+        'connect to it by Bluetooth.';
+  }
+  final where = target.hosts.isEmpty ? 'that address' : target.hosts.first;
+  return 'Nothing answered at $where. Check that your phone is on the '
+      "player's network, and that the player's gRPC controller is turned "
+      'on.';
+}
+
+/// The name of a radio for a person: `Wi-Fi` or `Bluetooth`.
+String carrierName(Carrier carrier) =>
+    carrier == Carrier.wifi ? 'Wi-Fi' : 'Bluetooth';

@@ -21,6 +21,7 @@ import 'package:mtrack_remote/src/app/asset_cache.dart';
 import 'package:mtrack_remote/src/app/lighting_assets.dart';
 import 'package:mtrack_remote/src/protocol/player_client.dart';
 
+import '../support/client.dart';
 import '../support/fake_player.dart';
 
 Uint8List bytesOf(String text) => Uint8List.fromList(text.codeUnits);
@@ -36,7 +37,7 @@ void main() {
   setUp(() async {
     ready = true;
     fake = FakePlayer();
-    client = PlayerClient(fake);
+    client = clientOver(fake);
     root = await Directory.systemTemp.createTemp('lighting_assets_test');
     cache = LightingAssetCache(() async => root);
     assets = LightingAssets(
@@ -223,7 +224,7 @@ void main() {
         // Its own player, client and no cache: a disk does not run on fake
         // time.
         final fake = FakePlayer();
-        final client = PlayerClient(fake);
+        final client = clientOver(fake);
         final assets = LightingAssets(client: () => client, isReady: () => true)
           ..linkChanged(ready: true);
         AssetFailure? failed;

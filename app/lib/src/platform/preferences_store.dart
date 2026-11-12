@@ -23,6 +23,10 @@ class PreferencesPlayerStore implements PlayerStore {
 
   static const String _idKey = 'player.id';
   static const String _nameKey = 'player.name';
+  static const String _hostsKey = 'player.wifi.hosts';
+  static const String _portKey = 'player.wifi.port';
+  static const String _hostnameKey = 'player.wifi.hostname';
+  static const String _bluetoothKey = 'player.bluetooth';
 
   final SharedPreferencesAsync _preferences;
 
@@ -33,19 +37,50 @@ class PreferencesPlayerStore implements PlayerStore {
       return null;
     }
     final name = await _preferences.getString(_nameKey);
-    return RememberedPlayer(id: id, name: name ?? id);
+    final hostname = await _preferences.getString(_hostnameKey);
+    return RememberedPlayer(
+      id: id,
+      name: name ?? id,
+      hosts: await _preferences.getStringList(_hostsKey) ?? const [],
+      port: await _preferences.getInt(_portKey),
+      hostname: hostname == null || hostname.isEmpty ? null : hostname,
+      // A player kept before Wi-Fi was Bluetooth's.
+      bluetooth: await _preferences.getBool(_bluetoothKey) ?? true,
+    );
   }
 
   @override
   Future<void> save(RememberedPlayer player) async {
     await _preferences.setString(_idKey, player.id);
     await _preferences.setString(_nameKey, player.name);
+    await _preferences.setStringList(_hostsKey, player.hosts);
+    final port = player.port;
+    if (port == null) {
+      await _preferences.remove(_portKey);
+    } else {
+      await _preferences.setInt(_portKey, port);
+    }
+    final hostname = player.hostname;
+    if (hostname == null) {
+      await _preferences.remove(_hostnameKey);
+    } else {
+      await _preferences.setString(_hostnameKey, hostname);
+    }
+    await _preferences.setBool(_bluetoothKey, player.bluetooth);
   }
 
   @override
   Future<void> clear() async {
-    await _preferences.remove(_idKey);
-    await _preferences.remove(_nameKey);
+    for (final key in [
+      _idKey,
+      _nameKey,
+      _hostsKey,
+      _portKey,
+      _hostnameKey,
+      _bluetoothKey,
+    ]) {
+      await _preferences.remove(key);
+    }
   }
 }
 
