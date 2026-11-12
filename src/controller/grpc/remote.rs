@@ -96,7 +96,19 @@ pub(super) fn network_info(player: &Player) -> GetNetworkInfoResponse {
 /// link-local addresses (which mean nothing without an interface) left out.
 fn addresses() -> Vec<String> {
     let found = if_addrs::get_if_addrs().unwrap_or_else(|e| {
-        tracing::debug!(error = %e, "network interfaces not read");
+        // Said once: a phone asks again every few seconds. The usual cause
+        // is a service unit written before this call existed, whose sandbox has no
+        // AF_NETLINK (`mtrack systemd` prints the current unit).
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                error = %e,
+                "Could not read this machine's network addresses, so a phone on \
+                 Bluetooth will not be told where to find the player on Wi-Fi. If \
+                 this runs under systemd, its unit may need AF_NETLINK in \
+                 RestrictAddressFamilies."
+            );
+        });
         Vec::new()
     });
     reachable(found.iter().map(|interface| interface.ip()))

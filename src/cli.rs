@@ -91,7 +91,9 @@ RestrictNamespaces=true
 RestrictSUIDSGID=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is how the player reads its own network addresses, which it
+# tells a phone connected over Bluetooth so the phone can find it on Wi-Fi.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

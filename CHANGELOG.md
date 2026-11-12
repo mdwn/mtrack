@@ -102,7 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RemoteStatus` with the same field numbers, so it is the same bytes on the air.
 - **`GetNetworkInfo` gRPC RPC**: the player's host name, its IPv4 and IPv6 addresses (not
   loopback or link-local) and the port its gRPC controller listens on. A phone connected over
-  Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi.
+  Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi. Reading the
+  addresses needs netlink: the unit `mtrack systemd` prints now has `AF_NETLINK` in
+  `RestrictAddressFamilies`. Under a unit installed earlier the call still answers, with no
+  addresses (the player says so once in its log), until the unit is replaced.
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the

@@ -41,7 +41,9 @@ gain new privileges via setuid/setgid binaries or filesystem capabilities),
 `MemoryDenyWriteExecute` (no writable-executable memory pages), `SystemCallArchitectures=native`
 (only native architecture syscalls), `LockPersonality` (cannot change execution domain),
 `RestrictNamespaces` (cannot create user/network/mount namespaces), and
-`RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` (only IPv4, IPv6, and Unix socket access).
+`RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK` (only IPv4, IPv6, Unix socket
+and netlink access; netlink is how the player reads its own network addresses, and without
+`CAP_NET_ADMIN` it cannot change them).
 
 ## Network exposure
 
