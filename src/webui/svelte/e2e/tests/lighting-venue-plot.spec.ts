@@ -14,7 +14,7 @@
 
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 // The Venues page's plot for a venue that is not the current one: it shows
 // that venue's file (not live), and place / arrange / aim save to that venue
@@ -353,7 +353,7 @@ test.describe("Venues plot: a venue that is not current", () => {
     });
     await page.goto(`/?wsId=${live}#/lighting/venues`);
     await expect(page.getByTestId(`venue-card-${live}`)).toBeVisible();
-    await sendWs(page, live, {
+    await sendStage(page, live, {
       type: "metadata",
       fixtures: {
         A: {
@@ -364,7 +364,7 @@ test.describe("Venues plot: a venue that is not current", () => {
           rotation: null,
         },
       },
-      venue: { name: live, dir: null, focus_points: { spot: [0, 1, 0] } },
+      venue: { name: live, focus_points: { spot: [0, 1, 0] } },
     });
     await expect(label(page)).toContainText(`Current venue: ${live} · live`);
     await expect(page.getByTestId(`venue-live-${live}`)).toBeVisible();

@@ -16,7 +16,7 @@
   import type {
     FixtureMetadata,
     StageValues,
-    VenueMetadata,
+    StageVenue,
   } from "../../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
@@ -70,7 +70,7 @@
    *  plot when the venue has geometry, the tag heuristic otherwise. */
   function computeLayout(
     fixtures: Record<string, FixtureMetadata>,
-    venue: VenueMetadata | null,
+    venue: StageVenue | null,
   ) {
     const names = Object.keys(fixtures);
     if (!canvasEl || names.length === 0) return;
@@ -352,7 +352,7 @@
   }
 
   // The draw loop starts when the canvas appears and stops when it goes;
-  // the first draw reads the live state untracked, so a state message does
+  // the first draw reads the live state untracked, so a frame does
   // not restart the loop (and blank the canvas) each time one arrives.
   $effect(() => {
     if (canvasEl) {

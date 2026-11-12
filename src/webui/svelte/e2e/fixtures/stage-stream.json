@@ -1,5 +1,5 @@
 {
-  "about": "A WatchStage stream as the player encodes it, with the websocket's message for the same stage beside each update. Written by the test the_web_uis_recorded_stream_is_what_the_encoder_says in src/controller/grpc/stage.rs; do not edit by hand.",
+  "about": "A WatchStage stream as the player encodes it, with what the web UI should make of each update beside it (the stage's metadata and state, before the stream narrowed their numbers to 32 bits). Written by the test the_web_uis_recorded_stream_is_what_the_encoder_says in src/controller/grpc/stage.rs; do not edit by hand.",
   "steps": [
     {
       "metadata": {
@@ -69,9 +69,7 @@
             "type": "Par"
           }
         },
-        "type": "metadata",
         "venue": {
-          "dir": "/somewhere/venues",
           "focus_points": {
             "drummer": [
               0.0,
@@ -135,7 +133,6 @@
         "strobe_rates": {
           "head": 12.5
         },
-        "type": "state",
         "under_test": [
           "head"
         ]
@@ -176,7 +173,6 @@
         "strobe_rates": {
           "stray": 3.0
         },
-        "type": "state",
         "under_test": [
           "bar",
           "stray"
@@ -207,7 +203,6 @@
         "strobe_rates": {
           "stray": 3.0
         },
-        "type": "state",
         "under_test": [
           "bar",
           "stray"
@@ -289,9 +284,7 @@
             "type": "Par"
           }
         },
-        "type": "metadata",
         "venue": {
-          "dir": "/somewhere/venues",
           "focus_points": {
             "drummer": [
               0.0,
@@ -358,7 +351,6 @@
         "strobe_rates": {
           "head": 12.5
         },
-        "type": "state",
         "under_test": [
           "head"
         ]

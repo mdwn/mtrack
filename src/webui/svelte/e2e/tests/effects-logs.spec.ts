@@ -23,7 +23,9 @@ test.describe("Effects and Logs Cards", () => {
     );
   });
 
-  test("effects card shows active effects from WebSocket", async ({ page }) => {
+  test("effects card shows the active effects of the stage stream", async ({
+    page,
+  }) => {
     // Mock server sends FIXTURE_STATE with active_effects: ["color_wash", "strobe_pulse"]
     const effectsList = page.locator(".effects-card__chips .badge");
     await expect(effectsList).toHaveCount(2);

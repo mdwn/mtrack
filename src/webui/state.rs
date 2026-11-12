@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tokio::time;
 use tracing::{info, warn};
 
@@ -374,30 +374,9 @@ pub fn to_json(msg: &wire::SocketMessage) -> String {
     serde_json::to_string(msg).unwrap_or_default()
 }
 
-/// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
-#[tracing::instrument(skip_all, name = "state_poller")]
-pub async fn state_poller(
-    mut state_rx: watch::Receiver<Arc<crate::state::StateSnapshot>>,
-    tx: broadcast::Sender<String>,
-) {
-    loop {
-        // Wait for the state to change
-        if state_rx.changed().await.is_err() {
-            break; // Sender dropped
-        }
-
-        if tx.receiver_count() == 0 {
-            continue;
-        }
-
-        let snapshot = state_rx.borrow_and_update().clone();
-        let _ = tx.send(build_state_json(&snapshot));
-    }
-}
-
 /// The stage at one instant, by fixture -- channel values, poses,
 /// per-cell values and strobe rates -- from a snapshot's parts. The live
-/// message and the preview's evaluation both build it here, so the stage
+/// stream and the preview's evaluation both build it here, so the stage
 /// views are fed the same shape either way and the two cannot drift apart.
 pub fn stage_frame(
     fixtures: &[crate::state::FixtureSnapshot],
@@ -423,17 +402,6 @@ pub fn stage_frame(
             .filter_map(|f| f.strobe_hz.map(|hz| (f.name.clone(), hz)))
             .collect(),
     }
-}
-
-/// Builds the `state` WebSocket message for a snapshot. Also sent to each
-/// client on connect, so one that joins while nothing is changing (an idle
-/// player) still learns the current values.
-pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
-    to_json(&wire::SocketMessage::State(wire::StageState {
-        frame: stage_frame(&snapshot.fixtures, &snapshot.poses),
-        active_effects: snapshot.active_effects.clone(),
-        under_test: snapshot.under_test.clone(),
-    }))
 }
 
 /// Polls the log ring buffer at ~2Hz and broadcasts log lines.
@@ -885,21 +853,8 @@ fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: u
     peaks
 }
 
-/// Builds the initial metadata JSON from the lighting system.
-///
-/// Sent to each WebSocket client on connect so the stage view knows fixture
-/// names, types, and spatial tags.
-pub fn build_metadata_json(
-    lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
-) -> String {
-    to_json(&wire::SocketMessage::Metadata(stage_metadata(
-        lighting_system,
-    )))
-}
-
 /// The venue's fixtures and the venue itself, as the stage views need them:
-/// what the `metadata` message carries and what the gRPC stage stream's
-/// layout is built from, so the two cannot drift apart. Locks the lighting
+/// what the gRPC stage stream's layout is built from. Locks the lighting
 /// system while it reads.
 pub fn stage_metadata(
     lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
@@ -941,10 +896,7 @@ pub fn stage_metadata(
             }
         }
         if let Some(venue) = system.get_current_venue() {
-            metadata.venue = Some(wire::VenueMetadata {
-                venue: stage_venue(&system, venue),
-                dir: system.venues_dir().map(String::from),
-            });
+            metadata.venue = Some(stage_venue(&system, venue));
         }
     }
 
@@ -1003,11 +955,17 @@ mod test {
         assert_eq!(retrieved.unwrap(), peaks);
     }
 
+    /// A stage's metadata as JSON, to read a field at a time.
+    fn metadata_json(
+        lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
+    ) -> String {
+        serde_json::to_string(&stage_metadata(lighting_system)).unwrap()
+    }
+
     #[test]
-    fn build_metadata_json_no_lighting() {
-        let json_str = build_metadata_json(None);
+    fn stage_metadata_no_lighting() {
+        let json_str = metadata_json(None);
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
-        assert_eq!(parsed["type"], "metadata");
         assert!(parsed["fixtures"].is_object());
         assert!(parsed["fixtures"].as_object().unwrap().is_empty());
     }
@@ -1325,28 +1283,6 @@ metronome: {}
         assert_eq!(next_json(&pl, false), json!({"song": null}));
     }
 
-    #[test]
-    fn build_state_json_reports_current_snapshot_without_a_change() {
-        // What a freshly connected client is sent: the current value of the
-        // watch channel, even though nothing has changed since it was made.
-        let (_state_tx, state_rx) = watch::channel(Arc::new(crate::state::StateSnapshot {
-            fixtures: vec![crate::state::FixtureSnapshot {
-                strobe_hz: None,
-                cells: Default::default(),
-                name: "wash1".to_string(),
-                channels: std::collections::HashMap::from([("dimmer".to_string(), 0)]),
-            }],
-            active_effects: Vec::new(),
-            poses: Vec::new(),
-            under_test: Vec::new(),
-        }));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&build_state_json(&state_rx.borrow())).unwrap();
-        assert_eq!(parsed["type"], "state");
-        assert_eq!(parsed["fixtures"]["wash1"]["dimmer"], 0);
-        assert_eq!(parsed["strobe_rates"], json!({}), "not strobing: no rate");
-    }
-
     /// A strobing fixture's rate rides in a map of its own beside the
     /// `fixtures` byte map — never as a channel — so the stage views flash
     /// at it instead of guessing from the byte (live message and
@@ -1371,118 +1307,35 @@ metronome: {}
         let maps = stage_frame(&fixtures, &[]);
         assert_eq!(json!(maps.fixtures["brick"]), json!({"strobe": 200}));
         assert_eq!(json!(maps.strobe_rates), json!({"brick": 12.5}));
-        let message: serde_json::Value =
-            serde_json::from_str(&build_state_json(&crate::state::StateSnapshot {
-                fixtures,
-                ..Default::default()
-            }))
-            .unwrap();
-        assert_eq!(message["strobe_rates"], json!({"brick": 12.5}));
     }
 
-    #[tokio::test]
-    async fn state_poller_sends_on_change() {
-        let initial = Arc::new(crate::state::StateSnapshot::default());
-        let (state_tx, state_rx) = watch::channel(initial);
-        let (tx, mut rx) = broadcast::channel(16);
-
-        let handle = tokio::spawn(state_poller(state_rx, tx));
-
-        // Send a state update with fixtures
-        let snapshot = Arc::new(crate::state::StateSnapshot {
-            fixtures: vec![crate::state::FixtureSnapshot {
-                strobe_hz: None,
-                cells: Default::default(),
-                name: "wash1".to_string(),
-                channels: {
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("red".to_string(), 255);
-                    m
-                },
-            }],
-            active_effects: vec!["chase".to_string()],
-            poses: Vec::new(),
-            under_test: Vec::new(),
-        });
-        state_tx.send(snapshot).unwrap();
-
-        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
-            .await
-            .expect("timed out waiting for state message")
-            .expect("recv error");
-
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(parsed["type"], "state");
-        assert!(parsed["fixtures"].is_object());
-        assert_eq!(parsed["fixtures"]["wash1"]["red"], 255);
-        assert_eq!(parsed["active_effects"][0], "chase");
-
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn state_poller_carries_cells_only_for_fixtures_that_have_them() {
-        let initial = Arc::new(crate::state::StateSnapshot::default());
-        let (state_tx, state_rx) = watch::channel(initial);
-        let (tx, mut rx) = broadcast::channel(16);
-
-        let handle = tokio::spawn(state_poller(state_rx, tx));
-
+    #[test]
+    fn a_frame_carries_cells_only_for_fixtures_that_have_them() {
         let mut cells = std::collections::BTreeMap::new();
         cells.insert(
             "1".to_string(),
             std::collections::HashMap::from([("red".to_string(), 255u8)]),
         );
-        let snapshot = Arc::new(crate::state::StateSnapshot {
-            fixtures: vec![
-                crate::state::FixtureSnapshot {
-                    strobe_hz: None,
-                    name: "bar".to_string(),
-                    channels: std::collections::HashMap::new(),
-                    cells,
-                },
-                crate::state::FixtureSnapshot {
-                    strobe_hz: None,
-                    name: "wash1".to_string(),
-                    channels: std::collections::HashMap::from([("red".to_string(), 255)]),
-                    cells: Default::default(),
-                },
-            ],
-            active_effects: Vec::new(),
-            poses: Vec::new(),
-            under_test: Vec::new(),
-        });
-        state_tx.send(snapshot).unwrap();
-
-        let msg = tokio::time::timeout(crate::testutil::PATIENCE, rx.recv())
-            .await
-            .expect("timed out waiting for state message")
-            .expect("recv error");
-
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(parsed["type"], "state");
-        assert_eq!(parsed["cells"]["bar"]["1"]["red"], 255);
+        let fixtures = vec![
+            crate::state::FixtureSnapshot {
+                strobe_hz: None,
+                name: "bar".to_string(),
+                channels: std::collections::HashMap::new(),
+                cells,
+            },
+            crate::state::FixtureSnapshot {
+                strobe_hz: None,
+                name: "wash1".to_string(),
+                channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                cells: Default::default(),
+            },
+        ];
+        let values = json!(stage_frame(&fixtures, &[]));
+        assert_eq!(values["cells"]["bar"]["1"]["red"], 255);
         assert!(
-            parsed["cells"].as_object().unwrap().get("wash1").is_none(),
-            "a fixture with no cells is absent from `cells`: {parsed}"
+            values["cells"].as_object().unwrap().get("wash1").is_none(),
+            "a fixture with no cells is absent from `cells`: {values}"
         );
-
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn state_poller_exits_when_sender_dropped() {
-        let initial = Arc::new(crate::state::StateSnapshot::default());
-        let (state_tx, state_rx) = watch::channel(initial);
-        let (tx, _rx) = broadcast::channel::<String>(16);
-
-        let handle = tokio::spawn(state_poller(state_rx, tx));
-
-        // Drop the sender — poller should exit
-        drop(state_tx);
-
-        let result = tokio::time::timeout(crate::testutil::PATIENCE, handle).await;
-        assert!(result.is_ok(), "poller should have exited");
     }
 
     #[tokio::test]
@@ -1801,39 +1654,6 @@ metronome: {}
     }
 
     #[tokio::test]
-    async fn state_poller_no_subscribers_skips_send() {
-        let initial = Arc::new(crate::state::StateSnapshot::default());
-        let (state_tx, state_rx) = watch::channel(initial);
-        let (tx, _rx) = broadcast::channel::<String>(16);
-
-        // Drop receiver so receiver_count() == 0
-        drop(_rx);
-
-        let handle = tokio::spawn(state_poller(state_rx, tx));
-
-        // Send a state update with no subscribers
-        let snapshot = Arc::new(crate::state::StateSnapshot {
-            fixtures: vec![crate::state::FixtureSnapshot {
-                strobe_hz: None,
-                name: "light1".to_string(),
-                channels: std::collections::HashMap::new(),
-                cells: Default::default(),
-            }],
-            active_effects: vec![],
-            poses: Vec::new(),
-            under_test: Vec::new(),
-        });
-        state_tx.send(snapshot).unwrap();
-
-        // Let it process with no subscribers
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Should still be running
-        assert!(!handle.is_finished());
-        handle.abort();
-    }
-
-    #[tokio::test]
     async fn waveform_poller_no_subscribers_skips() {
         let player = test_player(&["Song A"]);
         let (tx, _rx) = broadcast::channel::<String>(16);
@@ -1935,11 +1755,11 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_carries_cells_for_a_pixel_fixture() {
+    fn stage_metadata_carries_cells_for_a_pixel_fixture() {
         let fixture_dsl = "fixture_type \"Bar\" {\n  channel \"dimmer\" @ 1\n  cell \"1\" at (-0.3, 0, 0) { channel \"red\" @ 2 }\n  cell \"2\" at (0.3, 0, 0) { channel \"red\" @ 3 }\n}\n";
         let venue_dsl = "venue \"v\" {\n  fixture \"bar\" Bar @ 1:1\n}\n";
         let (system, _dir) = create_test_lighting_system_fixture(fixture_dsl, venue_dsl, "v");
-        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let json = metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         let cells = value["fixtures"]["bar"]["cells"].as_array().unwrap();
@@ -1951,12 +1771,12 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_carries_capabilities() {
+    fn stage_metadata_carries_capabilities() {
         let fixture_dsl = "fixture_type \"Head\" {\n  channel \"pan\" @ 1\n  channel \"tilt\" @ 2\n  channel \"red\" @ 3\n  channel \"green\" @ 4\n  channel \"blue\" @ 5\n}\nfixture_type \"Dim\" {\n  channel \"dimmer\" @ 1\n}\n";
         let venue_dsl =
             "venue \"v\" {\n  fixture \"head\" Head @ 1:1\n  fixture \"dim\" Dim @ 1:20\n}\n";
         let (system, _dir) = create_test_lighting_system_fixture(fixture_dsl, venue_dsl, "v");
-        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let json = metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
@@ -1970,7 +1790,7 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_cells_is_empty_for_a_plain_fixture() {
+    fn stage_metadata_cells_is_empty_for_a_plain_fixture() {
         let fixture_dsl = r#"fixture_type "wash" {
             channels: 3
             channel_map: {
@@ -1983,7 +1803,7 @@ metronome: {}
             fixture "front_wash_1" wash @ 1:1
         }"#;
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
-        let json_str = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let json_str = metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
 
         let cells = parsed["fixtures"]["front_wash_1"]["cells"]
@@ -1993,7 +1813,7 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_with_lighting_system() {
+    fn stage_metadata_with_lighting_system() {
         let fixture_dsl = r#"fixture_type "wash" {
             channels: 3
             channel_map: {
@@ -2009,10 +1829,9 @@ metronome: {}
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
 
         let ls = Arc::new(parking_lot::Mutex::new(system));
-        let json_str = build_metadata_json(Some(&ls));
+        let json_str = metadata_json(Some(&ls));
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
 
-        assert_eq!(parsed["type"], "metadata");
         assert!(parsed["fixtures"].is_object());
 
         let fixture_meta = &parsed["fixtures"]["front_wash_1"];
@@ -2025,11 +1844,11 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_carries_stage_geometry() {
+    fn stage_metadata_carries_stage_geometry() {
         let fixture_dsl = "fixture_type \"T\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n}\n";
         let venue_dsl = "venue \"v\" {\n  fixture \"A\" T @ 1:1 tags [\"front\"] position (-2, 3.5, 4.2) rotation (0, 0, 180) beam_angle 60\n  fixture \"B\" T @ 1:5\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n";
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "v");
-        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let json = metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["fixtures"]["A"]["position"], json!([-2.0, 3.5, 4.2]));
         assert_eq!(value["fixtures"]["A"]["rotation"], json!([0.0, 0.0, 180.0]));
@@ -2052,7 +1871,7 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_with_fixture_no_tags() {
+    fn stage_metadata_with_fixture_no_tags() {
         let fixture_dsl = r#"fixture_type "par" {
             channels: 1
             channel_map: {
@@ -2066,10 +1885,9 @@ metronome: {}
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
 
         let ls = Arc::new(parking_lot::Mutex::new(system));
-        let json_str = build_metadata_json(Some(&ls));
+        let json_str = metadata_json(Some(&ls));
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
 
-        assert_eq!(parsed["type"], "metadata");
         let fixture_meta = &parsed["fixtures"]["par_1"];
         assert_eq!(fixture_meta["type"], "par");
         let tags = fixture_meta["tags"].as_array().unwrap();
@@ -2098,7 +1916,7 @@ metronome: {}
     }
 
     #[test]
-    fn build_metadata_json_with_multiple_fixtures() {
+    fn stage_metadata_with_multiple_fixtures() {
         let fixture_dsl = r#"fixture_type "generic" {
             channels: 1
             channel_map: {
@@ -2114,7 +1932,7 @@ metronome: {}
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Multi");
 
         let ls = Arc::new(parking_lot::Mutex::new(system));
-        let json_str = build_metadata_json(Some(&ls));
+        let json_str = metadata_json(Some(&ls));
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
 
         let fixtures_obj = parsed["fixtures"].as_object().unwrap();

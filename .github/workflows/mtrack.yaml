@@ -269,6 +269,10 @@ jobs:
       run: make lint-ui
     - name: Format check
       run: cd src/webui/svelte && npm run format:check
+    # Vitest: the stage stream's reader and its page-wide lease, in under a
+    # second.
+    - name: Unit tests
+      run: cd src/webui/svelte && npm run test:unit
     # The phone app's stage page is a second build of the same sources, and
     # nothing else in CI builds it: a few seconds here, with everything it
     # needs already generated.

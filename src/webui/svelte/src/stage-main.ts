@@ -159,7 +159,7 @@ systemDark?.addEventListener("change", applyTheme);
 applyTheme();
 
 // --- The stream, into the stores the stage view reads: the same two
-// writes the websocket's `metadata` and `state` messages end in.
+// writes the web UI's own stream reader (main.ts) ends in.
 const reader = new StageReader({
   metadata: applyStageMetadata,
   state: applyStageState,

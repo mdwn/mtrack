@@ -33,7 +33,7 @@ function framedReply(): Buffer {
   ]);
 }
 
-/** Answers every PlayerService call with success (see {@link GrpcReply}),
+/** Answers every PlayerService call but the stage stream with success (see {@link GrpcReply}),
  *  calling `onCall` first, if given. */
 export async function stubPlayerService(
   page: Page,
@@ -41,6 +41,12 @@ export async function stubPlayerService(
 ): Promise<void> {
   const reply = options.reply ?? "trailers-only";
   await page.route("**/player.v1.PlayerService/**", async (route) => {
+    // The stage stream is the mock server's (support/stage.ts), not a call
+    // to stub.
+    if (route.request().url().endsWith("/WatchStage")) {
+      await route.fallback();
+      return;
+    }
     options.onCall?.();
     await route.fulfill(
       reply === "framed"

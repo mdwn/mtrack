@@ -32,6 +32,10 @@ import type {
   Status,
   StoreSnapshot,
 } from "../../src/gen/rules/mtrack_rules";
+import type {
+  StageMetadataMessage,
+  StageStateMessage,
+} from "../support/stage-stream";
 
 export const SONGS: SongList = {
   songs: [
@@ -565,7 +569,7 @@ export const FIT: FitReport = {
   },
 };
 
-/** A fixture as the metadata message carries it, unplaced. */
+/** A fixture as the stage's metadata carries it, unplaced. */
 function metadataFixture(
   type: string,
   tags: string[],
@@ -595,7 +599,7 @@ export const METADATA_STATE = {
     }),
   },
   venue: null,
-} satisfies SocketMessage;
+} satisfies StageMetadataMessage;
 
 /** The same venue with a three-cell pixel bar beside the pars. */
 export const PIXEL_METADATA_STATE = {
@@ -612,7 +616,7 @@ export const PIXEL_METADATA_STATE = {
     }),
   },
   venue: null,
-} satisfies SocketMessage;
+} satisfies StageMetadataMessage;
 
 /** A state frame in which a per-cell effect drives the bar: red, green,
  *  blue along its cells over a white bed. */
@@ -634,7 +638,7 @@ export const PIXEL_STATE = {
   },
   strobe_rates: {},
   under_test: [],
-} satisfies SocketMessage;
+} satisfies StageStateMessage;
 
 /** A mover's rig as the asset store writes it: base, yoke (pan), head
  *  (tilt), one beam. */
@@ -766,7 +770,7 @@ export const FIXTURE_STATE = {
   cells: {},
   strobe_rates: {},
   under_test: [],
-} satisfies SocketMessage;
+} satisfies StageStateMessage;
 
 export const WAVEFORM_DATA = {
   type: "waveform",

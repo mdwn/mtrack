@@ -36,7 +36,7 @@ import type {
   SceneryModel,
   StageValues,
   Vec3,
-  VenueMetadata,
+  StageVenue,
 } from "../../gen/rules/mtrack_rules";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -464,7 +464,7 @@ export class StageScene {
    *  the same venue leaves it where the user put it. */
   async setVenue(
     fixtures: Record<string, FixtureMetadata>,
-    venue: VenueMetadata | null,
+    venue: StageVenue | null,
     frame = true,
   ): Promise<void> {
     const generation = ++this.generation;
