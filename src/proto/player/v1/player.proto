@@ -882,6 +882,75 @@ message StageUpdate {
     }
 }
 
+// RemoteStatus is the player's state as a phone watches it: pushed on the
+// Bluetooth status characteristic (and returned by a read of it), and
+// streamed by WatchStatus over gRPC. One message for both carriers, with
+// the field numbers it has always had on Bluetooth. It is deliberately
+// small, to fit a few packets: it carries no beat grid and no sections,
+// which a client fetches with the Status method when the song changes.
+message RemoteStatus {
+    // The name of the current playlist.
+    string playlist_name = 1;
+    // The name of the song the playlist is on. Empty when it has none.
+    string song_name = 2;
+    // The length of that song.
+    google.protobuf.Duration song_duration = 3;
+    // True while a song is playing.
+    bool playing = 4;
+    // How far into the song the player is, as of this message: on the
+    // playback clock while playing, the position kept for the next play while
+    // stopped. A client runs its own clock between messages.
+    google.protobuf.Duration elapsed = 5;
+    // The index of the playlist entry the playlist is on, as
+    // GetPlaylistResponse.position gives it. Absent while the song playing is
+    // one an edit took off the list.
+    optional uint32 position = 6;
+    // The song waiting to start by itself, and how long until it does.
+    // Absent when none is.
+    optional AutoPlayStatus auto_play = 7;
+    // The name of the section of the current song that a section loop is set
+    // on, as the web UI marks it: from the LoopSection call until the loop
+    // is stopped. Absent when no section is looping.
+    optional string loop_section = 8;
+    // A count the player moves on any change to a track's gain or mute, from
+    // any surface: this one, gRPC, OSC or the web UI. A client fetches the
+    // gains again when it differs from the last it saw. It wraps, so compare
+    // for inequality, not order. Absent only from a player too old to count.
+    optional uint32 gains_revision = 9;
+    // The ambient light's mode: "auto", "on" or "off", as
+    // AmbientStatus.mode gives it. Absent when the player has no
+    // DMX engine, or has not read it yet. Read about twice a second.
+    optional string ambient_mode = 10;
+    // What the ambient light is doing: "playing", "pending", "off" or
+    // "unavailable", as AmbientStatus.state gives it. Absent when
+    // ambient_mode is.
+    optional string ambient_state = 11;
+    // Whether the player is locked, as SetLockResponse gives it:
+    // while it is, playlist edits are refused. Absent only from a player too
+    // old to say.
+    optional bool locked = 12;
+}
+
+// WatchStatusRequest opens the status stream. It has no fields.
+message WatchStatusRequest {}
+
+// GetNetworkInfoRequest asks where the player is on the network. It has no
+// fields.
+message GetNetworkInfoRequest {}
+
+// GetNetworkInfoResponse is where a phone can reach the player over Wi-Fi.
+message GetNetworkInfoResponse {
+    // The player's host name, as the system reports it. A phone on a
+    // network that resolves names can use it as it is, or with ".local".
+    string hostname = 1;
+    // The player's addresses on the network, as text: IPv4 and IPv6, with
+    // loopback and link-local addresses left out. Empty when it has none.
+    repeated string addresses = 2;
+    // The port the player's gRPC controller listens on. Absent when the
+    // player has no gRPC controller configured.
+    optional uint32 grpc_port = 3;
+}
+
 // GetLightingAssetRequest asks for one file of the lighting asset store.
 message GetLightingAssetRequest {
     // The path under /api/lighting/assets/, as the stage layout and the rig
@@ -1220,4 +1289,17 @@ service PlayerService {
     // UI's /api/lighting/assets/ serves it, in chunks. NOT_FOUND for a path
     // that is not in the store or not a type it serves. Open while locked.
     rpc GetLightingAsset(GetLightingAssetRequest) returns (stream AssetChunk);
+
+    // WatchStatus is a stream of the player's status as a phone watches it:
+    // the current status at once, then again whenever it changes, and at
+    // least once a second while a song is playing, for the clock. A slow
+    // client is sent the latest status and skips those between. Open while
+    // locked.
+    rpc WatchStatus(WatchStatusRequest) returns (stream RemoteStatus);
+
+    // GetNetworkInfo tells where the player is on the network: its host
+    // name, its addresses and the port of its gRPC controller. A phone
+    // connected over Bluetooth asks it to learn where to find the player
+    // over Wi-Fi. Open while locked.
+    rpc GetNetworkInfo(GetNetworkInfoRequest) returns (GetNetworkInfoResponse);
 }

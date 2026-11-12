@@ -68,6 +68,7 @@ pub(crate) const ALLOWED: &[&str] = &[
     "UpdateSongSettings",
     "SetLock",
     "WatchStage",
+    "GetNetworkInfo",
     "GetLightingAsset",
 ];
 
@@ -623,6 +624,31 @@ mod tests {
         // SetLock is how a phone gets out of it.
         let response = call(&dispatcher, 4, "SetLock", Vec::new()).await;
         assert_eq!(response.code, 0, "{}", response.message);
+    }
+
+    /// A phone on Bluetooth learns where the player is on Wi-Fi, locked or
+    /// not, with the port gRPC listens on; and does not need `WatchStatus`,
+    /// which Bluetooth's own status push stands in for.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phone_asks_where_the_player_is_on_the_network() {
+        use crate::proto::player::v1::GetNetworkInfoResponse;
+
+        let (player, dispatcher, _device) = setup().await;
+        player.set_locked(true);
+
+        let response = call(&dispatcher, 1, "GetNetworkInfo", Vec::new()).await;
+        assert_eq!(response.code, 0, "{}", response.message);
+        let none = GetNetworkInfoResponse::decode(response.payload.as_slice()).expect("info");
+        assert_eq!(none.grpc_port, None, "no gRPC controller listens");
+        assert_eq!(none.hostname, crate::config::resolve_hostname());
+
+        player.set_grpc_port(Some(50051));
+        let response = call(&dispatcher, 2, "GetNetworkInfo", Vec::new()).await;
+        let info = GetNetworkInfoResponse::decode(response.payload.as_slice()).expect("info");
+        assert_eq!(info.grpc_port, Some(50051));
+
+        let response = call(&dispatcher, 3, "WatchStatus", Vec::new()).await;
+        assert_eq!(response.code, PERMISSION_DENIED, "{}", response.message);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1,4 +1,4 @@
-import '../../gen/ble/v1/ble.pb.dart' as ble;
+import '../../gen/player/v1/player.pb.dart' as player;
 
 /// A reading of a monotonic clock, as time since some fixed start. Only
 /// differences between readings are used.
@@ -24,7 +24,7 @@ class PlaybackClock {
 
   /// Takes the latest status. The position is the status's elapsed time as of
   /// this call.
-  void update(ble.Status status) {
+  void update(player.RemoteStatus status) {
     _playing = status.playing;
     _elapsed = status.hasElapsed() ? status.elapsed.toDart() : Duration.zero;
     _duration = status.hasSongDuration()

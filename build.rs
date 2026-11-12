@@ -48,12 +48,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
         .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
 
-    // The Bluetooth envelope: messages only, no service. Its status borrows
-    // a player message, which it names rather than generates a second time.
+    // The Bluetooth envelope: messages only, no service.
     tonic_prost_build::configure()
         .build_client(false)
         .build_server(false)
-        .extern_path(".player.v1", "crate::proto::player::v1")
         .compile_protos(&["src/proto/ble/v1/ble.proto"], &["src/proto"])?;
 
     // Embed git hash.

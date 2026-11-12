@@ -11,7 +11,6 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:protobuf/well_known_types/google/protobuf/duration.pb.dart'
     as pb;
@@ -337,7 +336,7 @@ class Rig {
   RigSong get current => songs[index];
 
   /// The status the player would send now.
-  ble.Status get status => ble.Status(
+  pp.RemoteStatus get status => pp.RemoteStatus(
     playlistName: playlist,
     songName: songs.isEmpty ? '' : current.name,
     songDuration: songs.isEmpty ? null : seconds(current.length.inSeconds),

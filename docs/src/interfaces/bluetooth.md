@@ -158,8 +158,14 @@ The calls a phone may make, and no others:
 `SeekToSection`, `SwitchToPlaylist`, `Status`, `LoopSection`, `StopSectionLoop`, `SectionAck`,
 `StopSamples`, `CancelAutoPlay`, `ListPlaylists`, `GetPlaylist`, `GetTrackGains`, `SetTrackGain`,
 `SetTrackMute`, `SetAmbientMode`, `SavePlaylist`, `DeletePlaylist`, `ListLightShows`, `ListSongs`,
-`GetSong`, `UpdateSongSettings`, `SetLock`, and two streams,
+`GetSong`, `UpdateSongSettings`, `SetLock`, `GetNetworkInfo`, and two streams,
 `WatchStage` and `GetLightingAsset` (see [Streams](#streams)).
+
+`GetNetworkInfo` answers with the player's `hostname`, its `addresses` and `grpc_port`, the port its
+gRPC controller listens on (absent when none is configured): a phone paired over Bluetooth
+learns from it where to find the player over Wi-Fi, where it can call the whole gRPC service. It
+is open while the player is locked. `WatchStatus`, the gRPC stream of the message below, is not on
+this list: the `status` characteristic already pushes it.
 
 `SavePlaylist` and `DeletePlaylist` edit a playlist's songs and their order, as the web UI's
 playlist editor does with only the songs: each entry keeps its own settings (fades, auto play,
@@ -294,7 +300,8 @@ continuation chunks until the next start.
 
 ### Status
 
-The `status` characteristic carries a small `Status` message: the playlist and song names, the
+The `status` characteristic carries a small `RemoteStatus` message (the one gRPC's `WatchStatus`
+streams; its field numbers are the ones this characteristic has always used): the playlist and song names, the
 song's length, whether it is playing, the elapsed time, the playlist position, the song
 waiting to start by itself, if any, the section a section loop is set on, if any, the ambient
 light's mode and state (`ambient_mode`: `auto`, `on` or `off`; `ambient_state`: `playing`,
@@ -304,7 +311,7 @@ DMX engine) and `gains_revision`. That last is a count the player moves whenever
 inequality. `locked` says whether the player is locked, so a phone shows the lock without
 asking, and is pushed when it changes. The message carries no beat grid and no sections; fetch those with the `Status` call when the song changes.
 
-- **Read** returns the latest `Status` as a bare encoded message, not chunked, at most 512
+- **Read** returns the latest `RemoteStatus` as a bare encoded message, not chunked, at most 512
   bytes (a long name is shortened to fit). It uses long reads if the MTU is small.
 - **Notify** pushes the same message as a frame, chunked as above, whenever anything but the
   elapsed time changes and about four times a second while a song is playing. The elapsed time

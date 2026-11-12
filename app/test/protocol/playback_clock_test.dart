@@ -1,14 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
+import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as player;
 import 'package:mtrack_remote/src/protocol/playback_clock.dart';
 import 'package:protobuf/well_known_types/google/protobuf/duration.pb.dart'
     as pb;
 
-ble.Status status({
+player.RemoteStatus status({
   required bool playing,
   required int elapsedMs,
   int durationMs = 200000,
-}) => ble.Status(
+}) => player.RemoteStatus(
   songName: 'Song',
   playing: playing,
   elapsed: pb.Duration.fromDart(Duration(milliseconds: elapsedMs)),

@@ -15,7 +15,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../../gen/ble/v1/ble.pb.dart' as ble;
 import '../../gen/player/v1/player.pb.dart' as player;
 import '../protocol/playback_clock.dart';
 import '../protocol/player_client.dart';
@@ -195,7 +194,7 @@ class Session extends ChangeNotifier {
   PlayerClient? _client;
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
-  ble.Status? _status;
+  player.RemoteStatus? _status;
   String? _ambientMode;
   String? _ambientState;
   Duration _statusAt = Duration.zero;
@@ -246,7 +245,7 @@ class Session extends ChangeNotifier {
 
   /// The latest status from the player. Kept, and shown dimmed, while the
   /// link is lost.
-  ble.Status? get status => _status;
+  player.RemoteStatus? get status => _status;
 
   /// The ambient light's mode (`auto`, `on` or `off`), or null when the
   /// player has no ambient light to set.
@@ -699,7 +698,7 @@ class Session extends ChangeNotifier {
 
   // The status, and what is fetched because of it.
 
-  void _onStatus(ble.Status status) {
+  void _onStatus(player.RemoteStatus status) {
     if (_disposed) {
       return;
     }
@@ -720,14 +719,14 @@ class Session extends ChangeNotifier {
 
   /// Whether the song details or the playlist are not for what the status
   /// describes.
-  bool _needsFetch(ble.Status status) =>
+  bool _needsFetch(player.RemoteStatus status) =>
       status.songName != _detailsName || _entriesStale(status);
 
   /// Whether the playlist entries are not the playlist the status is on: a
   /// different playlist, or the same name with other songs at the position
   /// (it was edited). An edit that leaves the position's song alone goes
   /// unseen until the next change.
-  bool _entriesStale(ble.Status status) {
+  bool _entriesStale(player.RemoteStatus status) {
     if (status.playlistName != _entriesPlaylist) {
       return true;
     }
@@ -743,7 +742,7 @@ class Session extends ChangeNotifier {
     return _entriesKey(status) != _entriesAskedFor;
   }
 
-  String _entriesKey(ble.Status status) =>
+  String _entriesKey(player.RemoteStatus status) =>
       '${status.playlistName}|${status.hasPosition() ? status.position : null}'
       '|${status.songName}';
 

@@ -15,7 +15,6 @@ import 'dart:async';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/app/failure.dart';
 import 'package:mtrack_remote/src/app/player_link.dart';
@@ -766,8 +765,8 @@ void main() {
 
   test('a status message type is what the session shows', () {
     // Guards the contract the fake rig and the real player share: the app
-    // reads `ble.Status`, whose loop field is optional.
-    expect(ble.Status().hasLoopSection(), isFalse);
-    expect(ble.Status(loopSection: 'x').hasLoopSection(), isTrue);
+    // reads `pp.RemoteStatus`, whose loop field is optional.
+    expect(pp.RemoteStatus().hasLoopSection(), isFalse);
+    expect(pp.RemoteStatus(loopSection: 'x').hasLoopSection(), isTrue);
   });
 }

@@ -116,6 +116,8 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GetSong"),
     (Grpc, "WatchStage"),
     (Grpc, "GetLightingAsset"),
+    (Grpc, "WatchStatus"),
+    (Grpc, "GetNetworkInfo"),
     // The lock itself: the phone's only way to unlock. SavePlaylist and
     // DeletePlaylist are playlist writes and stay locked out, as the web
     // UI's are.
@@ -177,5 +179,8 @@ mod tests {
         assert!(open_while_locked(Grpc, "Play"));
         assert!(!open_while_locked(Mcp, "Play"));
         assert!(!open_while_locked(Grpc, "UpdateAudio"));
+        // The phone's status stream and its Wi-Fi lookup are reads.
+        assert!(open_while_locked(Grpc, "WatchStatus"));
+        assert!(open_while_locked(Grpc, "GetNetworkInfo"));
     }
 }
