@@ -12,3 +12,5 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+# Kotlin compiler session files, made by every Gradle build
+.kotlin/
