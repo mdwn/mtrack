@@ -102,7 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RemoteStatus` with the same field numbers, so it is the same bytes on the air.
 - **`GetNetworkInfo` gRPC RPC**: the player's host name, its IPv4 and IPv6 addresses (not
   loopback or link-local) and the port its gRPC controller listens on. A phone connected over
-  Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi.
+  Bluetooth can call it, locked or not, to learn where to reach the player over Wi-Fi. Reading the
+  addresses needs netlink: the unit `mtrack systemd` prints now has `AF_NETLINK` in
+  `RestrictAddressFamilies`. Under a unit installed earlier the call still answers, with no
+  addresses (the player says so once in its log), until the unit is replaced.
 - **The phone app can use Wi-Fi as well as Bluetooth**: it talks gRPC to the player's gRPC port
   (the `grpc` controller must be enabled) and prefers the network when the player answers there,
   falling back to Bluetooth after two seconds and moving back by itself when the player returns.
