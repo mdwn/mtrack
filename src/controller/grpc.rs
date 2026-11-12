@@ -1964,8 +1964,16 @@ mod test {
             expected_checksum: checksum,
         };
 
-        player.play().await?;
-        eventually(|| device.is_playing(), "Song never started playing");
+        // Held paused, which counts as playing: the test song is half a
+        // second long, and a slow runner reached the update after it had
+        // ended. A pause landing after the end finds nothing; start again.
+        loop {
+            player.play().await?;
+            eventually(|| device.is_playing(), "Song never started playing");
+            if player.pause().await?.is_some() {
+                break;
+            }
+        }
         let (_, checksum) = store.read_yaml().await?;
         let deferred = server
             .update_audio(tonic::Request::new(update(checksum)))
