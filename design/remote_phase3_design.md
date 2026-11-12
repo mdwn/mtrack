@@ -452,6 +452,22 @@ So: move the live feeds once `WatchStatus` exists, and leave the editing
 API alone. It is its own piece of work (P5) and nothing on the phone waits
 for it.
 
+**As built: the live stage feed has moved.** The web UI's stage (plot and 3D)
+reads `WatchStage` over gRPC-Web, and the websocket's JSON `metadata` and
+`state` messages are gone, on the player and in the web UI. The stream is one
+per page, opened when something first shows the stage and closed five seconds
+after the last thing that does lets go; it asks for the player's own rate. The
+venues directory the JSON named (`dir`) is not on the stream, and nothing
+needs it: every venue save reads and writes the file through the REST API,
+which defaults to the configured directory. Geometry arrives as 32-bit floats
+(shown as the shortest decimal that is the float), so the editors take the
+numbers they write from the file they just read, not from the stage. Measured
+before the switch, side by side in one browser for 50 s with a show running:
+763 frames on each feed, a median gap of 50 ms on both, and the stream's 763
+messages arrived in 767 network chunks (no batching). What remains on the
+websocket is the status, logs, waveforms and reload notices (the rest of this
+section).
+
 ## 6. Order
 
 | Phase | What | Size |

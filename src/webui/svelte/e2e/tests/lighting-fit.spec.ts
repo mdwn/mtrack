@@ -14,7 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { FIT } from "../mock-server/test-data";
-import { sendWs } from "../support/ws";
+import { openWithStage, sendStage } from "../support/stage";
 
 // Every test routes its own fit facts, venue file and profile with
 // `page.route`, so no test depends on state another one left in the shared
@@ -121,7 +121,6 @@ function planMetadata() {
     ),
     venue: {
       name: "fit-venue",
-      dir: null,
       focus_points: { center: [0, 2, 0] },
     },
   };
@@ -135,7 +134,7 @@ async function openWithPlan(
   const wsId = `fit-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
   await page.goto(`/?wsId=${wsId}${hash}`);
   await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
-  await sendWs(page, wsId, planMetadata());
+  await sendStage(page, wsId, planMetadata());
   await expect
     .poll(async () =>
       page
@@ -562,7 +561,7 @@ test.describe("Lighting: Fit shows", () => {
         body: JSON.stringify(FIT),
       });
     });
-    await page.goto("/#/lighting/fit");
+    await openWithStage(page, "#/lighting/fit");
     await expect(page.getByTestId("fit-error")).toContainText("boom");
     fail = false;
     await page.getByRole("button", { name: "Retry" }).click();
@@ -582,7 +581,7 @@ test.describe("Lighting: Fit shows", () => {
         body: broken ? "<html>gateway</html>" : JSON.stringify(FIT),
       });
     });
-    await page.goto("/#/lighting/fit");
+    await openWithStage(page, "#/lighting/fit");
     await expect(page.getByTestId("fit-error")).toContainText(
       "answer was not understood",
     );

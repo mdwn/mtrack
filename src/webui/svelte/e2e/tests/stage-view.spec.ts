@@ -13,7 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 /** Lets the page paint `n` frames: anything the browser has queued for
  *  after the next frame (a ResizeObserver callback) runs by the second. */
@@ -93,7 +93,7 @@ test.describe("Stage View", () => {
     const settled = await resizes();
 
     for (let i = 0; i < 5; i++) {
-      await sendWs(page, wsId, {
+      await sendStage(page, wsId, {
         type: "state",
         fixtures: {
           "front-left": {

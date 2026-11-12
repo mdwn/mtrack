@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The websocket's messages (`/ws`): the playback status, the stage's
-//! state and metadata, log lines, waveforms and reload notices.
+//! The websocket's messages (`/ws`): the playback status, log lines,
+//! waveforms and reload notices. (The stage is not here: it is the gRPC
+//! stream `WatchStage`; its types below are what the web UI reads it into.)
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -32,8 +33,6 @@ use crate::state::PoseSnapshot;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SocketMessage {
     Playback(Box<Playback>),
-    State(StageState),
-    Metadata(StageMetadata),
     Logs {
         lines: Vec<LogLine>,
     },
@@ -272,7 +271,8 @@ pub struct StageValues {
     pub strobe_rates: BTreeMap<String, f64>,
 }
 
-/// The `state` message: the stage now.
+/// The stage now: what a frame of the gRPC stage stream says, read against
+/// its layout.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StageState {
@@ -284,14 +284,14 @@ pub struct StageState {
     pub under_test: Vec<String>,
 }
 
-/// The `metadata` message: the venue's fixtures as the stage views need
-/// them, sent to each client on connect.
+/// What is on the stage: the venue's fixtures as the stage views need them,
+/// which is what a layout of the gRPC stage stream says.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StageMetadata {
     pub fixtures: BTreeMap<String, FixtureMetadata>,
-    pub venue: Option<VenueMetadata>,
+    pub venue: Option<StageVenue>,
 }
 
 /// A fixture as the stage views draw it.
@@ -339,17 +339,7 @@ pub struct CellPlacement {
     pub offset: Vec3,
 }
 
-/// The current venue as the stage views need it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct VenueMetadata {
-    #[serde(flatten)]
-    pub venue: StageVenue,
-    /// The configured venues directory, for saving edits back.
-    pub dir: Option<String>,
-}
-
-/// A venue's points and scenery.
+/// The current venue as the stage views need it: its points and scenery.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

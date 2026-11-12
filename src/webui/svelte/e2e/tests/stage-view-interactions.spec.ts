@@ -13,7 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 let testCounter = 0;
 
@@ -54,7 +54,7 @@ test.describe("Stage View Interactions", () => {
     await expect(canvas).toBeVisible();
 
     // Send updated fixture state with new colors.
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       type: "state",
       fixtures: {
         "front-left": {
@@ -86,7 +86,7 @@ test.describe("Stage View Interactions", () => {
     await expect(canvas).toBeVisible();
 
     // Send metadata with additional fixtures.
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       type: "metadata",
       fixtures: {
         "front-left": { tags: ["front", "left"], type: "par" },

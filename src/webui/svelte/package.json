@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:unit": "vitest run",
     "test": "playwright test --project=mock",
     "test:e2e": "playwright test --project=e2e",
     "test:mock": "playwright test --project=mock",
@@ -37,6 +38,7 @@
     "typescript": "^6",
     "typescript-eslint": "^8.56.1",
     "vite": "^8",
+    "vitest": "^5.1.0",
     "ws": "^8.19.0"
   },
   "dependencies": {

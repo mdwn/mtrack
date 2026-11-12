@@ -792,7 +792,10 @@ configuration changes from the web UI.
 ## REST API
 
 The web UI exposes a comprehensive REST API for all management operations. Playback control
-uses gRPC-Web (PlayerService). Real-time state streaming uses WebSocket (`/ws`).
+uses gRPC-Web (PlayerService), and so does the light view (the stage plot and 3D): it reads the
+`WatchStage` stream (see [gRPC](grpc.md)), opened when a page first shows the stage. The rest of the
+real-time state (playback status, logs, waveforms and reload notices) uses WebSocket (`/ws`). The
+WebSocket no longer carries the stage: its `metadata` and `state` messages were removed.
 
 All mutating REST endpoints are blocked when the player is in lock mode, returning
 HTTP 423 (Locked). These always work: read endpoints, playback control, the lock toggle,

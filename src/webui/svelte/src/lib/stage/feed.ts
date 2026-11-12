@@ -12,9 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The gRPC stage stream (`WatchStage`) read into what the websocket's
-// `metadata` and `state` messages say: a layout is the metadata, a frame
-// read against its layout is the state. The mirror of the player's
+// The gRPC stage stream (`WatchStage`) read into what the stage views
+// draw from: a layout is the metadata (the venue's fixtures and the venue),
+// a frame read against its layout is the state. The mirror of the player's
 // src/controller/grpc/stage.rs. Pure: no DOM, no stores; whoever holds the
 // reader says where the two go.
 
@@ -36,26 +36,43 @@ import type {
   Vec3,
 } from "../../gen/rules/mtrack_rules";
 
-const vec3 = (v: StageVec3): Vec3 => [v.x, v.y, v.z];
+/**
+ * A number the stream carried as a 32-bit float, as the shortest decimal
+ * that is that float: what a person wrote in a venue file (`2.7`) comes
+ * back as `2.7`, not as the float's exact value (`2.700000047683716`),
+ * so an editor that shows it, or writes it back beside an edit to another
+ * axis, does not rewrite the file's number. A value the stream rounded to
+ * 32 bits stays rounded; there is no getting the rest back.
+ */
+export function f32(x: number): number {
+  if (!Number.isFinite(x) || Number.isInteger(x)) return x;
+  for (let digits = 1; digits <= 9; digits++) {
+    const decimal = Number(x.toPrecision(digits));
+    if (Math.fround(decimal) === x) return decimal;
+  }
+  return x;
+}
+
+const vec3 = (v: StageVec3): Vec3 => [f32(v.x), f32(v.y), f32(v.z)];
 
 function pose(p: StagePose): PoseSnapshot {
   return {
-    pan: p.pan,
-    tilt: p.tilt,
+    pan: f32(p.pan),
+    tilt: f32(p.tilt),
     aim: p.aim ? vec3(p.aim) : [0, 0, 0],
-    floor: p.floor ? [p.floor.x, p.floor.y] : null,
+    floor: p.floor ? [f32(p.floor.x), f32(p.floor.y)] : null,
   };
 }
 
 /**
- * What the `metadata` message says for this layout: the venue's fixtures
- * and the venue. A layout also lists fixtures the player is driving that
- * the venue does not (they have channels, no type and no placement); the
- * `metadata` message has none of those, so neither does this.
+ * What the stage views draw from, for this layout: the venue's fixtures and
+ * the venue. A layout also lists fixtures the player is driving that the
+ * venue does not (they have channels, no type and no placement); the stage
+ * views have none of those, so neither does this.
  *
- * Two things the JSON has that the stream does not: the venues directory
- * (`dir`, for saving edits; always null here), and geometry in more than
- * the stream's 32-bit floats.
+ * Geometry arrives as 32-bit floats (see {@link f32}). Nothing here is
+ * what an edit is saved from: every save reads the venue file through the
+ * REST API, which names the venues directory and holds the numbers whole.
  */
 export function layoutMetadata(layout: StageLayout): StageMetadata {
   const fixtures: Record<string, FixtureMetadata> = {};
@@ -66,7 +83,7 @@ export function layoutMetadata(layout: StageLayout): StageMetadata {
       type: f.type,
       position: f.position ? vec3(f.position) : null,
       rotation: f.rotation ? vec3(f.rotation) : null,
-      beam_angle: f.beamAngle ?? null,
+      beam_angle: f.beamAngle == null ? null : f32(f.beamAngle),
       rig: f.rig ?? null,
       capabilities: f.capabilities as Capability[],
       cells: f.cells.map((c) => ({
@@ -81,7 +98,6 @@ export function layoutMetadata(layout: StageLayout): StageMetadata {
     venue: venue
       ? {
           name: venue.name,
-          dir: null,
           focus_points: Object.fromEntries(
             Object.entries(venue.focusPoints).map(([name, p]) => [
               name,
@@ -96,8 +112,7 @@ export function layoutMetadata(layout: StageLayout): StageMetadata {
 }
 
 /**
- * What the `state` message says for this frame, read against `layout` and
- * nothing else; null for a frame of another layout, which is dropped: its
+ * The stage's state for this frame, read against `layout` and nothing else; null for a frame of another layout, which is dropped: its
  * bytes and indexes are in that layout's order. Throws on a frame that
  * names its layout and does not fit it (a wrong number of bytes, a fixture
  * index past the end), which the player never sends.
@@ -162,7 +177,7 @@ export function frameState(
     }
   }
   for (const strobe of frame.strobes) {
-    state.strobe_rates[name(strobe.fixture)] = strobe.hertz;
+    state.strobe_rates[name(strobe.fixture)] = f32(strobe.hertz);
   }
   return state;
 }

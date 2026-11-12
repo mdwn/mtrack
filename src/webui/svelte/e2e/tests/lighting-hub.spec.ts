@@ -20,7 +20,7 @@ import type {
   Readiness,
 } from "../../src/gen/rules/mtrack_rules";
 import { READINESS } from "../mock-server/test-data";
-import { sendWs } from "../support/ws";
+import { openWithStage, sendStage } from "../support/stage";
 
 // Every test routes its own readiness answer with `page.route`, so no test
 // depends on state another one left in the shared mock server. The verdicts
@@ -638,10 +638,10 @@ test.describe("Lighting hub", () => {
 
     // The server re-broadcasts metadata after a venue or config reload.
     broken = true;
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       type: "metadata",
       fixtures: {},
-      venue: { name: `venue-${wsId}`, dir: null, focus_points: {} },
+      venue: { name: `venue-${wsId}`, focus_points: {} },
     });
     await expect(page.getByTestId("check-groups")).toHaveAttribute(
       "data-state",
@@ -715,7 +715,7 @@ test.describe("Lighting hub", () => {
         body: JSON.stringify(READINESS),
       });
     });
-    await page.goto("/#/lighting");
+    await openWithStage(page, "#/lighting");
     await expect(page.getByTestId("hub-error")).toContainText("boom");
     fail = false;
     await page.getByRole("button", { name: "Retry" }).click();
@@ -744,7 +744,7 @@ test.describe("Lighting hub", () => {
           body: broken ? body : JSON.stringify(READINESS),
         });
       });
-      await page.goto("/#/lighting");
+      await openWithStage(page, "#/lighting");
       await expect(page.getByTestId("hub-error")).toContainText(
         "answer was not understood",
       );

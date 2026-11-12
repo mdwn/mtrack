@@ -14,7 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { PIXEL_METADATA_STATE, PIXEL_STATE } from "../mock-server/test-data";
-import { sendWs } from "../support/ws";
+import { sendStage } from "../support/stage";
 
 let testCounter = 0;
 
@@ -37,8 +37,8 @@ test.describe("Stage cells (design §17.4)", () => {
     );
     await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
 
-    await sendWs(page, wsId, PIXEL_METADATA_STATE);
-    await sendWs(page, wsId, PIXEL_STATE);
+    await sendStage(page, wsId, PIXEL_METADATA_STATE);
+    await sendStage(page, wsId, PIXEL_STATE);
 
     await expect(page.locator(".stage-card")).toBeVisible();
     await expect(page.locator(".stage-card__title")).toContainText(
@@ -56,9 +56,9 @@ test.describe("Stage cells (design §17.4)", () => {
     page.on("pageerror", (err) => errors.push(String(err)));
 
     await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
-    await sendWs(page, wsId, {
+    await sendStage(page, wsId, {
       ...PIXEL_METADATA_STATE,
-      venue: { name: "test-venue", dir: null, focus_points: {} },
+      venue: { name: "test-venue", focus_points: {} },
     });
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
@@ -67,7 +67,7 @@ test.describe("Stage cells (design §17.4)", () => {
       { timeout: 15000 },
     );
 
-    await sendWs(page, wsId, PIXEL_STATE);
+    await sendStage(page, wsId, PIXEL_STATE);
 
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
       "data-source",

@@ -23,7 +23,6 @@
   } from "../../gen/rules/mtrack_rules";
   import { untrack } from "svelte";
   import { t, locale } from "svelte-i18n";
-  import { get } from "svelte/store";
   import { BadAnswerError } from "../../lib/lighting/answer";
   import {
     ConflictError,
@@ -64,7 +63,7 @@
   let copied = $state<number | null>(null);
 
   // A refresh that arrives while one is running is folded into a single
-  // follow-up: a reload sends both a reload and a metadata message.
+  // follow-up: a reload sends both a reload and a new stage layout.
   let inflight = false;
   let again = false;
   /** The venue file's version the page was loaded at. */
@@ -84,7 +83,7 @@
       // against it, so a file changed since is not overwritten.
       const shown = fit.venue?.name;
       if (shown) {
-        fetchVenue(shown, get(venueStore)?.dir ?? undefined)
+        fetchVenue(shown)
           .then((r) => {
             if (fit?.venue?.name === shown) venueVersion = r.version;
           })
@@ -205,8 +204,7 @@
       // The venue file is the truth: read it, add the tags, write it back
       // whole, so positions, rotations, focus points and provenance stay as
       // they are. The server reloads the venue after the save.
-      const dir = get(venueStore)?.dir ?? undefined;
-      const { venue, version: fresh } = await fetchVenue(venueName, dir);
+      const { venue, version: fresh } = await fetchVenue(venueName);
       if (venueVersion && fresh && venueVersion !== fresh) {
         throw new ConflictError("", fresh);
       }
@@ -222,7 +220,7 @@
           focus_points: venue.focus_points ?? {},
           source: venue.source ?? null,
         },
-        dir,
+        undefined,
         venueVersion ?? fresh,
       );
       tagMsg = saved.venueError
