@@ -208,26 +208,45 @@ a dimmer channel:
 | Colour `replace` on a higher layer, lower layer dimmed | Still dimmed: colour writes only RGB, and the dimmer channel blends separately | Not dimmed on foreground, dimmed on midground (`state.rs:262`) |
 | Dimmer `replace` on a higher layer, lower layer dimmed | Replaces the lower level (normal channel blending) | Multiplies with it: the blend mode is ignored and every brightness effect becomes a multiplier (`fixture.rs:291`) |
 
-The new model, the same on every fixture:
+The new model, the same on every fixture. **The principle: dimming on a
+layer applies to that layer and the layers beneath it, never to the layers
+above it.**
 
-1. **Intensity is a logical value, kept per layer.** Dimmer, pulse, chase
-   and strobe effects contribute to their layer's intensity with their own
-   blend mode (`replace` sets it, `multiply` scales it, and so on), the
-   same way any channel blends.
-2. **A colour `replace` on layer *k* starts a new look.** Intensity from
-   layers below *k* no longer applies; the fixture's intensity is
-   combined from layer *k* upward, starting at full. While the colour
-   fades in (a `replace` with a crossfade), the lower intensity fades out
-   with it, so a crossfade doesn't jump in brightness.
-3. **Effects that blend rather than replace** (`multiply`, `add`,
-   `overlay`, `screen`) build on what's beneath, so they don't start a
-   new look and lower intensity still applies.
-4. **Output depends on the hardware.** The combined intensity goes to the
-   dimmer channel when the fixture has one. Otherwise it scales the RGB
-   channels. A fixture with no colour (a plain dimmer) never gets a
-   colour effect, so rule 2 never fires and its intensity blends exactly
-   as its dimmer channel does today. CMY and colour-wheel fixtures follow
-   rule 2 when their colour is replaced, like RGB.
+1. **Each layer has its own colour and its own intensity.** Colour effects
+   set the layer's colour; dimmer, pulse, chase and strobe effects set its
+   intensity, each with its own blend mode, the same way any channel
+   blends within a layer.
+2. **Layers are composited bottom up, as light.** Start dark. For each
+   layer in order: blend its colour into the light so far (with the
+   colour effect's blend mode), then apply its intensity to the result.
+   So a layer's intensity dims its own colour and everything beneath, and
+   nothing above. This covers every blend mode:
+   - A colour `replace` on layer *k* starts a new look: what was beneath,
+     and its dimming, is gone. While the colour crossfades in, the lower
+     light (already dimmed) fades out under it, so there's no jump.
+   - A colour `add` (or `screen`, `overlay`) on layer *k* sits on top of
+     the lower light *as it was dimmed*; the lower dimmer doesn't touch
+     the added colour.
+   - A colour `multiply` filters the dimmed light beneath.
+3. **A dimmer's blend mode decides what it does to the dimmers below.**
+   `multiply` (and pulse, chase and strobe by default) scales the light
+   so far. `replace` sets its level: the dimmers on layers below it no
+   longer apply (as if at full), and the light so far is set to its
+   level. That's what a dimmer channel does today on a fixture that has
+   one.
+4. **A fixture with no colour (a plain dimmer)** is treated as full white
+   at the bottom, so the rules above reduce to blending its intensity
+   layer by layer, exactly as its dimmer channel does today.
+5. **Output depends on the hardware.** The composite is a colour of light
+   (colour × level). On an RGB-only fixture it goes straight to RGB. On
+   a fixture with a dimmer channel it's split into a level and a colour:
+   the dimmer gets the highest level among the layers that contribute
+   colour, and each layer's colour is scaled by its own level relative to
+   that before blending, so the light out is the same. When one layer
+   provides all the colour, which is the common case, the dimmer is that
+   layer's level and RGB is its colour unchanged, so the DMX values match
+   what the show wrote. CMY and colour-wheel fixtures go through the same
+   split.
 
 The per-layer `_dimmer/_pulse/_chase_mult_*` channels give way to one
 intensity value per layer, held per fixture and per cell (design §17.3).
@@ -246,11 +265,14 @@ changelog):
   blend instead of replace.
 - On RGB-only fixtures, a midground colour `replace` is no longer dimmed
   by background dimmers.
+- On every fixture, colour that a higher layer adds (`add`, `screen`,
+  `overlay`) is no longer dimmed by dimmers beneath it; the lower colour
+  still is.
 - On RGB-only fixtures, a higher-layer dimmer `replace` sets the level
   instead of multiplying with the levels below.
 
 Before B1 lands, lint gains a check that names each place in a show where
-the new rule changes brightness (colour `replace` above a layer that dims
+the new rule changes brightness (colour on a layer above one that dims
 the same fixtures at the same time), and the prod shows are run through it.
 
 ### 3.5 Surfaces
@@ -280,7 +302,10 @@ the same fixtures at the same time), and the prod shows are run through it.
   L1); a five-layer config with effects on each; unknown layer refused at
   load; clear/freeze/master on a configured layer.
 - Brightness (§3.4): every row of the §3.4 table, on a dimmer-channel and
-  an RGB-only fixture, gives the same result on both; a crossfading colour
+  an RGB-only fixture, gives the same light on both; a higher-layer `add`
+  over a dimmed lower layer, with the lower dimmer touching only the lower
+  colour; a dimmer `replace` over lower dimmers; one-layer looks give the
+  same DMX as today on dimmer-channel fixtures; a crossfading colour
   `replace` fades the lower intensity out with no jump; a plain dimmer
   fixture is unchanged; cells follow the same rule. Each golden and
   visual-consistency diff B1 causes is checked against the list of
@@ -292,7 +317,7 @@ the same fixtures at the same time), and the prod shows are run through it.
 
 | # | What | Size |
 |---|---|---|
-| B1 | One brightness model (§3.4) on today's three layers: per-layer intensity, colour `replace` starts a new look, blend modes honoured on every fixture; the lint check, run on the prod shows first; changelog. Backported (§5.1) | Medium–large |
+| B1 | One brightness model (§3.4) on today's three layers: per-layer colour and intensity composited bottom up, dimming never reaches a layer above, blend modes honoured on every fixture, split to dimmer + colour by hardware; the lint check, run on the prod shows first; changelog. Backported (§5.1) | Medium–large |
 | L1 | Layers in the engine: `EffectLayer(u8)`, `LayerSet`, per-layer intensity indexed; default list only; no output change from B1 | Medium |
 | L2 | Layers configurable: `dmx.lighting.layers`, parser checks names, status/gRPC report them, web UI lanes and dropdown, settings editor, docs | Medium |
 | P1 | Palettes in the DSL and engine: `palette {}` block, `palette.<slot>`, `ColorRef`, resolve before first frame, defaults only; writer round-trip; docs | Medium |
@@ -307,8 +332,8 @@ L1 and P1 can be built side by side.
 ### 5.1 Backport
 
 B1 is a fix: brightness behaved differently on the two kinds of fixture,
-and a midground colour `replace` didn't escape lower dimmers as foreground
-did. Both release lines have the same three-layer code (`release/0.18`,
+and dimming reached layers above it (on dimmer-channel fixtures always, on
+RGB-only fixtures everywhere but a foreground `replace`). Both release lines have the same three-layer code (`release/0.18`,
 `release/0.17`), so B1 is written against the enum as it is and goes to
 both, with its lint check, so anyone upgrading can find what will look
 different in their shows. Everything else (configurable layers, palettes)
@@ -327,8 +352,9 @@ fixtures), the fix in the show, and the lint command that finds it.
    playlist-entry override.** Decided.
 3. **Layers are a named, ordered list in the player config, defaulting to
    the current three, at most 16.** Decided.
-4. **Brightness is one model on every fixture: a colour `replace` on a
-   layer ignores intensity from the layers below it** (§3.4). Decided.
+4. **Brightness is one model on every fixture: dimming on a layer applies
+   to that layer and those beneath it, never to those above** (§3.4).
+   Decided.
    Hardware decides how a fixture is driven, not what the show means.
    Backported to 0.18 and 0.17 (§5.1).
 5. **Slot reference spelling: `palette.primary`** (§2.2). Decided.
