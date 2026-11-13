@@ -192,8 +192,9 @@ checked against the venue's groups:
   to files. `is_multiplier_channel` matches the new form.
 - The hand-written triple product in `state.rs:252` becomes a loop over
   the layers.
-- In L1 the foreground rule (`state.rs:262`) becomes "the top layer", so
-  output doesn't change. §3.4 then replaces it.
+- §3.4's brightness rule lands first, on the three-layer enum (phase B1),
+  so it can be backported. L1 then carries it over to indexed layers
+  without changing output.
 - Status and the web UI's live state report layers by name.
 
 ### 3.4 Brightness: one model for every fixture
@@ -248,7 +249,7 @@ changelog):
 - On RGB-only fixtures, a higher-layer dimmer `replace` sets the level
   instead of multiplying with the levels below.
 
-Before L2 lands, lint gains a check that names each place in a show where
+Before B1 lands, lint gains a check that names each place in a show where
 the new rule changes brightness (colour `replace` above a layer that dims
 the same fixtures at the same time), and the prod shows are run through it.
 
@@ -282,7 +283,7 @@ the same fixtures at the same time), and the prod shows are run through it.
   an RGB-only fixture, gives the same result on both; a crossfading colour
   `replace` fades the lower intensity out with no jump; a plain dimmer
   fixture is unchanged; cells follow the same rule. Each golden and
-  visual-consistency diff L2 causes is checked against the list of
+  visual-consistency diff B1 causes is checked against the list of
   intended changes, and nothing else may move.
 - Web UI: journeys for editing a slot in the show, overriding it in a
   playlist entry, and a show on a custom layer drawing its lane.
@@ -291,17 +292,32 @@ the same fixtures at the same time), and the prod shows are run through it.
 
 | # | What | Size |
 |---|---|---|
-| L1 | Layers in the engine: `EffectLayer(u8)`, `LayerSet`, index multiplier channels, loop in `state.rs`; default list only; no output change | Medium |
-| L2 | One brightness model (§3.4): per-layer intensity, colour `replace` starts a new look, output by hardware; lint check for affected shows, run on the prod shows first; changelog | Medium–large |
-| L3 | Layers configurable: `dmx.lighting.layers`, parser checks names, status/gRPC report them, web UI lanes and dropdown, settings editor, docs | Medium |
+| B1 | One brightness model (§3.4) on today's three layers: per-layer intensity, colour `replace` starts a new look, blend modes honoured on every fixture; the lint check, run on the prod shows first; changelog. Backported (§5.1) | Medium–large |
+| L1 | Layers in the engine: `EffectLayer(u8)`, `LayerSet`, per-layer intensity indexed; default list only; no output change from B1 | Medium |
+| L2 | Layers configurable: `dmx.lighting.layers`, parser checks names, status/gRPC report them, web UI lanes and dropdown, settings editor, docs | Medium |
 | P1 | Palettes in the DSL and engine: `palette {}` block, `palette.<slot>`, `ColorRef`, resolve before first frame, defaults only; writer round-trip; docs | Medium |
 | P2 | Overrides: song YAML and playlist entry fields, resolution order at play, warnings | Small |
 | P3 | Palette UI: show editor panel and slot pickers, song editor overrides, playlist editor overrides and colour strip | Medium |
 | P4 | Over gRPC and in the app: `EntrySettings.palette`, entry sheet | Small; after phone-remote phase 3 P1 |
 
-L2 changes output on purpose, so it's its own PR, after L1 and before or
-beside L3. The layer and palette tracks don't depend on each other. L1 and
-P1 can be built side by side.
+B1 comes first and is its own PR, because it changes output on purpose and
+is backported. The layer and palette tracks don't depend on each other.
+L1 and P1 can be built side by side.
+
+### 5.1 Backport
+
+B1 is a fix: brightness behaved differently on the two kinds of fixture,
+and a midground colour `replace` didn't escape lower dimmers as foreground
+did. Both release lines have the same three-layer code (`release/0.18`,
+`release/0.17`), so B1 is written against the enum as it is and goes to
+both, with its lint check, so anyone upgrading can find what will look
+different in their shows. Everything else (configurable layers, palettes)
+is a feature and stays on main.
+
+Because a patch release will change how some shows look, the changelog
+entry for each line says so plainly, names the case that plays brighter
+(brightness on background, colour `replace` above it, on dimmer-channel
+fixtures), the fix in the show, and the lint command that finds it.
 
 ## 6. Decisions
 
@@ -314,6 +330,7 @@ P1 can be built side by side.
 4. **Brightness is one model on every fixture: a colour `replace` on a
    layer ignores intensity from the layers below it** (§3.4). Decided.
    Hardware decides how a fixture is driven, not what the show means.
+   Backported to 0.18 and 0.17 (§5.1).
 5. **Slot reference spelling: `palette.primary`** (§2.2). Decided.
 6. **A show must give every slot a default** (§2.2). Recommended: yes, so
    a show always plays and previews without a song or playlist.
