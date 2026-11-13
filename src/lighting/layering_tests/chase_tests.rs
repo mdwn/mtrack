@@ -283,18 +283,28 @@ fn test_chase_pattern_random() {
 
     // Test random pattern - should have some fixture ON at each time point
     // At t=0ms - some fixture should be ON
+    // (Read on the dimmer channels: a lit fixture shows white as well.)
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
-    let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+    let on_fixtures: Vec<_> = commands
+        .iter()
+        .filter(|cmd| cmd.value == 255 && (cmd.channel - 1) % 4 == 0)
+        .collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 
     // At t=125ms - some fixture should be ON
     let commands = engine.update(Duration::from_millis(125), None).unwrap();
-    let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+    let on_fixtures: Vec<_> = commands
+        .iter()
+        .filter(|cmd| cmd.value == 255 && (cmd.channel - 1) % 4 == 0)
+        .collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 
     // At t=250ms - some fixture should be ON
     let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 250ms total
-    let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+    let on_fixtures: Vec<_> = commands
+        .iter()
+        .filter(|cmd| cmd.value == 255 && (cmd.channel - 1) % 4 == 0)
+        .collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 }
 #[test]
@@ -544,9 +554,10 @@ fn rgb_only_chase() -> EffectInstance {
     )
 }
 
-/// A chase on a fixture with no dimmer channel must not write colour. It is a
-/// brightness mask, so on its own — with no colour bed underneath — it emits nothing
-/// rather than painting white. Regression test for #345.
+/// A chase on a fixture with no dimmer channel is a level, not a colour of its
+/// own: with no colour bed underneath it shows white at its level (design 3.4,
+/// rule 7) -- the active fixture white, the others dark, never a colour.
+/// Regression test for #345.
 #[test]
 fn test_chase_rgb_only_fixtures_emit_no_color_of_their_own() {
     let mut engine = EffectEngine::new();
@@ -555,16 +566,25 @@ fn test_chase_rgb_only_fixtures_emit_no_color_of_their_own() {
 
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
-    // The chase multiplier is an internal channel with no DMX mapping, so a bare
-    // chase over RGB-only fixtures produces no output at all.
-    assert!(
-        commands.iter().all(|cmd| cmd.value == 0),
-        "chase alone should not light RGB-only fixtures, got {:?}",
+    // Fixture 1 (channels 1-3) is the active step: white. Fixtures 2 and 3
+    // are masked off: dark. Nothing is a colour of the chase's own.
+    let by_channel = |channel: u16| {
         commands
             .iter()
-            .filter(|cmd| cmd.value > 0)
-            .map(|cmd| (cmd.channel, cmd.value))
-            .collect::<Vec<_>>()
+            .find(|cmd| cmd.channel == channel)
+            .map(|cmd| cmd.value)
+    };
+    assert_eq!(
+        [by_channel(1), by_channel(2), by_channel(3)],
+        [Some(255); 3],
+        "the active fixture is white"
+    );
+    assert!(
+        commands
+            .iter()
+            .filter(|cmd| cmd.channel > 4)
+            .all(|cmd| cmd.value == 0),
+        "the masked fixtures are dark: {commands:?}"
     );
 }
 

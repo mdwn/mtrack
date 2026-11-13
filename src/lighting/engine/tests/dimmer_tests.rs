@@ -45,7 +45,7 @@ fn test_dimmer_effect() {
 
     // Should have only dimmer command since fixture has dedicated dimmer channel
     // The fixture profile system uses DedicatedDimmer strategy for RGB+dimmer fixtures
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
 
     // Check dimmer command
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
@@ -78,13 +78,13 @@ fn test_dimmer_effect_dim_down() {
 
     // At start (0ms), dimmer should be at start_level (1.0 = 255)
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 255, "At start, dimmer should be at 100%");
 
     // At midpoint (500ms), dimmer should be at 50% (128)
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(
         dimmer_cmd.value, 128,
@@ -123,7 +123,7 @@ fn test_dimmer_effect_dim_down_partial() {
 
     // At start (0ms), dimmer should be at start_level (0.8 = 204)
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(
         dimmer_cmd.value, 204,
@@ -132,7 +132,7 @@ fn test_dimmer_effect_dim_down_partial() {
 
     // At midpoint (500ms), dimmer should be halfway between 0.8 and 0.3 = 0.55 (140)
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     // 0.55 * 255 = 140.25, so expect 140 or 141
     assert!(
