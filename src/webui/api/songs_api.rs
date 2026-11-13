@@ -25,9 +25,7 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use super::super::state as ws_state;
 use crate::webui::wire::messages::Waveform;
-use crate::webui::wire::songs::{
-    FileKind, SongFailure, SongFile, SongFiles, SongInfo, SongList, TempoGuess, TempoGuessSource,
-};
+use crate::webui::wire::songs::{FileKind, SongFile, SongFiles, TempoGuess, TempoGuessSource};
 use crate::{config, songs};
 
 /// A song's directory `dir` relative to the songs directory `root`, "/"
@@ -44,85 +42,6 @@ pub(crate) fn base_dir(root: &std::path::Path, dir: &std::path::Path) -> String 
                 .join("/")
         })
         .unwrap_or_default()
-}
-
-/// GET /api/songs — returns a list of all songs with metadata.
-///
-/// Uses the player's song registry rather than rescanning disk, so the API
-/// is always consistent with what the player knows about.
-pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
-    let all_songs = state.player.songs();
-    let songs: Vec<SongInfo> = all_songs
-        .sorted_list()
-        .iter()
-        .map(|song| {
-            // Compute the song's directory path relative to the songs root,
-            // so the frontend can construct lighting API paths.
-            let base_dir = base_dir(&state.songs_path(), song.base_path());
-
-            // Collect DSL lighting show file paths relative to the songs root.
-            let lighting_files: Vec<String> = song
-                .dsl_lighting_shows()
-                .iter()
-                .filter_map(|show| {
-                    show.file_path()
-                        .strip_prefix(state.songs_path())
-                        .ok()
-                        .map(|p| p.to_string_lossy().to_string())
-                })
-                .collect();
-
-            // Collect MIDI DMX file paths relative to the songs root.
-            let midi_dmx_files: Vec<String> = song
-                .light_shows()
-                .iter()
-                .filter_map(|show| {
-                    show.dmx_file_path()
-                        .strip_prefix(state.songs_path())
-                        .ok()
-                        .map(|p| p.to_string_lossy().to_string())
-                })
-                .collect();
-
-            let summary = song.summary();
-            SongInfo {
-                name: summary.name,
-                duration_ms: summary.duration.as_millis() as u64,
-                duration_display: crate::util::duration_minutes_seconds(summary.duration),
-                num_channels: song.num_channels(),
-                sample_format: format!("{}", song.sample_format()),
-                track_count: song.tracks().len(),
-                tracks: song.tracks().iter().map(|t| t.name().to_string()).collect(),
-                has_midi: song.midi_playback().is_some(),
-                has_lighting: !song.light_shows().is_empty()
-                    || !song.dsl_lighting_shows().is_empty(),
-                base_dir,
-                lighting_files,
-                midi_dmx_files,
-                beat_grid: song.beat_grid().cloned(),
-                has_tempo_map: song.tempo_map().is_some(),
-                loop_playback: song.loop_playback(),
-                loop_crossfade_ms: song.loop_crossfade().map(|d| d.as_millis() as u64),
-                loop_crossfade_cut: song.loop_crossfade_cut().to_vec(),
-                sections: summary.sections,
-            }
-        })
-        .collect();
-    let failures: Vec<SongFailure> = all_songs
-        .failures()
-        .iter()
-        .map(|f| {
-            let base_dir = base_dir(&state.songs_path(), f.base_path());
-            SongFailure {
-                name: f.name().to_string(),
-                error: f.error().to_string(),
-                base_dir,
-                failed: true,
-            }
-        })
-        .collect();
-
-    (StatusCode::OK, Json(SongList { songs, failures })).into_response()
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
@@ -1127,52 +1046,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn get_songs_empty_registry() {
-        let songs = std::sync::Arc::new(crate::songs::Songs::new(std::collections::HashMap::new()));
-        let (state, _dir) = test_state_with_registry(songs);
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["songs"].is_array());
-        assert!(parsed["songs"].as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn get_songs_returns_registry_contents() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let songs = parsed["songs"].as_array().unwrap();
-        assert_eq!(songs.len(), 1);
-        assert_eq!(songs[0]["name"], "Song A");
-    }
-
-    #[tokio::test]
     async fn get_song_not_found() {
         let (state, _dir) = test_state();
         let app = router().with_state(state);
@@ -1231,42 +1104,6 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn get_songs_with_wav_files() {
-        let (state, _dir) = test_state();
-        let song_dir = state.songs_path().join("TestSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: TestSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
-        )
-        .unwrap();
-
-        state.player.reload_songs().await.unwrap();
-
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let songs = parsed["songs"].as_array().unwrap();
-        assert_eq!(songs.len(), 1);
-        assert_eq!(songs[0]["name"], "TestSong");
-        assert!(songs[0]["tracks"].is_array());
     }
 
     #[tokio::test]
@@ -2480,150 +2317,6 @@ mod test {
     }
 
     // ── get_songs response field tests ───────────────────────────────
-
-    #[tokio::test]
-    async fn get_songs_includes_base_dir() {
-        let (state, _dir) = test_state();
-
-        // Create a song on disk so that it appears in the response.
-        let song_dir = state.songs_path().join("BaseDirSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: BaseDirSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
-        )
-        .unwrap();
-
-        state.player.reload_songs().await.unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let songs = parsed["songs"].as_array().unwrap();
-        let base_dir_song = songs
-            .iter()
-            .find(|s| s["name"] == "BaseDirSong")
-            .expect("BaseDirSong should be in the response");
-        assert!(
-            base_dir_song.get("base_dir").is_some(),
-            "Response should include base_dir field"
-        );
-        assert_eq!(base_dir_song["base_dir"], "BaseDirSong");
-    }
-
-    #[tokio::test]
-    async fn get_songs_includes_lighting_files() {
-        let (state, _dir) = test_state();
-
-        // Create a song with a DSL lighting show.
-        let song_dir = state.songs_path().join("LitSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-        std::fs::write(song_dir.join("show.light"), "show \"Test\" {\n}\n").unwrap();
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: LitSong\ntracks:\n  - name: track1\n    file: track1.wav\nlighting:\n  - file: show.light\n",
-        )
-        .unwrap();
-
-        state.player.reload_songs().await.unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let songs = parsed["songs"].as_array().unwrap();
-        let lit_song = songs
-            .iter()
-            .find(|s| s["name"] == "LitSong")
-            .expect("LitSong should be in the response");
-        let lighting_files = lit_song["lighting_files"].as_array().unwrap();
-        assert!(
-            !lighting_files.is_empty(),
-            "lighting_files should be populated"
-        );
-        assert!(
-            lighting_files[0].as_str().unwrap().contains("show.light"),
-            "lighting_files should contain the .light file path"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_songs_includes_midi_dmx_files() {
-        let (state, _dir) = test_state();
-
-        // Create a song with a legacy dmx_*.mid light show.
-        let song_dir = state.songs_path().join("LegacySong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-
-        // Copy a real MIDI file from assets to serve as the dmx file.
-        let midi_source =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid");
-        std::fs::copy(&midi_source, song_dir.join("dmx_show.mid")).unwrap();
-
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: LegacySong\ntracks:\n  - name: track1\n    file: track1.wav\nlight_shows:\n  - universe_name: default\n    dmx_file: dmx_show.mid\n",
-        )
-        .unwrap();
-
-        state.player.reload_songs().await.unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let songs = parsed["songs"].as_array().unwrap();
-        let legacy_song = songs
-            .iter()
-            .find(|s| s["name"] == "LegacySong")
-            .expect("LegacySong should be in the response");
-        let legacy_files = legacy_song["midi_dmx_files"].as_array().unwrap();
-        assert!(
-            !legacy_files.is_empty(),
-            "midi_dmx_files should be populated"
-        );
-        assert!(
-            legacy_files[0].as_str().unwrap().contains("dmx_show.mid"),
-            "midi_dmx_files should contain the dmx MIDI file path"
-        );
-    }
 
     #[tokio::test]
     async fn get_song_waveform_success() {

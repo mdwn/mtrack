@@ -262,6 +262,7 @@ mod tests {
         let got = server(&project)
             .get_playlist(Request::new(crate::proto::player::v1::GetPlaylistRequest {
                 name: "set".into(),
+                ..Default::default()
             }))
             .await
             .unwrap()
@@ -395,6 +396,7 @@ mod tests {
         server(project)
             .get_playlist(Request::new(crate::proto::player::v1::GetPlaylistRequest {
                 name: name.into(),
+                ..Default::default()
             }))
             .await
             .unwrap()
@@ -685,6 +687,7 @@ ambient:
             position: Some(49),
             ambient: settings.ambient.clone(),
             revision: "0123456789abcdef".into(),
+            ..Default::default()
         };
         let request = SavePlaylistRequest {
             name: long("playlist"),
@@ -765,5 +768,428 @@ ambient:
                 .unwrap_err();
             assert_eq!(err.code(), code, "{name}");
         }
+    }
+
+    // What the web UI's playlist routes did, which these calls now are.
+
+    fn read(project: &PlaylistProject, name: &str) -> String {
+        std::fs::read_to_string(project.file(name)).unwrap()
+    }
+
+    /// A playlist kept as `.yml` is saved into that file, keeping its
+    /// settings, not into a new `.yaml` beside it, and the reloaded player
+    /// plays the songs saved; with both there, the `.yaml` the loader reads
+    /// is saved and the `.yml` left alone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_goes_to_the_file_the_name_has() {
+        let project = playlist_project().await.unwrap();
+        let dir = project.dir.path().join("playlists");
+        let old = "songs:\n  - Song 1\nambient: false\n";
+        std::fs::write(dir.join("mine.yml"), old).unwrap();
+        project.player.reload_songs().await.unwrap();
+        save(&project, save_request("mine", &["Song 2"], false))
+            .await
+            .unwrap();
+        assert!(!dir.join("mine.yaml").exists());
+        let written = std::fs::read_to_string(dir.join("mine.yml")).unwrap();
+        assert!(written.contains("Song 2"), "{written}");
+        assert!(written.contains("ambient: false"), "{written}");
+        assert_eq!(
+            get(&project, "mine").await.entries[0].song_name,
+            "Song 2",
+            "the reloaded player has it"
+        );
+
+        std::fs::write(dir.join("both.yaml"), "songs:\n  - Song 1\n").unwrap();
+        std::fs::write(dir.join("both.yml"), old).unwrap();
+        project.player.reload_songs().await.unwrap();
+        save(&project, save_request("both", &["Song 3"], false))
+            .await
+            .unwrap();
+        assert!(read(&project, "both").contains("Song 3"));
+        assert_eq!(std::fs::read_to_string(dir.join("both.yml")).unwrap(), old);
+    }
+
+    /// A new playlist named as a file there but for case (`set` beside
+    /// `Set.yaml`, which a case-insensitive filesystem would open for it)
+    /// is refused, and `Set.yaml` left alone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_name_differing_only_in_case_is_refused() {
+        let project = playlist_project().await.unwrap();
+        let old = "songs:\n  - Song 1\n";
+        let dir = project.dir.path().join("playlists");
+        std::fs::write(dir.join("Set.yaml"), old).unwrap();
+        let err = save(&project, save_request("set", &[], true))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::AlreadyExists);
+        assert!(
+            err.message()
+                .contains("`Set.yaml` already exists; names differ only in case"),
+            "{}",
+            err.message()
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("Set.yaml")).unwrap(), old);
+        assert!(!dir.join("set.yaml").exists());
+    }
+
+    /// A delete removes the name's file: its `.yml` when that is all there
+    /// is, its `.yaml` when both are there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_delete_removes_the_names_file() {
+        let project = playlist_project().await.unwrap();
+        let dir = project.dir.path().join("playlists");
+        std::fs::write(dir.join("old.yml"), "songs: []\n").unwrap();
+        std::fs::write(dir.join("both.yaml"), "songs: []\n").unwrap();
+        std::fs::write(dir.join("both.yml"), "songs: []\n").unwrap();
+        project.player.reload_songs().await.unwrap();
+        for name in ["old", "both"] {
+            server(&project)
+                .delete_playlist(Request::new(DeletePlaylistRequest { name: name.into() }))
+                .await
+                .unwrap();
+        }
+        assert!(!dir.join("old.yml").exists());
+        assert!(!dir.join("both.yaml").exists());
+        assert!(dir.join("both.yml").exists());
+    }
+
+    /// Refused saves leave the file as it was: a song the player does not
+    /// have (#578: saved, and then the playlist vanished, being one the
+    /// player would not load), settings that do not go one to a song
+    /// (#578: laid over the entries by position, the first lost its fade_in
+    /// and the rest kept theirs), and an ambient show outside the project
+    /// (#578: read from wherever it pointed on a switch).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_saves_leave_an_existing_file_as_it_was() {
+        let project = playlist_project().await.unwrap();
+        let existing = "songs:\n- song: Song 1\n  fade_in: 1s\n- Song 3\n- Song 5\n";
+        project.write("set", existing).await;
+        let unchanged = || assert_eq!(read(&project, "set"), existing);
+
+        let err = save(
+            &project,
+            save_request("set", &["Song 1", "No Such Song"], false),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        unchanged();
+
+        for settings in [1, 2, 4] {
+            let req = SavePlaylistRequest {
+                settings: vec![EntrySettings::default(); settings],
+                set_settings: true,
+                ..save_request("set", &["Song 1", "Song 3", "Song 5"], false)
+            };
+            let err = save(&project, req).await.unwrap_err();
+            assert_eq!(err.code(), Code::InvalidArgument, "{settings}");
+            assert!(err.message().contains("one for each"), "{}", err.message());
+            unchanged();
+        }
+
+        for show in [
+            "../../../etc/passwd",
+            "/etc/passwd",
+            "lighting/../../x.light",
+        ] {
+            let ambient = AmbientSetting {
+                on: true,
+                show: Some(show.into()),
+                ..Default::default()
+            };
+            let playlist = SavePlaylistRequest {
+                ambient: Some(ambient.clone()),
+                set_ambient: true,
+                ..save_request("set", &["Song 1"], false)
+            };
+            let entry = SavePlaylistRequest {
+                settings: vec![EntrySettings {
+                    ambient: Some(ambient),
+                    ..Default::default()
+                }],
+                set_settings: true,
+                ..save_request("set", &["Song 1"], false)
+            };
+            for req in [playlist, entry] {
+                let err = save(&project, req).await.unwrap_err();
+                assert_eq!(err.code(), Code::InvalidArgument, "{show}");
+                unchanged();
+            }
+        }
+    }
+
+    /// Two editors saving at once take turns: #578, they shared the
+    /// write's sidecar, and all but one got an error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_saves_to_one_playlist_all_succeed() {
+        let project = playlist_project().await.unwrap();
+        project.write("set", "songs:\n- Song 1\n").await;
+        let project = std::sync::Arc::new(project);
+        let saves: Vec<_> = (0..12)
+            .map(|i| {
+                let project = project.clone();
+                tokio::spawn(async move {
+                    let songs: &[&str] = if i % 2 == 0 {
+                        &["Song 1"]
+                    } else {
+                        &["Song 1", "Song 1"]
+                    };
+                    save(&project, save_request("set", songs, false)).await
+                })
+            })
+            .collect();
+        for save in saves {
+            save.await.unwrap().unwrap();
+        }
+    }
+
+    /// What a save leaves out it keeps, and what it sets to none it clears:
+    /// the playlist's ambient light (set with `set_ambient`), and each
+    /// entry's fades (set with `set_settings`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_keeps_or_clears_ambient_and_fades() {
+        let project = playlist_project().await.unwrap();
+        let existing = "ambient: false\nsongs:\n- song: Song 1\n  auto_play: 2s\n  fade_out: 200ms\n  fade_in: 100ms\n";
+        project.write("set", existing).await;
+        // Left out: kept, each entry's with it.
+        save(&project, save_request("set", &["Song 1"], false))
+            .await
+            .unwrap();
+        let kept = read(&project, "set");
+        for part in [
+            "ambient: false",
+            "auto_play: 2s",
+            "fade_out: 200ms",
+            "fade_in: 100ms",
+        ] {
+            assert!(kept.contains(part), "{part}: {kept}");
+        }
+        // Ambient set to none removes it, so the profile's plays.
+        let req = SavePlaylistRequest {
+            set_ambient: true,
+            ..save_request("set", &["Song 1"], false)
+        };
+        save(&project, req).await.unwrap();
+        let cleared = read(&project, "set");
+        assert!(!cleared.contains("ambient"), "{cleared}");
+        assert!(cleared.contains("fade_out: 200ms"), "{cleared}");
+        // Entries set to none lose their fades, leaving the song's name.
+        let req = SavePlaylistRequest {
+            settings: vec![EntrySettings::default()],
+            set_settings: true,
+            ..save_request("set", &["Song 1"], false)
+        };
+        save(&project, req).await.unwrap();
+        let bare = read(&project, "set");
+        assert!(!bare.contains("fade"), "{bare}");
+        assert!(!bare.contains("auto_play"), "{bare}");
+        assert!(bare.contains("- Song 1"), "{bare}");
+    }
+
+    /// A fade the player would refuse is refused before it is written: an
+    /// unknown curve, a track the song does not have (on either fade), and
+    /// lights on a fade in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_fade_is_refused_and_nothing_is_written() {
+        let project = playlist_project().await.unwrap();
+        let existing = "songs:\n- Song 1\n";
+        project.write("set", existing).await;
+        let fade = |curve: Option<&str>, exclude: Option<&[&str]>, lights: Option<&str>| Fade {
+            length: "200ms".into(),
+            curve: curve.map(str::to_string),
+            exclude: exclude.map(|names| TrackNames {
+                names: names.iter().map(|n| n.to_string()).collect(),
+            }),
+            lights: lights.map(str::to_string),
+        };
+        let cases = [
+            (
+                EntrySettings {
+                    fade_out: Some(fade(Some("wobbly"), None, None)),
+                    ..Default::default()
+                },
+                "wobbly",
+            ),
+            (
+                EntrySettings {
+                    fade_out: Some(fade(None, Some(&["cowbell"]), None)),
+                    ..Default::default()
+                },
+                "cowbell",
+            ),
+            (
+                EntrySettings {
+                    fade_in: Some(fade(None, Some(&["cowbell"]), None)),
+                    ..Default::default()
+                },
+                "cowbell",
+            ),
+            (
+                EntrySettings {
+                    fade_in: Some(fade(None, None, Some("100ms"))),
+                    ..Default::default()
+                },
+                "lights applies only to fade_out",
+            ),
+        ];
+        for (bad, says) in cases {
+            let req = SavePlaylistRequest {
+                settings: vec![bad.clone()],
+                set_settings: true,
+                ..save_request("set", &["Song 1"], false)
+            };
+            let err = save(&project, req).await.unwrap_err();
+            assert_eq!(err.code(), Code::InvalidArgument, "{bad:?}");
+            assert!(err.message().contains(says), "{says}: {}", err.message());
+            assert_eq!(read(&project, "set"), existing, "{bad:?}");
+        }
+        // The song's own track is a fine thing to leave out.
+        let good = SavePlaylistRequest {
+            settings: vec![EntrySettings {
+                fade_out: Some(fade(Some("linear"), Some(&["track 1"]), Some("0s"))),
+                ..Default::default()
+            }],
+            set_settings: true,
+            ..save_request("set", &["Song 1"], false)
+        };
+        save(&project, good).await.unwrap();
+    }
+
+    /// Names from before #578's rules for new names: they load and are
+    /// listed, and the editor must still save and delete them. A new
+    /// playlist cannot be given one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn playlists_already_on_disk_stay_savable_and_deletable() {
+        for (file, name) in [(".warmup.yaml", ".warmup"), ("Encore .yaml", "Encore ")] {
+            let project = playlist_project().await.unwrap();
+            let path = project.dir.path().join("playlists").join(file);
+            let err = save(&project, save_request(name, &["Song 1"], true))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), Code::InvalidArgument, "{file}");
+            assert!(!path.exists(), "{file}");
+
+            std::fs::write(&path, "songs:\n  - \"Song 1\"\n").unwrap();
+            project.player.reload_songs().await.unwrap();
+            save(&project, save_request(name, &["Song 1", "Song 1"], false))
+                .await
+                .unwrap();
+            server(&project)
+                .delete_playlist(Request::new(DeletePlaylistRequest { name: name.into() }))
+                .await
+                .unwrap();
+            assert!(!path.exists(), "{file}");
+        }
+    }
+
+    /// The editor's read: each entry's fades as written, the songs the
+    /// playlist could have, and each song's tracks for a fade to leave out;
+    /// left off unless asked for, as a phone asks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_playlist_with_the_library_lists_the_songs_and_their_tracks() {
+        let project = playlist_project().await.unwrap();
+        project
+            .write(
+                "set",
+                "songs:\n- song: Song 1\n  fade_out: {length: 1measure, exclude: [track 1]}\n- Song 1\n",
+            )
+            .await;
+        let project = &project;
+        let ask = |with_library: bool| async move {
+            server(project)
+                .get_playlist(Request::new(crate::proto::player::v1::GetPlaylistRequest {
+                    name: "set".into(),
+                    with_library,
+                }))
+                .await
+        };
+        let plain = ask(false).await.unwrap().into_inner();
+        assert!(plain.available_songs.is_empty());
+        assert!(plain.song_tracks.is_empty());
+
+        let full = ask(true).await.unwrap().into_inner();
+        let out = settings_of(&full)[0].fade_out.clone().unwrap();
+        assert_eq!(out.length, "1measure");
+        assert_eq!(out.exclude.unwrap().names, ["track 1"]);
+        assert_eq!(settings_of(&full)[1], EntrySettings::default());
+        // Every song the player has, sorted, each with its tracks.
+        let library = project.player.songs();
+        let expected: Vec<String> = library
+            .sorted_list()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(full.available_songs, expected);
+        assert!(expected.len() > 1);
+        assert_eq!(full.song_tracks.len(), expected.len());
+        assert_eq!(full.song_tracks["Song 1"].names, ["track 1"]);
+        // What else it says is what the plain read says.
+        let strip = |mut r: GetPlaylistResponse| {
+            r.available_songs.clear();
+            r.song_tracks.clear();
+            r
+        };
+        assert_eq!(strip(full), plain);
+    }
+
+    /// The list of playlists, as the web UI's shows them: each with its
+    /// song count, the player's own flagged reserved, and the active one
+    /// named. Brief unless asked, as a phone asks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_detailed_list_gives_each_playlists_count_and_reserved() {
+        use crate::proto::player::v1::{ListPlaylistsRequest, PlaylistSummary};
+        let project = playlist_project().await.unwrap();
+        project.write("mine", "songs:\n- Song 1\n- Song 3\n").await;
+        std::fs::write(
+            project.dir.path().join("playlists/ymllist.yml"),
+            "songs: []\n",
+        )
+        .unwrap();
+        project.player.reload_songs().await.unwrap();
+        let project = &project;
+        let list = |detailed| async move {
+            server(project)
+                .list_playlists(Request::new(ListPlaylistsRequest { detailed }))
+                .await
+        };
+
+        let brief = list(false).await.unwrap().into_inner();
+        assert!(brief.playlists.is_empty());
+        assert_eq!(brief.names, ["all_songs", "mine", "ymllist"]);
+
+        let detailed = list(true).await.unwrap().into_inner();
+        assert_eq!(detailed.names, brief.names);
+        assert_eq!(detailed.active, "all_songs");
+        let all = project.player.songs().sorted_list().len() as u32;
+        assert_eq!(
+            detailed.playlists,
+            [
+                PlaylistSummary {
+                    name: "all_songs".into(),
+                    song_count: all,
+                    reserved: true
+                },
+                PlaylistSummary {
+                    name: "mine".into(),
+                    song_count: 2,
+                    reserved: false
+                },
+                PlaylistSummary {
+                    name: "ymllist".into(),
+                    song_count: 0,
+                    reserved: false
+                },
+            ]
+        );
+        // An unknown playlist is not found.
+        let err = server(project)
+            .get_playlist(Request::new(crate::proto::player::v1::GetPlaylistRequest {
+                name: "nonexistent".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::NotFound);
     }
 }

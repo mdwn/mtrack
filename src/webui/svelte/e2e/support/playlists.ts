@@ -13,22 +13,98 @@
 //
 
 import type { Page } from "@playwright/test";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  PlayerService,
+  type EntrySettings,
+  type Fade,
+  type AmbientSetting,
+  type SavePlaylistRequest,
+} from "../../src/gen/player/v1/player_pb";
+import type {
+  Ambient,
+  AutoPlayConfig,
+  FadeConfig,
+} from "../../src/gen/rules/mtrack_rules";
+import { PLAYLIST_DETAILS } from "../mock-server/test-data";
+import { getPlaylistReply, type PlaylistFixture } from "./library-rpc";
+import { mockRpc } from "./rpc";
 
-/** Answers PUTs of the `setlist` playlist as saved, letting other requests
- *  through; the bodies PUT, in order, as they come. */
+function fade(f: Fade | undefined): FadeConfig | null {
+  if (!f) return null;
+  if (f.curve === undefined && !f.exclude && f.lights === undefined) {
+    return f.length;
+  }
+  return {
+    length: f.length,
+    ...(f.curve !== undefined ? { curve: f.curve } : {}),
+    ...(f.exclude ? { exclude: f.exclude.names } : {}),
+    ...(f.lights !== undefined ? { lights: f.lights } : {}),
+  };
+}
+
+function ambient(a: AmbientSetting | undefined): false | Ambient | null {
+  if (!a) return null;
+  if (!a.on) return false;
+  return {
+    ...(a.show !== undefined ? { show: a.show } : {}),
+    ...(a.delay !== undefined ? { delay: a.delay } : {}),
+    ...(a.fadeIn !== undefined ? { fade_in: a.fadeIn } : {}),
+    ...(a.fadeOut !== undefined ? { fade_out: a.fadeOut } : {}),
+  };
+}
+
+function autoPlay(s: EntrySettings): AutoPlayConfig | null {
+  if (!s.autoPlay) return null;
+  return s.autoPlay.gap === "" ? true : s.autoPlay.gap;
+}
+
+/** What a playlist save says, as the page's playlist editor holds it (the
+ *  songs, and each setting it sets), read from the `SavePlaylist` request:
+ *  a setting the request does not set is left out, as it was left out of the
+ *  body the REST save sent. */
+export function playlistBody(
+  req: SavePlaylistRequest,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { songs: [...req.songs] };
+  if (req.setSettings) {
+    body.auto_play = req.settings.map(autoPlay);
+    body.fades = req.settings.map((s) => ({
+      fade_out: fade(s.fadeOut),
+      fade_in: fade(s.fadeIn),
+    }));
+    body.entry_ambient = req.settings.map((s) => ambient(s.ambient));
+  }
+  if (req.setAmbient) body.ambient = ambient(req.ambient);
+  return body;
+}
+
+/** Answers the saves of the playlist `setlist` as saved, letting the rest
+ *  through; the saves as the editor holds them (see {@link playlistBody}),
+ *  in order, as they come. */
 export async function capturePlaylistPut(page: Page) {
   const bodies: Record<string, unknown>[] = [];
-  await page.route("**/api/playlists/setlist", async (route) => {
-    if (route.request().method() === "PUT") {
-      bodies.push(route.request().postDataJSON());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", name: "setlist" }),
-      });
-    } else {
-      await route.continue();
-    }
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.savePlaylist, (req) => {
+    bodies.push(playlistBody(req));
+    return { name: req.name };
   });
   return bodies;
+}
+
+/** Answers the read of the playlist `name` with `detail`, the other
+ *  playlists as the mock server has them. */
+export async function stubPlaylist(
+  page: Page,
+  name: string,
+  detail: PlaylistFixture,
+) {
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.getPlaylist, (req) => {
+    if (req.name === name) return getPlaylistReply(detail);
+    const other = PLAYLIST_DETAILS[req.name];
+    if (!other) throw new ConnectError("Playlist not found", Code.NotFound);
+    return getPlaylistReply(other);
+  });
+  return rpc;
 }

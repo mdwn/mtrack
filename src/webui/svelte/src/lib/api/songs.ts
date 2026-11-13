@@ -21,12 +21,18 @@ import type {
   TempoGuess,
   Waveform,
 } from "../../gen/rules/mtrack_rules";
+import { playerClient } from "../grpc/client";
+import { callError, mapSongList } from "../grpc/library";
 import { get, post, postYaml, putYaml, uploadFile, uploadFiles } from "./rest";
 
+/** Every song in the library, with what the song pages show, and those that
+ *  failed to load. */
 export async function fetchSongs(): Promise<SongList> {
-  const res = await get("/songs");
-  if (!res.ok) throw new Error(`Failed to fetch songs: ${res.status}`);
-  return res.json();
+  try {
+    return mapSongList(await playerClient.listSongs({ detailed: true }));
+  } catch (e) {
+    throw callError(e, "Failed to fetch songs");
+  }
 }
 
 export async function fetchSongConfig(name: string): Promise<string> {

@@ -32,7 +32,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendWatchRetrying } from "../support/watch";
-import { PLAYBACK_STATE } from "../mock-server/test-data";
+import { PLAYBACK_STATE, SONGS } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { listSongsReply } from "../support/library-rpc";
+import { mockRpc } from "../support/rpc";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -235,19 +238,16 @@ async function openTimeline(page: Page, yaml: string, wsId?: string) {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({ status: 200, contentType: "text/yaml", body: yaml });
   });
-  await page.route("**/api/songs", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    const res = await route.fetch();
-    const data = await res.json();
-    for (const song of data.songs ?? []) {
-      if (song.name === SONG) {
-        song.has_tempo_map = true;
-        song.duration_ms = 34000;
-        song.duration_display = "0:34";
-      }
+  const data = structuredClone(SONGS);
+  for (const song of data.songs) {
+    if (song.name === SONG) {
+      song.has_tempo_map = true;
+      song.duration_ms = 34000;
+      song.duration_display = "0:34";
     }
-    await route.fulfill({ response: res, json: data });
-  });
+  }
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
   await page.goto(
     wsId
       ? `/?wsId=${wsId}#/songs/${SONG_ENC}/sections`

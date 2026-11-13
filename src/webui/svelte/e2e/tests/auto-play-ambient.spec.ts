@@ -18,7 +18,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
 import { sendWatch } from "../support/watch";
-import { capturePlaylistPut } from "../support/playlists";
+import { capturePlaylistPut, stubPlaylist } from "../support/playlists";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
@@ -88,18 +88,12 @@ test.describe("Playlist editor: auto play and ambient light", () => {
   });
 
   test("a playlist reads its settings back", async ({ page }) => {
-    await page.route("**/api/playlists/setlist", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          name: "setlist",
-          songs: ["Test Song Alpha"],
-          auto_play: ["3s"],
-          ambient: { show: "lighting/walk_in.light", fade_in: "6s" },
-          available_songs: ["Test Song Beta"],
-        }),
-      });
+    await stubPlaylist(page, "setlist", {
+      name: "setlist",
+      songs: ["Test Song Alpha"],
+      auto_play: ["3s"],
+      ambient: { show: "lighting/walk_in.light", fade_in: "6s" },
+      available_songs: ["Test Song Beta"],
     });
     await playlists.selectPlaylist("setlist");
     const row = playlists.playlistSongs().first();
@@ -216,25 +210,18 @@ test.describe("Playlist editor: an entry's ambient light", () => {
     page,
   }) => {
     const bodies = await capturePlaylistPut(page);
-    await page.route("**/api/playlists/setlist", async (route) => {
-      if (route.request().method() !== "GET") return route.fallback();
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          name: "setlist",
-          songs: ["Test Song Alpha", "Test Song Beta", "Test Song Gamma"],
-          auto_play: [null, "2s", null],
-          fades: [
-            { fade_out: null, fade_in: null },
-            { fade_out: null, fade_in: "2measures" },
-            { fade_out: null, fade_in: null },
-          ],
-          entry_ambient: [null, false, { fade_in: "3s" }],
-          ambient: null,
-          available_songs: [],
-        }),
-      });
+    await stubPlaylist(page, "setlist", {
+      name: "setlist",
+      songs: ["Test Song Alpha", "Test Song Beta", "Test Song Gamma"],
+      auto_play: [null, "2s", null],
+      fades: [
+        { fade_out: null, fade_in: null },
+        { fade_out: null, fade_in: "2measures" },
+        { fade_out: null, fade_in: null },
+      ],
+      entry_ambient: [null, false, { fade_in: "3s" }],
+      ambient: null,
+      available_songs: [],
     });
     await playlists.selectPlaylist("setlist");
     const rows = playlists.playlistSongs();

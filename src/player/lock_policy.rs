@@ -119,17 +119,14 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "WatchStatus"),
     (Grpc, "Watch"),
     (Grpc, "GetNetworkInfo"),
-    // The lock itself: the phone's only way to unlock. SavePlaylist and
-    // DeletePlaylist are playlist writes and stay locked out, as the web
-    // UI's are.
+    // The lock itself: the phone's only way to unlock, and the web UI's
+    // toggle. SavePlaylist and DeletePlaylist are playlist writes and stay
+    // locked out.
     (Grpc, "SetLock"),
-    // Web: the lock toggle, validation, playlist activation (a playback
-    // control, not an edit), the controller restart, and the pure reads that
+    // Web: validation, the controller restart, and the pure reads that
     // happen to be POSTs (a preview evaluation and the upload inspectors,
     // which write nothing).
-    (Web, "PUT /lock"),
     (Web, "POST /lighting/validate"),
-    (Web, "POST /playlists/{name}/activate"),
     (Web, "POST /controllers/restart"),
     (Web, "POST /lighting/evaluate"),
     (Web, "POST /lighting/mvr/inspect"),
@@ -172,9 +169,9 @@ mod tests {
 
     #[test]
     fn web_gets_are_open_and_other_methods_are_listed() {
-        assert!(open_while_locked(Web, "GET /songs"));
-        assert!(open_while_locked(Web, "PUT /lock"));
-        assert!(!open_while_locked(Web, "PUT /playlists/{name}"));
+        assert!(open_while_locked(Web, "GET /songs/{name}"));
+        assert!(open_while_locked(Web, "POST /lighting/validate"));
+        assert!(!open_while_locked(Web, "PUT /songs/{name}"));
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
         assert!(!open_while_locked(Mcp, "Play"));

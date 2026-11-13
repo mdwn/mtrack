@@ -795,7 +795,8 @@ configuration changes from the web UI.
 ## REST API
 
 The web UI exposes a comprehensive REST API for all management operations. Playback control
-uses gRPC-Web (PlayerService), and so does everything the page watches: the `Watch` stream
+uses gRPC-Web (PlayerService), and so do the playlists, the song list and the lock toggle (see
+[gRPC](grpc.md)); and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no
@@ -808,8 +809,9 @@ To check that a player is up from a script, fetch the page (`curl -sf http://hos
 the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 
 All mutating REST endpoints are blocked when the player is in lock mode, returning
-HTTP 423 (Locked). These always work: read endpoints, playback control, the lock toggle,
-playlist activation, the lighting validation endpoint, controller restart, and
+HTTP 423 (Locked); the gRPC calls that write refuse with `FAILED_PRECONDITION`. These always
+work: read endpoints, playback control, the lock toggle (`SetLock`), playlist activation
+(`SwitchToPlaylist`), the lighting validation endpoint, controller restart, and
 the lighting endpoints that only compute or inspect and write nothing (preview evaluation and
 MVR inspection). Releasing a fixture test also works, since it only returns the lights to the
 show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they

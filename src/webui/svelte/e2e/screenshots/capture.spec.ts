@@ -27,6 +27,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { sendWatchUnchecked } from "../support/watch";
+import { SONGS } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { listSongsReply } from "../support/library-rpc";
+import { stubPlaylist } from "../support/playlists";
+import { mockRpc } from "../support/rpc";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -165,24 +170,17 @@ test("playback-auto-play", async ({ page }) => {
 test("playlist-auto-play", async ({ page }) => {
   // The playlist editor with an intro that leads into the opener, the
   // opener after a gap, and the playlist's own ambient show.
-  await page.route("**/api/playlists/setlist", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        name: "setlist",
-        songs: [
-          "Line Check",
-          "Walk-on Tape",
-          "Death is a Fine Companion",
-          "The Slow One",
-        ],
-        auto_play: [null, true, "2s", null],
-        ambient: { show: "lighting/walk_in.light", fade_in: "6s" },
-        available_songs: ["Encore", "Outro Tape"],
-      }),
-    });
+  await stubPlaylist(page, "setlist", {
+    name: "setlist",
+    songs: [
+      "Line Check",
+      "Walk-on Tape",
+      "Death is a Fine Companion",
+      "The Slow One",
+    ],
+    auto_play: [null, true, "2s", null],
+    ambient: { show: "lighting/walk_in.light", fade_in: "6s" },
+    available_songs: ["Encore", "Outro Tape"],
   });
   await page.goto("/#/playlists/setlist");
   await expect(page.getByTestId("playlist-ambient")).toBeVisible();
@@ -369,18 +367,16 @@ async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
     await route.fulfill({ json: STE_WAVEFORM });
   });
   // Trim the reported duration to the authored region so "Fit" fills the width.
-  await page.route("**/api/songs", async (route) => {
-    const resp = await route.fetch();
-    const data = await resp.json();
-    for (const s of data.songs ?? []) {
-      if (s.name === STE_SONG) {
-        s.has_tempo_map = true;
-        s.duration_ms = 34000;
-        s.duration_display = "0:34";
-      }
+  const data = structuredClone(SONGS);
+  for (const s of data.songs) {
+    if (s.name === STE_SONG) {
+      s.has_tempo_map = true;
+      s.duration_ms = 34000;
+      s.duration_display = "0:34";
     }
-    await route.fulfill({ response: resp, json: data });
-  });
+  }
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
 }
 
 async function steOpen(page: Page, yaml: string = STE_YAML, wsId?: string) {
@@ -543,21 +539,18 @@ show "Main" {
 
 /** Test Song Beta with its own tempo map and a light show that has another. */
 async function tempoImportRoutes(page: Page) {
-  await page.route("**/api/songs", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    const res = await route.fetch();
-    const data = await res.json();
-    for (const song of data.songs ?? []) {
-      if (song.name === STE_SONG) {
-        song.has_lighting = true;
-        song.lighting_files = ["show.light"];
-        song.has_tempo_map = true;
-        song.duration_ms = 34000;
-        song.duration_display = "0:34";
-      }
+  const data = structuredClone(SONGS);
+  for (const song of data.songs) {
+    if (song.name === STE_SONG) {
+      song.has_lighting = true;
+      song.lighting_files = ["show.light"];
+      song.has_tempo_map = true;
+      song.duration_ms = 34000;
+      song.duration_display = "0:34";
     }
-    await route.fulfill({ response: res, json: data });
-  });
+  }
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
   await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({

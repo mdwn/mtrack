@@ -111,7 +111,6 @@ pub fn router() -> Router<WebUiState> {
 
     // All other routes use the default body limit.
     Router::new()
-        .route("/songs", get(songs_api::get_songs))
         .route(
             "/songs/{name}",
             get(songs_api::get_song)
@@ -132,17 +131,6 @@ pub fn router() -> Router<WebUiState> {
             post(browse::create_song_in_directory),
         )
         .route("/browse/bulk-import", post(browse::bulk_import))
-        .route("/playlists", get(playlists::get_playlists))
-        .route(
-            "/playlists/{name}",
-            get(playlists::get_playlist_by_name)
-                .put(playlists::put_playlist_by_name)
-                .delete(playlists::delete_playlist_by_name),
-        )
-        .route(
-            "/playlists/{name}/activate",
-            post(playlists::activate_playlist),
-        )
         .route(
             "/lighting/{name}",
             get(lighting_api::get_lighting_file)
@@ -169,7 +157,6 @@ pub fn router() -> Router<WebUiState> {
                 .delete(profiles::delete_profile_file),
         )
         .route("/controllers/restart", post(status::restart_controllers))
-        .route("/lock", put(status::put_lock))
         .route("/bluetooth", get(bluetooth::get_bluetooth))
         .route("/bluetooth/pairing", post(bluetooth::post_pairing))
         .route(
@@ -689,21 +676,15 @@ mod test {
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // The real toggle, then the validator, which answer rather than 423.
-        assert_eq!(
-            send(&app, "PUT", "/api/lock", r#"{"locked":true}"#).await,
-            StatusCode::OK
-        );
+        // The validator and the restart answer rather than 423. (The lock
+        // toggle and the playlist switch are gRPC calls, held to the same
+        // table by the gRPC lock guard's tests.)
         assert_ne!(
             send(&app, "POST", "/api/lighting/validate", "").await,
             StatusCode::LOCKED
         );
         assert_ne!(
             send(&app, "POST", "/api/controllers/restart", "").await,
-            StatusCode::LOCKED
-        );
-        assert_ne!(
-            send(&app, "POST", "/api/playlists/all/activate", "").await,
             StatusCode::LOCKED
         );
         // The inspectors and the preview write nothing.

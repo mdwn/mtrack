@@ -36,9 +36,9 @@ use yaml_rust2::{Yaml, YamlEmitter, YamlLoader};
 use crate::config;
 use crate::player::{Player, SongSources};
 use crate::proto::player::v1::{
-    GetSongResponse, ListSongsResponse, SampleVelocity, SongFile, SongListing, SongLooping,
-    SongOverview, SongSample, SongSamples, SongTrack, SongTracks, SongTrigger,
-    UpdateSongSettingsRequest,
+    BeatGrid, GetSongResponse, ListSongsResponse, SampleVelocity, Section as ProtoSection,
+    SongFile, SongListing, SongLooping, SongOverview, SongSample, SongSamples, SongTrack,
+    SongTracks, SongTrigger, UpdateSongSettingsRequest,
 };
 use crate::webui::api::songs_api::{self, SONG_WRITES};
 use crate::webui::wire::songs::FileKind;
@@ -51,6 +51,15 @@ pub(super) const PAGE_BUDGET: usize = 48 * 1024;
 /// it whole.
 const LISTED_FAILURE: usize = 200;
 
+/// How much of a song a listing says.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Detail {
+    /// What a phone's list shows; a failure cut short.
+    Brief,
+    /// What the web UI's song pages show, a failure in full.
+    Full,
+}
+
 /// The page of the library from `start`: as many songs, loaded and failed,
 /// sorted by name, as fit `budget` bytes (one at least). With the songs
 /// directory `root`, each says its directory under it.
@@ -59,25 +68,74 @@ pub(super) fn list(
     root: Option<&Path>,
     start: u32,
     budget: usize,
+    detail: Detail,
 ) -> ListSongsResponse {
     let songs = player.songs();
     let base_dir = |dir: &Path| root.map(|root| songs_api::base_dir(root, dir));
+    // A path as the web UI's lists give one: under the songs directory.
+    let under_root = |path: &Path| {
+        root.and_then(|root| path.strip_prefix(root).ok())
+            .map(|p| p.to_string_lossy().to_string())
+    };
     let mut rows: Vec<SongListing> = songs
         .sorted_list()
         .iter()
-        .map(|song| SongListing {
-            name: song.name().to_string(),
-            duration: prost_types::Duration::try_from(song.length()).ok(),
-            loops: song.loop_playback(),
-            has_lighting: !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
-            has_midi: song.midi_playback().is_some(),
-            has_samples: !song.samples_config().samples().is_empty(),
-            failure: None,
-            base_dir: base_dir(song.base_path()),
+        .map(|song| {
+            let mut row = SongListing {
+                name: song.name().to_string(),
+                duration: prost_types::Duration::try_from(song.length()).ok(),
+                loops: song.loop_playback(),
+                has_lighting: !song.light_shows().is_empty()
+                    || !song.dsl_lighting_shows().is_empty(),
+                has_midi: song.midi_playback().is_some(),
+                has_samples: !song.samples_config().samples().is_empty(),
+                failure: None,
+                base_dir: base_dir(song.base_path()),
+                ..Default::default()
+            };
+            if detail == Detail::Full {
+                row.channels = u32::from(song.num_channels());
+                row.sample_format = song.sample_format().to_string();
+                row.tracks = song.tracks().iter().map(|t| t.name().to_string()).collect();
+                row.lighting_files = song
+                    .dsl_lighting_shows()
+                    .iter()
+                    .filter_map(|show| under_root(show.file_path()))
+                    .collect();
+                row.midi_dmx_files = song
+                    .light_shows()
+                    .iter()
+                    .filter_map(|show| under_root(show.dmx_file_path()))
+                    .collect();
+                row.beat_grid = song.beat_grid().map(|grid| BeatGrid {
+                    beats: grid.beats.clone(),
+                    measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
+                });
+                row.has_tempo_map = song.tempo_map().is_some();
+                row.loop_crossfade_ms = song.loop_crossfade().map(|d| d.as_millis() as u64);
+                row.loop_crossfade_cut = song.loop_crossfade_cut().to_vec();
+                row.sections = song
+                    .summary()
+                    .sections
+                    .iter()
+                    .map(|s| ProtoSection {
+                        name: s.name.clone(),
+                        start_measure: s.start_measure as u32,
+                        end_measure: s.end_measure as u32,
+                        start_beat: s.start_beat,
+                        end_beat: s.end_beat,
+                        color: s.color.clone(),
+                    })
+                    .collect();
+            }
+            row
         })
         .chain(songs.failures().iter().map(|failure| SongListing {
             name: failure.name().to_string(),
-            failure: Some(shortened(failure.error(), LISTED_FAILURE)),
+            failure: Some(match detail {
+                Detail::Brief => shortened(failure.error(), LISTED_FAILURE),
+                Detail::Full => failure.error().to_string(),
+            }),
             base_dir: base_dir(failure.base_path()),
             ..Default::default()
         }))
@@ -1488,7 +1546,10 @@ notification_audio:
         async fn the_library_lists_loaded_and_failed_songs_in_pages() {
             let project = project().await;
             let all = server(&project)
-                .list_songs(Request::new(ListSongsRequest { start: 0 }))
+                .list_songs(Request::new(ListSongsRequest {
+                    start: 0,
+                    ..Default::default()
+                }))
                 .await
                 .unwrap()
                 .into_inner();
@@ -1513,7 +1574,13 @@ notification_audio:
             let mut start = 0;
             loop {
                 let root = super::super::listing_root(&project.player, Some(&project.store)).await;
-                let page = super::super::list(&project.player, root.as_deref(), start, 64);
+                let page = super::super::list(
+                    &project.player,
+                    root.as_deref(),
+                    start,
+                    64,
+                    super::super::Detail::Brief,
+                );
                 assert_eq!(page.total, all.total);
                 assert!(!page.songs.is_empty());
                 paged.extend(page.songs);
@@ -1523,6 +1590,129 @@ notification_audio:
                 }
             }
             assert_eq!(paged, all.songs);
+        }
+
+        /// The web UI's song list, which this is now: every song in one
+        /// answer, each with what the song pages show, and a failure whole.
+        /// A phone's list leaves all of that out.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_detailed_list_has_what_the_song_pages_show() {
+            let project = project().await;
+            let list = |detailed: bool| {
+                let server = server(&project);
+                async move {
+                    server
+                        .list_songs(Request::new(ListSongsRequest { start: 0, detailed }))
+                        .await
+                        .unwrap()
+                        .into_inner()
+                }
+            };
+            let brief = list(false).await;
+            let detailed = list(true).await;
+            assert_eq!(detailed.next, None);
+            assert_eq!(detailed.total, brief.total);
+            assert_eq!(detailed.songs.len(), brief.songs.len());
+            let find = |name: &str| detailed.songs.iter().find(|s| s.name == name).unwrap();
+
+            let full = find("Full");
+            assert_eq!(full.tracks, ["click", "keys"]);
+            assert_eq!(full.channels, 2, "click is one channel, keys two");
+            assert!(!full.sample_format.is_empty());
+            assert_eq!(full.lighting_files, ["Full/show.light"]);
+            assert_eq!(full.midi_dmx_files, ["Full/dmx.mid"]);
+            assert!(full.loops && full.has_lighting && full.has_midi);
+            // 2measures, resolved on the song's tempo, in whole milliseconds.
+            let song = project.player.songs().get("Full").unwrap();
+            let crossfade = song.loop_crossfade().expect("resolved");
+            assert_eq!(full.loop_crossfade_ms, Some(crossfade.as_millis() as u64));
+            assert_eq!(full.loop_crossfade_cut, ["click"]);
+            let sections: Vec<_> = full
+                .sections
+                .iter()
+                .map(|s| (s.name.as_str(), s.start_measure, s.end_measure))
+                .collect();
+            assert_eq!(sections, [("verse", 1, 8), ("chorus", 9, 16)]);
+            assert_eq!(full.sections[1].color.as_deref(), Some("#5ecaea"));
+            // The beat grid and the tempo map are the song's own.
+            assert_eq!(full.has_tempo_map, song.tempo_map().is_some());
+            assert_eq!(
+                full.beat_grid.as_ref().map(|g| g.beats.len()),
+                song.beat_grid().map(|g| g.beats.len())
+            );
+
+            // What is brief in a phone's list stays brief.
+            for row in &brief.songs {
+                assert!(row.tracks.is_empty() && row.lighting_files.is_empty());
+                assert!(row.sections.is_empty() && row.beat_grid.is_none());
+                assert_eq!(row.channels, 0);
+                assert_eq!(row.loop_crossfade_ms, None);
+            }
+            // The fields a phone's list has are the same in both.
+            let strip = |mut row: crate::proto::player::v1::SongListing| {
+                row.channels = 0;
+                row.sample_format.clear();
+                row.tracks.clear();
+                row.lighting_files.clear();
+                row.midi_dmx_files.clear();
+                row.beat_grid = None;
+                row.has_tempo_map = false;
+                row.loop_crossfade_ms = None;
+                row.loop_crossfade_cut.clear();
+                row.sections.clear();
+                row.failure = row.failure.map(|f| f.chars().take(10).collect());
+                row
+            };
+            let cut = |mut row: crate::proto::player::v1::SongListing| {
+                row.failure = row.failure.map(|f| f.chars().take(10).collect());
+                row
+            };
+            let from_detailed: Vec<_> = detailed.songs.iter().cloned().map(strip).collect();
+            let from_brief: Vec<_> = brief.songs.iter().cloned().map(cut).collect();
+            assert_eq!(from_detailed, from_brief);
+
+            // A failure is cut in a phone's list and whole in the web UI's.
+            let long = format!(
+                "name: Long\ntracks:\n- name: t\n  file: {}.wav\n",
+                "x".repeat(300)
+            );
+            let dir = song_dir(&project, "Long");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("song.yaml"), long).unwrap();
+            project.player.reload_songs().await.unwrap();
+            let cut_failure = |list: &crate::proto::player::v1::ListSongsResponse| {
+                list.songs
+                    .iter()
+                    .find(|s| s.name == "Long")
+                    .unwrap()
+                    .failure
+                    .clone()
+                    .unwrap()
+            };
+            let (brief, detailed) = (list(false).await, list(true).await);
+            assert!(cut_failure(&brief).chars().count() <= super::super::LISTED_FAILURE + 1);
+            assert!(cut_failure(&detailed).chars().count() > super::super::LISTED_FAILURE + 1);
+            assert!(cut_failure(&detailed).contains(&"x".repeat(300)));
+        }
+
+        /// The empty library: nothing to list, no error.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_empty_library_lists_nothing() {
+            let project = playlist_project().await.unwrap();
+            for entry in std::fs::read_dir(project.dir.path().join("assets/songs")).unwrap() {
+                std::fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+            project.player.reload_songs().await.unwrap();
+            let all = server(&project)
+                .list_songs(Request::new(ListSongsRequest {
+                    start: 0,
+                    detailed: true,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(all.songs.is_empty());
+            assert_eq!(all.total, 0);
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1539,7 +1729,10 @@ notification_audio:
             .unwrap();
             project.player.reload_songs().await.unwrap();
             let all = server(&project)
-                .list_songs(Request::new(ListSongsRequest { start: 0 }))
+                .list_songs(Request::new(ListSongsRequest {
+                    start: 0,
+                    ..Default::default()
+                }))
                 .await
                 .unwrap()
                 .into_inner();
@@ -1569,7 +1762,13 @@ notification_audio:
                 Some("Live/2026 tour/Deep")
             );
             // Without a songs directory to say it under, it is not said.
-            let bare = super::super::list(&project.player, None, 0, super::super::PAGE_BUDGET);
+            let bare = super::super::list(
+                &project.player,
+                None,
+                0,
+                super::super::PAGE_BUDGET,
+                super::super::Detail::Brief,
+            );
             assert!(bare.songs.iter().all(|s| s.base_dir.is_none()));
         }
 
@@ -1848,6 +2047,7 @@ notification_audio:
                 failure: i
                     .is_multiple_of(20)
                     .then(|| "x".repeat(super::LISTED_FAILURE)),
+                ..Default::default()
             };
             let response = crate::proto::player::v1::ListSongsResponse {
                 songs: (0..200).map(row).collect(),

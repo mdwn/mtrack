@@ -14,6 +14,10 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { listSongsReply } from "../support/library-rpc";
+import { mockRpc } from "../support/rpc";
+
 import type { SongList } from "../../src/gen/rules/mtrack_rules";
 
 // Init and the bulk import name a nested song by its path when its folder's
@@ -41,7 +45,8 @@ async function routeSlashSongs(page: Page) {
     })),
     failures: [],
   } satisfies SongList;
-  await page.route("**/api/songs", (route) => route.fulfill({ json: list }));
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.listSongs, listSongsReply(list));
   await page.route(
     (url) =>
       Object.keys(SLASH_SONGS).some(

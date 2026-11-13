@@ -15,6 +15,8 @@
 import { test, expect } from "@playwright/test";
 import { sendWatch } from "../support/watch";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 let lockTestCounter = 0;
 
@@ -27,23 +29,18 @@ test.describe("Lock Mode", () => {
 
   test("lock toggle calls API when clicked", async ({ page }) => {
     await page.goto("/#/");
-    let lockCalled = false;
-    await page.route("**/api/lock", async (route) => {
-      if (route.request().method() === "PUT") {
-        lockCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ locked: true }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.setLock, { locked: true });
 
     const lockToggle = page.locator(".topnav__lock");
+    // Locked until the first playback event: wait for it, or the click
+    // would be an unlock, which asks first.
+    await expect(lockToggle).not.toHaveClass(/topnav__lock--locked/);
     await lockToggle.click();
-    expect(lockCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.setLock).length)
+      .toBe(1);
+    expect(rpc.calls(PlayerService.method.setLock)[0].locked).toBe(true);
   });
 
   test("unlocked state does not have locked class", async ({ page }) => {

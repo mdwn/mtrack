@@ -25,26 +25,10 @@ use mtrack::proto::player::v1::watch_event::Event;
 use mtrack::proto::player::v1::{HardwareStatus, WatchEvent, WatchRequest, WatchTopic};
 use prost::Message;
 
+use crate::grpc_web::{first_message, frame};
+
 /// How long the stream may take to say its first event.
 const FIRST_EVENT: Duration = Duration::from_secs(5);
-
-/// One gRPC-Web frame carrying `message`: a flag byte (0), the length (four
-/// bytes, big endian) and the message.
-fn frame(message: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8];
-    out.extend_from_slice(&(message.len() as u32).to_be_bytes());
-    out.extend_from_slice(message);
-    out
-}
-
-/// The message of the first data frame in `buffer`, once all of it is there.
-fn first_message(buffer: &[u8]) -> Option<&[u8]> {
-    if buffer.len() < 5 {
-        return None;
-    }
-    let len = u32::from_be_bytes(buffer[1..5].try_into().ok()?) as usize;
-    buffer.get(5..5 + len)
-}
 
 /// The player's hardware status, as `Watch` opens with it.
 pub async fn read_hardware(

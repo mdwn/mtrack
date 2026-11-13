@@ -12,7 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The playlist API's payloads (`/api/playlists`).
+//! The shapes the web UI holds of playlists. The player sends them as
+//! `ListPlaylists`, `GetPlaylist` and `SavePlaylist` messages, which the UI
+//! maps into these (src/lib/grpc/library.ts); the types are generated for
+//! it from here.
 
 use std::collections::BTreeMap;
 
@@ -33,8 +36,8 @@ pub struct PlaylistInfo {
     pub reserved: bool,
 }
 
-/// `GET /api/playlists/{name}`: a playlist's songs and, entry for entry,
-/// their settings, with the songs it could have.
+/// A playlist's songs and, entry for entry, their settings, with the songs
+/// it could have (`GetPlaylist` with `with_library`).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -58,8 +61,8 @@ pub struct PlaylistDetail {
     pub song_tracks: BTreeMap<String, Vec<String>>,
 }
 
-/// `PUT /api/playlists/{name}`: the songs, and what is set beyond them;
-/// each setting left out keeps what the playlist has.
+/// What a playlist save sets (`SavePlaylist`): the songs, and what is set
+/// beyond them; each setting left out keeps what the playlist has.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct PlaylistBody {

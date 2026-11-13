@@ -34,6 +34,7 @@ mod checks;
 mod client;
 mod discovery;
 mod dmx_sink;
+mod grpc_web;
 mod midi;
 mod outcome;
 mod plan;

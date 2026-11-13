@@ -69,6 +69,30 @@ import {
   MVR_INSPECTION,
   MVR_EXPORT_SUMMARY,
 } from "./test-data.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { Code } from "@connectrpc/connect";
+import {
+  DeletePlaylistRequestSchema,
+  DeletePlaylistResponseSchema,
+  GetPlaylistRequestSchema,
+  GetPlaylistResponseSchema,
+  ListPlaylistsResponseSchema,
+  ListSongsResponseSchema,
+  SavePlaylistRequestSchema,
+  SetLockRequestSchema,
+  SetLockResponseSchema,
+  SwitchToPlaylistResponseSchema,
+} from "../../src/gen/player/v1/player_pb.js";
+import {
+  errorHeaders,
+  requestMessage,
+  unaryBody,
+} from "../support/grpc-web.js";
+import {
+  getPlaylistReply,
+  listPlaylistsReply,
+  listSongsReply,
+} from "../support/library-rpc.js";
 import { StageStream, type StageMessage } from "../support/stage-stream.js";
 import { watchFrame, type WatchPush } from "../support/watch-stream.js";
 
@@ -76,11 +100,101 @@ const app = express();
 app.use(express.json());
 app.use(express.text({ type: "text/*" }));
 
-// --- Songs ---
+// --- The player's gRPC-Web calls that the pages make for the song list, the
+// playlists and the lock ---
+// Answered from the same fixtures the REST routes of the other pages use; a
+// spec that needs other answers or the requests uses mockRpc
+// (e2e/support/rpc.ts), which is consulted first.
 
-app.get("/api/songs", (_req, res) => {
-  res.json(SONGS);
+const grpcRaw = express.raw({ type: () => true, limit: "1mb" });
+
+/** A unary call of the player service: `answer` makes the response message
+ *  from the decoded request bytes, or throws `GrpcFailure`. */
+class GrpcFailure extends Error {
+  constructor(
+    readonly code: Code,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function grpcUnary(
+  method: string,
+  answer: (request: Uint8Array) => Uint8Array,
+): void {
+  app.post(`/player.v1.PlayerService/${method}`, grpcRaw, (req, res) => {
+    try {
+      const body = answer(requestMessage(new Uint8Array(req.body ?? [])));
+      res
+        .status(200)
+        .set({ "content-type": "application/grpc-web+proto" })
+        .end(Buffer.from(unaryBody(body)));
+    } catch (e) {
+      if (!(e instanceof GrpcFailure)) throw e;
+      res.status(200).set(errorHeaders(e.code, e.message)).end();
+    }
+  });
+}
+
+grpcUnary("ListSongs", () =>
+  toBinary(
+    ListSongsResponseSchema,
+    create(ListSongsResponseSchema, listSongsReply(SONGS)),
+  ),
+);
+
+grpcUnary("ListPlaylists", () =>
+  toBinary(
+    ListPlaylistsResponseSchema,
+    create(ListPlaylistsResponseSchema, listPlaylistsReply(PLAYLISTS)),
+  ),
+);
+
+grpcUnary("GetPlaylist", (request) => {
+  const { name } = fromBinary(GetPlaylistRequestSchema, request);
+  const detail = PLAYLIST_DETAILS[name];
+  if (!detail) throw new GrpcFailure(Code.NotFound, "Playlist not found");
+  return toBinary(
+    GetPlaylistResponseSchema,
+    create(GetPlaylistResponseSchema, getPlaylistReply(detail)),
+  );
 });
+
+// A save, a delete and a switch change nothing here: the fixtures are fixed,
+// as the REST routes they replace were.
+grpcUnary("SavePlaylist", (request) => {
+  const { name } = fromBinary(SavePlaylistRequestSchema, request);
+  return toBinary(
+    GetPlaylistResponseSchema,
+    create(GetPlaylistResponseSchema, { name }),
+  );
+});
+
+grpcUnary("DeletePlaylist", (request) => {
+  fromBinary(DeletePlaylistRequestSchema, request);
+  return toBinary(
+    DeletePlaylistResponseSchema,
+    create(DeletePlaylistResponseSchema),
+  );
+});
+
+grpcUnary("SwitchToPlaylist", () =>
+  toBinary(
+    SwitchToPlaylistResponseSchema,
+    create(SwitchToPlaylistResponseSchema),
+  ),
+);
+
+grpcUnary("SetLock", (request) => {
+  const { locked } = fromBinary(SetLockRequestSchema, request);
+  return toBinary(
+    SetLockResponseSchema,
+    create(SetLockResponseSchema, { locked }),
+  );
+});
+
+// --- Songs ---
 
 app.get("/api/songs/:name", (req, res) => {
   const song = SONGS.songs.find((s) => s.name === req.params.name);
@@ -161,30 +275,6 @@ app.post("/api/songs/:name/tracks", (_req, res) => {
 
 app.post("/api/songs/:name/import", (_req, res) => {
   res.json({ status: "imported" });
-});
-
-// --- Playlists ---
-
-app.get("/api/playlists", (_req, res) => {
-  res.json(PLAYLISTS);
-});
-
-app.get("/api/playlists/:name", (req, res) => {
-  const detail = PLAYLIST_DETAILS[req.params.name];
-  if (!detail) return res.status(404).json({ error: "Playlist not found" });
-  res.json(detail);
-});
-
-app.put("/api/playlists/:name", (req, res) => {
-  res.json({ status: "saved", name: req.params.name });
-});
-
-app.delete("/api/playlists/:name", (req, res) => {
-  res.json({ status: "deleted", name: req.params.name });
-});
-
-app.post("/api/playlists/:name/activate", (req, res) => {
-  res.json({ status: "activated", name: req.params.name });
 });
 
 // --- Config ---
@@ -342,12 +432,6 @@ app.delete("/api/bluetooth/devices/:address", (req, res) => {
     return;
   }
   res.json(bluetoothBody(sim));
-});
-
-// --- Lock ---
-
-app.put("/api/lock", (req, res) => {
-  res.json({ locked: req.body?.locked ?? false });
 });
 
 // --- Lighting ---

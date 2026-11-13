@@ -493,6 +493,7 @@ mod tests {
 
         let request = GetPlaylistRequest {
             name: "playlist".to_string(),
+            ..Default::default()
         };
         let response = call(&dispatcher, 4, "GetPlaylist", request.encode_to_vec()).await;
         assert_eq!(response.code, 0, "{}", response.message);

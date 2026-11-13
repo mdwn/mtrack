@@ -14,6 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { ALL_SONGS } from "./helpers.js";
+import { playerClientAt } from "../support/player-client";
 
 /**
  * These tests exercise the REST API directly to verify the backend
@@ -39,15 +40,11 @@ test.describe("Smoke: REST API", () => {
     ).toBeVisible();
   });
 
-  test("GET /api/songs returns all example songs", async ({ request }) => {
-    const response = await request.get("/api/songs");
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+  test("ListSongs returns all example songs", async ({ baseURL }) => {
+    const body = await playerClientAt(baseURL!).listSongs({ detailed: true });
 
-    expect(body.songs).toBeDefined();
-    expect(Array.isArray(body.songs)).toBe(true);
-
-    const songNames = body.songs.map((s: { name: string }) => s.name);
+    expect(body.songs.length).toBeGreaterThanOrEqual(ALL_SONGS.length);
+    const songNames = body.songs.map((s) => s.name);
     for (const expected of ALL_SONGS) {
       expect(songNames).toContain(expected);
     }
@@ -80,13 +77,13 @@ test.describe("Smoke: REST API", () => {
     expect(device.max_channels).toBeDefined();
   });
 
-  test("GET /api/playlists returns playlist list", async ({ request }) => {
-    const response = await request.get("/api/playlists");
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+  test("ListPlaylists returns playlist list", async ({ baseURL }) => {
+    const body = await playerClientAt(baseURL!).listPlaylists({
+      detailed: true,
+    });
 
-    expect(Array.isArray(body)).toBe(true);
-    expect(body.length).toBeGreaterThanOrEqual(1);
+    expect(body.names.length).toBeGreaterThanOrEqual(1);
+    expect(body.playlists.map((p) => p.name)).toEqual(body.names);
   });
 
   test("GET /api/config/store returns config", async ({ request }) => {
