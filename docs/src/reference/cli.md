@@ -32,6 +32,7 @@ These talk to the player's gRPC server (`-H host:port`); see [gRPC Control](../i
 | `mtrack verify <mtrack.yaml>` | Checks the songs against the player config (`--check`, `--hostname`). |
 | `mtrack devices`, `mtrack midi-devices` | Lists audio or MIDI devices. See [Discovering Devices](../getting-started/devices.md). |
 | `mtrack test-audio <mtrack.yaml>` | Opens the configured audio device silently and confirms it streams. |
+| `mtrack brightness-changes [project] [--hostname <name>]` | Lists the cues in a project's lighting shows whose brightness changes in the release that gave every fixture one brightness model (layered dimming, dimmer `replace`, colour with no dimmer, level with no colour). Run it before upgrading; it exits 0 either way. |
 | `mtrack calibrate-triggers <device>` | Measures an audio input for trigger settings. See [Trigger Configuration](../configuration/triggers.md). |
 | `mtrack verify-light-show <file> [--config <mtrack.yaml>]` | Checks a `.light` show. See [Light Show Verification](../lighting/verification.md). |
 

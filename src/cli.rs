@@ -118,6 +118,22 @@ enum Commands {
         #[arg(long)]
         init: bool,
     },
+    /// Lists where an upgrade changes how a project's lighting shows look.
+    ///
+    /// The lighting engine now brightens every fixture the same way, with or
+    /// without a dimmer channel. A show written against the old behaviour can
+    /// come out brighter, or white where it was dark. Run this before
+    /// upgrading to see which cues to look at. Prints findings by song;
+    /// exits 0 either way.
+    BrightnessChanges {
+        /// The project directory, or its config file. Defaults to the
+        /// current directory.
+        #[arg(default_value = ".")]
+        project: String,
+        /// Override the hostname used to select a hardware profile.
+        #[arg(long)]
+        hostname: Option<String>,
+    },
     /// Lists the available audio output devices.
     Devices {},
     /// Opens the configured audio device and confirms audio is actually flowing.
@@ -481,6 +497,9 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Commands::Songs { path, init } => local::songs(&path, init)?,
+        Commands::BrightnessChanges { project, hostname } => {
+            local::brightness_changes(&project, hostname)?
+        }
         // `list_device_info` rather than `list_devices`: the latter builds every
         // device, and each one holds an ALSA handle that stops its siblings
         // being described, so it under-reports itself -- 8 of 19 on the test

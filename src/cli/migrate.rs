@@ -20,7 +20,7 @@ use crate::config;
 /// Resolves the config file path from a user-provided path string.
 /// If it's a file or has a YAML extension, use it directly.
 /// Otherwise treat it as a project directory and look for mtrack.yaml inside.
-fn resolve_config_path(path: &str) -> PathBuf {
+pub(super) fn resolve_config_path(path: &str) -> PathBuf {
     let input = Path::new(path);
     if input.is_file() || input.extension().is_some_and(|e| e == "yaml" || e == "yml") {
         input.to_path_buf()
