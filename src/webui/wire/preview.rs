@@ -64,13 +64,7 @@ pub struct PreviewEffect {
     pub fixtures: Vec<String>,
 }
 
-/// `GET /api/lighting`: the `.light` files under the songs directory.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct LightFiles {
-    pub files: Vec<LightFileInfo>,
-}
-
+/// One `.light` file found under the songs directory.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightFileInfo {

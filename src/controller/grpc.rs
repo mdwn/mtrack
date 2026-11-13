@@ -23,6 +23,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
+use tonic_health::pb::health_server::{Health, HealthServer};
 use tracing::{info, span, Level};
 
 use crate::util::FaultKind;
@@ -117,6 +118,7 @@ impl super::Driver for Driver {
 
             Server::builder()
                 .add_service(reflection_service)
+                .add_service(health_service().await)
                 .add_service(player_service(player))
                 .serve_with_incoming(
                     tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true)),
@@ -187,6 +189,18 @@ pub(crate) fn player_service(player: Arc<Player>) -> LockGuard<PlayerServiceServ
         inner: PlayerServiceServer::new(server),
         player,
     }
+}
+
+/// The standard `grpc.health.v1.Health` service, reporting the server as a
+/// whole and the player service as serving. It is not behind the lock: a
+/// health check must answer on a locked player. The gRPC controller and the
+/// web UI's gRPC-Web route both serve it.
+pub(crate) async fn health_service() -> HealthServer<impl Health> {
+    let (reporter, service) = tonic_health::server::health_reporter();
+    reporter
+        .set_serving::<PlayerServiceServer<PlayerServer>>()
+        .await;
+    service
 }
 
 /// Refuses every RPC the lock policy does not leave open while the player
@@ -2300,6 +2314,43 @@ mod test {
                 "{rpc}"
             );
         }
+        Ok(())
+    }
+
+    /// The standard health service answers on the gRPC port while the
+    /// player is locked, for the server and for the player service.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_health_service_is_serving_while_locked() -> Result<(), Box<dyn Error>> {
+        use tonic_health::pb::{
+            health_check_response::ServingStatus, health_client::HealthClient, HealthCheckRequest,
+        };
+        let (player, _client, _device) = setup_grpc().await?;
+        player.set_locked(true);
+        let driver = Driver::new(config::GrpcController::new(0), player.clone())?;
+        drop(driver.monitor_events());
+        let port = driver.bound.port().await;
+        let channel = Channel::from_shared(format!("http://127.0.0.1:{port}"))?
+            .connect()
+            .await?;
+        let mut health = HealthClient::new(channel);
+
+        for service in ["", "player.v1.PlayerService"] {
+            let status = health
+                .check(HealthCheckRequest {
+                    service: service.to_string(),
+                })
+                .await?
+                .into_inner()
+                .status;
+            assert_eq!(status, ServingStatus::Serving as i32, "{service:?}");
+        }
+        let unknown = health
+            .check(HealthCheckRequest {
+                service: "no.such.Service".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(unknown.code(), tonic::Code::NotFound);
         Ok(())
     }
 

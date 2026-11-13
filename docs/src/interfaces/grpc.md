@@ -104,6 +104,21 @@ after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playl
 refused too. Unlock from the web UI, or with `SetLock`, which is open while locked. When the web UI cannot start, the
 player runs unlocked, since the web UI is how the lock is normally released.
 
+## Health checking
+
+The player serves the standard [`grpc.health.v1.Health`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)
+service on the gRPC port, and on the web UI's port over gRPC-Web. `Check` answers `SERVING` for the
+server as a whole (the empty service name) and for `player.v1.PlayerService`; any other name is
+`NOT_FOUND`. It answers while the player is locked. Tools that speak the protocol, such as
+`grpc_health_probe` and load balancers, can use it as they would for any gRPC server:
+
+```bash
+grpcurl -plaintext host:43234 grpc.health.v1.Health/Check
+```
+
+`curl` cannot read a gRPC answer. A script that only has `curl` can fetch the web UI's page
+(`curl -sf http://host:8080/`) to tell the server is up.
+
 ## Security
 
 The gRPC server has no authentication. Do not run the player on a public network, and disable

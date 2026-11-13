@@ -20,7 +20,6 @@ import type {
   BulkImport,
   ChannelCalibration,
   FixtureTypeDeleted,
-  LightFiles,
   LightingGroups,
   LightingValidation,
   MvrKept,
@@ -351,21 +350,11 @@ app.delete("/api/bluetooth/devices/:address", (req, res) => {
 
 // --- Lock ---
 
-app.get("/api/lock", (_req, res) => {
-  res.json({ locked: false });
-});
-
 app.put("/api/lock", (req, res) => {
   res.json({ locked: req.body?.locked ?? false });
 });
 
 // --- Lighting ---
-
-app.get("/api/lighting", (_req, res) => {
-  res.json({
-    files: [{ path: "show.light", name: "show.light" }],
-  } satisfies LightFiles);
-});
 
 app.get("/api/lighting/readiness", (_req, res) => {
   res.json(READINESS);

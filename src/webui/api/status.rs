@@ -64,11 +64,6 @@ pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl
     }
 }
 
-/// GET /api/lock — returns the current lock state.
-pub(super) async fn get_lock(State(state): State<WebUiState>) -> impl IntoResponse {
-    Json(json!({"locked": state.player.is_locked()}))
-}
-
 /// PUT /api/lock — sets the lock state.
 pub(super) async fn put_lock(
     State(state): State<WebUiState>,

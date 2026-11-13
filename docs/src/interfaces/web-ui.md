@@ -799,7 +799,7 @@ WebSocket no longer carries the stage: its `metadata` and `state` messages were 
 
 All mutating REST endpoints are blocked when the player is in lock mode, returning
 HTTP 423 (Locked). These always work: read endpoints, playback control, the lock toggle,
-playlist activation, the config and lighting validation endpoints, controller restart, and
+playlist activation, the lighting validation endpoint, controller restart, and
 the lighting endpoints that only compute or inspect and write nothing (preview evaluation and
 MVR inspection). Releasing a fixture test also works, since it only returns the lights to the
 show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they
