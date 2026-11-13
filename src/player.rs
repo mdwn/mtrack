@@ -4301,6 +4301,76 @@ mod test {
         Ok(())
     }
 
+    /// A player on a config store holding `songs: songs_a`, with one song,
+    /// "Song A", in `songs_a`, and its songs loaded.
+    async fn player_on_songs_a(
+        dir: &std::path::Path,
+    ) -> Result<(Arc<Player>, PathBuf), Box<dyn Error>> {
+        let song_dir = dir.join("songs_a").join("one");
+        fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Song A\ntracks:\n- name: kick\n  file: kick.wav\n",
+        )?;
+        let path = dir.join("mtrack.yaml");
+        fs::write(&path, "songs: songs_a\n")?;
+        let player = Arc::new(assets_player_with_devices(no_devices())?);
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path.clone(),
+        )));
+        player.reload_songs().await?;
+        assert!(player.songs().get("Song A").is_ok());
+        Ok((player, path))
+    }
+
+    /// A `songs:` naming a directory not there yet, inside the project, is
+    /// made, as startup makes it, and the songs reload from it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_songs_change_to_a_new_directory_makes_it() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (player, path) = player_on_songs_a(dir.path()).await?;
+        fs::write(&path, "songs: newdir\n")?;
+        let store = player.config_store().expect("a store");
+        store.lock_for_disk_write().await.reload().await?;
+
+        let change = player.apply_config_change().await;
+        assert!(change.songs_error.is_none(), "{:?}", change.songs_error);
+        assert!(dir.path().join("newdir").is_dir(), "not made");
+        let sources = player.song_sources().expect("sources");
+        assert!(sources.songs.ends_with("newdir"), "{:?}", sources.songs);
+        assert!(player.songs().get("Song A").is_err(), "the old set");
+        Ok(())
+    }
+
+    /// A `songs:` that cannot be used (outside the project and not there)
+    /// is not reloaded from: the change says so, and the song paths and the
+    /// songs are left as they were, with nothing made.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_songs_location_that_cannot_be_used_is_not_reloaded_from(
+    ) -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let (player, path) = player_on_songs_a(dir.path()).await?;
+        let before = player.song_sources().expect("sources");
+        let missing = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("mtrack-no-such-songs-dir");
+        fs::write(&path, format!("songs: {}\n", missing.display()))?;
+        let store = player.config_store().expect("a store");
+        store.lock_for_disk_write().await.reload().await?;
+
+        let change = player.apply_config_change().await;
+        let error = change.songs_error.expect("a songs error");
+        assert!(error.contains("cannot be used"), "{error}");
+        assert!(!missing.exists());
+        assert_eq!(player.song_sources().expect("sources"), before);
+        assert!(player.songs().get("Song A").is_ok(), "the songs moved");
+        Ok(())
+    }
+
     /// A song reload that fails beside a hardware reload is carried with
     /// it: neither hides the other.
     #[test]

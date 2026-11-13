@@ -30,8 +30,6 @@ import type {
   FixtureTypeGdtf,
   FixtureTypeList,
   GdtfImport,
-  LightFileInfo,
-  LightFiles,
   LightingGroup,
   LightingGroups,
   LightingValidation,
@@ -880,13 +878,6 @@ export async function activatePlaylist(name: string): Promise<void> {
 }
 
 // ---- Lighting Show Files ----
-
-export async function fetchLightingFiles(): Promise<LightFileInfo[]> {
-  const res = await get("/lighting");
-  if (!res.ok) throw new Error(`Failed to fetch lighting files: ${res.status}`);
-  const data: LightFiles = await res.json();
-  return data.files;
-}
 
 export async function fetchLightingFile(name: string): Promise<string> {
   const res = await get(`/lighting/${encodeURIComponent(name)}`);

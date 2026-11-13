@@ -19,7 +19,7 @@ use crate::webui::wire::fixture_types::{
 };
 use crate::webui::wire::messages::FixturePlacement;
 use crate::webui::wire::preview::{
-    LightFileInfo, LightFiles, LightingGroup, LightingGroups, LightingValidation,
+    LightFileInfo, LightingGroup, LightingGroups, LightingValidation,
 };
 use axum::{
     body::Bytes,
@@ -217,24 +217,6 @@ pub(super) async fn import_gdtf(
     .await?
     .map_err(|(status, body)| (status, Json(body)).into_response())?;
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
-}
-
-/// GET /api/lighting — lists available .light files from the songs directory.
-pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl IntoResponse {
-    let songs_path = state.songs_path().clone();
-    let mut light_files =
-        match super::helpers::spawn_blocking_io("scan for lighting files", move || {
-            let mut files = Vec::new();
-            find_light_files(&songs_path, &songs_path, &mut files)?;
-            Ok::<_, std::io::Error>(files)
-        })
-        .await
-        {
-            Ok(f) => f,
-            Err(e) => return e,
-        };
-    light_files.sort_by(|a, b| a.path.cmp(&b.path));
-    (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
 /// Recursively finds light show files (`.light`, in any case:
@@ -3099,76 +3081,6 @@ profiles:
     }
 
     #[tokio::test]
-    async fn get_lighting_files_empty() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["files"].is_array());
-    }
-
-    #[tokio::test]
-    async fn get_lighting_files_with_files() {
-        let (state, _dir) = test_state();
-        std::fs::write(state.songs_path().join("show.light"), "content").unwrap();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["files"].as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn get_lighting_files_sorted() {
-        let (state, _dir) = test_state();
-        std::fs::write(state.songs_path().join("z_show.light"), "content").unwrap();
-        std::fs::write(state.songs_path().join("a_show.light"), "content").unwrap();
-        std::fs::write(state.songs_path().join("m_show.light"), "content").unwrap();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let files = parsed["files"].as_array().unwrap();
-        assert_eq!(files.len(), 3);
-        let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
-        assert_eq!(paths, vec!["a_show.light", "m_show.light", "z_show.light"]);
-    }
-
-    #[tokio::test]
     async fn get_lighting_file_success() {
         let (state, _dir) = test_state();
         std::fs::write(state.songs_path().join("show.light"), "light content").unwrap();
@@ -3406,29 +3318,6 @@ show "test" {
             .unwrap();
 
         assert_ne!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn get_lighting_files_missing_dir() {
-        let (state, _dir) = test_state();
-        {
-            let mut sources = state.player.song_sources().unwrap_or_default();
-            sources.songs = std::path::PathBuf::from("/nonexistent/songs");
-            state.player.set_song_sources(sources);
-        }
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -4055,37 +3944,6 @@ show "test" {
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(parsed["error"].is_string());
-    }
-
-    #[tokio::test]
-    async fn get_lighting_files_scan_error_returns_500() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (state, _dir) = test_state();
-        let sub = state.songs_path().join("unreadable_dir");
-        std::fs::create_dir(&sub).unwrap();
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to scan for lighting files"));
     }
 
     // -----------------------------------------------------------------------

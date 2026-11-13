@@ -214,6 +214,7 @@ pub async fn start_or_unlock(
 /// - `/` — Web UI SPA (dashboard, config editor, etc.)
 /// - `/ws` — WebSocket for real-time state streaming (playback, fixtures, logs)
 /// - `/player.v1.PlayerService/*` — gRPC-Web endpoints for player control
+/// - `/grpc.health.v1.Health/*` — the standard gRPC health service, over gRPC-Web
 /// - `/api/*` — REST endpoints for config/song/playlist/lighting CRUD
 /// - Static assets from the embedded Svelte dist directory
 pub async fn start(
@@ -249,6 +250,7 @@ pub async fn start(
         .route("/ws", get(ws_handler))
         .nest("/api", api_router)
         .route("/player.v1.PlayerService/{method}", any(grpc_web_handler))
+        .route("/grpc.health.v1.Health/{method}", any(grpc_health_handler))
         .route("/", get(index_handler))
         .fallback(get(static_handler))
         .with_state(webui_state);
@@ -306,8 +308,33 @@ async fn grpc_web_handler(
     );
 
     // The same service, behind the same lock, as native gRPC.
-    let grpc_svc = crate::controller::grpc::player_service(state.player.clone());
-    let grpc_web = GrpcWebLayer::new().layer(grpc_svc);
+    serve_grpc_web(
+        crate::controller::grpc::player_service(state.player.clone()),
+        request,
+    )
+    .await
+}
+
+/// Answers the standard `grpc.health.v1.Health` service over gRPC-Web. It is
+/// not behind the lock: a health check must work on a locked player.
+async fn grpc_health_handler(request: axum::extract::Request) -> Response {
+    serve_grpc_web(crate::controller::grpc::health_service().await, request).await
+}
+
+/// Serves one gRPC-Web request with `service`, adapting between axum and
+/// tonic body types.
+async fn serve_grpc_web<S>(service: S, request: axum::extract::Request) -> Response
+where
+    S: tower::Service<
+            http::Request<tonic::body::Body>,
+            Response = http::Response<tonic::body::Body>,
+            Error = std::convert::Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    let grpc_web = GrpcWebLayer::new().layer(service);
 
     match grpc_web.oneshot(request).await {
         Ok(response) => {
@@ -603,18 +630,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn server_api_config() {
-        let (_handle, base_url, _dir) = start_test_server().await;
-
-        let resp = reqwest::get(format!("{}/api/config", base_url))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        let body = resp.text().await.unwrap();
-        assert!(body.contains("songs:"));
-    }
-
-    #[tokio::test]
     async fn server_api_playlist() {
         let (_handle, base_url, _dir) = start_test_server().await;
 
@@ -625,34 +640,10 @@ mod test {
     }
 
     #[tokio::test]
-    async fn server_api_validate_config() {
-        let (_handle, base_url, _dir) = start_test_server().await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("{}/api/config/validate", base_url))
-            .body("songs: songs\n")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-    }
-
-    #[tokio::test]
     async fn server_api_songs_empty() {
         let (_handle, base_url, _dir) = start_test_server().await;
 
         let resp = reqwest::get(format!("{}/api/songs", base_url))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-    }
-
-    #[tokio::test]
-    async fn server_api_lighting_empty() {
-        let (_handle, base_url, _dir) = start_test_server().await;
-
-        let resp = reqwest::get(format!("{}/api/lighting", base_url))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
@@ -754,6 +745,47 @@ mod test {
             "unexpected status: {}",
             status
         );
+    }
+
+    /// The standard health service answers over gRPC-Web, on a locked
+    /// player, for the server as a whole.
+    #[tokio::test]
+    async fn the_health_service_answers_over_grpc_web_while_locked() {
+        use prost::Message;
+        use tonic_health::pb::{health_check_response::ServingStatus, HealthCheckRequest};
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        for (service, expected) in [
+            ("", ServingStatus::Serving),
+            ("player.v1.PlayerService", ServingStatus::Serving),
+        ] {
+            let msg = HealthCheckRequest {
+                service: service.to_string(),
+            }
+            .encode_to_vec();
+            let mut frame = vec![0u8];
+            frame.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+            frame.extend_from_slice(&msg);
+
+            let resp = reqwest::Client::new()
+                .post(format!("{base_url}/grpc.health.v1.Health/Check"))
+                .header("content-type", "application/grpc-web+proto")
+                .header("x-grpc-web", "1")
+                .body(frame)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+            let body = resp.bytes().await.unwrap();
+            // The first frame is the message: flag 0, a 4 byte length, then
+            // the response. A trailers frame (flag 0x80) follows it.
+            assert_eq!(body[0], 0, "{service:?}");
+            let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
+            let answer = tonic_health::pb::HealthCheckResponse::decode(&body[5..5 + len]).unwrap();
+            assert_eq!(answer.status, expected as i32, "{service:?}");
+            let trailers = String::from_utf8_lossy(&body[5 + len..]).to_lowercase();
+            assert!(trailers.contains("grpc-status:0"), "{trailers}");
+        }
     }
 
     /// Only the web UI can release the lock, so a player whose web UI

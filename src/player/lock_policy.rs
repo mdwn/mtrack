@@ -127,7 +127,6 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     // happen to be POSTs (a preview evaluation and the upload inspectors,
     // which write nothing).
     (Web, "PUT /lock"),
-    (Web, "POST /config/validate"),
     (Web, "POST /lighting/validate"),
     (Web, "POST /playlists/{name}/activate"),
     (Web, "POST /controllers/restart"),

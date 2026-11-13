@@ -14,7 +14,6 @@
 
 use std::path::Path;
 
-use crate::config;
 use crate::util;
 
 /// Writes content to a config file, preserving its ownership and leaving a
@@ -34,14 +33,6 @@ pub fn write(path: &Path, content: &str, new: bool) -> std::io::Result<()> {
     } else {
         util::write_file(path, content.as_bytes())
     }
-}
-
-/// Validates a player config YAML string by attempting to deserialize it.
-pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
-    let player = config::Player::deserialize_from_str(yaml).map_err(|e| vec![format!("{}", e)])?;
-    player.validate()?;
-
-    Ok(())
 }
 
 /// Validates a light show DSL string by attempting to parse it.
@@ -99,17 +90,5 @@ show "test" {
     fn test_validate_light_show_invalid() {
         let content = "this is not valid DSL content {{{";
         assert!(validate_light_show(content, None, None, None).is_err());
-    }
-
-    #[test]
-    fn test_validate_player_config_valid() {
-        let yaml = "songs: songs\n";
-        assert!(validate_player_config(yaml).is_ok());
-    }
-
-    #[test]
-    fn test_validate_player_config_invalid() {
-        let yaml = "this is not valid yaml: [[[";
-        assert!(validate_player_config(yaml).is_err());
     }
 }

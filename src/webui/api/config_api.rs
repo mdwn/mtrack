@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::webui::wire::config::{ConfigReload, ConfigSaved, FileSaved, StoreSnapshot};
+use crate::webui::wire::config::{ConfigReload, ConfigSaved, StoreSnapshot};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -23,169 +23,8 @@ use serde_json::json;
 
 use tracing::warn;
 
-use super::super::config_io;
 use super::super::server::WebUiState;
 use crate::config;
-
-/// GET /api/config — returns the raw YAML content of the player config file.
-pub(super) async fn get_config_raw(State(state): State<WebUiState>) -> impl IntoResponse {
-    // codeql[rust/path-injection] config_path is set at startup, not from user input.
-    let path = state.config_path.clone();
-    match super::helpers::spawn_blocking_io("read config", move || {
-        crate::util::read_to_string(&path)
-    })
-    .await
-    {
-        Ok(content) => (
-            StatusCode::OK,
-            [("content-type", "text/yaml; charset=utf-8")],
-            content,
-        )
-            .into_response(),
-        Err(e) => e,
-    }
-}
-
-/// GET /api/config/parsed — returns the player config as JSON.
-pub(super) async fn get_config_parsed(State(state): State<WebUiState>) -> impl IntoResponse {
-    let path = state.config_path.clone();
-    let player_config = match super::helpers::spawn_blocking_io("parse config", move || {
-        config::Player::deserialize(&path).map_err(|e| e.to_string())
-    })
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-    match serde_json::to_value(&player_config) {
-        Ok(json_val) => (StatusCode::OK, Json(json_val)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to serialize config: {}", e)})),
-        )
-            .into_response(),
-    }
-}
-
-/// PUT /api/config — validates and atomically writes the player config.
-pub(super) async fn put_config(State(state): State<WebUiState>, body: String) -> impl IntoResponse {
-    if let Err(errors) = config_io::validate_player_config(&body) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-    }
-    // Where the songs and playlists live is checked before the save, and the
-    // songs directory made where startup would: a config whose songs cannot
-    // be read is refused, leaving the config, the song paths and the songs
-    // as they were, rather than saved with the player on songs from
-    // somewhere else. Only a save that moves them is checked: one that
-    // leaves them as they are is not refused for a location in use that has
-    // since become unreadable.
-    let mut made_songs_dir = None;
-    if state.player.config_store().is_some() {
-        let player = state.player.clone();
-        let yaml = body.clone();
-        let checked = tokio::task::spawn_blocking(move || {
-            let config = config::Player::deserialize_from_str(&yaml).map_err(|e| e.to_string())?;
-            player.prepare_song_sources(&config)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-        match checked {
-            Ok(made) => made_songs_dir = made,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("the songs or playlists cannot be used: {e}")})),
-                )
-                    .into_response();
-            }
-        }
-    }
-    // A songs directory the check made for a save that then does not
-    // happen goes again, while it is still empty.
-    let unmake = move || {
-        if let Some(dir) = made_songs_dir {
-            let _ = std::fs::remove_dir(dir);
-        }
-    };
-
-    // The store persists its own copy of this file on every mutation: the
-    // copy is read back from the save before any mutation can land, or the
-    // next one writes the copy from before the save over it.
-    let store = state.player.config_store();
-    let disk_write = match &store {
-        Some(store) => Some(store.lock_for_disk_write().await),
-        None => None,
-    };
-    let path = state.config_path.clone();
-    let previous = match super::helpers::spawn_blocking_io("write config", move || {
-        // A missing file has nothing to put back: a failed save removes it.
-        let previous = match crate::util::read_file(&path) {
-            Ok(previous) => Some(previous),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("failed to read the config before saving: {e}")),
-        };
-        config_io::staged_write(&path, &body)?;
-        Ok(previous)
-    })
-    .await
-    {
-        Ok(previous) => previous,
-        Err(e) => {
-            unmake();
-            return e;
-        }
-    };
-    if let Some(disk_write) = disk_write {
-        // The store keeps its own copy and checksum, and a failed reload
-        // leaves the old ones: the file goes back as it was, still under the
-        // store's lock, so a failed save changes nothing rather than waiting
-        // for the next settings change to write over it.
-        let path = state.config_path.clone();
-        let restore = move || {
-            match previous {
-                Some(previous) => crate::util::write_file(&path, &previous),
-                None => std::fs::remove_file(&path),
-            }
-            .map_err(|e| e.to_string())
-        };
-        if let Err(e) = disk_write.reload_or_restore(restore).await {
-            warn!("Config reload after config write failed: {}", e);
-            unmake();
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!("the config could not be loaded, and was not saved: {e}")
-                })),
-            )
-                .into_response();
-        }
-    }
-    // The running hardware was set up from the config before the save, and
-    // matches it only once reloaded from the store's copy, which now holds it.
-    let reload = apply_config_change(&state).await;
-    (
-        StatusCode::OK,
-        Json(FileSaved {
-            status: "saved".to_string(),
-            filename: None,
-            version: None,
-            reload,
-        }),
-    )
-        .into_response()
-}
-
-/// POST /api/config/validate — validates player config YAML without saving.
-pub(super) async fn validate_config(body: String) -> impl IntoResponse {
-    match config_io::validate_player_config(&body) {
-        Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
-        Err(errors) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"valid": false, "errors": errors})),
-        )
-            .into_response(),
-    }
-}
 
 /// Helper to convert a ConfigError into an HTTP response.
 fn config_store_error_response(e: config::ConfigError) -> axum::response::Response {
@@ -286,76 +125,6 @@ fn extract_checksum(body: &serde_json::Value) -> Result<String, axum::response::
             )
                 .into_response()
         })
-}
-
-/// Completes a config section update: calls the store updater, reloads hardware,
-/// and returns the response.
-async fn finish_config_update(
-    state: &WebUiState,
-    result: Result<config::store::ConfigSnapshot, config::ConfigError>,
-) -> axum::response::Response {
-    match result {
-        Ok(snapshot) => {
-            let reload = apply_config_change(state).await;
-            config_snapshot_response(snapshot, StatusCode::OK, reload)
-        }
-        Err(e) => config_store_error_response(e),
-    }
-}
-
-/// Updates `section` from the body's `field` (absent or `null` removes an
-/// optional section), through the store's one parse and validation, as
-/// MCP and gRPC do.
-async fn put_config_section(
-    state: &WebUiState,
-    body: &serde_json::Value,
-    section: config::store::ConfigSection,
-) -> axum::response::Response {
-    let checksum = match extract_checksum(body) {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-    let store = match require_config_store(state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    let value = body
-        .get(section.name())
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    finish_config_update(state, store.update_section(section, value, &checksum).await).await
-}
-
-/// PUT /api/config/audio — update audio config section.
-pub(super) async fn put_config_audio(
-    State(state): State<WebUiState>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    put_config_section(&state, &body, config::store::ConfigSection::Audio).await
-}
-
-/// PUT /api/config/midi — update MIDI config section.
-pub(super) async fn put_config_midi(
-    State(state): State<WebUiState>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    put_config_section(&state, &body, config::store::ConfigSection::Midi).await
-}
-
-/// PUT /api/config/dmx — update DMX config section.
-pub(super) async fn put_config_dmx(
-    State(state): State<WebUiState>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    put_config_section(&state, &body, config::store::ConfigSection::Dmx).await
-}
-
-/// PUT /api/config/controllers — update controllers config.
-pub(super) async fn put_config_controllers(
-    State(state): State<WebUiState>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    put_config_section(&state, &body, config::store::ConfigSection::Controllers).await
 }
 
 /// PUT /api/config/samples — replace all sample definitions.
@@ -601,249 +370,6 @@ mod test {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn get_config_raw_returns_yaml() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        assert!(body.contains("songs:"));
-    }
-
-    #[tokio::test]
-    async fn get_config_raw_missing_file() {
-        let (mut state, _dir) = test_state();
-        state.config_path = std::path::PathBuf::from("/nonexistent/config.yaml");
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[tokio::test]
-    async fn get_config_parsed_returns_json() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config/parsed")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed.is_object());
-    }
-
-    #[tokio::test]
-    async fn get_config_parsed_invalid_config() {
-        let (mut state, dir) = test_state();
-        let bad_config = dir.path().join("bad.yaml");
-        std::fs::write(&bad_config, "invalid: [[[").unwrap();
-        state.config_path = bad_config;
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config/parsed")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[tokio::test]
-    async fn validate_config_valid() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/config/validate")
-                    .body(Body::from("songs: songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["valid"], true);
-    }
-
-    #[tokio::test]
-    async fn validate_config_invalid() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/config/validate")
-                    .body(Body::from("not valid: [[["))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["valid"], false);
-    }
-
-    #[tokio::test]
-    async fn put_config_valid() {
-        let (state, _dir) = test_state();
-        let config_path = state.config_path.clone();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            std::fs::read_to_string(&config_path).unwrap(),
-            "songs: songs\n"
-        );
-    }
-
-    #[tokio::test]
-    async fn put_config_invalid() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("invalid: [[["))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn get_config_raw_error_body_contains_message() {
-        let (mut state, _dir) = test_state();
-        state.config_path = std::path::PathBuf::from("/nonexistent/config.yaml");
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to read config"));
-    }
-
-    #[tokio::test]
-    async fn get_config_parsed_error_body_contains_message() {
-        let (mut state, dir) = test_state();
-        let bad_config = dir.path().join("bad.yaml");
-        std::fs::write(&bad_config, "invalid: [[[").unwrap();
-        state.config_path = bad_config;
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/config/parsed")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to parse config"));
-    }
-
-    #[tokio::test]
-    async fn put_config_write_failure_returns_500() {
-        let (mut state, _dir) = test_state();
-        state.config_path = std::path::PathBuf::from("/nonexistent/dir/config.yaml");
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].is_string());
-    }
-
-    #[tokio::test]
     async fn get_config_store_without_store_returns_503() {
         let (state, _dir) = test_state();
         let app = router().with_state(state);
@@ -1035,162 +561,110 @@ mod test {
         parsed["checksum"].as_str().unwrap().to_string()
     }
 
-    #[tokio::test]
-    async fn put_config_audio_success() {
-        let (state, _dir) = test_state_with_store();
-        let checksum = get_checksum(&state).await;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/audio")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "audio": { "device": "test-device" }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(result["yaml"].is_string());
-        assert!(result["checksum"].is_string());
-        assert!(!result["checksum"].as_str().unwrap().is_empty());
-        assert_eq!(result["applied"], serde_json::json!(true), "{result}");
-    }
-
-    /// A raw config save wrote the file and left the store's copy as it
-    /// was: the next settings change persisted that copy over the save.
-    #[tokio::test]
-    async fn a_settings_change_after_a_raw_config_save_keeps_the_save() {
-        let (state, _dir) = test_state_with_store();
-        let config_path = state.config_path.clone();
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: other-songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let checksum = get_checksum(&state).await;
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/audio")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "audio": { "device": "test-device" }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let written = std::fs::read_to_string(&config_path).unwrap();
-        assert!(
-            written.contains("other-songs"),
-            "the raw save was written over: {written}"
-        );
-    }
-
-    /// A raw config save the store could not load back was written and left
-    /// on disk, with the store's old copy and checksum: the next settings
-    /// change wrote that copy over it, silently.
-    #[tokio::test]
-    async fn a_raw_config_save_that_cannot_be_loaded_changes_nothing() {
-        let (state, dir) = test_state_with_store();
-        let config_path = state.config_path.clone();
-        let before = std::fs::read_to_string(&config_path).unwrap();
-        let checksum = get_checksum(&state).await;
-        // Valid by itself, but its profiles directory holds a broken profile.
-        let profiles = dir.path().join("broken-profiles");
-        std::fs::create_dir(&profiles).unwrap();
-        std::fs::write(profiles.join("broken.yaml"), "audio: [[[").unwrap();
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from(
-                        "songs: other-songs\nprofiles_dir: broken-profiles\n",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let error = parsed["error"].as_str().unwrap();
-        assert!(error.contains("was not saved"), "{error}");
-        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
-        assert_eq!(get_checksum(&state).await, checksum);
-    }
-
-    /// A raw config save reloaded the store but not the hardware, which ran
-    /// on the config from before it until a restart.
-    #[tokio::test]
-    async fn a_raw_config_save_reloads_the_hardware() {
-        let (state, _dir) = test_state_with_store();
-        assert!(state.player.audio_device().is_none());
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from(
-                        "songs: songs\naudio:\n  device: mock-device\n  track_mappings:\n    kick: [1]\n",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            state.player.await_hardware_ready(),
-        )
-        .await
-        .expect("the hardware never came up");
-        assert!(
-            state.player.audio_device().is_some(),
-            "the saved audio device was not set up"
-        );
-    }
-
     /// Sets a config store on the state's player, from its config file.
     fn set_store(state: &crate::webui::server::WebUiState) {
         let path = state.config_path.clone();
         let cfg = crate::config::Player::deserialize(&path).unwrap();
         let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
         state.player.set_config_store(store);
+    }
+
+    /// Saves an empty set of samples, the one settings save that needs
+    /// nothing but the store's checksum, and answers the reply's status and
+    /// body.
+    async fn save_samples(
+        state: &crate::webui::server::WebUiState,
+    ) -> (StatusCode, serde_json::Value) {
+        let checksum = get_checksum(state).await;
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"expected_checksum": checksum, "samples": {}})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap(),
+        )
+    }
+
+    /// A settings save in an auto play's gap reset the hardware, and the song failed
+    /// to start when the gap ended (#578): the gap counts as playing. The
+    /// save is made, and its reload waits for the song, as a save while it
+    /// plays does; the reply says so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_an_auto_play_waits_is_saved_and_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("playlist.yaml");
+        std::fs::write(
+            &path,
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n",
+        )
+        .unwrap();
+        let songs = crate::songs::get_all_songs(std::path::Path::new("assets/songs")).unwrap();
+        let playlist = crate::playlist::Playlist::new(
+            "playlist",
+            &crate::config::Playlist::deserialize(&path).unwrap(),
+            songs,
+        )
+        .unwrap();
+        let (state, _dir) = test_state_with_playlist(playlist);
+        set_store(&state);
+        state.player.next().await;
+        assert!(state.player.auto_play_status().is_some(), "waiting");
+
+        let (status, body) = save_samples(&state).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        assert!(body["message"].as_str().is_some_and(|m| m.contains("idle")));
+        assert!(
+            state.player.hardware_status().init_done,
+            "the hardware was reset in the gap"
+        );
+        assert!(state.player.cancel_waiting_auto_play(), "still waiting");
+    }
+
+    /// A paused song is a show in progress, which a reload waits for, as for
+    /// a playing one. A save then used to be refused with a 409, though the
+    /// gRPC and MCP config changes saved and waited: it is saved, the reply
+    /// says the reload waits, and it runs once the song is stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_a_song_is_paused_is_saved_and_applied_once_stopped() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+        state.player.play().await.unwrap();
+        assert!(state.player.pause().await.unwrap().is_some(), "paused");
+
+        let (status, body) = save_samples(&state).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        // The deferred reload generation the save waits for, for the web
+        // UI to clear its notice by.
+        assert_eq!(body["awaits_reload"], serde_json::json!(1), "{body}");
+        assert_eq!(
+            body["awaits_process"],
+            serde_json::json!(crate::player::process_id().to_string())
+        );
+        assert!(state.player.is_paused(), "the pause was kept");
+        assert!(
+            state.player.audio_device().is_some(),
+            "the hardware was reset under the pause"
+        );
+        state.player.stop().await;
+        crate::testutil::eventually(
+            || state.player.audio_device().is_none(),
+            "the saved config was never applied",
+        );
     }
 
     /// A play landing between a save's playback check and its hardware
@@ -1258,98 +732,6 @@ mod test {
         state.player.shutdown_controllers();
     }
 
-    /// A save in an auto play's gap reset the hardware, and the song failed
-    /// to start when the gap ended (#578): the gap counts as playing. The
-    /// save is made, and its reload waits for the song, as a save while it
-    /// plays does; the reply says so.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_save_while_an_auto_play_waits_is_saved_and_waits() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("playlist.yaml");
-        std::fs::write(
-            &path,
-            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n",
-        )
-        .unwrap();
-        let songs = crate::songs::get_all_songs(std::path::Path::new("assets/songs")).unwrap();
-        let playlist = crate::playlist::Playlist::new(
-            "playlist",
-            &crate::config::Playlist::deserialize(&path).unwrap(),
-            songs,
-        )
-        .unwrap();
-        let (state, _dir) = test_state_with_playlist(playlist);
-        set_store(&state);
-        state.player.next().await;
-        assert!(state.player.auto_play_status().is_some(), "waiting");
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
-        assert!(body["message"].as_str().is_some_and(|m| m.contains("idle")));
-        assert!(
-            state.player.hardware_status().init_done,
-            "the hardware was reset in the gap"
-        );
-        assert!(state.player.cancel_waiting_auto_play(), "still waiting");
-    }
-
-    /// A paused song is a show in progress, which a reload waits for, as for
-    /// a playing one. A save then used to be refused with a 409, though the
-    /// gRPC and MCP config changes saved and waited: it is saved, the reply
-    /// says the reload waits, and it runs once the song is stopped.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_save_while_a_song_is_paused_is_saved_and_applied_once_stopped() {
-        let (state, _dir) = test_state_with_audio_device("mock-device");
-        set_store(&state);
-        state.player.play().await.unwrap();
-        assert!(state.player.pause().await.unwrap().is_some(), "paused");
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: songs\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["status"], "saved");
-        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
-        // The deferred reload generation the save waits for, for the web
-        // UI to clear its notice by.
-        assert_eq!(body["awaits_reload"], serde_json::json!(1), "{body}");
-        assert_eq!(
-            body["awaits_process"],
-            serde_json::json!(crate::player::process_id().to_string())
-        );
-        assert!(state.player.is_paused(), "the pause was kept");
-        assert!(
-            state.player.audio_device().is_some(),
-            "the hardware was reset under the pause"
-        );
-        state.player.stop().await;
-        crate::testutil::eventually(
-            || state.player.audio_device().is_none(),
-            "the saved config was never applied",
-        );
-    }
-
     /// A position cued by a seek while stopped read as a pause, and a save
     /// was refused as "playing or paused", though nothing plays and no
     /// lights are held.
@@ -1365,87 +747,6 @@ mod test {
         assert!(!state.player.is_playing().await);
         let reload = serde_json::json!(super::apply_config_change(&state).await);
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
-    }
-
-    /// Puts `yaml` as the whole config, and answers the reply's status and
-    /// body.
-    async fn put_whole_config(
-        state: &crate::webui::server::WebUiState,
-        yaml: &str,
-    ) -> (StatusCode, serde_json::Value) {
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from(yaml.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (
-            status,
-            serde_json::from_str(&response_body(response).await).unwrap(),
-        )
-    }
-
-    /// A `songs:` naming a directory not there yet, inside the project, is
-    /// made, as startup makes it, and the songs reload from it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_runtime_songs_change_to_a_new_directory_makes_it() {
-        let (state, dir) = test_state();
-        set_store(&state);
-        let (status, body) = put_whole_config(&state, "songs: newdir\n").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
-        assert!(
-            dir.path().join("newdir").is_dir(),
-            "the directory was not made"
-        );
-        assert!(state.songs_path().ends_with("newdir"));
-    }
-
-    /// A `songs:` that cannot be used (outside the project and not there)
-    /// is refused before the save: the config, the song paths and the songs
-    /// are left as they were. It used to be saved, said applied, with every
-    /// song path after it pointing at the missing directory.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_songs_location_that_cannot_be_used_is_refused_before_the_save() {
-        let (state, dir) = test_state();
-        set_store(&state);
-        let store = state.player.config_store().unwrap();
-        let (_, checksum) = store.read_yaml().await.unwrap();
-        let file = std::fs::read_to_string(&state.config_path).unwrap();
-        let before = state.songs_path();
-        let songs = state.player.songs().len();
-        let missing = dir
-            .path()
-            .parent()
-            .unwrap()
-            .join("mtrack-no-such-songs-dir");
-        let (status, body) =
-            put_whole_config(&state, &format!("songs: {}\n", missing.display())).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("songs"), "{body}");
-        assert!(!missing.exists());
-        assert_eq!(std::fs::read_to_string(&state.config_path).unwrap(), file);
-        assert_eq!(store.read_yaml().await.unwrap().1, checksum);
-        assert_eq!(state.songs_path(), before, "the song paths moved");
-        assert_eq!(state.player.songs().len(), songs);
-    }
-
-    /// A save that leaves the songs where they are is not refused because
-    /// the location in use has become unreadable: only a save that moves
-    /// them is checked.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_save_leaving_the_songs_where_they_are_is_not_checked() {
-        let (state, _dir) = test_state();
-        set_store(&state);
-        std::fs::remove_dir_all(state.songs_path()).unwrap();
-        let (status, body) = put_whole_config(&state, "songs: songs\n").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     /// A metronome save whose song reload fails is still answered with the
@@ -1488,49 +789,6 @@ mod test {
         assert!(body["songs_error"].is_string(), "{body}");
     }
 
-    /// A runtime change to `songs:` takes effect without a restart: the save
-    /// reloads the new set, and the web UI's song files are read from it,
-    /// as every surface's reload reads it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_runtime_songs_change_reloads_the_new_set_over_the_web() {
-        let (state, dir) = test_state();
-        set_store(&state);
-        let moved = dir.path().join("other").join("moved");
-        std::fs::create_dir_all(&moved).unwrap();
-        crate::testutil::write_wav(moved.join("kick.wav"), vec![vec![0_i32; 441]], 44100).unwrap();
-        std::fs::write(
-            moved.join("song.yaml"),
-            "name: Moved Song\ntracks:\n- name: kick\n  file: kick.wav\n",
-        )
-        .unwrap();
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config")
-                    .body(Body::from("songs: other\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            state.player.songs().get("Moved Song").is_ok(),
-            "the new set"
-        );
-        assert!(
-            state.songs_path().ends_with("other"),
-            "{:?}",
-            state.songs_path()
-        );
-
-        // A song edit's reload reads it too.
-        super::super::helpers::reload_songs(&state).await.unwrap();
-        assert!(state.player.songs().get("Moved Song").is_ok());
-    }
-
     /// The reply to a save says what became of it on the hardware, as the
     /// gRPC and MCP replies do: applied, deferred with a message, or saved
     /// and not applied because the reload failed, with the reason.
@@ -1554,195 +812,6 @@ mod test {
             message.contains("saved") && message.contains("no store"),
             "{message}"
         );
-    }
-
-    #[tokio::test]
-    async fn put_config_audio_stale_checksum() {
-        let (state, _dir) = test_state_with_store();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/audio")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": "wrong-checksum",
-                            "audio": { "device": "test-device" }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn put_config_audio_no_store() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/audio")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": "abc",
-                            "audio": { "device": "test" }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[tokio::test]
-    async fn put_config_midi_success() {
-        let (state, _dir) = test_state_with_store();
-        let checksum = get_checksum(&state).await;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/midi")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "midi": { "device": "test-midi-device" }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(result["yaml"].is_string());
-        assert!(!result["checksum"].as_str().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn put_config_dmx_success() {
-        let (state, _dir) = test_state_with_store();
-        let checksum = get_checksum(&state).await;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/dmx")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "dmx": { "dim_speed_modifier": 1.0, "universes": [] }
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(result["yaml"].is_string());
-        assert!(!result["checksum"].as_str().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn put_config_controllers_success() {
-        let (state, _dir) = test_state_with_store();
-        let checksum = get_checksum(&state).await;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/controllers")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "controllers": []
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(result["yaml"].is_string());
-        assert!(!result["checksum"].as_str().unwrap().is_empty());
-    }
-
-    /// A second MIDI controller was saved and applied, and mtrack then
-    /// failed to start on the config it wrote. It is refused with a 400, and
-    /// the file is left as it was.
-    #[tokio::test]
-    async fn put_config_controllers_refuses_a_config_that_would_not_load() {
-        let (state, _dir) = test_state_with_store();
-        let checksum = get_checksum(&state).await;
-        let path = state.config_path.clone();
-        let before = std::fs::read_to_string(&path).unwrap();
-        let midi = crate::config::Controller::Midi(crate::config::MidiController::new(
-            crate::config::midi::note_on(16, 0, 127),
-            crate::config::midi::note_on(16, 1, 127),
-            crate::config::midi::note_on(16, 2, 127),
-            crate::config::midi::note_on(16, 3, 127),
-            crate::config::midi::note_on(16, 4, 127),
-            crate::config::midi::note_on(16, 5, 127),
-        ));
-
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/config/controllers")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "expected_checksum": checksum,
-                            "controllers": [midi, midi]
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains("only one can watch"), "{body}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-        assert_eq!(get_checksum(&state).await, checksum);
     }
 
     #[tokio::test]

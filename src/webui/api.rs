@@ -111,12 +111,6 @@ pub fn router() -> Router<WebUiState> {
 
     // All other routes use the default body limit.
     Router::new()
-        .route(
-            "/config",
-            get(config_api::get_config_raw).put(config_api::put_config),
-        )
-        .route("/config/parsed", get(config_api::get_config_parsed))
-        .route("/config/validate", post(config_api::validate_config))
         .route("/songs", get(songs_api::get_songs))
         .route(
             "/songs/{name}",
@@ -149,7 +143,6 @@ pub fn router() -> Router<WebUiState> {
             "/playlists/{name}/activate",
             post(playlists::activate_playlist),
         )
-        .route("/lighting", get(lighting_api::get_lighting_files))
         .route(
             "/lighting/{name}",
             get(lighting_api::get_lighting_file)
@@ -161,13 +154,6 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/fit", get(lighting_api::get_fit))
         .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
         .route("/config/store", get(config_api::get_config_store))
-        .route("/config/audio", put(config_api::put_config_audio))
-        .route("/config/midi", put(config_api::put_config_midi))
-        .route("/config/dmx", put(config_api::put_config_dmx))
-        .route(
-            "/config/controllers",
-            put(config_api::put_config_controllers),
-        )
         .route("/config/samples", put(config_api::put_config_samples))
         .route("/config/metronome", put(config_api::put_config_metronome))
         .route("/config/profiles", post(config_api::post_config_profile))
@@ -184,7 +170,7 @@ pub fn router() -> Router<WebUiState> {
         )
         .route("/status", get(status::get_status))
         .route("/controllers/restart", post(status::restart_controllers))
-        .route("/lock", get(status::get_lock).put(status::put_lock))
+        .route("/lock", put(status::put_lock))
         .route("/bluetooth", get(bluetooth::get_bluetooth))
         .route("/bluetooth/pairing", post(bluetooth::post_pairing))
         .route(
@@ -698,7 +684,7 @@ mod test {
         }
         // Ordinary edits stay locked.
         assert_eq!(
-            send(&app, "PUT", "/api/config", "songs: songs\n").await,
+            send(&app, "PUT", "/api/config/samples", "{}").await,
             StatusCode::LOCKED
         );
     }
@@ -709,17 +695,13 @@ mod test {
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // The real toggle, then the validators, which answer rather than 423.
+        // The real toggle, then the validator, which answer rather than 423.
         assert_eq!(
             send(&app, "PUT", "/api/lock", r#"{"locked":true}"#).await,
             StatusCode::OK
         );
         assert_ne!(
             send(&app, "POST", "/api/lighting/validate", "").await,
-            StatusCode::LOCKED
-        );
-        assert_ne!(
-            send(&app, "POST", "/api/config/validate", "songs: songs\n").await,
             StatusCode::LOCKED
         );
         assert_ne!(

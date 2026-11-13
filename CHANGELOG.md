@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effects of `Next` and `Previous` on pauses, auto-play and ambient light. Like them it leaves the
   playlist where it is while a song plays, and it is open while the player is locked. A position
   past the end is `OUT_OF_RANGE`; a name that is not the entry's is `FAILED_PRECONDITION`.
+- **gRPC health service**: the player answers the standard `grpc.health.v1.Health` service, on the
+  gRPC port and on the web UI's port (over gRPC-Web), reporting `SERVING` for the server as a whole
+  and for `player.v1.PlayerService`. `grpcurl -plaintext host:43234 grpc.health.v1.Health/Check`,
+  `grpc_health_probe` and load balancers can use it to tell the player is up. It answers while the
+  player is locked. See [gRPC](docs/src/interfaces/grpc.md#health-checking).
 
 ### Changed
 
@@ -134,6 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
+  `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
+  `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and
+  `GET /api/lighting` (the list of `.light` files; `/api/lighting/<name>` stays). The web UI never
+  used them. A script that did should use the gRPC `GetConfig`, `UpdateAudio`, `UpdateMidi`,
+  `UpdateDmx` and `UpdateControllers` calls (see [gRPC](docs/src/interfaces/grpc.md)), or
+  `GET /api/config/store` to read the YAML with its checksum, and read the lock from
+  `GET /api/status` or the gRPC `Status`. Replacing the whole config file in one
+  request has no equivalent; edit the file on disk, or save by section.
 - **Breaking: the websocket's `metadata` and `state` messages**: `/ws` no longer sends the stage,
   on connect or after. Anything that read them (a script, a dashboard of your own) should open the
   `WatchStage` gRPC stream instead (see [gRPC](docs/src/interfaces/grpc.md)). The websocket still
