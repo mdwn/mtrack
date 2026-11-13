@@ -367,7 +367,7 @@ fn show_layout(show: &ParsedShow, horizon: Duration) -> ShowLayout {
 /// first pass only, and nothing its later passes put on the timeline, as
 /// it runs until the song ends. Neither the timeline's `show_end` (where
 /// playback ends: a loop's every pass, an end cap, a held look) nor
-/// `pass_length` (one pass, from its earliest cue): what the score
+/// `pass_length` (one pass, from its sequence's origin): what the score
 /// writes, measured from zero, offsets and all.
 fn written_end(cues: &[ParsedCue]) -> Duration {
     let mut end = Duration::ZERO;
@@ -599,6 +599,9 @@ mod tests {
         close(pass.pass_ms, 2000.0, "pass length");
         close(pass.end_ms, 8000.0, "passes end");
         assert_eq!(pass.count, 3);
+        // Passes start at the sequence's origin (its @1/1, which the
+        // sequence's first cue is written at, so this is also where its
+        // earliest cue lands), a pass length (2s) apart.
         assert_eq!(pass.pass_starts, vec![2000.0, 4000.0, 6000.0]);
         // Passes laid on past the three, to the end of the timeline: a
         // resize counts the whole ones a dragged end reaches.

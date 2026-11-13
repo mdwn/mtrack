@@ -272,9 +272,11 @@ impl SequenceLibrary {
         // an error whatever it would expand to, and a long expansion is
         // spared.
         let length = definition.declared_length(tempo.as_ref())?;
+        let origin = definition.block.origin();
         Ok(Sequence {
             cues: definition.block.place(self)?,
             tempo_map: tempo,
+            origin,
             length,
         })
     }
