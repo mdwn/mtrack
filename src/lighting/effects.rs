@@ -13,6 +13,7 @@
 //
 
 mod color;
+mod composite;
 mod error;
 mod fixture;
 mod instance;
@@ -27,12 +28,13 @@ mod tests;
 
 // Re-export public items
 pub use color::{Color, NAMED_COLORS};
+pub(crate) use composite::resolve_fixture;
 pub use error::EffectError;
 #[cfg(test)]
 pub(crate) use fixture::declared_dmx;
 pub use fixture::{
-    cell_fixture_name, cell_name, has_cmy, has_dimmer_channel, multiplier_key, FixtureCapabilities,
-    FixtureInfo, FixtureProfile, StrobeMap, StrobeStrategy, MULTIPLIER_PREFIXES,
+    cell_fixture_name, cell_name, has_cmy, has_dimmer_channel, FixtureCapabilities, FixtureInfo,
+    FixtureProfile, StrobeMap, StrobeStrategy,
 };
 pub(crate) use instance::fade_progress;
 pub use instance::EffectInstance;
@@ -44,7 +46,7 @@ pub(crate) use pointing::mat_vec;
 pub use pointing::{
     aim, aim_solutions, direction, lerp, nearest_pan, out_of_frame, rest_beam, AimCalibration, Pose,
 };
-pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
+pub use state::{ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
     BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve, Easing,

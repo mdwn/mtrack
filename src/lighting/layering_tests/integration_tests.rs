@@ -1850,6 +1850,10 @@ fn test_example_files_parse() {
 /// Before the fix the bed rendered at full because `intensity:` was discarded, and
 /// the chase painted white over it because it wrote RGB directly. This drives the
 /// real parser so both the DSL spelling and the render path are covered.
+///
+/// The chase multiplies: a chase that replaces (the default blend) sets the
+/// level, so its active fixture would leave the bed's 45% behind and show at
+/// full (design 3.4, rule 3).
 #[test]
 fn test_bed_plus_chase_on_dimmerless_fixtures() {
     use super::super::parser::parse_light_shows;
@@ -1859,7 +1863,7 @@ fn test_bed_plus_chase_on_dimmerless_fixtures() {
     let dsl_content = r##"show "Legions" {
     @00:00.000
     all_wash: static color: "#C40000", intensity: 45%, duration: 7s, layer: background
-    all_wash: chase pattern: linear, speed: 2.0, direction: left_to_right, duration: 7s, layer: midground
+    all_wash: chase pattern: linear, speed: 2.0, direction: left_to_right, duration: 7s, layer: midground, blend_mode: multiply
 }"##;
 
     let shows = parse_light_shows(dsl_content).expect("show should parse");

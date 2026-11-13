@@ -375,23 +375,27 @@ fn test_pulse_effect_crossfade() {
 
     engine.start_effect(pulse_effect).unwrap();
 
+    // A pulse over no colour shows white at its level (design 3.4, rule 7):
+    // three channels at the one level, never a colour of its own.
+    let white_level = |commands: &[DmxCommand]| {
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert!(
+            commands.iter().all(|cmd| cmd.value == commands[0].value),
+            "{commands:?}"
+        );
+    };
+
     // Test fade in phase - pulse should be dimmed
-    // With fixture profile system, RGB-only fixtures use _pulse_multiplier
-    // which gets applied during blending, so we expect no direct RGB commands
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    // The pulse effect for RGB-only fixtures uses _pulse_multiplier, not direct RGB channels
-    // So there should be no DMX commands at this point (multiplier is internal)
-    assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
+    white_level(commands);
 
     // Test full intensity phase - pulse should be at full amplitude
     let commands = engine.update(Duration::from_secs(2), None).unwrap();
-    // Same as above - no direct RGB commands with fixture profile system
-    assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
+    white_level(commands);
 
     // Test fade out phase - pulse should be dimmed (at 4.5s total: 0.5s into down_time)
     let commands = engine.update(Duration::from_millis(2000), None).unwrap(); // 2.5s + 2s = 4.5s
-                                                                              // Same as above - no direct RGB commands with fixture profile system
-    assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
+    white_level(commands);
 
     // Test effect end - should be no commands (at 5s total)
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 4.5s + 0.5s = 5s

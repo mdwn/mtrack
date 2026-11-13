@@ -25,10 +25,10 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::lighting::channels::{fine_name, mirror_name, CMY_OF_RGB};
-use crate::lighting::effects::{is_multiplier_channel, FixtureState};
+use crate::lighting::effects::FixtureState;
 use crate::lighting::EffectEngine;
 
-/// Pre-computed fixture display state: all non-multiplier channels at 0-255.
+/// Pre-computed fixture display state: all channels at 0-255.
 ///
 /// `PartialEq` so a push-based consumer can tell a real change from a sampler
 /// tick that produced the same values — an idle rig must not wake subscribers
@@ -618,27 +618,20 @@ async fn sampler_loop_cancellable(
 /// `registry` knows the fixture's channel.
 pub(crate) fn compute_fixture_snapshots(
     states: &HashMap<String, FixtureState>,
-    has_dimmer_map: &HashMap<String, bool>,
+    _has_dimmer_map: &HashMap<String, bool>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) -> Vec<FixtureSnapshot> {
     let mut snapshots: Vec<FixtureSnapshot> = states
         .iter()
         .map(|(name, state)| {
-            let has_dedicated_dimmer = has_dimmer_map.get(name).copied().unwrap_or(false);
             let info = registry.get(name);
             let mut channels = HashMap::new();
 
             for (channel_name, channel_state) in &state.channels {
-                if is_multiplier_channel(channel_name) {
-                    continue;
-                }
-
-                let value = state.effective_channel_value(
-                    channel_name,
-                    channel_state,
-                    has_dedicated_dimmer,
+                channels.insert(
+                    channel_name.clone(),
+                    wire_byte(info, channel_name, channel_state.value),
                 );
-                channels.insert(channel_name.clone(), wire_byte(info, channel_name, value));
             }
 
             FixtureSnapshot {
@@ -888,7 +881,6 @@ pub(crate) fn attach_cell_snapshots(
                         channels: info
                             .channels
                             .keys()
-                            .filter(|name| !is_multiplier_channel(name))
                             .map(|name| (name.clone(), 0u8))
                             .collect(),
                         cells,
@@ -943,15 +935,15 @@ mod tests {
     fn test_compute_fixture_snapshots_rgb_only() {
         let mut states = HashMap::new();
         let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "green".to_string(),
             ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
         );
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "blue".to_string(),
             ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
         );
@@ -969,19 +961,16 @@ mod tests {
 
     #[test]
     fn test_compute_fixture_snapshots_with_dimmer() {
+        // Resolved states: the colour and the level are plain channels.
         let mut states = HashMap::new();
         let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "dimmer".to_string(),
             ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
         );
         states.insert("fixture_with_dimmer".to_string(), fixture_state);
 
@@ -989,31 +978,8 @@ mod tests {
         let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
-        // Red should remain 255 (not reduced by multiplier when fixture has dedicated dimmer)
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 255);
         assert_eq!(*snapshots[0].channels.get("dimmer").unwrap(), 128);
-    }
-
-    #[test]
-    fn test_compute_fixture_snapshots_excludes_multiplier_channels() {
-        let mut states = HashMap::new();
-        let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        states.insert("test_fixture".to_string(), fixture_state);
-
-        let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
-
-        assert_eq!(snapshots.len(), 1);
-        assert!(snapshots[0].channels.contains_key("red"));
-        assert!(!snapshots[0].channels.contains_key("_dimmer_mult_bg"));
     }
 
     #[test]
@@ -1041,7 +1007,7 @@ mod tests {
     fn test_compute_fixture_snapshots_zero_value() {
         let mut states = HashMap::new();
         let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "red".to_string(),
             ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
         );
@@ -1057,7 +1023,7 @@ mod tests {
     fn test_compute_fixture_snapshots_unknown_fixture_in_dimmer_map() {
         let mut states = HashMap::new();
         let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
+        fixture_state.channels.insert(
             "red".to_string(),
             ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
         );
@@ -1446,12 +1412,12 @@ mod tests {
         registry.insert("Bar".to_string(), bar_info);
 
         let mut bed = FixtureState::new();
-        bed.set_channel(
+        bed.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
         let mut cell_2 = FixtureState::new();
-        cell_2.set_channel(
+        cell_2.channels.insert(
             "red".to_string(),
             ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Replace),
         );
@@ -1528,7 +1494,7 @@ mod tests {
         registry.insert("Bar".to_string(), bar_info);
 
         let mut bed = FixtureState::new();
-        bed.set_channel(
+        bed.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
@@ -1554,7 +1520,7 @@ mod tests {
         registry.insert("Bar".to_string(), bar_info);
 
         let mut cell_2 = FixtureState::new();
-        cell_2.set_channel(
+        cell_2.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
@@ -1709,7 +1675,7 @@ mod tests {
         let registry: HashMap<String, _> = [("bar".to_string(), info)].into_iter().collect();
 
         let mut state = FixtureState::new();
-        state.set_channel(
+        state.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );

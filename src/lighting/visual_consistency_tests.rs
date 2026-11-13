@@ -129,15 +129,17 @@ mod tests {
         assert!(dimmer_cmd.is_some());
         assert_eq!(dimmer_cmd.unwrap().value, 128);
 
-        // RGB-only fixture should have no direct DMX commands (uses _dimmer_multiplier)
-        // This is the key benefit: same visual result, different implementation
+        // A level with no colour beneath it is white (design 3.4, rule 7),
+        // so the RGB-only fixture shows white at the same 50% the others
+        // are dimmed to: same visual result, different implementation.
         let rgb_commands: Vec<_> = commands
             .iter()
             .filter(|cmd| cmd.channel >= 1 && cmd.channel <= 3)
             .collect();
+        assert_eq!(rgb_commands.len(), 3);
         assert!(
-            rgb_commands.is_empty(),
-            "RGB-only fixture should not have direct RGB commands with fixture profile system"
+            rgb_commands.iter().all(|cmd| cmd.value == 128),
+            "RGB-only fixture should show white at 50%: {rgb_commands:?}"
         );
     }
 
@@ -193,14 +195,18 @@ mod tests {
         assert!(rgb_dimmer_cmd.is_some());
         assert!(dimmer_cmd.is_some());
 
-        // RGB-only fixture should have no direct DMX commands (uses _pulse_multiplier)
+        // RGB-only fixture shows white at the pulse's level, which is the
+        // level the dimmer channels are sent (design 3.4, rule 7).
         let rgb_commands: Vec<_> = commands
             .iter()
             .filter(|cmd| cmd.channel >= 1 && cmd.channel <= 3)
             .collect();
+        assert_eq!(rgb_commands.len(), 3);
         assert!(
-            rgb_commands.is_empty(),
-            "RGB-only fixture should not have direct RGB commands with fixture profile system"
+            rgb_commands
+                .iter()
+                .all(|cmd| cmd.value == rgb_dimmer_cmd.unwrap().value),
+            "RGB-only fixture should show white at the pulse level: {rgb_commands:?}"
         );
     }
 
@@ -325,12 +331,15 @@ mod tests {
         assert!(rgb_dimmer_cmd.is_some());
         assert!(dimmer_cmd.is_some());
 
-        // RGB-only fixture should have no direct DMX commands (uses _chase_multiplier).
-        // Writing the chase value into RGB would make the chase its own colour — always
-        // white — and zero every inactive fixture on the layer. See #345.
+        // With no colour beneath it, a chase shows white at its level on an
+        // RGB-only fixture too (design 3.4, rule 7): all three channels at
+        // the one level, lit or dark.
+        assert_eq!(rgb_commands.len(), 3);
         assert!(
-            rgb_commands.is_empty(),
-            "RGB-only fixture should use _chase_multiplier, not direct DMX commands"
+            rgb_commands
+                .iter()
+                .all(|cmd| cmd.value == rgb_commands[0].value),
+            "RGB-only fixture should show white at the chase level: {rgb_commands:?}"
         );
     }
 
@@ -375,10 +384,11 @@ mod tests {
             .update(Duration::from_millis(500), None)
             .unwrap();
 
-        // RGB-only engine: should have no direct DMX commands (uses _dimmer_multiplier)
+        // RGB-only engine: white at 50% (design 3.4, rule 7)
+        assert_eq!(commands_rgb.len(), 3);
         assert!(
-            commands_rgb.is_empty(),
-            "RGB-only fixture should use _dimmer_multiplier, not direct DMX commands"
+            commands_rgb.iter().all(|cmd| cmd.value == 128),
+            "RGB-only fixture should show white at 50%: {commands_rgb:?}"
         );
 
         // RGB+dimmer engine: should have dimmer command at 50% (127)
