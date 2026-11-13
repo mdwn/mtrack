@@ -19,38 +19,47 @@
     AudioOutputHealth,
     SubsystemStatus,
   } from "../gen/rules/mtrack_rules";
-  import { refreshStatus, statusStore } from "../lib/ws/status";
+  import { statusStore } from "../lib/ws/status";
+  import { connect, watchConnected, watchError } from "../lib/ws/stores";
+  import { untrack } from "svelte";
 
   const data = $derived($statusStore);
-  let error = $state<string | null>(null);
+  // The player says its hardware by itself, within about a second of a
+  // change (the `Watch` stream, lib/grpc/watch.ts). Refresh asks it again:
+  // a new stream opens with the status as it is now.
   let loading = $state(false);
-  let lastFetchTime = $state<number>(Date.now());
+  // When the stream was lost, while it is; the page's status is then as old
+  // as that.
+  let droppedAt = $state<number | null>(null);
   let secondsAgo = $state<number>(0);
 
-  async function fetchStatus() {
+  /** How long a refresh waits for the player before it gives up waiting. */
+  const REFRESH_WAIT_MS = 5000;
+
+  function refresh() {
     loading = true;
-    error = null;
-    try {
-      await refreshStatus();
-      lastFetchTime = Date.now();
-      secondsAgo = 0;
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      loading = false;
-    }
+    setTimeout(() => (loading = false), REFRESH_WAIT_MS);
+    connect();
   }
 
+  // The refresh is over when the player answers (any status) or fails to.
   $effect(() => {
-    fetchStatus();
-    const poll = setInterval(() => fetchStatus(), 5000);
+    void $statusStore;
+    void $watchError;
+    untrack(() => (loading = false));
+  });
+
+  $effect(() => {
+    if ($watchConnected) droppedAt = null;
+    else untrack(() => (droppedAt ??= Date.now()));
+  });
+
+  $effect(() => {
     const tick = setInterval(() => {
-      secondsAgo = Math.round((Date.now() - lastFetchTime) / 1000);
+      secondsAgo =
+        droppedAt === null ? 0 : Math.round((Date.now() - droppedAt) / 1000);
     }, 1000);
-    return () => {
-      clearInterval(poll);
-      clearInterval(tick);
-    };
+    return () => clearInterval(tick);
   });
 
   function statusColor(status: string): string {
@@ -134,17 +143,20 @@
   }
 
   let restarting = $state(false);
+  /** What went wrong restarting the controllers. */
+  let error = $state<string | null>(null);
 
   async function restartControllers() {
     restarting = true;
+    error = null;
     try {
       const res = await fetch("/api/controllers/restart", { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         error = body?.error ?? `Restart failed (${res.status})`;
-      } else {
-        await fetchStatus();
       }
+      // The controllers' new status arrives by itself, within about a
+      // second, on the `Watch` stream.
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -178,19 +190,25 @@
     <div>
       <h1 class="page__title">{$t("status.title")}</h1>
       <p class="page__subtitle">
-        {$t("status.lastUpdated", { values: { seconds: secondsAgo } })}
+        {#if $watchConnected}
+          {$t("status.live")}
+        {:else}
+          {$t("status.lastUpdated", { values: { seconds: secondsAgo } })}
+        {/if}
       </p>
     </div>
     <div class="refresh-group">
-      <button class="btn" onclick={fetchStatus} disabled={loading}>
+      <button class="btn" onclick={refresh} disabled={loading}>
         {loading ? $t("common.refreshing") : $t("common.refresh")}
       </button>
     </div>
   </div>
 
-  {#if error}
+  {#if error || ($watchError && !$watchConnected)}
     <div class="error-banner">
-      {$t("status.failedToLoad", { values: { error } })}
+      {$t("status.failedToLoad", {
+        values: { error: error ?? $watchError },
+      })}
     </div>
   {/if}
 

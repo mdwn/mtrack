@@ -247,8 +247,8 @@ pub async fn start(
         tokio::sync::watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
     player.set_state_tx(state_tx);
 
-    // The player's own watch hub feeds the web UI's websocket, the gRPC
-    // `Watch` stream (native and gRPC-Web) and the DMX file watcher. Its
+    // The player's own watch hub feeds the gRPC `Watch` stream (native
+    // and gRPC-Web) and the DMX file watcher. Its
     // pollers run for as long as the player does, whether or not the web
     // server starts or a gRPC controller is configured.
     let _hub_tasks = player.watch_hub().start(player.clone());

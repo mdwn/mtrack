@@ -345,7 +345,7 @@ test.describe("the stage stores, from the stream", () => {
     under_test: get(underTestStore),
   });
 
-  // Importing the stores opened no websocket: there is none to open here
+  // Importing the stores opened no stream: there is none to open here
   // (no `location`), and the import at the top of this file did not throw.
   test("the stream ends in the same store writes as the stage it describes", () => {
     const reader = new StageReader({

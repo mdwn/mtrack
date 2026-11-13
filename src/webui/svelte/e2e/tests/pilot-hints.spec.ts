@@ -13,7 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { sendWsRetrying } from "../support/ws";
+import { sendWatchRetrying } from "../support/watch";
 import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
@@ -70,7 +70,7 @@ test.describe("Pilot hints", () => {
   });
 
   test("hint markers render on the progress bar", async ({ page }) => {
-    await sendWsRetrying(page, wsId, playbackState());
+    await sendWatchRetrying(page, wsId, playbackState());
 
     await expect(page.locator(".scrub__hint")).toHaveCount(3);
     await expect(page.locator(".scrub__hint").first()).toHaveAttribute(
@@ -84,14 +84,14 @@ test.describe("Pilot hints", () => {
   }) => {
     // Before the group's lead window — the row is reserved (no card
     // resizing) but idle, with no labels.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 40000 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 40000 }));
     await expect(page.locator(".playback-card__hint")).toHaveClass(
       /playback-card__hint--idle/,
     );
     await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
 
     // In the lead window — both labels of the group show, none live.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 52000 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 52000 }));
     const labels = page.locator(".playback-card__hint-label");
     await expect(labels).toHaveCount(2);
     await expect(labels.nth(0)).toContainText("bridge");
@@ -101,7 +101,7 @@ test.describe("Pilot hints", () => {
     );
 
     // At the label-only hint's anchor — "bridge" highlights, countdown stays.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 55500 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 55500 }));
     await expect(labels.nth(0)).toHaveClass(/playback-card__hint-label--live/);
     await expect(labels.nth(1)).not.toHaveClass(
       /playback-card__hint-label--live/,
@@ -109,7 +109,7 @@ test.describe("Pilot hints", () => {
 
     // While the countdown sample plays — the highlight hands off to it,
     // and the passed "bridge" label stays visible in grey.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 58000 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 58000 }));
     await expect(labels).toHaveCount(2);
     await expect(labels.nth(0)).not.toHaveClass(
       /playback-card__hint-label--live/,
@@ -117,14 +117,14 @@ test.describe("Pilot hints", () => {
     await expect(labels.nth(1)).toHaveClass(/playback-card__hint-label--live/);
 
     // After the group has passed — labels gone, row still reserved.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 70000 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 70000 }));
     await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
     await expect(page.locator(".playback-card__hint")).toHaveCount(1);
   });
 
   test("label-only hint highlights briefly at its anchor", async ({ page }) => {
     // In the lead window — visible, not live.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 118000 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 118000 }));
     const labels = page.locator(".playback-card__hint-label");
     await expect(labels).toHaveCount(1);
     await expect(labels.first()).toContainText("solo");
@@ -133,17 +133,17 @@ test.describe("Pilot hints", () => {
     );
 
     // Just after its anchor — highlighted even though it has no audio.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 120300 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 120300 }));
     await expect(labels.first()).toHaveClass(/playback-card__hint-label--live/);
 
     // After the brief highlight window — the label goes, the row stays.
-    await sendWsRetrying(page, wsId, playbackState({ elapsed_ms: 121500 }));
+    await sendWatchRetrying(page, wsId, playbackState({ elapsed_ms: 121500 }));
     await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
     await expect(page.locator(".playback-card__hint")).toHaveCount(1);
   });
 
   test("hint labels hidden while stopped, row reserved", async ({ page }) => {
-    await sendWsRetrying(
+    await sendWatchRetrying(
       page,
       wsId,
       playbackState({ is_playing: false, elapsed_ms: 58000 }),

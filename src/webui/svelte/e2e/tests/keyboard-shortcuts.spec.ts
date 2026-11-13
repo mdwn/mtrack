@@ -18,7 +18,7 @@ import { stubPlayerService } from "../support/grpc";
 test.describe("Keyboard Shortcuts", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/");
-    // Wait for WebSocket to deliver playback state
+    // Wait for the Watch stream to deliver playback state
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );

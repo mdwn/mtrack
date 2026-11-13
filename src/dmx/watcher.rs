@@ -36,7 +36,7 @@ pub struct WatcherHandle {
 /// 2. Builds a new LightingTimeline
 /// 3. Swaps it into `engine`'s, rebuilt where the lights are
 ///    ([`Engine::reload_show`])
-/// 4. Sends a reload notification over WebSocket
+/// 4. Sends a reload notification to the player's watch hub
 ///
 /// The engine is held weakly: it owns the handle, and the watcher stops
 /// with it. It reloads under `generation`, the engine's watcher generation
@@ -630,10 +630,9 @@ show "test" {
         while start.elapsed() < Duration::from_secs(5) {
             match rx.try_recv() {
                 Ok(msg) => {
-                    let msg = crate::webui::state::to_json(&msg);
                     assert!(
-                        msg.contains("reload"),
-                        "Expected reload message, got: {}",
+                        matches!(msg, SocketMessage::Reload(_)),
+                        "Expected reload message, got: {:?}",
                         msg
                     );
                     received = true;
@@ -698,10 +697,12 @@ show "test" {
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
-        let status = crate::webui::state::to_json(
-            &status.expect("an edit to an included file reloads the show"),
+        let status = status.expect("an edit to an included file reloads the show");
+        assert_eq!(
+            status,
+            SocketMessage::Reload(ShowReload::Ok),
+            "reload failed"
         );
-        assert!(status.contains("\"ok\""), "reload failed: {status}");
         assert!(engine.current_song_timeline.lock().is_some());
     }
 
@@ -735,10 +736,9 @@ show "test" {
         while start.elapsed() < Duration::from_secs(5) {
             match rx.try_recv() {
                 Ok(msg) => {
-                    let msg = crate::webui::state::to_json(&msg);
                     assert!(
-                        msg.contains("error"),
-                        "Expected error reload message, got: {}",
+                        matches!(msg, SocketMessage::Reload(ShowReload::Error { .. })),
+                        "Expected error reload message, got: {:?}",
                         msg
                     );
                     break;

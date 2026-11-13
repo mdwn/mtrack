@@ -20,7 +20,7 @@ import type { BuildInfo } from "../gen/rules/mtrack_rules";
  * restarted an open tab talks to the new server with old code.
  */
 
-/** The server's build as `/api/status` reports it. */
+/** The server's build as the `Watch` stream's hardware event reports it. */
 export type ServerBuild = Pick<BuildInfo, "build_time" | "ui_build">;
 
 /**

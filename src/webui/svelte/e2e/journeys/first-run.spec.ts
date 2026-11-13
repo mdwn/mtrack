@@ -14,7 +14,14 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { api, expect, FIRST_RUN_CONFIG, synthGdtf, test } from "./harness";
+import {
+  api,
+  expect,
+  FIRST_RUN_CONFIG,
+  status,
+  synthGdtf,
+  test,
+} from "./harness";
 
 // A new install's first lighting, through the UI, with a DMX engine and a
 // config that names no lighting directories: what the Lighting area makes
@@ -23,9 +30,6 @@ import { api, expect, FIRST_RUN_CONFIG, synthGdtf, test } from "./harness";
 
 test.use({ config: FIRST_RUN_CONFIG });
 
-interface Status {
-  hardware: { lighting_venue: { name: string | null; status: string } };
-}
 interface Readiness {
   venue: { name: string; fixtures: number } | null;
   venue_error: unknown;
@@ -79,7 +83,7 @@ test("a GDTF, a venue, made current on Groups: the engine drives it, and again a
     await expect
       .poll(
         async () => {
-          const s = await api<Status>(project, "/status");
+          const s = await status(project);
           return [
             s.hardware.lighting_venue.name,
             s.hardware.lighting_venue.status,

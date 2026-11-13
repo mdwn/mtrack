@@ -14,7 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 
-test.describe("WebSocket Integration", () => {
+test.describe("Watch stream integration", () => {
   test("connection indicator shows connected after WS connects", async ({
     page,
   }) => {
@@ -27,7 +27,7 @@ test.describe("WebSocket Integration", () => {
 
   test("playback store populates from WS message", async ({ page }) => {
     await page.goto("/#/");
-    // Playback data comes from WebSocket, not REST
+    // Playback data comes from the Watch stream, not REST
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
@@ -38,7 +38,7 @@ test.describe("WebSocket Integration", () => {
 
   test("waveform data loads from WS message", async ({ page }) => {
     await page.goto("/#/");
-    // Waveform data arrives via WebSocket — verify tracks card has track rows
+    // Waveform data arrives via the Watch stream — verify tracks card has track rows
     // (canvas rendering depends on waveform data being present)
     await expect(page.locator(".tracks-card__row").first()).toBeVisible();
     await expect(page.locator(".tracks-card__waveform").first()).toBeVisible();

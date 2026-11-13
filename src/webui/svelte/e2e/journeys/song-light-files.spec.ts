@@ -48,7 +48,7 @@ test.use({
 });
 
 /** The song's Lighting tab, once the page is live: the player reports
- *  locked until the first status message arrives over the socket, and
+ *  locked until the first status message arrives on the Watch stream, and
  *  the editor's add and remove buttons refuse while it does. */
 async function openLightingTab(page: Page) {
   await expect(

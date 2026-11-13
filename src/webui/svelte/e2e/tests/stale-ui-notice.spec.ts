@@ -13,43 +13,46 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { STATUS } from "../mock-server/test-data";
+import { PLAYBACK_STATE, STATUS } from "../mock-server/test-data";
+import { sendWatch, setWatchOpening, type WatchPush } from "../support/watch";
 import { uiOutdated } from "../../src/lib/buildCheck";
 
 // An open tab after mtrack is replaced: it keeps its old bundle until it is
-// reloaded, so it must say so. Each browser test answers /api/status itself
-// (page.route); the shared mock is untouched. The dev server stamps no UI
-// build, so in the browser the build-time rule is the one exercised; the
-// UI-build rule is checked as plain values below.
+// reloaded, so it must say so. Each browser test says the player's status
+// itself, on its page's Watch stream (setWatchOpening, sendWatch); the shared
+// mock is untouched. The dev server stamps no UI build, so in the browser the
+// build-time rule is the one exercised; the UI-build rule is checked as plain
+// values below.
 
-/** Answers /api/status with `builds[n]` on the n-th poll (the last one
- *  repeating). */
-async function statusSequence(page: Page, buildTimes: string[]) {
-  let n = 0;
-  await page.route("**/api/status", (route) => {
-    const body = structuredClone(STATUS);
-    body.build.build_time = buildTimes[Math.min(n, buildTimes.length - 1)];
-    n++;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
-  return () => n;
+let counter = 0;
+
+/** The mock's status, built at `buildTime`, as the player's `hardware`
+ *  event. */
+function statusBuilt(buildTime: string): WatchPush {
+  const body = structuredClone(STATUS);
+  body.build.build_time = buildTime;
+  return { type: "hardware", ...body };
+}
+
+/** Opens the app on a player built at `buildTime`; the page's id. */
+async function openBuilt(page: Page, buildTime: string): Promise<string> {
+  const id = `stale-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
+  await setWatchOpening(page, id, statusBuilt(buildTime));
+  await page.goto(`/?wsId=${id}#/`);
+  await expect(page.locator(".playback-card__title")).toContainText(
+    "Test Song Alpha",
+  );
+  return id;
 }
 
 test("a server replaced under the page shows the notice, with a Reload that reloads", async ({
   page,
 }) => {
-  const polls = await statusSequence(page, [
-    "2026-01-01T00:00:00Z",
-    "2026-02-02T00:00:00Z",
-  ]);
-  await page.goto("/#/");
+  const id = await openBuilt(page, "2026-01-01T00:00:00Z");
   const notice = page.getByTestId("ui-updated");
-  // The status poll runs every 5 seconds; the second answer is the new build.
-  await expect.poll(polls, { timeout: 15000 }).toBeGreaterThan(1);
+  await expect(notice).toHaveCount(0);
+  // The player is replaced: its stream says the new build.
+  await sendWatch(page, id, statusBuilt("2026-02-02T00:00:00Z"));
   await expect(notice).toBeVisible();
   await expect(notice).toContainText(
     "mtrack was updated. Reload to use the new version.",
@@ -64,9 +67,14 @@ test("a server replaced under the page shows the notice, with a Reload that relo
 });
 
 test("an unchanged server shows no notice", async ({ page }) => {
-  const polls = await statusSequence(page, ["2026-01-01T00:00:00Z"]);
-  await page.goto("/#/");
-  await expect.poll(polls, { timeout: 15000 }).toBeGreaterThan(1);
+  const id = await openBuilt(page, "2026-01-01T00:00:00Z");
+  await sendWatch(page, id, statusBuilt("2026-01-01T00:00:00Z"));
+  // The stream is in order: once the playback after the status shows, the
+  // status has been read.
+  await sendWatch(page, id, { ...PLAYBACK_STATE, song_name: "Test Song Beta" });
+  await expect(page.locator(".playback-card__title")).toContainText(
+    "Test Song Beta",
+  );
   await expect(page.getByTestId("ui-updated")).toHaveCount(0);
 });
 

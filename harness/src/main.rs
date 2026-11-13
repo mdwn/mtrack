@@ -43,6 +43,7 @@ mod runner;
 mod sabotage;
 mod server;
 mod songs;
+mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

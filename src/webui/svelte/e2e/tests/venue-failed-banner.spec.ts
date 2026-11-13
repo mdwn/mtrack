@@ -14,34 +14,34 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { STATUS } from "../mock-server/test-data";
+import { setWatchOpening } from "../support/watch";
 
 // A venue that does not load lights nothing, so it must be impossible to
 // miss: a banner on every page while it stands, and a red health dot. Each
-// test answers /api/status itself (page.route); the shared mock is untouched.
+// test says the player's status itself, as its page's Watch stream opens; the
+// shared mock is untouched.
 
 const REASON =
   'fixture "Brick3": mode "13: DIM" of fixture type "Astera-PixelBrick" did not load (venue "house", lighting/venues/house.venue)';
 
+let counter = 0;
+
+/** Opens the app with the player saying its venue is `lighting_venue`. */
 async function statusWith(
   page: Page,
   lighting_venue: { name: string | null; status: string; error: string | null },
 ) {
   const body = structuredClone(STATUS);
   (body.hardware as Record<string, unknown>).lighting_venue = lighting_venue;
-  await page.route("**/api/status", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    }),
-  );
+  const id = `venue-failed-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
+  await setWatchOpening(page, id, { type: "hardware", ...body });
+  await page.goto(`/?wsId=${id}#/`);
 }
 
 test("a venue that did not load is a banner on the dashboard and in Lighting", async ({
   page,
 }) => {
   await statusWith(page, { name: "house", status: "failed", error: REASON });
-  await page.goto("/#/");
   const banner = page.getByTestId("venue-failed-banner");
   await expect(banner).toBeVisible();
   await expect(banner).toContainText('Venue "house" did not load:');
@@ -63,7 +63,6 @@ test("a venue that loads, or none at all, shows no banner", async ({
   page,
 }) => {
   await statusWith(page, { name: "house", status: "ok", error: null });
-  await page.goto("/#/");
   await expect(page.locator(".topnav__conn")).toBeVisible();
   await expect(page.getByTestId("venue-failed-banner")).toHaveCount(0);
 });

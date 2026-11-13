@@ -145,6 +145,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the last page that does goes away, so the Songs and Config pages do not hold it open.
   Frames arrive at the player's own rate (20 a second). Arrival timing can be read in the browser
   console with `?stageTiming=1` (`window.__stageTiming.summary()`).
+- **The web UI's live feeds are gRPC too**: the dashboard's playback, log lines, waveform, show
+  reloads and the build, hardware and controller status now come from one `Watch` gRPC-Web
+  stream per tab, instead of a websocket and a poll of the status route. The status page and the
+  health dot update within about a second of a change instead of every five seconds, and the
+  connection indicator and the "connection lost" banner follow that stream. The status page's
+  Refresh button opens the stream again, which sends everything as it is now. A reverse proxy in
+  front of the web UI must pass streamed responses without buffering them, as it had to for the
+  websocket.
 
 ### Removed
 
@@ -155,15 +163,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used them. A script that did should use the gRPC `GetConfig`, `UpdateAudio`, `UpdateMidi`,
   `UpdateDmx` and `UpdateControllers` calls (see [gRPC](docs/src/interfaces/grpc.md)), or
   `GET /api/config/store` to read the YAML with its checksum, and read the lock from
-  `GET /api/status` or the gRPC `Status`. Replacing the whole config file in one
+  the gRPC `Status`. Replacing the whole config file in one
   request has no equivalent; edit the file on disk, or save by section.
-- **Breaking: the websocket's `metadata` and `state` messages**: `/ws` no longer sends the stage,
-  on connect or after. Anything that read them (a script, a dashboard of your own) should open the
-  `WatchStage` gRPC stream instead (see [gRPC](docs/src/interfaces/grpc.md)). The websocket still
-  carries the playback status, log lines, waveforms and reload notices. The venues directory the
+- **Breaking: the web UI's websocket (`/ws`) and `GET /api/status`**: both are gone. Anything
+  that read the websocket (a script, a dashboard of your own) should open the `Watch` gRPC stream
+  instead: it carries the same playback status, log lines, waveforms and reload notices as
+  messages of the `WatchEvent` protobuf, and `WatchStage` carries the stage (the websocket's
+  `metadata` and `state` messages went earlier in this release). The venues directory the
   `metadata` message named is not on the stream: a client that saves venue edits reads and writes
   the venue through `/api/lighting/venues/<name>`, which uses the configured directory when none
-  is given.
+  is given. `GET /api/status`'s build, hardware and controller status is the `hardware` event of
+  `Watch`, which opens with it and sends it again when it changes
+  (`grpcurl -plaintext -d '{"topics":["WATCH_TOPIC_HARDWARE"]}' host:43234
+  player.v1.PlayerService/Watch`). To check that a player is up, use the standard gRPC health
+  service (`grpc.health.v1.Health`, for `grpc_health_probe` and the like), or, with only `curl`,
+  fetch the web UI's page (`curl -sf http://host:8080/`). See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.1] - 2026-11-09
 

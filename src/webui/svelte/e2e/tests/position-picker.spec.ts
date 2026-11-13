@@ -18,7 +18,7 @@
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { playbackState } from "../support/playback";
 
 const SONG = "Test Song Beta";
@@ -55,7 +55,7 @@ async function openWithPlayhead(page: Page, yaml = SONG_YAML): Promise<void> {
   await routes(page, yaml);
   await page.goto(`/?wsId=${wsId}#/songs/${ENC}/sections`);
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
-  await sendWs(
+  await sendWatch(
     page,
     wsId,
     playbackState({

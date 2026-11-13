@@ -13,7 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { playbackState } from "../support/playback";
 
 let testCounter = 0;
@@ -47,14 +47,14 @@ test.describe("Visual click", () => {
   test("renders one dot per beat of the current meter (7/8)", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackState({ beat_grid: sevenEightGrid() }));
+    await sendWatch(page, wsId, playbackState({ beat_grid: sevenEightGrid() }));
 
     await expect(page.locator(".beat-dot")).toHaveCount(7);
   });
 
   test("active dot follows the playhead", async ({ page }) => {
     // Elapsed 0.5s in the 7/8 grid = third eighth note (index 2).
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({ beat_grid: sevenEightGrid(), elapsed_ms: 500 }),
@@ -82,12 +82,16 @@ test.describe("Visual click", () => {
       [600, 1],
       [1200, 2],
     ]) {
-      await sendWs(page, wsId, playbackState({ beat_grid: grid, elapsed_ms }));
+      await sendWatch(
+        page,
+        wsId,
+        playbackState({ beat_grid: grid, elapsed_ms }),
+      );
       await expect(dots.nth(beat)).toHaveClass(/beat-dot--active/);
     }
 
     // Before the first beat nothing is lit.
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({ beat_grid: grid, elapsed_ms: 20 }),
@@ -97,7 +101,7 @@ test.describe("Visual click", () => {
   });
 
   test("downbeat dot is marked as accent", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({ beat_grid: sevenEightGrid(), elapsed_ms: 0 }),
@@ -109,7 +113,7 @@ test.describe("Visual click", () => {
   });
 
   test("flash pulses while playing", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -126,7 +130,7 @@ test.describe("Visual click", () => {
   });
 
   test("hidden when no beat grid is available", async ({ page }) => {
-    await sendWs(page, wsId, playbackState({ beat_grid: null }));
+    await sendWatch(page, wsId, playbackState({ beat_grid: null }));
 
     await expect(page.locator(".beat-indicator")).toHaveCount(0);
   });
@@ -134,7 +138,7 @@ test.describe("Visual click", () => {
   test("resolved accent levels style the dots", async ({ page }) => {
     // 4/4 grid with per-beat levels: accent, silent, normal, half.
     const beats = [0, 0.5, 1.0, 1.5];
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -158,7 +162,7 @@ test.describe("Visual click", () => {
   });
 
   test("half-accent beat flashes with the half style", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -176,7 +180,7 @@ test.describe("Visual click", () => {
   });
 
   test("silent beat does not flash", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({

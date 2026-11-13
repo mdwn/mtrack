@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import { wsConnected, playbackStore } from "../lib/ws/stores";
+  import { watchConnected, playbackStore } from "../lib/ws/stores";
   import {
     healthStore,
     testOutput,
@@ -75,9 +75,9 @@
     drawerOpen = false;
   }
 
-  let health = $derived($wsConnected ? $healthStore : ("unknown" as const));
+  let health = $derived($watchConnected ? $healthStore : ("unknown" as const));
   let healthLabelKey = $derived.by(() => {
-    if (!$wsConnected) return "nav.connection.disconnected";
+    if (!$watchConnected) return "nav.connection.disconnected";
     if (health === "ok") return "nav.health.ok";
     if (health === "warn") return "nav.health.warn";
     if (health === "error") return "nav.health.error";
@@ -249,10 +249,10 @@
     </button>
     <a
       class="topnav__conn"
-      class:topnav__conn--off={!$wsConnected}
-      class:topnav__conn--warn={$wsConnected && health === "warn"}
-      class:topnav__conn--error={$wsConnected && health === "error"}
-      class:topnav__conn--unknown={$wsConnected && health === "unknown"}
+      class:topnav__conn--off={!$watchConnected}
+      class:topnav__conn--warn={$watchConnected && health === "warn"}
+      class:topnav__conn--error={$watchConnected && health === "error"}
+      class:topnav__conn--unknown={$watchConnected && health === "unknown"}
       href="#/status"
       title={$t(healthLabelKey)}
       aria-label={$t(healthLabelKey)}
@@ -298,7 +298,7 @@
   </div>
 {/if}
 
-{#if !$wsConnected}
+{#if !$watchConnected}
   <div class="disconnect-banner" role="alert">
     {$t("nav.connection.banner")}
   </div>

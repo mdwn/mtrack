@@ -232,7 +232,7 @@ fn build_info() -> proto::BuildInfo {
     }
 }
 
-/// What the web UI's `/api/status` says, as a proto message.
+/// The build, hardware and controllers, as a proto message.
 fn hardware_status(player: &Player, build: &proto::BuildInfo) -> proto::HardwareStatus {
     proto::HardwareStatus {
         build: Some(build.clone()),

@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The hardware and controllers as status surfaces report them (`/api/status`,
+//! The hardware and controllers as status surfaces report them (the `Watch` stream's `hardware` event,
 //! the MCP status tool): light, so the web UI's WebAssembly module compiles
 //! it as it is.
 
@@ -124,7 +124,7 @@ pub struct LightingVenueStatus {
     pub error: Option<String>,
 }
 
-/// What `/api/status` says about a running test.
+/// What the status says about a running test.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TestOutputStatus {

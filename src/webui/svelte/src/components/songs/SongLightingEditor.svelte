@@ -60,7 +60,7 @@
   import { t } from "svelte-i18n";
   import { showConfirm, showPrompt } from "../../lib/dialog.svelte";
   import { playerClient } from "../../lib/grpc/client";
-  import { playbackStore, wsConnected } from "../../lib/ws/stores";
+  import { playbackStore, watchConnected } from "../../lib/ws/stores";
   import { create } from "@bufbuild/protobuf";
   import { DurationSchema } from "@bufbuild/protobuf/wkt";
   import { get } from "svelte/store";
@@ -124,11 +124,11 @@
   let showMidiDmxModal = $state(false);
   let showFileBrowser = $state(false);
 
-  // Playback state derived from the WebSocket playback store
+  // Playback state derived from the `Watch` playback store
   let pbState = $state(get(playbackStore));
   const unsubPlayback = playbackStore.subscribe((v) => (pbState = v));
 
-  // WebSocket connection state (accessed via $wsConnected in template)
+  // Connection state (accessed via $watchConnected in template)
 
   // Client-side interpolation for smooth playhead
   let lastKnownMs = $state(0);
@@ -154,7 +154,7 @@
       const now = performance.now();
       const elapsed = now - lastUpdateTime;
       // Cap interpolation drift to 2s — beyond that, hold at lastKnownMs
-      // until the next WebSocket update arrives (prevents large jumps on reconnect).
+      // until the next playback update arrives (prevents large jumps on reconnect).
       const capped = Math.min(elapsed, 2000);
       interpolatedMs = Math.min(
         lastKnownMs + capped,
@@ -795,7 +795,7 @@
 </script>
 
 <div class="lighting-section">
-  {#if !$wsConnected}
+  {#if !$watchConnected}
     <div class="warn-banner">
       {$t("songLighting.notConnected")}
     </div>

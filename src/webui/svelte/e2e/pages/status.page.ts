@@ -43,8 +43,9 @@ export class StatusPageModel {
     this.version = page.locator(".info-value").first();
   }
 
-  async goto() {
-    await this.page.goto("/#/status");
+  /** Opens the page; `wsId` names it for the mock server's Watch stream. */
+  async goto(wsId?: string) {
+    await this.page.goto(`/${wsId ? `?wsId=${wsId}` : ""}#/status`);
   }
 
   subsystemRow(label: string): Locator {

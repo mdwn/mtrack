@@ -14,12 +14,13 @@
 
 import type { Status } from "../../gen/rules/mtrack_rules";
 import { derived, writable } from "svelte/store";
-import { wsConnected } from "./stores";
 import { uiOutdated, type ServerBuild } from "../buildCheck";
 
 /** Worst-case across all required subsystems. */
 export type Health = "ok" | "warn" | "error" | "unknown";
 
+/** The player's build, hardware and controllers, as its `hardware` events
+ *  last said them (lib/grpc/watch.ts); null before the first. */
 export const statusStore = writable<Status | null>(null);
 
 /** The server's build as first seen by this page. */
@@ -29,7 +30,7 @@ statusStore.subscribe((s) => {
 });
 
 /** The UI this bundle was built as; empty for a build that stamped none. */
-const UI_BUILD: string = import.meta.env.VITE_MTRACK_UI_BUILD ?? "";
+const UI_BUILD: string = import.meta.env?.VITE_MTRACK_UI_BUILD ?? "";
 
 /** This tab runs an older UI than the server now serves: reload for the
  *  new one. Never reloads by itself — someone may be mid-edit. */
@@ -48,43 +49,6 @@ export const testOutput = derived(
   statusStore,
   ($status) => $status?.hardware.test_output ?? null,
 );
-
-let pollHandle: ReturnType<typeof setInterval> | null = null;
-
-/** Fetches `/api/status` into the store; throws when it cannot. */
-export async function refreshStatus(): Promise<void> {
-  const res = await fetch("/api/status");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  statusStore.set((await res.json()) as Status);
-}
-
-async function fetchStatus() {
-  try {
-    await refreshStatus();
-  } catch {
-    // Fetch failures are tolerated; the WS connect indicator already
-    // surfaces total disconnects via the disconnect banner.
-  }
-}
-
-function startPolling() {
-  if (pollHandle !== null) return;
-  void fetchStatus();
-  pollHandle = setInterval(fetchStatus, 5000);
-}
-
-function stopPolling() {
-  if (pollHandle === null) return;
-  clearInterval(pollHandle);
-  pollHandle = null;
-}
-
-// Poll while the WebSocket is up. When it drops we keep the last known
-// snapshot but stop hammering /api/status.
-wsConnected.subscribe((connected) => {
-  if (connected) startPolling();
-  else stopPolling();
-});
 
 /**
  * Derives the worst-case health across required subsystems.

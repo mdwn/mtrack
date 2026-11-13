@@ -26,8 +26,10 @@ test.describe("Smoke: Dashboard", () => {
     await expect(page).toHaveTitle(/mtrack/);
   });
 
-  test("WebSocket connects and delivers playback state", async ({ page }) => {
-    // Song name should appear from real WebSocket data.
+  test("Watch stream connects and delivers playback state", async ({
+    page,
+  }) => {
+    // Song name should appear from real Watch data.
     const songName = page.locator(".playback-song");
     await expect(songName).toBeVisible();
     // Should be one of our example songs.

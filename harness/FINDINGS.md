@@ -203,7 +203,7 @@ These are working as designed but surprised the harness, and cost time:
 - **Top-level `controllers:` is ignored when `profiles` is present.** It warns
   and continues, so the gRPC port simply never opens. Controllers must be in
   each profile, and only the *first* profile is active.
-- **`hardware.profile` in `/api/status` is the profile's `hostname` field**, or
+- **`hardware.profile` in the player's status (`Watch`, formerly `/api/status`) is the profile's `hostname` field**, or
   `"default"` — there is no profile-name concept. Check the claimed device to
   confirm which profile was applied.
 - **`hardware.<subsystem>.name` is the display form**

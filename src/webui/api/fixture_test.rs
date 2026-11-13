@@ -748,8 +748,8 @@ mod tests {
         assert_eq!(kinds, vec!["olad_unreachable"]);
 
         // Status says so, for every page.
-        let (_, status_body) = call(&state, "GET", "/status", None).await;
-        assert_eq!(status_body["hardware"]["test_output"]["address"], 10);
+        let hardware = state.player.hardware_status();
+        assert_eq!(hardware.test_output.expect("a live test").address, 10);
 
         // A raw value wins over its channel, by offset or by name.
         let mut raw = red_par();

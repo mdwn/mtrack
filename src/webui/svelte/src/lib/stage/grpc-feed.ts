@@ -21,11 +21,13 @@
 
 import type { StageUpdate } from "../../gen/player/v1/player_pb";
 import type { StageMetadata } from "../../gen/rules/mtrack_rules";
+import { BACKOFF_MS, runReconnecting, type Sleep } from "../grpc/reconnect";
 import { StageReader, type StageSink } from "./feed";
 import { stageTiming, TimingRecorder } from "./timing";
 
-/** Backoff steps in ms between reconnects; the last repeats. */
-export const STAGE_BACKOFF = [250, 500, 1000, 2000];
+/** Backoff steps in ms between reconnects; the last repeats. The page's
+ *  streams share them (../grpc/reconnect). */
+export const STAGE_BACKOFF = BACKOFF_MS;
 
 /** How long the stream stays open after the last watcher leaves, in ms:
  *  long enough that moving between two pages that show the stage (or a page
@@ -53,49 +55,29 @@ export interface StreamOptions {
   sink: StageSink;
   signal: AbortSignal;
   /** Waits before a reconnect; rejects never (resolves early on abort). */
-  sleep?(ms: number, signal: AbortSignal): Promise<void>;
+  sleep?: Sleep;
   /** Backoff steps in ms; the last repeats. */
   backoff?: number[];
   onError?(error: unknown): void;
-}
-
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", done);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", done, { once: true });
-  });
 }
 
 /** Reads the stream into `sink` until aborted, reconnecting with a short
  *  backoff when it errors or ends. The stage is left as it was while
  *  reconnecting; the backoff starts over after a connection that delivered. */
 export async function runStageStream(o: StreamOptions): Promise<void> {
-  const sleep = o.sleep ?? abortableSleep;
-  const steps = o.backoff ?? STAGE_BACKOFF;
-  let attempt = 0;
-  while (!o.signal.aborted) {
-    const reader = new StageReader(o.sink);
-    try {
-      for await (const update of o.open(o.signal)) {
+  await runReconnecting({
+    session: async (signal, delivered) => {
+      const reader = new StageReader(o.sink);
+      for await (const update of o.open(signal)) {
         reader.take(update);
-        attempt = 0;
+        delivered();
       }
-    } catch (error) {
-      if (o.signal.aborted) return;
-      o.onError?.(error);
-    }
-    if (o.signal.aborted) return;
-    await sleep(steps[Math.min(attempt, steps.length - 1)], o.signal);
-    attempt++;
-  }
+    },
+    signal: o.signal,
+    sleep: o.sleep,
+    backoff: o.backoff ?? STAGE_BACKOFF,
+    onError: o.onError,
+  });
 }
 
 /** Timers a {@link FeedLease} waits with; the page's own, unless a test

@@ -14,7 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
@@ -67,7 +67,7 @@ test.describe("Section Loop Controls", () => {
     page,
   }) => {
     // Put into playing state with sections.
-    await sendWs(page, wsId, playbackWithSections(wsId));
+    await sendWatch(page, wsId, playbackWithSections(wsId));
 
     // Each section chip has a dedicated loop button next to the name.
     const verseGroup = page.locator(".section-chip-group", {
@@ -85,7 +85,7 @@ test.describe("Section Loop Controls", () => {
   test("clicking a section chip name sends SeekToSection gRPC call", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackWithSections(wsId));
+    await sendWatch(page, wsId, playbackWithSections(wsId));
 
     const verseChip = page.locator(".section-chip", { hasText: "verse" });
     await expect(verseChip).toBeVisible();
@@ -100,7 +100,11 @@ test.describe("Section Loop Controls", () => {
   test("loop button is disabled while stopped, seek chip is not", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackWithSections(wsId, { is_playing: false }));
+    await sendWatch(
+      page,
+      wsId,
+      playbackWithSections(wsId, { is_playing: false }),
+    );
 
     const verseGroup = page.locator(".section-chip-group", {
       hasText: "verse",
@@ -113,7 +117,7 @@ test.describe("Section Loop Controls", () => {
     page,
   }) => {
     // Put into playing state with an active section loop.
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -133,7 +137,7 @@ test.describe("Section Loop Controls", () => {
 
   test("active chip clears after section loop stops", async ({ page }) => {
     // Start with active loop.
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -143,7 +147,7 @@ test.describe("Section Loop Controls", () => {
     await expect(page.locator(".section-chip.badge--active")).toBeVisible();
 
     // Simulate stop — server clears active section.
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackWithSections(wsId, { active_section: null }),
@@ -154,7 +158,7 @@ test.describe("Section Loop Controls", () => {
   });
 
   test("active section chip shows section name", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -166,7 +170,7 @@ test.describe("Section Loop Controls", () => {
   });
 
   test("section chips hidden when song has no sections", async ({ page }) => {
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,

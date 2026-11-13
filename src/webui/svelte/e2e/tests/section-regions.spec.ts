@@ -27,7 +27,7 @@
 // answers from the correct one, rather than merely approximate ones.
 
 import { test, expect } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
@@ -84,7 +84,7 @@ test.describe("Section regions on the transport", () => {
   test("a measure-aligned section ends where the exclusive bound says", async ({
     page,
   }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -107,7 +107,7 @@ test.describe("Section regions on the transport", () => {
   test("beat offsets move the boundary within its measure", async ({
     page,
   }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -137,7 +137,7 @@ test.describe("Section regions on the transport", () => {
   test("a fractional beat interpolates between grid beats", async ({
     page,
   }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({

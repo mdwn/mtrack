@@ -30,6 +30,15 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import {
+  WatchEventSchema,
+  WatchRequestSchema,
+  WatchTopic,
+} from "../../src/gen/player/v1/player_pb";
+import type { Status } from "../../src/gen/rules/mtrack_rules";
+import { mapWatchEvent } from "../../src/lib/grpc/watch";
+import { dataFrame } from "../support/stage-stream";
 
 /** The repository root (this file is src/webui/svelte/e2e/journeys/). */
 export const REPO = path.resolve(
@@ -180,6 +189,58 @@ async function freePort(): Promise<number> {
   });
 }
 
+/** The player's build, hardware and controllers: the first event of the
+ *  gRPC stream `Watch` over gRPC-Web, which is how the web UI reads them.
+ *  Throws when it does not come. */
+export async function readStatus(url: string): Promise<Status> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 10_000);
+  try {
+    const res = await fetch(`${url}/player.v1.PlayerService/Watch`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/grpc-web+proto",
+        "x-grpc-web": "1",
+      },
+      body: new Uint8Array(
+        dataFrame(
+          toBinary(
+            WatchRequestSchema,
+            create(WatchRequestSchema, { topics: [WatchTopic.HARDWARE] }),
+          ),
+        ),
+      ),
+      signal: abort.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`Watch: HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    let buffer = Buffer.alloc(0);
+    for (;;) {
+      if (buffer.length >= 5) {
+        const length = buffer.readUInt32BE(1);
+        if (buffer.length >= 5 + length) {
+          if (buffer[0] !== 0) throw new Error("Watch ended without a status");
+          const event = fromBinary(
+            WatchEventSchema,
+            buffer.subarray(5, 5 + length),
+          );
+          const message = mapWatchEvent(event);
+          if (message?.type !== "hardware") {
+            throw new Error("Watch's first event was not the hardware status");
+          }
+          return message.status;
+        }
+      }
+      const { done, value } = await reader.read();
+      if (done) throw new Error("Watch ended without a status");
+      buffer = Buffer.concat([buffer, value]);
+    }
+  } finally {
+    clearTimeout(timer);
+    abort.abort();
+  }
+}
+
 async function waitUp(url: string, child: ChildProcess, log: string[]) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -188,8 +249,7 @@ async function waitUp(url: string, child: ChildProcess, log: string[]) {
     try {
       // Up, and the hardware (the DMX engine and its lighting system) done
       // initialising, so a journey's first look is at a settled player.
-      const res = await fetch(`${url}/api/status`);
-      if (res.ok && (await res.json())?.hardware?.init_done) return;
+      if ((await readStatus(url)).hardware.init_done) return;
     } catch {
       // Not listening yet.
     }
@@ -308,6 +368,11 @@ export const test = base.extend<{
 });
 
 export { expect };
+
+/** The project's player's status, as the web UI is told it. */
+export function status(project: Project): Promise<Status> {
+  return readStatus(project.url);
+}
 
 /** GET a JSON API path of the project. */
 export async function api<T = Record<string, unknown>>(

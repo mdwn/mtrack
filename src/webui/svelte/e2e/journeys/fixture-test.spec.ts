@@ -18,7 +18,7 @@ import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import type { StageState } from "../../src/gen/rules/mtrack_rules";
 import { StageReader } from "../../src/lib/stage/feed";
-import { api, expect, synthGdtf, test, type Project } from "./harness";
+import { expect, status, synthGdtf, test, type Project } from "./harness";
 
 // Testing a fixture from its page, against the real binary with its DMX
 // engine on the null client: Send lights it full white, a swatch changes
@@ -31,15 +31,6 @@ test.use({ env: { MTRACK_TEST_OUTPUT_EXPIRY_MS: String(EXPIRY_MS) } });
 
 interface Frame {
   frame: { name: string; value: number; address: number }[];
-}
-interface Status {
-  hardware: {
-    test_output: {
-      universe: number;
-      address: number;
-      footprint: number;
-    } | null;
-  };
 }
 
 const byName = (body: Frame) =>
@@ -56,7 +47,7 @@ const posted = (page: Page, color?: string) =>
   );
 
 const testOutput = async (project: Project) =>
-  (await api<Status>(project, "/status")).hardware.test_output;
+  (await status(project)).hardware.test_output;
 
 test("a fixture lights full white on Send, follows a swatch, and stops", async ({
   page,

@@ -13,27 +13,21 @@
 //
 
 use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
-    },
+    extract::State,
     http::{header, StatusCode, Uri},
     response::{Html, IntoResponse, Response},
     routing::{any, get},
     Router,
 };
-use futures_util::{SinkExt, StreamExt};
 use rust_embed::Embed;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, ServiceExt};
 use tracing::{debug, error, info};
 
 use crate::player::Player;
 
-use super::hub::WatchHub;
 use super::state as ws_state;
 
 #[derive(Embed)]
@@ -79,12 +73,9 @@ impl Default for WebConfig {
 #[derive(Clone)]
 pub struct WebUiState {
     pub player: Arc<Player>,
-    /// The typed feeds the websocket reads, shared with the gRPC `Watch`
-    /// stream: the player's own hub.
-    pub hub: WatchHub,
     /// Canonicalized path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
-    /// The hub's waveform cache (sent to each WebSocket client on connect).
+    /// The hub's waveform cache.
     pub waveform_cache: ws_state::WaveformCache,
     /// Canonicalized path to the profiles directory (if configured).
     pub profiles_dir: Option<PathBuf>,
@@ -139,12 +130,9 @@ pub struct WebUiStateParams {
 impl WebUiState {
     /// Creates a new WebUiState, canonicalizing all path fields.
     pub fn new(params: WebUiStateParams) -> Self {
-        // The player's own hub: the feeds are the same for every server.
-        let hub = params.player.watch_hub().clone();
         WebUiState {
+            waveform_cache: params.player.watch_hub().waveform_cache().clone(),
             player: params.player,
-            waveform_cache: hub.waveform_cache().clone(),
-            hub,
             config_path: canonicalize_or_keep(params.config_path),
             profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
             calibration: Arc::new(parking_lot::Mutex::new(None)),
@@ -154,7 +142,7 @@ impl WebUiState {
 
 /// Handle to a running web UI server, returned so callers can shut it down.
 ///
-/// When dropped, the server is aborted. The pollers that feed the websocket
+/// When dropped, the server is aborted. The pollers that feed `Watch`
 /// are the player's hub's, started by whoever runs the player.
 pub struct WebUiHandle {
     _shutdown_tx: tokio::sync::oneshot::Sender<()>,
@@ -206,8 +194,6 @@ pub async fn start_or_unlock(
 ///
 /// The server serves:
 /// - `/` — Web UI SPA (dashboard, config editor, etc.)
-/// - `/ws` — WebSocket for real-time state streaming (playback, logs, waveforms),
-///   fed by the player's [`WatchHub`], whose pollers the caller starts
 /// - `/player.v1.PlayerService/*` — gRPC-Web endpoints for player control
 /// - `/grpc.health.v1.Health/*` — the standard gRPC health service, over gRPC-Web
 /// - `/api/*` — REST endpoints for config/song/playlist/lighting CRUD
@@ -222,7 +208,6 @@ pub async fn start(
     // Build the app router
     let api_router = super::api::guarded_router(&webui_state);
     let app = Router::new()
-        .route("/ws", get(ws_handler))
         .nest("/api", api_router)
         .route("/player.v1.PlayerService/{method}", any(grpc_web_handler))
         .route("/grpc.health.v1.Health/{method}", any(grpc_health_handler))
@@ -386,84 +371,6 @@ fn mime_type_for_path(path: &str) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
-    }
-}
-
-/// Handles WebSocket upgrade requests for the dashboard.
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WebUiState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
-}
-
-/// Handles a single WebSocket connection for the dashboard.
-///
-/// Sends the cached waveform on connect, then streams playback, log,
-/// waveform and reload messages from the broadcast channel. The stage is not
-/// here: it is the gRPC stream `WatchStage`.
-async fn handle_ws(socket: WebSocket, state: WebUiState) {
-    let (mut sender, mut receiver) = socket.split();
-
-    // Send cached waveform for the current song on connect
-    let waveform_msg = state
-        .hub
-        .cached_waveform(&state.player)
-        .map(|(song_name, track_peaks)| {
-            let tracks_json: Vec<serde_json::Value> = track_peaks
-                .into_iter()
-                .map(|(name, peaks)| {
-                    serde_json::json!({
-                        "name": name,
-                        "peaks": peaks,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "type": "waveform",
-                "song_name": song_name,
-                "tracks": tracks_json,
-            })
-            .to_string()
-        });
-    if let Some(msg) = waveform_msg {
-        if sender.send(Message::Text(msg.into())).await.is_err() {
-            return;
-        }
-    }
-
-    // Subscribe to state broadcasts
-    let mut rx = state.hub.subscribe();
-
-    // Spawn a task to forward broadcasts to this client
-    let mut send_task = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    // The JSON is made here, once per reader and message.
-                    if sender
-                        .send(Message::Text(ws_state::to_json(&msg).into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-
-    // Drain incoming messages (we only use server→client for now)
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            if let Message::Close(_) = msg {
-                break;
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = &mut send_task => { recv_task.abort(); }
-        _ = &mut recv_task => { send_task.abort(); }
     }
 }
 
@@ -814,162 +721,6 @@ mod test {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn server_websocket_receives_waveform() {
-        use futures_util::StreamExt;
-
-        let (state, _dir) = test_webui_state();
-        // Pre-populate waveform cache for current song "Song A"
-        state.waveform_cache.lock().insert(
-            "Song A".to_string(),
-            vec![("track1".to_string(), vec![0.5, 0.8, 0.3])],
-        );
-        let handle = start(state, "127.0.0.1".to_string(), 0)
-            .await
-            .expect("server should start");
-        let addr = handle.local_addr();
-        let ws_url = format!("ws://{}/ws", addr);
-
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("WebSocket connect failed");
-
-        let (_, mut read) = ws_stream.split();
-
-        // First message: waveform (from pre-populated cache)
-        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-            .await
-            .expect("timed out waiting for waveform message")
-            .expect("stream ended")
-            .expect("WS error");
-
-        let text = msg.into_text().expect("expected text message");
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed["type"], "waveform");
-        assert_eq!(parsed["song_name"], "Song A");
-        assert!(parsed["tracks"].is_array());
-        let tracks = parsed["tracks"].as_array().unwrap();
-        assert_eq!(tracks[0]["name"], "track1");
-    }
-
-    #[tokio::test]
-    async fn server_websocket_receives_playback() {
-        use futures_util::StreamExt;
-
-        let (state, _dir) = test_webui_state();
-        // The player's hub feeds the websocket; its pollers are started by
-        // whoever runs the player, as `mtrack start` does.
-        let _hub_tasks = state.hub.start(state.player.clone());
-        let handle = start(state, "127.0.0.1".to_string(), 0)
-            .await
-            .expect("server should start");
-        let addr = handle.local_addr();
-        let ws_url = format!("ws://{}/ws", addr);
-
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("WebSocket connect failed");
-
-        let (_, mut read) = ws_stream.split();
-
-        // The messages should include a playback update (poller runs at 200ms)
-        let msg = tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-            .await
-            .expect("timed out waiting for playback message")
-            .expect("stream ended")
-            .expect("WS error");
-
-        let text = msg.into_text().expect("expected text message");
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        // Could be playback or waveform — just verify it's valid JSON
-        assert!(parsed["type"].is_string());
-    }
-
-    /// A new reader of the websocket sees the hub's messages as the JSON the
-    /// websocket has always written, byte for byte, and the cached waveform
-    /// it is sent on connect widens its floats as it always has.
-    #[tokio::test]
-    async fn the_websocket_writes_the_hubs_messages_as_the_json_it_always_did() {
-        use crate::webui::wire::messages::{LogLine, ShowReload, SocketMessage, Waveform};
-        use futures_util::StreamExt;
-
-        let (state, _dir) = test_webui_state();
-        state.waveform_cache.lock().insert(
-            "Song A".to_string(),
-            vec![("track1".to_string(), vec![0.5, 0.8, 0.3])],
-        );
-        let sender = state.hub.sender();
-        let hub = state.hub.clone();
-        let handle = start(state, "127.0.0.1".to_string(), 0)
-            .await
-            .expect("server should start");
-        let (ws_stream, _) =
-            tokio_tungstenite::connect_async(format!("ws://{}/ws", handle.local_addr()))
-                .await
-                .expect("WebSocket connect failed");
-        let (_, mut read) = ws_stream.split();
-        async fn text(
-            read: &mut (impl futures_util::Stream<
-                Item = Result<
-                    tokio_tungstenite::tungstenite::Message,
-                    tokio_tungstenite::tungstenite::Error,
-                >,
-            > + Unpin),
-        ) -> String {
-            tokio::time::timeout(crate::testutil::PATIENCE, read.next())
-                .await
-                .expect("timed out")
-                .expect("stream ended")
-                .expect("WS error")
-                .into_text()
-                .expect("text")
-                .to_string()
-        }
-
-        let on_connect = text(&mut read).await;
-        assert!(
-            on_connect.contains("\"peaks\":[0.5,0.800000011920929,0.30000001192092896]"),
-            "{on_connect}"
-        );
-        // Subscribed once the cached waveform is sent.
-        crate::testutil::eventually(|| hub.sender().receiver_count() == 1, "never subscribed");
-
-        for (message, json) in [
-            (SocketMessage::ConfigChanged, r#"{"type":"config_changed"}"#),
-            (
-                SocketMessage::Reload(ShowReload::Ok),
-                r#"{"type":"reload","status":"ok"}"#,
-            ),
-            (
-                SocketMessage::Reload(ShowReload::Error {
-                    error: "boom".to_string(),
-                }),
-                r#"{"type":"reload","status":"error","error":"boom"}"#,
-            ),
-            (
-                SocketMessage::Logs {
-                    lines: vec![LogLine {
-                        level: "INFO".to_string(),
-                        target: "t".to_string(),
-                        message: "m".to_string(),
-                    }],
-                },
-                r#"{"type":"logs","lines":[{"level":"INFO","target":"t","message":"m"}]}"#,
-            ),
-            // The live waveform widens the player's f32s.
-            (
-                SocketMessage::Waveform(Waveform::new(
-                    "S".to_string(),
-                    [("t".to_string(), vec![0.8_f32])],
-                )),
-                r#"{"type":"waveform","song_name":"S","tracks":[{"name":"t","peaks":[0.800000011920929]}]}"#,
-            ),
-        ] {
-            sender.send(message).expect("a reader");
-            assert_eq!(text(&mut read).await, json);
-        }
-    }
-
     /// One frame of a gRPC-Web response body: the message of the first
     /// data frame in `buffer`, taken off it, once it is all there.
     fn take_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
@@ -987,7 +738,7 @@ mod test {
     }
 
     /// `Watch` streams over gRPC-Web from the web server's own port, on a
-    /// locked player, from the same hub as the websocket, and with no gRPC
+    /// locked player, from the player's hub, and with no gRPC
     /// controller anywhere.
     #[tokio::test]
     async fn watch_streams_over_grpc_web_while_locked() {
@@ -996,7 +747,7 @@ mod test {
 
         let (state, _dir) = test_webui_state();
         assert!(state.player.is_locked());
-        let sender = state.hub.sender();
+        let sender = state.player.watch_hub().sender();
         let handle = start(state, "127.0.0.1".to_string(), 0)
             .await
             .expect("server should start");

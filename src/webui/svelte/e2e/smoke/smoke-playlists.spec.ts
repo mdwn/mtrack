@@ -13,12 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { waitForWebSocket } from "./helpers.js";
+import { waitForWatch } from "./helpers.js";
 
 test.describe("Smoke: Playlists", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/playlists");
-    await waitForWebSocket(page);
+    await waitForWatch(page);
   });
 
   test("playlists page loads and shows playlist list", async ({ page }) => {

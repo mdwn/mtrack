@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { sendStage } from "../support/stage";
+import { setWatchOpening } from "../support/watch";
 import type { ProfileFileInfo } from "../../src/gen/rules/mtrack_rules";
 
 let testCounter = 0;
@@ -223,14 +224,12 @@ test.describe("Lighting area: Groups", () => {
   }) => {
     await routeTwoProfiles(page);
     // The player runs a profile that none of these is (or status is down).
-    await page.route("**/api/status", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ hardware: { profile: "some-other-machine" } }),
-      });
+    const id = `groups-${test.info().parallelIndex}-${Date.now()}`;
+    await setWatchOpening(page, id, {
+      type: "hardware",
+      hardware: { profile: "some-other-machine" },
     });
-    await page.goto("/#/lighting/groups");
+    await page.goto(`/?wsId=${id}#/lighting/groups`);
     await expect(page.getByTestId("groups-no-match")).toBeVisible();
     const picker = page.locator("#groups-profile");
     await expect(picker).toHaveValue("");
@@ -252,7 +251,10 @@ test.describe("Lighting area: Groups", () => {
     page,
   }) => {
     await routeTwoProfiles(page);
-    await page.route("**/api/status", (route) => route.abort());
+    // The Watch stream never opens, so the page never has a status.
+    await page.route("**/player.v1.PlayerService/Watch", (route) =>
+      route.abort(),
+    );
     await page.goto("/#/lighting/groups");
     await expect(page.getByTestId("groups-no-match")).toBeVisible();
     await expect(page.locator("#groups-profile")).toHaveValue("");

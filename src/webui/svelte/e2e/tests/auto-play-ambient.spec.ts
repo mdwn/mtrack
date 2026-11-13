@@ -17,7 +17,7 @@ import { stubPlayerService } from "../support/grpc";
 import { fromBinary } from "@bufbuild/protobuf";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { capturePlaylistPut } from "../support/playlists";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
@@ -344,7 +344,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
       persisted_playlist_name: "setlist",
       locked: false,
     };
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
       ambient: {
@@ -367,7 +367,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ambient-source")).toHaveCount(0);
 
     // The entry's own settings are up: the badge says whose.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
       ambient: {
@@ -380,7 +380,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ambient-badge")).toHaveText(
       "Ambient light · this song's",
     );
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       ambient: {
         mode: "auto",
@@ -395,7 +395,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
 
     // A status read of the DMX engine that did not answer says so, rather
     // than passing for no DMX engine; the mode is not known, so no buttons.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       ambient: {
         available: false,
@@ -407,7 +407,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     );
     await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
 
-    await sendWs(page, wsId, { ...frame, is_playing: true });
+    await sendWatch(page, wsId, { ...frame, is_playing: true });
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
     await expect(page.getByTestId("ambient-badge")).toHaveCount(0);
   });
@@ -436,7 +436,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
       persisted_playlist_name: "setlist",
       locked: false,
     };
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       ending: { song: "Test Song Beta", remaining_ms: 3600 },
     });
@@ -450,7 +450,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
       page.getByRole("button", { name: "Stop", exact: true }),
     ).toBeEnabled();
 
-    await sendWs(page, wsId, { ...frame, ending: null });
+    await sendWatch(page, wsId, { ...frame, ending: null });
     await expect(page.getByTestId("ending-fade")).toHaveCount(0);
   });
 });
@@ -480,7 +480,7 @@ test.describe("Dashboard: ambient light mode", () => {
       // Locked: ambient mode is a show control, open like transport.
       locked: true,
     };
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       ambient: { mode: "off", show: "/p/lighting/ambient.light", state: "off" },
     });
@@ -503,7 +503,7 @@ test.describe("Dashboard: ambient light mode", () => {
     );
 
     // On with no show to play says so.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...frame,
       ambient: { mode: "on", show: null, state: "unavailable" },
     });
@@ -516,7 +516,7 @@ test.describe("Dashboard: ambient light mode", () => {
     );
 
     // No DMX engine: no control.
-    await sendWs(page, wsId, { ...frame, ambient: null });
+    await sendWatch(page, wsId, { ...frame, ambient: null });
     await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
   });
 });

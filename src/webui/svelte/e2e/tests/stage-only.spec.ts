@@ -77,17 +77,15 @@ function watchRequests(page: Page): string[] {
   const asked: string[] = [];
   const ofPlayer = (url: string) => {
     const path = new URL(url).pathname;
-    return (
-      path.startsWith("/api") ||
-      path.startsWith("/ws") ||
-      path.startsWith("/player.v1")
-    );
+    return path.startsWith("/api") || path.startsWith("/player.v1");
   };
   page.on("request", (r) => {
     if (ofPlayer(r.url())) asked.push(r.url());
   });
+  // Any websocket is the page asking something of someone (but the dev
+  // server's own, for hot reload, which carries a token).
   page.on("websocket", (ws) => {
-    if (ofPlayer(ws.url())) asked.push(ws.url());
+    if (!new URL(ws.url()).searchParams.has("token")) asked.push(ws.url());
   });
   return asked;
 }

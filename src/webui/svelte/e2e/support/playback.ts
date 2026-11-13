@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// Playback messages for specs to push over the page's WebSocket.
-import type { Playback, SocketMessage } from "../../src/gen/rules/mtrack_rules";
+// Playback messages for specs to push down the page's `Watch` stream.
+import type { Playback } from "../../src/gen/rules/mtrack_rules";
+import type { TypedWatchPush } from "./watch-stream";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 /** The mock server's playback state, moved on to the setlist's second and
@@ -28,5 +29,5 @@ export function playbackState(overrides: Partial<Playback> = {}) {
     playlist_at_last: true,
     tracks: [],
     ...overrides,
-  } satisfies SocketMessage;
+  } satisfies TypedWatchPush;
 }

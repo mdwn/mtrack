@@ -14,6 +14,8 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { sendStage } from "../support/stage";
+import { setWatchOpening } from "../support/watch";
+import { STATUS } from "../mock-server/test-data";
 
 // A fixture test drives a venue fixture: the state stream carries the
 // test's bytes for it and names it in `under_test`. The plot draws that
@@ -82,28 +84,25 @@ test("the venue's stage shows what a fixture test sends, and says so", async ({
   page,
 }) => {
   const wsId = `under-test-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
-  let live = true;
   const deletes: string[] = [];
-  await page.route("**/api/status", async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    body.hardware.test_output = live
-      ? {
-          universe: 1,
-          address: 1,
-          footprint: 4,
-          fixture_type: "par",
-          mode: null,
-          expires_in_secs: 4,
-        }
-      : null;
-    await route.fulfill({ response: res, json: body });
+  // The player's status says a test is live.
+  await setWatchOpening(page, wsId, {
+    type: "hardware",
+    ...STATUS,
+    hardware: {
+      ...STATUS.hardware,
+      test_output: {
+        universe: 1,
+        address: 1,
+        footprint: 4,
+        fixture_type: "par",
+        mode: null,
+        expires_in_secs: 4,
+      },
+    },
   });
   await page.route(/\/api\/lighting\/fixture-test(\?.*)?$/, async (route) => {
-    if (route.request().method() === "DELETE") {
-      deletes.push("DELETE");
-      live = false;
-    }
+    if (route.request().method() === "DELETE") deletes.push("DELETE");
     await route.fallback();
   });
 

@@ -16,25 +16,6 @@ use axum::{extract::State, response::IntoResponse, Json};
 use serde_json::json;
 
 use super::super::server::WebUiState;
-use crate::build_info;
-use crate::webui::wire::status::{BuildInfo, Status};
-
-/// GET /api/status — returns build info, hardware status, and controller status.
-pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResponse {
-    let hardware = state.player.hardware_status();
-    let controllers = state.player.controller_statuses();
-    Json(Status {
-        build: BuildInfo {
-            version: build_info::VERSION.to_string(),
-            git_hash: build_info::GIT_HASH.to_string(),
-            build_time: build_info::BUILD_TIME.to_string(),
-            ui_build: super::super::server::ui_build(),
-        },
-        hardware,
-        controllers,
-        locked: state.player.is_locked(),
-    })
-}
 
 /// POST /api/controllers/restart — restarts all controllers from current config.
 ///
@@ -76,78 +57,4 @@ pub(super) async fn put_lock(
 #[derive(serde::Deserialize)]
 pub(super) struct LockRequest {
     locked: bool,
-}
-
-#[cfg(test)]
-mod test {
-    use super::super::super::api;
-    use super::super::test_helpers::*;
-    use axum::body::Body;
-    use http::StatusCode;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn get_status_returns_build_and_hardware() {
-        let (state, _dir) = test_state();
-        let app = api::router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("GET")
-                    .uri("/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-
-        // Build info is present.
-        assert!(parsed["build"]["version"].is_string());
-        assert!(parsed["build"]["git_hash"].is_string());
-        assert!(parsed["build"]["build_time"].is_string());
-        let ui_build = &parsed["build"]["ui_build"];
-        assert!(ui_build.is_string() || ui_build.is_null(), "{ui_build}");
-
-        // Hardware section is present with all subsystems.
-        assert!(parsed["hardware"]["init_done"].is_boolean());
-        // Profile fields are present (may be null in test state).
-        assert!(!parsed["hardware"]["hostname"].is_object());
-        assert!(!parsed["hardware"]["profile"].is_object());
-        assert!(parsed["hardware"]["audio"]["status"].is_string());
-        assert!(parsed["hardware"]["midi"]["status"].is_string());
-        assert!(parsed["hardware"]["dmx"]["status"].is_string());
-        assert!(parsed["hardware"]["trigger"]["status"].is_string());
-    }
-
-    #[tokio::test]
-    async fn get_status_no_devices_shows_not_connected() {
-        let (state, _dir) = test_state();
-        let app = api::router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("GET")
-                    .uri("/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-
-        // Test state has init_done=true and no devices, so all should be not_connected.
-        assert_eq!(parsed["hardware"]["init_done"], true);
-        assert_eq!(parsed["hardware"]["audio"]["status"], "not_connected");
-        assert_eq!(parsed["hardware"]["midi"]["status"], "not_connected");
-        assert_eq!(parsed["hardware"]["dmx"]["status"], "not_connected");
-        assert_eq!(parsed["hardware"]["trigger"]["status"], "not_connected");
-    }
 }

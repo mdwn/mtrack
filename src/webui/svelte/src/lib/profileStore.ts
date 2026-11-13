@@ -25,8 +25,10 @@
 import type {
   ConfigReload,
   Lighting,
+  Status,
   StoreSnapshot,
 } from "../gen/rules/mtrack_rules";
+import { statusStore } from "./ws/status";
 import YAML from "yaml";
 import {
   addProfile,
@@ -38,7 +40,6 @@ import {
   type ProfileDraft,
 } from "./api/config";
 import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
-import { get } from "./api/rest";
 import { reloadNotice, type ReloadNotice } from "./configReload";
 import type { Translate } from "./i18n";
 
@@ -272,7 +273,7 @@ export async function writeProfile(
 }
 
 /** The profile the player is running: the one whose `hostname` matches what
- *  `/api/status` reports as `hardware.profile`. There is no fallback: when
+ *  the player's status reports as `hardware.profile`. There is no fallback: when
  *  the status cannot be read or no profile names this host, the answer is
  *  null, and the caller has the user choose. Falling back to the first
  *  profile let one machine's editor write another machine's profile. Only
@@ -286,17 +287,28 @@ export function pickRunningProfile(
   return entries.find((e) => e.editable && e.hostname === running) ?? null;
 }
 
-/** The running profile's name as `/api/status` reports it, or null when the
- *  status cannot be read. */
+/** How long to wait for the player's first status, when the page has none. */
+const STATUS_WAIT_MS = 2000;
+
+/** The running profile's name as the player's status reports it (the
+ *  `Watch` stream's hardware event), or null when the status does not come:
+ *  a page that has just opened waits briefly for the first. */
 export async function fetchRunningProfile(): Promise<string | null> {
-  try {
-    const res = await get("/status");
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.hardware?.profile ?? null;
-  } catch {
-    return null;
-  }
+  const status = await new Promise<Status | null>((resolve) => {
+    let unsubscribe: () => void = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, STATUS_WAIT_MS);
+    unsubscribe = statusStore.subscribe((current) => {
+      if (current === null) return;
+      clearTimeout(timer);
+      // Unsubscribed once subscribe has returned (it may call back at once).
+      queueMicrotask(() => unsubscribe());
+      resolve(current);
+    });
+  });
+  return status?.hardware.profile ?? null;
 }
 
 /** The running profile's `dmx.lighting` block (empty when it has none), with

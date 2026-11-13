@@ -12,13 +12,13 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The status API's payloads (`/api/status`, `/api/controllers/restart`).
+//! The status the web UI holds: the shape of `Watch`'s hardware event.
 
 use serde::Serialize;
 
 use crate::player::{ControllerStatus, HardwareStatusSnapshot};
 
-/// `GET /api/status`: the build, the hardware and the controllers.
+/// The build, the hardware and the controllers, as the web UI holds them.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Status {
