@@ -330,3 +330,48 @@ show "s" {
     assert!(brightness_changes(&shows(source), &ctx()).is_empty());
     assert!(brightness_changes(&shows(source), &BrightnessContext::default()).is_empty());
 }
+
+#[test]
+fn a_foreground_replace_colour_is_reported_only_on_dimmer_channel_fixtures() {
+    // RGB-only fixtures already let a foreground `replace` escape every
+    // lower dimmer; only dimmer-channel fixtures change.
+    for (group, expected) in [("dim", 1), ("rgb", 0)] {
+        let source = format!(
+            r#"
+show "s" {{
+    @00:00.000
+    {group}: static color: "red", dimmer: 50%, duration: 4s
+    @00:01.000
+    {group}: static color: "blue", duration: 2s, layer: foreground
+}}
+"#
+        );
+        let warnings = found(&source, UPPER);
+        assert_eq!(warnings.len(), expected, "{group}: {warnings:?}");
+    }
+}
+
+#[test]
+fn a_chase_or_pulse_that_replaces_over_a_dimmer_is_reported_on_rgb_only_fixtures() {
+    for upper in [
+        "chase pattern: linear, speed: 2.0, direction: left_to_right",
+        "pulse frequency: 2",
+    ] {
+        let source = format!(
+            r#"
+show "s" {{
+    @00:00.000
+    rgb: static color: "red", dimmer: 45%, duration: 4s
+    @00:00.000
+    rgb: {upper}, duration: 4s, layer: midground
+}}
+"#
+        );
+        let warnings = found(&source, REPLACE);
+        assert_eq!(warnings.len(), 1, "{upper}: {warnings:?}");
+        assert!(warnings[0].message.contains("blend_mode: multiply"));
+
+        let multiply = source.replace("layer: midground", "layer: midground, blend_mode: multiply");
+        assert!(found(&multiply, REPLACE).is_empty(), "{upper} as multiply");
+    }
+}
