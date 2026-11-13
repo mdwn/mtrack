@@ -229,11 +229,11 @@ above it.**
      the added colour.
    - A colour `multiply` filters the dimmed light beneath.
 3. **A dimmer's blend mode decides what it does to the dimmers below.**
-   `multiply` (and pulse, chase and strobe by default) scales the light
-   so far. `replace` sets its level: the dimmers on layers below it no
-   longer apply (as if at full), and the light so far is set to its
-   level. That's what a dimmer channel does today on a fixture that has
-   one.
+   This holds for dimmer, pulse, chase and strobe alike. `multiply`
+   scales the light so far. `replace`, the default for every effect,
+   sets its level: the dimmers on layers below it no longer apply (as if
+   at full), and the light so far is set to its level. That's what a
+   dimmer channel does today on a fixture that has one.
 4. **A fixture with no colour (a plain dimmer)** is treated as full white
    at the bottom, so the rules above reduce to blending its intensity
    layer by layer, exactly as its dimmer channel does today.
