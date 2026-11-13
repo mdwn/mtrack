@@ -113,7 +113,7 @@ pub fn virtual_track_peaks(song: &crate::songs::Song, num_buckets: usize) -> Vec
 
 /// Polls the player state at ~5Hz and broadcasts playback status messages.
 #[tracing::instrument(skip_all, name = "playback_poller")]
-pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>) {
+pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<wire::SocketMessage>) {
     let mut interval = time::interval(Duration::from_millis(200));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
@@ -125,40 +125,42 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             continue;
         }
 
-        // The player's one status, its DMX reads bounded: the ambient
-        // light was read here on a runtime worker, unbounded, and a wedged
-        // effects loop stalled the dashboard's every update with it.
-        let status = player.playback_status().await;
-        let is_playing = status.playing;
-        let playlist = status.playlist.clone();
+        let _ = tx.send(wire::SocketMessage::Playback(Box::new(
+            current_playback(&player).await,
+        )));
+    }
+}
 
-        // The player's position is the song's: every loop jump, a section's
-        // or a looping song's pass, has put it back as it fell due, so a
-        // position in an armed section is already inside it.
-        let elapsed_ms = status
-            .elapsed
-            .clone()
-            .ok()
-            .flatten()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+/// What the player is doing now: what the playback poller sends, and what
+/// a new reader of the feeds is sent at once.
+pub async fn current_playback(player: &Player) -> wire::Playback {
+    // The player's one status, its DMX reads bounded: the ambient
+    // light was read here on a runtime worker, unbounded, and a wedged
+    // effects loop stalled the dashboard's every update with it.
+    let status = player.playback_status().await;
+    let is_playing = status.playing;
+    let playlist = status.playlist.clone();
 
-        let playlist_name = playlist.name().to_string();
-        let playlist_position = playlist.position();
-        // A song an edit took off the list, playing on: the position is the
-        // entry the playlist sits before, which is not the song playing.
-        let playlist_off_list = playlist.entry().is_none();
-        let playlist_songs: Vec<String> = playlist.songs().clone();
+    // The player's position is the song's: every loop jump, a section's
+    // or a looping song's pass, has put it back as it fell due, so a
+    // position in an armed section is already inside it.
+    let elapsed_ms = status
+        .elapsed
+        .clone()
+        .ok()
+        .flatten()
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
-        let (
-            song_name,
-            song_duration_ms,
-            tracks,
-            beat_grid,
-            looping,
-            available_sections,
-            pilot_hints,
-        ) = if let Some(current_song) = status.current_song.as_ref() {
+    let playlist_name = playlist.name().to_string();
+    let playlist_position = playlist.position();
+    // A song an edit took off the list, playing on: the position is the
+    // entry the playlist sits before, which is not the song playing.
+    let playlist_off_list = playlist.entry().is_none();
+    let playlist_songs: Vec<String> = playlist.songs().clone();
+
+    let (song_name, song_duration_ms, tracks, beat_grid, looping, available_sections, pilot_hints) =
+        if let Some(current_song) = status.current_song.as_ref() {
             let mappings = player.track_mappings();
             let track_gains: std::collections::HashMap<String, f32> = player
                 .get_track_gains()
@@ -220,102 +222,99 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             (String::new(), 0, vec![], None, false, vec![], vec![])
         };
 
-        let available_playlists = player.list_playlists();
-        let persisted_playlist_name = player.persisted_playlist_name();
+    let available_playlists = player.list_playlists();
+    let persisted_playlist_name = player.persisted_playlist_name();
 
-        let active_section = status.active_section.as_ref().map(|s| wire::ActiveSection {
-            name: s.name.clone(),
-            start_ms: s.start_time.as_millis() as u64,
-            end_ms: s.end_time.as_millis() as u64,
-        });
+    let active_section = status.active_section.as_ref().map(|s| wire::ActiveSection {
+        name: s.name.clone(),
+        start_ms: s.start_time.as_millis() as u64,
+        end_ms: s.end_time.as_millis() as u64,
+    });
 
-        let reactive_loop_state = {
-            use crate::player::ReactiveLoopState;
-            let section_name = |b: &crate::player::SectionBounds| b.name.clone();
-            match &status.reactive_loop_state {
-                ReactiveLoopState::Idle => wire::LoopState::Idle,
-                ReactiveLoopState::SectionOffered(b) => wire::LoopState::SectionOffered {
-                    section_name: section_name(b),
-                },
-                ReactiveLoopState::LoopArmed(b) => wire::LoopState::LoopArmed {
-                    section_name: section_name(b),
-                },
-                ReactiveLoopState::Looping(b) => wire::LoopState::Looping {
-                    section_name: section_name(b),
-                },
-                ReactiveLoopState::BreakRequested(b) => wire::LoopState::BreakRequested {
-                    section_name: section_name(b),
-                },
+    let reactive_loop_state = {
+        use crate::player::ReactiveLoopState;
+        let section_name = |b: &crate::player::SectionBounds| b.name.clone();
+        match &status.reactive_loop_state {
+            ReactiveLoopState::Idle => wire::LoopState::Idle,
+            ReactiveLoopState::SectionOffered(b) => wire::LoopState::SectionOffered {
+                section_name: section_name(b),
+            },
+            ReactiveLoopState::LoopArmed(b) => wire::LoopState::LoopArmed {
+                section_name: section_name(b),
+            },
+            ReactiveLoopState::Looping(b) => wire::LoopState::Looping {
+                section_name: section_name(b),
+            },
+            ReactiveLoopState::BreakRequested(b) => wire::LoopState::BreakRequested {
+                section_name: section_name(b),
+            },
+        }
+    };
+    // Current tempo and meter from the song's tempo map, sampled at the
+    // playhead so tempo changes show live.
+    let tempo = status.current_song.as_ref().and_then(|song| {
+        song.tempo_map().map(|map| {
+            let at = Duration::from_millis(elapsed_ms);
+            let time_signature = map.time_signature_at_time(at, 0.0);
+            wire::PlaybackTempo {
+                bpm: map.bpm_at_time(at, 0.0),
+                time_signature: (time_signature.numerator, time_signature.denominator),
             }
-        };
-        // Current tempo and meter from the song's tempo map, sampled at the
-        // playhead so tempo changes show live.
-        let tempo = status.current_song.as_ref().and_then(|song| {
-            song.tempo_map().map(|map| {
-                let at = Duration::from_millis(elapsed_ms);
-                let time_signature = map.time_signature_at_time(at, 0.0);
-                wire::PlaybackTempo {
-                    bpm: map.bpm_at_time(at, 0.0),
-                    time_signature: (time_signature.numerator, time_signature.denominator),
-                }
+        })
+    });
+
+    wire::Playback {
+        is_playing,
+        elapsed_ms,
+        song_name,
+        song_duration_ms,
+        playlist_name,
+        playlist_position,
+        playlist_off_list,
+        playlist_at_first: !playlist.can_move(true),
+        playlist_at_last: !playlist.can_move(false),
+        playlist_songs,
+        tracks,
+        available_playlists,
+        persisted_playlist_name,
+        locked: status.locked,
+        hardware_reload_started: status.deferred_reloads.started,
+        hardware_reload_refused: status
+            .deferred_reloads
+            .refused
+            .iter()
+            .map(|(generation, error)| wire::RefusedReload {
+                generation: *generation,
+                error: error.clone(),
             })
-        });
-
-        let msg = wire::SocketMessage::Playback(Box::new(wire::Playback {
-            is_playing,
-            elapsed_ms,
-            song_name,
-            song_duration_ms,
-            playlist_name,
-            playlist_position,
-            playlist_off_list,
-            playlist_at_first: !playlist.can_move(true),
-            playlist_at_last: !playlist.can_move(false),
-            playlist_songs,
-            tracks,
-            available_playlists,
-            persisted_playlist_name,
-            locked: status.locked,
-            hardware_reload_started: status.deferred_reloads.started,
-            hardware_reload_refused: status
-                .deferred_reloads
-                .refused
-                .iter()
-                .map(|(generation, error)| wire::RefusedReload {
-                    generation: *generation,
-                    error: error.clone(),
-                })
-                .collect(),
-            process_id: crate::player::process_id().to_string(),
-            beat_grid,
-            available_sections,
-            active_section,
-            looping,
-            reactive_loop_state,
-            pending_start_ms: status.pending_start.map(|d| d.as_millis() as u64),
-            pilot_hints,
-            tempo,
-            auto_play: status
-                .auto_play
-                .as_ref()
-                .map(|(song, starts_in)| wire::AutoPlay {
-                    song: song.clone(),
-                    starts_in_ms: starts_in.as_millis() as u64,
-                }),
-            ending: status
-                .ending
-                .as_ref()
-                .map(|(song, remaining)| wire::Ending {
-                    song: song.clone(),
-                    remaining_ms: remaining.as_millis() as u64,
-                }),
-            // With a DMX engine, whatever the mode, so the card can show it,
-            // or that the read did not answer.
-            ambient: status.ambient.as_ref().map(crate::player::DmxRead::view),
-            next: next_up(&playlist, is_playing),
-        }));
-
-        let _ = tx.send(to_json(&msg));
+            .collect(),
+        process_id: crate::player::process_id().to_string(),
+        beat_grid,
+        available_sections,
+        active_section,
+        looping,
+        reactive_loop_state,
+        pending_start_ms: status.pending_start.map(|d| d.as_millis() as u64),
+        pilot_hints,
+        tempo,
+        auto_play: status
+            .auto_play
+            .as_ref()
+            .map(|(song, starts_in)| wire::AutoPlay {
+                song: song.clone(),
+                starts_in_ms: starts_in.as_millis() as u64,
+            }),
+        ending: status
+            .ending
+            .as_ref()
+            .map(|(song, remaining)| wire::Ending {
+                song: song.clone(),
+                remaining_ms: remaining.as_millis() as u64,
+            }),
+        // With a DMX engine, whatever the mode, so the card can show it,
+        // or that the read did not answer.
+        ambient: status.ambient.as_ref().map(crate::player::DmxRead::view),
+        next: next_up(&playlist, is_playing),
     }
 }
 
@@ -406,7 +405,7 @@ pub fn stage_frame(
 
 /// Polls the log ring buffer at ~2Hz and broadcasts log lines.
 #[tracing::instrument(skip_all, name = "log_poller")]
-pub async fn log_poller(tx: broadcast::Sender<String>) {
+pub async fn log_poller(tx: broadcast::Sender<wire::SocketMessage>) {
     let mut interval = time::interval(Duration::from_millis(500));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
@@ -470,7 +469,7 @@ pub async fn log_poller(tx: broadcast::Sender<String>) {
             continue;
         }
 
-        let _ = tx.send(to_json(&wire::SocketMessage::Logs { lines: new_lines }));
+        let _ = tx.send(wire::SocketMessage::Logs { lines: new_lines });
     }
 }
 
@@ -490,7 +489,7 @@ pub fn new_waveform_cache() -> WaveformCache {
 #[tracing::instrument(skip_all, name = "waveform_poller")]
 pub async fn waveform_poller(
     player: Arc<Player>,
-    tx: broadcast::Sender<String>,
+    tx: broadcast::Sender<wire::SocketMessage>,
     cache: WaveformCache,
 ) {
     let mut interval = time::interval(Duration::from_millis(500));
@@ -579,8 +578,9 @@ pub async fn waveform_poller(
                 .await
                 .unwrap_or_default();
 
-        let _ = tx.send(to_json(&wire::SocketMessage::Waveform(
-            wire::Waveform::new(song_name, track_peaks.into_iter().chain(virtual_peaks)),
+        let _ = tx.send(wire::SocketMessage::Waveform(wire::Waveform::new(
+            song_name,
+            track_peaks.into_iter().chain(virtual_peaks),
         )));
     }
 }
@@ -590,7 +590,7 @@ pub async fn waveform_poller(
 /// This is event-driven (not polling): it waits on the ConfigStore's broadcast channel
 /// and sends a lightweight notification so clients know to re-fetch config.
 #[tracing::instrument(skip_all, name = "config_watcher")]
-pub async fn config_watcher(player: Arc<Player>, tx: broadcast::Sender<String>) {
+pub async fn config_watcher(player: Arc<Player>, tx: broadcast::Sender<wire::SocketMessage>) {
     let store = match player.config_store() {
         Some(s) => s,
         None => return, // No config store — nothing to watch.
@@ -604,13 +604,13 @@ pub async fn config_watcher(player: Arc<Player>, tx: broadcast::Sender<String>) 
                 if tx.receiver_count() == 0 {
                     continue;
                 }
-                let _ = tx.send(to_json(&wire::SocketMessage::ConfigChanged));
+                let _ = tx.send(wire::SocketMessage::ConfigChanged);
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("config_watcher missed {} change notifications", n);
                 // Still send one notification so clients know to re-fetch.
                 if tx.receiver_count() > 0 {
-                    let _ = tx.send(to_json(&wire::SocketMessage::ConfigChanged));
+                    let _ = tx.send(wire::SocketMessage::ConfigChanged);
                 }
             }
             Err(broadcast::error::RecvError::Closed) => break,
@@ -1158,7 +1158,7 @@ metronome: {}
                 .await
                 .expect("timed out waiting for playback message")
                 .expect("recv error");
-            serde_json::from_str(&msg).unwrap()
+            serde_json::from_str(&to_json(&msg)).unwrap()
         };
 
         // Off and idle with no show: still there, for the mode.
@@ -1190,7 +1190,7 @@ metronome: {}
             .expect("timed out waiting for playback message")
             .expect("recv error");
 
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         assert_eq!(parsed["type"], "playback");
         assert_eq!(parsed["song_name"], "Song A");
         assert_eq!(parsed["is_playing"], false);
@@ -1357,7 +1357,7 @@ metronome: {}
             .expect("timed out waiting for waveform message")
             .expect("recv error");
 
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         assert_eq!(parsed["type"], "waveform");
         assert_eq!(parsed["song_name"], "Song A");
         assert!(parsed["tracks"].is_array());
@@ -1379,7 +1379,7 @@ metronome: {}
             .expect("timed out waiting for waveform message")
             .expect("recv error");
 
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         assert_eq!(parsed["type"], "waveform");
         assert_eq!(parsed["song_name"], "Song A");
 
@@ -1392,7 +1392,7 @@ metronome: {}
     #[tokio::test]
     async fn playback_poller_skips_no_subscribers() {
         let player = test_player(&["Song A"]);
-        let (tx, _) = broadcast::channel::<String>(16);
+        let (tx, _) = broadcast::channel::<wire::SocketMessage>(16);
 
         // Drop the only receiver — poller should not panic
         let handle = tokio::spawn(playback_poller(player, tx));
@@ -1431,7 +1431,7 @@ metronome: {}
             .expect("timed out waiting for log message")
             .expect("recv error");
 
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         assert_eq!(parsed["type"], "logs");
         assert!(parsed["lines"].is_array());
         assert!(!parsed["lines"].as_array().unwrap().is_empty());
@@ -1471,7 +1471,7 @@ metronome: {}
         if let Ok(Ok(msg)) = result {
             // If we got a message, it might be from accumulated lines;
             // the important thing is the poller doesn't panic
-            let _: serde_json::Value = serde_json::from_str(&msg).unwrap();
+            let _: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         }
 
         handle.abort();
@@ -1638,7 +1638,7 @@ metronome: {}
     #[tokio::test]
     async fn playback_poller_no_subscribers_does_not_panic() {
         let player = test_player(&["Song A"]);
-        let (tx, _rx) = broadcast::channel::<String>(16);
+        let (tx, _rx) = broadcast::channel::<wire::SocketMessage>(16);
 
         // Drop the receiver immediately so receiver_count() == 0
         drop(_rx);
@@ -1656,7 +1656,7 @@ metronome: {}
     #[tokio::test]
     async fn waveform_poller_no_subscribers_skips() {
         let player = test_player(&["Song A"]);
-        let (tx, _rx) = broadcast::channel::<String>(16);
+        let (tx, _rx) = broadcast::channel::<wire::SocketMessage>(16);
         let cache = new_waveform_cache();
 
         // Drop the receiver
@@ -1674,7 +1674,7 @@ metronome: {}
 
     #[tokio::test]
     async fn log_poller_no_subscribers_skips() {
-        let (tx, _rx) = broadcast::channel::<String>(16);
+        let (tx, _rx) = broadcast::channel::<wire::SocketMessage>(16);
 
         // Drop the receiver
         drop(_rx);
@@ -1977,7 +1977,7 @@ metronome: {}
             .expect("timed out waiting for config_changed message")
             .expect("recv error");
 
-        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&msg)).unwrap();
         assert_eq!(parsed["type"], "config_changed");
 
         handle.abort();

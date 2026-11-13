@@ -713,6 +713,21 @@ mod tests {
         assert_eq!(response.code, FAILED_PRECONDITION);
     }
 
+    /// `Watch` carries the web UI's logs and waveforms, which a phone on
+    /// Bluetooth could not hold: it is not on the allowlist, and a call to
+    /// it is refused before the service sees it, locked or not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watch_is_not_reachable_over_bluetooth() {
+        assert!(!ALLOWED.contains(&"Watch"));
+        let (player, dispatcher, _device) = setup().await;
+        for locked in [false, true] {
+            player.set_locked(locked);
+            let response = call(&dispatcher, 5, "Watch", Vec::new()).await;
+            assert_eq!(response.code, PERMISSION_DENIED, "{}", response.message);
+            assert!(response.message.contains("Watch"), "{}", response.message);
+        }
+    }
+
     #[test]
     fn every_allowed_method_is_a_method_of_the_service() {
         let set = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).expect("descriptor");

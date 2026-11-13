@@ -154,7 +154,8 @@ pub struct Engine {
     pub(super) playback_generation: Arc<AtomicU64>,
     pub(super) timeline_finished: Arc<AtomicBool>,
     pub(super) timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
-    pub(super) broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
+    pub(super) broadcast_tx:
+        Mutex<Option<tokio::sync::broadcast::Sender<crate::webui::wire::messages::SocketMessage>>>,
     pub(super) watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
     /// Which show file watcher may reload the show: the one started for
     /// the song now playing. Bumped, under the timeline's lock, whenever
@@ -905,7 +906,10 @@ impl Engine {
     }
 
     /// Sets the broadcast channel so the file watcher can send reload notifications.
-    pub fn set_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+    pub fn set_broadcast_tx(
+        &self,
+        tx: tokio::sync::broadcast::Sender<crate::webui::wire::messages::SocketMessage>,
+    ) {
         *self.broadcast_tx.lock() = Some(tx);
     }
 

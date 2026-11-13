@@ -347,7 +347,15 @@ pub struct Player {
     /// The deferred hardware reloads started or refused, counted.
     deferred_reloads: Arc<parking_lot::Mutex<hardware::DeferredReloads>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
-    broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
+    broadcast_tx: Arc<
+        parking_lot::Mutex<
+            Option<tokio::sync::broadcast::Sender<crate::webui::wire::messages::SocketMessage>>,
+        >,
+    >,
+    /// The typed feeds the web UI's websocket and the gRPC `Watch` stream
+    /// both read, and the waveform cache. The player owns them so every
+    /// server it has reaches the same ones.
+    watch_hub: crate::webui::hub::WatchHub,
     /// Watch channel to signal hardware init completion.
     init_done_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// State sampler watch sender. Shared so async init can start the sampler
@@ -687,6 +695,7 @@ impl Player {
         };
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);
+        let watch_hub = crate::webui::hub::WatchHub::new();
 
         // Resolve the active playlist: use the requested name if it exists, else fall back to all_songs.
         let resolved_active = if playlists.contains_key(&active_playlist) {
@@ -726,7 +735,8 @@ impl Player {
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
             deferred_reloads: Arc::default(),
-            broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
+            broadcast_tx: Arc::new(parking_lot::Mutex::new(Some(watch_hub.sender()))),
+            watch_hub,
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
             stage_layout_tx: Arc::new(tokio::sync::watch::channel(0).0),
@@ -901,12 +911,21 @@ impl Player {
     /// Stores the broadcast channel and wires it to the DMX engine if one exists.
     /// If the DMX engine hasn't initialized yet, the channel is stored and will
     /// be wired when the engine comes up during async init.
-    pub fn set_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+    pub fn set_broadcast_tx(
+        &self,
+        tx: tokio::sync::broadcast::Sender<crate::webui::wire::messages::SocketMessage>,
+    ) {
         let dmx_engine = self.hardware.read().dmx_engine.clone();
         if let Some(ref engine) = dmx_engine {
             engine.set_broadcast_tx(tx.clone());
         }
         *self.broadcast_tx.lock() = Some(tx);
+    }
+
+    /// The feeds the web UI's websocket and the gRPC `Watch` stream read,
+    /// with the waveform cache.
+    pub fn watch_hub(&self) -> &crate::webui::hub::WatchHub {
+        &self.watch_hub
     }
 
     /// Stores the state sampler watch sender. When the DMX engine comes up

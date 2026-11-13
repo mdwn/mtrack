@@ -465,7 +465,6 @@ pub(super) mod test_helpers {
         playlists_dir: bool,
     ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
-        use tokio::sync::broadcast;
 
         let dir = tempfile::tempdir().unwrap();
 
@@ -497,8 +496,6 @@ pub(super) mod test_helpers {
                 .unwrap(),
         );
 
-        let (broadcast_tx, _) = broadcast::channel(16);
-
         player.set_song_sources(crate::player::SongSources {
             songs: songs_path,
             playlists_dir: playlists_dir.then(|| dir.path().to_path_buf()),
@@ -506,10 +503,8 @@ pub(super) mod test_helpers {
         });
         let state = WebUiState::new(super::super::server::WebUiStateParams {
             player,
-            broadcast_tx,
             config_path,
             profiles_dir: None,
-            waveform_cache: super::super::state::new_waveform_cache(),
         });
 
         (state, dir)

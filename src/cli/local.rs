@@ -247,24 +247,21 @@ pub async fn start(
         tokio::sync::watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
     player.set_state_tx(state_tx);
 
+    // The player's own watch hub feeds the web UI's websocket, the gRPC
+    // `Watch` stream (native and gRPC-Web) and the DMX file watcher. Its
+    // pollers run for as long as the player does, whether or not the web
+    // server starts or a gRPC controller is configured.
+    let _hub_tasks = player.watch_hub().start(player.clone());
+
     // Start the unified web server (dashboard + gRPC-Web + REST API)
     let _webui_handle = {
-        // Create a broadcast channel for the web UI (shared by dashboard WS and DMX file watcher)
-        let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(128);
-
-        // Store the broadcast channel on the player so async init can wire
-        // it to the DMX engine when it comes up.
-        player.set_broadcast_tx(broadcast_tx.clone());
-
         let profiles_dir = player_config.resolved_profiles_dir(player_path);
 
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
                 player: player.clone(),
-                broadcast_tx,
                 config_path: player_path.to_path_buf(),
                 profiles_dir,
-                waveform_cache: crate::webui::state::new_waveform_cache(),
             });
 
         crate::webui::server::start_or_unlock(

@@ -46,6 +46,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
+        // A `Watch` event is one message of a stream, made and sent; its
+        // largest case is the playback.
+        .type_attribute(
+            "player.v1.WatchEvent.event",
+            "#[allow(clippy::large_enum_variant)]",
+        )
         .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
 
     // The Bluetooth envelope: messages only, no service.
