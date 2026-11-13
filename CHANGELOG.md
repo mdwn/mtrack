@@ -179,6 +179,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service (`grpc.health.v1.Health`, for `grpc_health_probe` and the like), or, with only `curl`,
   fetch the web UI's page (`curl -sf http://host:8080/`). See [gRPC](docs/src/interfaces/grpc.md).
 
+## [0.18.2] - 2026-11-13
+
+Upgrade notes: what an existing setup can notice. Each is described in full below.
+
+- **Sequences whose first cue is not at `@1/1` move.** A sequence now starts at its own `@1/1`,
+  not at its earliest cue, so one opening on a later beat plays later than it did, where it is
+  written. A sequence that already opens at `@1/1` does not move.
+- **A sequence numbered from the score no longer loads without a `length:`.** One whose first cue
+  is a whole bar or more past its own `@1/1` (cues at `@17/1` onward, say) and that declares no
+  `length:` is refused at load. Renumber it from `@1/1`, or declare a `length:` if it is meant to
+  rest first. Run `validate_lighting` or `mtrack verify-light-show` over your shows first.
+
+### Fixed
+
+- **A looping sequence opened with an empty cue plays every pass**: a sequence whose first cue
+  has nothing under it (an `@1/1` anchor, say) played its first pass on `loop: N` and was silent
+  from the second on, live and after a seek. Each later pass starts by stopping the pass before
+  it, and that stop was taken for a `stop sequence` when the cue started none of the sequence's
+  own effects. An anchor with an effect under it was not affected.
+- **A sequence starts at its own `@1/1`, not at its earliest cue**: a sequence's cues were placed
+  from its earliest cue, so a figure resting on beat 1 (a backbeat on 2 and 4, a fill on the last
+  two beats of a bar) played early by however far its first cue was from beat 1, and an invisible
+  anchor at `@1/1` was needed to hold it in place. Its cues now count from its own `@1/1` (or
+  `@0.000` when any cue is written as a time), which lands where the sequence is used; its pass
+  length under `loop:`, a declared `length:`, and inline `loop { }` bodies count from there too.
+  A sequence numbered from the score would now rest that many bars at every use, so without a
+  `length:` it is refused at load with a message saying how to fix it.
+
 ## [0.18.1] - 2026-11-09
 
 ### Fixed
@@ -2188,6 +2216,16 @@ Upgrade notes: what an existing setup can notice. Each is described in full belo
   (prototype poisoning of merged objects), which `svelte-i18n` uses on the web UI's own bundled
   locale files, and `minimatch` in `eslint`, a development tool. Nothing in the served bundle
   changes.
+
+## [0.17.6] - 2026-11-13
+
+### Fixed
+
+- **A looping sequence opened with an empty cue plays every pass**: a sequence whose first cue
+  has nothing under it (an `@1/1` anchor, say) played its first pass on `loop: N` and was silent
+  from the second on, live and after a seek. Each later pass starts by stopping the pass before
+  it, and that stop was taken for a `stop sequence` when the cue started none of the sequence's
+  own effects. An anchor with an effect under it was not affected.
 
 ## [0.17.5] - 2026-11-04
 
