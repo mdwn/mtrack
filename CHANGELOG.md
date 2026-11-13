@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.6] - 2026-11-13
+
+### Fixed
+
+- **A looping sequence opened with an empty cue plays every pass**: a sequence whose first cue
+  has nothing under it (an `@1/1` anchor, say) played its first pass on `loop: N` and was silent
+  from the second on, live and after a seek. Each later pass starts by stopping the pass before
+  it, and that stop was taken for a `stop sequence` when the cue started none of the sequence's
+  own effects. An anchor with an effect under it was not affected.
+
 ## [0.17.5] - 2026-11-04
 
 ### Fixed
