@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::lighting::effects::*;
-use crate::lighting::engine::tests::common::create_test_fixture;
+use crate::lighting::engine::tests::common::{create_test_fixture, on_channel};
 use crate::lighting::engine::EffectEngine;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -379,8 +379,8 @@ fn test_layer_intensity_master() {
 
     // Get commands at full intensity
     let commands_full = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands_full.len(), 1);
-    let full_value = commands_full[0].value;
+    assert_eq!(commands_full.len(), 5);
+    let full_value = on_channel(commands_full, 1).value;
     assert_eq!(full_value, 255); // Full intensity
 
     // Set layer intensity master to 50%
@@ -389,8 +389,8 @@ fn test_layer_intensity_master() {
 
     // Get commands at 50% master
     let commands_half = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands_half.len(), 1);
-    let half_value = commands_half[0].value;
+    assert_eq!(commands_half.len(), 5);
+    let half_value = on_channel(commands_half, 1).value;
     assert_eq!(half_value, 127); // 50% of 255
 }
 
@@ -468,7 +468,7 @@ fn test_speed_master_affects_effect_progression() {
     // Get initial value
     let cmd1 = engine.update(Duration::from_millis(100), None).unwrap();
     assert!(!cmd1.is_empty());
-    let _initial_value = cmd1[0].value;
+    let _initial_value = on_channel(cmd1, 1).value;
 
     // Now set speed master to 0 (effectively frozen via speed = 0)
     engine.set_layer_speed_master(EffectLayer::Background, 0.0);
@@ -489,8 +489,8 @@ fn test_speed_master_affects_effect_progression() {
 
     // With speed = 0, effect time doesn't progress, so values should be consistent
     // (allowing for small floating point differences)
-    let val2 = cmd2[0].value;
-    let val3 = cmd3[0].value;
+    let val2 = on_channel(&cmd2, 1).value;
+    let val3 = on_channel(&cmd3, 1).value;
 
     // Values should be the same when speed is 0
     assert_eq!(
@@ -530,7 +530,7 @@ fn test_speed_master_resume_from_zero() {
 
     // Record frozen value
     let frozen_cmd = engine.update(Duration::from_millis(100), None).unwrap();
-    let frozen_val = frozen_cmd[0].value;
+    let frozen_val = on_channel(frozen_cmd, 1).value;
 
     // Wait a bit while frozen
     engine.update(Duration::from_millis(500), None).unwrap();
@@ -551,8 +551,8 @@ fn test_speed_master_resume_from_zero() {
     // After resuming, values should change (effect is running again)
     // We can't predict exact values due to sinusoidal pulse, but they should differ
     // over enough time
-    let val1 = resume_cmd1[0].value;
-    let val2 = resume_cmd2[0].value;
+    let val1 = on_channel(&resume_cmd1, 1).value;
+    let val2 = on_channel(&resume_cmd2, 1).value;
 
     // At least verify we got values (effect is running)
     assert!(!resume_cmd1.is_empty());

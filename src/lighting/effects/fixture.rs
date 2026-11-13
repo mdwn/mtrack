@@ -15,31 +15,22 @@
 use std::collections::HashMap;
 
 use super::color::Color;
+use super::composite::INTENSITY;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 
-/// Get the layer suffix for multiplier channel names
-#[inline]
-fn layer_suffix(layer: EffectLayer) -> &'static str {
-    match layer {
-        EffectLayer::Background => "_bg",
-        EffectLayer::Midground => "_mid",
-        EffectLayer::Foreground => "_fg",
-    }
-}
-
-/// Prefixes of the internal per-layer multiplier channels.
-///
-/// Effects that scale brightness route their level through one of these on fixtures
-/// with no dedicated dimmer channel, so the level modulates whatever colour the
-/// layers beneath provide instead of overwriting RGB. Every prefix listed here must
-/// also be resolved by `state::effective_channel_value`.
-pub const MULTIPLIER_PREFIXES: [&str; 3] = ["dimmer", "pulse", "chase"];
-
-/// Build a multiplier channel key (e.g. "_dimmer_mult_bg", "_pulse_mult_fg")
-#[inline]
-pub fn multiplier_key(prefix: &str, layer: EffectLayer) -> String {
-    format!("_{}_mult{}", prefix, layer_suffix(layer))
+/// The one internal contribution a level makes, whatever the fixture's
+/// hardware: its layer, blend mode and value, composited with the colour
+/// at the end of the frame (design 3.4).
+fn intensity(
+    value: f64,
+    layer: EffectLayer,
+    blend_mode: BlendMode,
+) -> HashMap<String, ChannelState> {
+    HashMap::from([(
+        INTENSITY.to_string(),
+        ChannelState::new(value, layer, blend_mode),
+    )])
 }
 
 /// Insert RGB channel states into a result map
@@ -282,45 +273,15 @@ impl FixtureProfile {
         }
     }
 
-    /// Apply a dimmer-or-multiplier value, using the given strategy.
-    /// Shared logic for brightness, pulse, and similar effects that either use a
-    /// dedicated dimmer channel or an RGB multiplier channel.
-    fn apply_dimmer_or_multiplier(
-        strategy_uses_dimmer: bool,
-        multiplier_prefix: &str,
-        value: f64,
-        layer: EffectLayer,
-        blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
-        if strategy_uses_dimmer {
-            result.insert(
-                "dimmer".to_string(),
-                ChannelState::new(value, layer, blend_mode),
-            );
-        } else {
-            result.insert(
-                multiplier_key(multiplier_prefix, layer),
-                ChannelState::new(value, layer, BlendMode::Multiply),
-            );
-        }
-        result
-    }
-
-    /// Apply brightness control using the fixture's strategy
+    /// Apply brightness control. A level is the same ask on every fixture:
+    /// how the hardware takes it is decided when the frame is resolved.
     pub fn apply_brightness(
         &self,
         level: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        Self::apply_dimmer_or_multiplier(
-            self.brightness_strategy == BrightnessStrategy::DedicatedDimmer,
-            "dimmer",
-            level,
-            layer,
-            blend_mode,
-        )
+        intensity(level, layer, blend_mode)
     }
 
     /// Apply color control using the fixture's strategy
@@ -389,8 +350,9 @@ impl FixtureProfile {
                     ChannelState::new(frequency, layer, blend_mode),
                 );
             }
-            StrobeStrategy::RgbStrobing => {
-                // Software strobing: use the provided strobe value
+            StrobeStrategy::RgbStrobing | StrobeStrategy::BrightnessStrobing => {
+                // Software strobing is a level that flashes whatever colour
+                // is beneath it.
                 if let Some(value) = strobe_value {
                     // When strobe is OFF (0), use Replace blend mode to override background
                     // When strobe is ON (1), use the original blend mode for layering
@@ -400,20 +362,7 @@ impl FixtureProfile {
                         blend_mode
                     };
 
-                    insert_rgb(&mut result, value, layer, effective_blend_mode);
-                }
-            }
-            StrobeStrategy::BrightnessStrobing => {
-                // Strobe brightness control
-                if let Some(value) = strobe_value {
-                    let effective_blend_mode = if value == 0.0 {
-                        BlendMode::Replace
-                    } else {
-                        blend_mode
-                    };
-
-                    let channel_state = ChannelState::new(value, layer, effective_blend_mode);
-                    result.insert("dimmer".to_string(), channel_state);
+                    result = intensity(value, layer, effective_blend_mode);
                 }
             }
         }
@@ -428,31 +377,25 @@ impl FixtureProfile {
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        Self::apply_dimmer_or_multiplier(
-            self.pulse_strategy == PulseStrategy::DedicatedDimmer,
-            "pulse",
-            pulse_value,
-            layer,
-            blend_mode,
-        )
+        intensity(pulse_value, layer, blend_mode)
     }
 
     /// Apply chase control using the fixture's strategy
     ///
-    /// A chase is a moving brightness mask, not a colour. On a fixture with no dimmer
-    /// channel the value goes to the chase multiplier rather than straight into RGB,
-    /// so the chase modulates the colour the layers beneath provide instead of
-    /// painting white over them and zeroing every inactive fixture.
+    /// A chase is a moving brightness mask, not a colour. In the gating modes it
+    /// is a level, composited with the colour the layers beneath provide (white
+    /// when there is none), so it modulates that colour instead of painting
+    /// over it.
     ///
     /// The blend mode decides what the mask does to the bed. `multiply` (and
     /// `replace`) gate it: the active fixture keeps its colour and every other
     /// fixture goes dark, the classic running light. `screen` and `add` lift it:
     /// the active fixture brightens toward white and the inactive fixtures keep
     /// the bed untouched, so a chase can ride over a wash without blacking out
-    /// the stage. A multiplier cannot lift anything, so the lifting modes write
-    /// the mask into the colour channels and let the blend do the work.
-    /// `overlay` is treated as `screen`: with a zero mask it would darken a dim
-    /// bed, which no chase means.
+    /// the stage. On a fixture with a dimmer the lift is a level too; on one
+    /// without, the mask goes into the colour channels and the blend does the
+    /// work. `overlay` is treated as `screen` there: with a zero mask it would
+    /// darken a dim bed, which no chase means.
     pub fn apply_chase(
         &self,
         chase_value: f64,
@@ -472,13 +415,7 @@ impl FixtureProfile {
                 insert_rgb(&mut result, chase_value, layer, lifting_mode);
                 result
             }
-            _ => Self::apply_dimmer_or_multiplier(
-                self.chase_strategy != ChaseStrategy::RgbChannels,
-                "chase",
-                chase_value,
-                layer,
-                blend_mode,
-            ),
+            _ => intensity(chase_value, layer, blend_mode),
         }
     }
 }
@@ -497,6 +434,23 @@ pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
 /// Each additive primary and the subtractive channel that removes it.
 pub const CMY_OF_RGB: [(&str, &str); 3] =
     [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
+
+/// Whether a channel map has a dimmer of its own: a fixture's, or a
+/// cell's. Without one, the level is carried on the colour channels.
+pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
+    channels.contains_key("dimmer")
+}
+
+/// The name a pixel fixture's cell registers under beside it: the
+/// fixture's, a slash, the cell's.
+pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
+    format!("{fixture}/{cell}")
+}
+
+/// The cell's own name in a name [`cell_fixture_name`] built.
+pub fn cell_name(sub_fixture: &str) -> &str {
+    sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
+}
 
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
@@ -677,6 +631,13 @@ impl FixtureInfo {
         self.cached_capabilities.contains(capability)
     }
 
+    /// Whether the fixture has a dimmer channel of its own. Without one,
+    /// its level is carried on its colour channels.
+    #[inline]
+    pub fn has_dimmer(&self) -> bool {
+        has_dimmer_channel(&self.channels)
+    }
+
     /// Get the cached fixture profile
     #[inline]
     pub fn profile(&self) -> &FixtureProfile {
@@ -791,32 +752,6 @@ mod tests {
             .with(FixtureCapabilities::RGB_COLOR)
             .with(FixtureCapabilities::RGB_COLOR);
         assert_eq!(caps.count(), 1);
-    }
-
-    // ── multiplier_key ───────────────────────────────────────────────
-
-    #[test]
-    fn multiplier_key_background() {
-        assert_eq!(
-            multiplier_key("dimmer", EffectLayer::Background),
-            "_dimmer_mult_bg"
-        );
-    }
-
-    #[test]
-    fn multiplier_key_midground() {
-        assert_eq!(
-            multiplier_key("pulse", EffectLayer::Midground),
-            "_pulse_mult_mid"
-        );
-    }
-
-    #[test]
-    fn multiplier_key_foreground() {
-        assert_eq!(
-            multiplier_key("chase", EffectLayer::Foreground),
-            "_chase_mult_fg"
-        );
     }
 
     // ── derive_capabilities ──────────────────────────────────────────
@@ -938,18 +873,19 @@ mod tests {
     fn apply_brightness_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
         let result = p.apply_brightness(0.75, EffectLayer::Background, BlendMode::Replace);
-        assert!(result.contains_key("dimmer"));
+        assert!(!result.contains_key("dimmer"), "a level, not a channel");
         assert!(!result.contains_key("red"));
-        assert!((result["dimmer"].value - 0.75).abs() < f64::EPSILON);
+        assert!((result[INTENSITY].value - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn apply_brightness_rgb_multiplication() {
+    fn apply_brightness_is_the_same_level_on_an_rgb_only_fixture() {
         let p = rgb_fixture().profile().clone();
         let result = p.apply_brightness(0.5, EffectLayer::Background, BlendMode::Replace);
         assert!(!result.contains_key("dimmer"));
-        let key = multiplier_key("dimmer", EffectLayer::Background);
-        assert!(result.contains_key(&key));
+        // Its blend mode is kept, not turned into a multiply.
+        assert_eq!(result[INTENSITY].blend_mode, BlendMode::Replace);
+        assert_eq!(result[INTENSITY].layer, EffectLayer::Background);
     }
 
     // ── apply_color ──────────────────────────────────────────────────
@@ -1004,9 +940,9 @@ mod tests {
             1.0,
             Some(1.0),
         );
-        assert!(result.contains_key("red"));
-        assert!(result.contains_key("green"));
-        assert!(result.contains_key("blue"));
+        // A software strobe is a level, so it flashes the colour beneath.
+        assert!(!result.contains_key("red"));
+        assert_eq!(result[INTENSITY].value, 1.0);
     }
 
     // ── apply_pulse ──────────────────────────────────────────────────
@@ -1015,15 +951,14 @@ mod tests {
     fn apply_pulse_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
         let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
-        assert!(result.contains_key("dimmer"));
+        assert!(result.contains_key(INTENSITY));
     }
 
     #[test]
     fn apply_pulse_rgb_multiplication() {
         let p = rgb_fixture().profile().clone();
         let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
-        let key = multiplier_key("pulse", EffectLayer::Midground);
-        assert!(result.contains_key(&key));
+        assert!(result.contains_key(INTENSITY));
     }
 
     // ── apply_chase ──────────────────────────────────────────────────
@@ -1032,11 +967,11 @@ mod tests {
     fn apply_chase_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
         let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
-        assert!(result.contains_key("dimmer"));
+        assert!(result.contains_key(INTENSITY));
     }
 
     #[test]
-    fn apply_chase_rgb_uses_multiplier_not_rgb_channels() {
+    fn apply_chase_rgb_is_a_level_not_rgb_channels() {
         let p = rgb_fixture().profile().clone();
         let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
 
@@ -1046,10 +981,9 @@ mod tests {
         assert!(!result.contains_key("green"));
         assert!(!result.contains_key("blue"));
 
-        let key = multiplier_key("chase", EffectLayer::Foreground);
-        let state = result.get(&key).expect("chase multiplier");
+        let state = result.get(INTENSITY).expect("chase level");
         assert_eq!(state.value, 0.5);
-        assert_eq!(state.blend_mode, BlendMode::Multiply);
+        assert_eq!(state.blend_mode, BlendMode::Replace);
     }
 
     #[test]
@@ -1065,7 +999,7 @@ mod tests {
             assert_eq!(state.value, 1.0);
             assert_eq!(state.blend_mode, BlendMode::Screen);
         }
-        assert!(!result.contains_key(&multiplier_key("chase", EffectLayer::Foreground)));
+        assert!(!result.contains_key(INTENSITY));
 
         let bed = ChannelState::new(0.4, EffectLayer::Background, BlendMode::Replace);
         let inactive = p.apply_chase(0.0, EffectLayer::Foreground, BlendMode::Screen);

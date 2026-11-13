@@ -90,6 +90,13 @@ pub struct Cell {
     pub offset: Vec3,
 }
 
+impl Cell {
+    /// Whether the cell has a dimmer channel of its own.
+    pub fn has_dimmer(&self) -> bool {
+        self.channels.contains_key("dimmer")
+    }
+}
+
 /// A structured channel definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelDef {
