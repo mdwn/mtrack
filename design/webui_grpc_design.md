@@ -1,12 +1,12 @@
 # The web UI on gRPC
 
-*Design doc, draft 1 — 2026-11-12. Follows `design/remote_phase3_design.md`
+*Design doc, draft 2 — 2026-11-12. Follows `design/remote_phase3_design.md`
 §5, which left open how far the web UI moves to gRPC. Mike has since decided
 the direction: "I'm not worried about cost. Consistency is a big thing here,
 but only if we can get the whole thing consistent. gRPC has a lot of
 advantages w/r/t versioning." The light view moved first (#730). This doc
 says what "the whole thing" is, how to get there without a broken web UI on
-the way, and what is his to decide (§10).*
+the way, and what was decided (§10).*
 
 ## 1. The end state
 
@@ -139,22 +139,32 @@ messages. The waveform is a message (it is numbers, and it gzips).
 
 ## 6. Services
 
-`PlayerService` has 44 RPCs and would pass 110. Split by area, all in
-`player.v1`, all on both ports:
+`PlayerService` has 44 RPCs and would pass 110. Three services, all in
+`player.v1`, all on both ports (decided, Mike, 2026-11-12):
 
 | Service | Holds |
 |---|---|
-| `PlayerService` | Performance: transport, sections, gains, ambient, the lock, status, the streams. What it has today stays, so nothing an app or script calls moves |
-| `ConfigService` | Config sections, profiles, validation, the config store |
-| `LibraryService` | Song files, song directories, browse and import, the editing side of playlists |
+| `PlayerService` | What a performer or a remote uses during a show: transport, sections, gains, ambient, the lock, status, the streams, and the playlist and song calls the phone makes. What it has today stays, so nothing an app or script calls moves |
+| `ConfigService` | What the editor pages use: config sections, profiles, validation, devices, calibration, Bluetooth pairing, controller restart, and the files of songs and playlists (song YAML, directories, browse and import, uploads) |
 | `LightingService` | Shows, validation and evaluation, fixture types, venues, MVR, fixture test |
-| `DeviceService` | Audio and MIDI devices, calibration, Bluetooth pairing, controller restart |
 
+- **The line is who calls, not what it touches.** Everything acts on the
+  one player: saving a song reloads it, a playlist is edited and performed.
+  A service is a group of names on the wire. All three are implemented over
+  the same `Player`, behind the same lock layer.
+- **Why three and not five.** Moving an RPC between services later is a
+  breaking rename. Lighting is large and stands apart; a finer split of the
+  rest (library, devices) would draw lines the code does not have.
+- **What it buys.** Clients are generated per service, so the phone app
+  and the Bluetooth allowlist deal with one small `PlayerService`, not 110
+  methods most of which they must not call.
 - **Bluetooth is unchanged.** Its allowlist names `PlayerService` methods.
   A new service is not reachable over Bluetooth unless a method is added to
   the list on purpose.
-- **Over Wi-Fi the phone could call all of it**, as §4.1 of the phase 3 doc
+- **Over Wi-Fi the phone could call all of it**, as the phase 3 doc
   already accepts for the web UI's network.
+- **Health** is the standard `grpc.health.v1.Health` service, on both
+  ports (§9).
 
 ## 7. One way to do the common things
 
@@ -178,12 +188,12 @@ handlers are mostly that already; the move is mechanical.
 
 | Step | What | Why here |
 |---|---|---|
-| G0 | Delete the 10 routes nothing calls. The test helper: answer any RPC from a spec by method name, as `stage-stream.ts` does for `WatchStage` | Cheap, and every later step needs the helper |
+| G0 | Delete the 10 routes nothing calls. The standard health service. The test helper: answer any RPC from a spec by method name, as `stage-stream.ts` does for `WatchStage` | Cheap, and every later step needs the helper |
 | G1 | `Watch`. The websocket and the status poll are deleted | The feeds are the part users see, and it removes a transport |
 | G2 | The RPCs that already exist: playlists, the lock, config sections, profiles, the song list. The web UI calls them; their REST twins are deleted | No new proto, and it removes the duplicated code first |
 | G3 | `ConfigService`: what is left of config and profiles | Small, text only |
-| G4 | `DeviceService`: devices, calibration, Bluetooth, restart | Small, and the harness moves with it |
-| G5 | `LibraryService`: song files, browse, import, waveform, tempo guess | Medium |
+| G4 | `ConfigService`: devices, calibration, Bluetooth, restart | Small, and the harness moves with it |
+| G5 | `ConfigService`: song files, browse, import, waveform, tempo guess | Medium |
 | G6 | `LightingService`: shows, validate, evaluate, fixture test | Medium |
 | G7 | `LightingService`: fixture types and venues | The largest handlers (8,800 lines with tests) |
 | G8 | Uploads and downloads (§5): tracks, samples, GDTF, MVR | Needs the new upload path; last because it is the only new mechanism |
@@ -200,9 +210,12 @@ Rust.
   endpoints. Anyone who scripted against it moves to `grpcurl` or a
   generated client. The changelog says so under Removed.
 - **Health checks.** `curl /api/status` is how the systemd test and people
-  check a player is up. Either `grpcurl … Status`, or one plain `GET
-  /healthz` that answers 200 and nothing else. Recommended: `/healthz`. It
-  is not an API.
+  check a player is up. The player gains the standard gRPC health service
+  (`grpc.health.v1.Health`, the `tonic-health` crate), which `grpcurl`,
+  `grpc_health_probe` and load balancers already know. It is not there
+  today. Plain `curl` cannot read it; a script with only `curl` fetches the
+  page (`curl -sf http://…:8080/`), which says the server is up. No
+  `/healthz` route.
 - **Reverse proxies.** A proxy in front of the web UI must pass streamed
   responses unbuffered, as it must for the websocket today. One line in
   the docs.
@@ -213,19 +226,18 @@ Rust.
 
 ## 10. Decisions
 
-1. **Services split by area** (§6), not one large `PlayerService`.
-   Recommended: yes.
-2. **One `Watch` stream beside `WatchStage`** (§4). Recommended: yes.
-3. **File bytes over HTTP at paths gRPC hands out** (§5). Recommended: yes;
-   a browser leaves no other way for uploads.
-4. **Each area leaves REST in the PR that moves it** (§8), so a release cut
-   mid-way has a REST API with holes. The alternative keeps every REST
-   route until G9 and deletes them together: a cleaner release note, and
-   two implementations to keep in step for the whole migration.
-   Recommended: delete as we go, and cut no release until G9 unless one is
-   needed.
-5. **A `/healthz` route** (§9). Recommended: yes.
-6. **Start with G0 and G1.** Recommended: yes.
+All decided with Mike, 2026-11-12.
+
+1. **Three services** (§6): `PlayerService` as it is, `ConfigService`,
+   `LightingService`. The line is who calls, not what it touches. The
+   first draft had five.
+2. **One `Watch` stream beside `WatchStage`** (§4).
+3. **File bytes over HTTP at paths gRPC hands out** (§5).
+4. **Each area leaves REST in the PR that moves it** (§8). A release cut
+   mid-way has a REST API with holes, so none is cut before G9 unless one
+   is needed.
+5. **The standard gRPC health service, and no `/healthz`** (§9).
+6. **Start with G0 and G1.**
 
 ## 11. What is not known
 
