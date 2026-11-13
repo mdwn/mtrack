@@ -13,12 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { waitForWebSocket } from "./helpers.js";
+import { waitForWatch } from "./helpers.js";
 
 test.describe("Smoke: Song Lighting Editor", () => {
   test("song with DSL lighting show shows lighting tab", async ({ page }) => {
     await page.goto(`/#/songs/${encodeURIComponent("A really cool song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("A really cool song")).toBeVisible({
       timeout: 10000,
     });
@@ -43,7 +43,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
     page,
   }) => {
     await page.goto(`/#/songs/${encodeURIComponent("DSL Light Show Song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("DSL Light Show Song")).toBeVisible({
       timeout: 10000,
     });
@@ -68,7 +68,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
 
   test("timeline editor loads for song with lighting", async ({ page }) => {
     await page.goto(`/#/songs/${encodeURIComponent("DSL Light Show Song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("DSL Light Show Song")).toBeVisible({
       timeout: 10000,
     });
@@ -86,7 +86,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
 
   test("Raw DSL tab shows editable text for light show", async ({ page }) => {
     await page.goto(`/#/songs/${encodeURIComponent("DSL Light Show Song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("DSL Light Show Song")).toBeVisible({
       timeout: 10000,
     });
@@ -110,7 +110,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
 
   test("validate button works on Raw DSL", async ({ page }) => {
     await page.goto(`/#/songs/${encodeURIComponent("DSL Light Show Song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("DSL Light Show Song")).toBeVisible({
       timeout: 10000,
     });
@@ -137,7 +137,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
 
   test("+ DSL button opens add dialog", async ({ page }) => {
     await page.goto(`/#/songs/${encodeURIComponent("DSL Light Show Song")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("DSL Light Show Song")).toBeVisible({
       timeout: 10000,
     });
@@ -164,7 +164,7 @@ test.describe("Smoke: Song Lighting Editor", () => {
   test("song without lighting shows lighting tab", async ({ page }) => {
     // "A really fast one" has no lighting config.
     await page.goto(`/#/songs/${encodeURIComponent("A really fast one")}`);
-    await waitForWebSocket(page);
+    await waitForWatch(page);
     await expect(page.getByText("A really fast one")).toBeVisible({
       timeout: 10000,
     });

@@ -12,14 +12,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The watch hub: the typed feeds the web UI's websocket and the gRPC
-//! `Watch` stream both read.
+//! The watch hub: the typed feeds the gRPC `Watch` stream reads.
 //!
 //! The pollers that watch the player (its playback, its log, the current
 //! song's waveform, its config store) and the light show watcher send what
-//! they find as [`SocketMessage`]s on one broadcast channel. The websocket
-//! writes each as the JSON it always was; `Watch` maps each to its proto
-//! message. The hub also owns the waveform cache, which the pollers fill
+//! they find as [`SocketMessage`]s on one broadcast channel. `Watch` maps
+//! each to its proto message. The hub also owns the waveform cache, which the pollers fill
 //! and the surfaces send a new client from.
 //!
 //! The hub belongs to the [`Player`], which both servers hold, so a player

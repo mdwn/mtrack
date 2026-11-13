@@ -14,7 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 
 test.describe("Config Save and Reload", () => {
   test.beforeEach(async ({ page }) => {
@@ -253,7 +253,7 @@ async function sendReloads(
   refused: { generation: number; error: string }[] = [],
   processId = "process-a",
 ) {
-  await sendWs(page, wsId, {
+  await sendWatch(page, wsId, {
     ...PLAYBACK_STATE,
     hardware_reload_started: started,
     hardware_reload_refused: refused,
@@ -261,7 +261,7 @@ async function sendReloads(
   });
 }
 
-/** Opens test-host's profile on a page of its own WebSocket, and answers
+/** Opens test-host's profile on a page of its own Watch stream, and answers
  *  its save as deferred, waiting for reload generation `awaits` (with the
  *  reply's other fields from `extra`). */
 async function openDeferredSave(

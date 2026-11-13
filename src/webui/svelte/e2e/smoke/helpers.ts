@@ -43,20 +43,20 @@ export const SONGS_WITH_LIGHTING = [
 ];
 
 /**
- * Wait for the WebSocket to connect and deliver initial state.
+ * Wait for the Watch stream to connect and deliver initial state.
  * Waits for the green status indicator dot in the nav.
  */
-export async function waitForWebSocket(page: Page): Promise<void> {
+export async function waitForWatch(page: Page): Promise<void> {
   await expect(page.locator(".status-indicator.connected")).toBeVisible({
     timeout: 15000,
   });
 }
 
 /**
- * Wait for the playback card to show a song name (WebSocket has delivered state).
+ * Wait for the playback card to show a song name (the Watch stream has delivered state).
  */
 export async function waitForPlaybackState(page: Page): Promise<void> {
-  await waitForWebSocket(page);
+  await waitForWatch(page);
   // Wait for the playback-song element to have non-empty, non-"No song" text.
   await expect(page.locator(".playback-song")).not.toHaveText("No song", {
     timeout: 15000,

@@ -592,7 +592,8 @@ with a hole in it. That is also what the next restart would give, so a venue
 edit that breaks it takes the running rig dark at once instead of at the next
 boot.
 
-It is hard to miss: the log says it once at `error` level, `GET /api/status`
+It is hard to miss: the log says it once at `error` level, the status the
+web UI watches (the `hardware` event of the gRPC `Watch` stream)
 reports `hardware.lighting_venue` as `failed` with the fixture and the reason,
 the web UI shows a red banner on every page and turns the health dot red, the
 Lighting Overview puts it first, and any save that leaves the current venue

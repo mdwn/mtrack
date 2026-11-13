@@ -16,7 +16,7 @@ import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
 import { fromBinary } from "@bufbuild/protobuf";
 import { SeekRequestSchema } from "../../src/gen/player/v1/player_pb";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
@@ -68,7 +68,7 @@ test.describe("Section editor preview transport", () => {
   test("playhead and musical readout appear when the song is current", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     // Stopped at 5.0s → measure 3, beat 3 of the 120 BPM 4/4 grid.
     await expect(page.locator(".playhead")).toBeVisible();
@@ -79,7 +79,7 @@ test.describe("Section editor preview transport", () => {
   test("pause on the playing current song fires Stop then Seek", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackState({ is_playing: true }));
+    await sendWatch(page, wsId, playbackState({ is_playing: true }));
 
     const playPause = page.locator(".preview-btn").first();
     await expect(playPause).toHaveClass(/preview-btn--live/);
@@ -96,7 +96,7 @@ test.describe("Section editor preview transport", () => {
   });
 
   test("stop rewinds the stopped current song to the top", async ({ page }) => {
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     const stopBtn = page.locator(".preview-btn").nth(1);
     await expect(stopBtn).toBeEnabled();
@@ -114,7 +114,7 @@ test.describe("Section editor preview transport", () => {
     // Two seconds in, so ArrowLeft's five-second step would land at -3s. A
     // negative Duration is rejected by the backend and only logged, which
     // would make the key a silent no-op.
-    await sendWs(page, wsId, playbackState({ elapsed_ms: 2000 }));
+    await sendWatch(page, wsId, playbackState({ elapsed_ms: 2000 }));
 
     const playhead = page.locator(".playhead");
     await playhead.focus();
@@ -132,7 +132,7 @@ test.describe("Section editor preview transport", () => {
   test("arrow keys on the focused playhead seek the preview", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     const playhead = page.locator(".playhead");
     await playhead.focus();
@@ -148,7 +148,7 @@ test.describe("Section editor preview transport", () => {
     page,
   }) => {
     // Stopped at 5.0s → measure 3, beat 3 of the 120 BPM 4/4 grid.
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     const firstBlock = page.locator(".section-block").first();
     const box = await firstBlock.boundingBox();

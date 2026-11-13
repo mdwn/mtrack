@@ -13,12 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { waitForWebSocket } from "./helpers.js";
+import { waitForWatch } from "./helpers.js";
 
 test.describe("Smoke: Navigation", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
-    await waitForWebSocket(page);
+    await waitForWatch(page);
   });
 
   test("all nav links are visible and functional", async ({ page }) => {
@@ -58,7 +58,7 @@ test.describe("Smoke: Navigation", () => {
     expect(text!.trim().length).toBeGreaterThan(0);
   });
 
-  test("WebSocket status indicator shows connected", async ({ page }) => {
+  test("Watch stream status indicator shows connected", async ({ page }) => {
     await expect(page.locator(".status-indicator.connected")).toBeVisible();
   });
 });

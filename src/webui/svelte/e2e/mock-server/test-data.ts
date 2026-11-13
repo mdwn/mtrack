@@ -27,7 +27,6 @@ import type {
   Readiness,
   RigModel,
   SceneryModel,
-  SocketMessage,
   SongList,
   Status,
   StoreSnapshot,
@@ -36,6 +35,7 @@ import type {
   StageMetadataMessage,
   StageStateMessage,
 } from "../support/stage-stream";
+import type { TypedWatchPush } from "../support/watch-stream";
 
 export const SONGS: SongList = {
   songs: [
@@ -371,7 +371,7 @@ export const PLAYBACK_STATE = {
   ending: null,
   ambient: null,
   next: null,
-} satisfies SocketMessage;
+} satisfies TypedWatchPush;
 
 /** The readiness of a rig where everything lines up, its facts and the
  *  player's verdicts on them. Specs that need a problem route their own copy
@@ -780,7 +780,7 @@ export const WAVEFORM_DATA = {
     { name: "snare", peaks: [0.1, 0.4, 0.7, 0.2, 0.6] },
     { name: "bass", peaks: [0.6, 0.5, 0.4, 0.7, 0.3] },
   ],
-} satisfies SocketMessage;
+} satisfies TypedWatchPush;
 
 export const LOG_LINES = {
   type: "logs",
@@ -794,7 +794,7 @@ export const LOG_LINES = {
       message: "Web UI listening on 0.0.0.0:8080",
     },
   ],
-} satisfies SocketMessage;
+} satisfies TypedWatchPush;
 
 /** An MVR as the inspect endpoint reports it (lighting UI design section 11):
  *  a three-fixture rig over a deck 6 m wide and 4 m deep, whose front edge is

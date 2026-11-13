@@ -13,12 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { waitForWebSocket } from "./helpers.js";
+import { waitForWatch } from "./helpers.js";
 
 test.describe("Smoke: Config", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/config");
-    await waitForWebSocket(page);
+    await waitForWatch(page);
   });
 
   test("config page loads and shows profile", async ({ page }) => {
@@ -57,7 +57,7 @@ test.describe("Smoke: Config", () => {
 test.describe("Smoke: Status Page", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/status");
-    await waitForWebSocket(page);
+    await waitForWatch(page);
   });
 
   test("status page shows build version", async ({ page }) => {

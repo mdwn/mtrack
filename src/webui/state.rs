@@ -368,11 +368,6 @@ fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wir
     })
 }
 
-/// A websocket message as sent.
-pub fn to_json(msg: &wire::SocketMessage) -> String {
-    serde_json::to_string(msg).unwrap_or_default()
-}
-
 /// The stage at one instant, by fixture -- channel values, poses,
 /// per-cell values and strobe rates -- from a snapshot's parts. The live
 /// stream and the preview's evaluation both build it here, so the stage
@@ -482,7 +477,7 @@ pub fn new_waveform_cache() -> WaveformCache {
     Arc::new(parking_lot::Mutex::new(HashMap::new()))
 }
 
-/// Polls for song changes and sends waveform peaks to WebSocket clients.
+/// Polls for song changes and sends waveform peaks to the hub's readers.
 ///
 /// Checks the shared cache first; on a miss, computes peaks on demand via
 /// `spawn_blocking` and inserts the result into the cache.
@@ -585,7 +580,7 @@ pub async fn waveform_poller(
     }
 }
 
-/// Watches the ConfigStore for mutations and broadcasts a signal to WebSocket clients.
+/// Watches the ConfigStore for mutations and broadcasts a signal to the hub's readers.
 ///
 /// This is event-driven (not polling): it waits on the ConfigStore's broadcast channel
 /// and sends a lightweight notification so clients know to re-fetch config.
@@ -933,6 +928,19 @@ fn get_venue_fixture_tags(
 mod test {
     use super::*;
     use serde_json::json;
+
+    /// A feed's message as the JSON of its payload, tagged with its feed.
+    fn to_json(msg: &wire::SocketMessage) -> String {
+        let (kind, mut value) = match msg {
+            wire::SocketMessage::Playback(playback) => ("playback", json!(playback)),
+            wire::SocketMessage::Logs { lines } => ("logs", json!({ "lines": lines })),
+            wire::SocketMessage::Waveform(waveform) => ("waveform", json!(waveform)),
+            wire::SocketMessage::ConfigChanged => ("config_changed", json!({})),
+            wire::SocketMessage::Reload(reload) => ("reload", json!(reload)),
+        };
+        value["type"] = json!(kind);
+        value.to_string()
+    }
 
     fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
         json!(next_up(playlist, is_playing))

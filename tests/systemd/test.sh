@@ -137,7 +137,6 @@ check "web UI serves HTML" bash -c "curl -sf http://127.0.0.1:8080/ | grep -q '<
 echo ""
 echo "--- Test: API access ---"
 
-check "status API responds" curl -sf -o /dev/null http://127.0.0.1:8080/api/status
 check "songs API responds" curl -sf -o /dev/null http://127.0.0.1:8080/api/songs
 
 echo ""

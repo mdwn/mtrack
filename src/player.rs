@@ -352,9 +352,9 @@ pub struct Player {
             Option<tokio::sync::broadcast::Sender<crate::webui::wire::messages::SocketMessage>>,
         >,
     >,
-    /// The typed feeds the web UI's websocket and the gRPC `Watch` stream
-    /// both read, and the waveform cache. The player owns them so every
-    /// server it has reaches the same ones.
+    /// The typed feeds the gRPC `Watch` stream reads, and the waveform
+    /// cache. The player owns them so every server it has reaches the same
+    /// ones.
     watch_hub: crate::webui::hub::WatchHub,
     /// Watch channel to signal hardware init completion.
     init_done_tx: Arc<tokio::sync::watch::Sender<bool>>,
@@ -922,8 +922,7 @@ impl Player {
         *self.broadcast_tx.lock() = Some(tx);
     }
 
-    /// The feeds the web UI's websocket and the gRPC `Watch` stream read,
-    /// with the waveform cache.
+    /// The feeds the gRPC `Watch` stream reads, with the waveform cache.
     pub fn watch_hub(&self) -> &crate::webui::hub::WatchHub {
         &self.watch_hub
     }

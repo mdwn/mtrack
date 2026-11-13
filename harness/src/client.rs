@@ -13,14 +13,18 @@
 //
 //! Talks to a running mtrack over the interfaces a real controller would use.
 //!
-//! Both transports are needed: the web API is the only place hardware and
-//! controller status is exposed, while gRPC carries playback control and the
-//! config mutations the persistence checks depend on.
+//! Both transports are needed: the web port is the only place a player whose
+//! gRPC port never opened can be observed (its hardware status is read from
+//! `Watch` over gRPC-Web, as the web UI reads it), while gRPC carries
+//! playback control and the config mutations the persistence checks depend
+//! on.
 
 use std::time::{Duration, Instant};
 
 use mtrack::proto::player::v1::player_service_client::PlayerServiceClient;
-use mtrack::proto::player::v1::{StatusRequest, StatusResponse};
+use mtrack::proto::player::v1::{
+    HardwareSnapshot, HardwareStatus, StatusRequest, StatusResponse, SubsystemStatus,
+};
 use tonic::transport::Channel;
 
 use crate::server::Server;
@@ -194,46 +198,43 @@ impl Client {
         Ok((status, response.text().await?))
     }
 
+    /// The build, hardware and controllers as the player reports them: the
+    /// hardware event `Watch` opens with.
+    pub async fn hardware_status(&self) -> Result<HardwareStatus, Box<dyn std::error::Error>> {
+        Ok(crate::watch::read_hardware(&self.http, &self.base_url).await?)
+    }
+
+    /// The hardware snapshot of [`Self::hardware_status`].
+    pub async fn hardware(&self) -> Result<HardwareSnapshot, Box<dyn std::error::Error>> {
+        Ok(self.hardware_status().await?.hardware.unwrap_or_default())
+    }
+
     /// The reported status of a hardware subsystem: `connected`,
     /// `initializing`, or `not_connected`.
     pub async fn subsystem_status(
         &self,
         subsystem: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let status = self.get_json("status").await?;
-        Ok(status
-            .get("hardware")
-            .and_then(|h| h.get(subsystem))
-            .and_then(|s| s.get("status"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("missing")
-            .to_string())
+        let hardware = self.hardware().await?;
+        Ok(subsystem_of(&hardware, subsystem)
+            .map(|s| s.status.clone())
+            .unwrap_or_else(|| "missing".to_string()))
     }
 
     /// The device name the player reports for a subsystem. This is what proves
-    /// a given profile actually took effect, since the status API's `profile`
+    /// a given profile actually took effect, since the status's `profile`
     /// field carries the profile's hostname (or `"default"`), not a name.
     pub async fn subsystem_device(
         &self,
         subsystem: &str,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let status = self.get_json("status").await?;
-        Ok(status
-            .get("hardware")
-            .and_then(|h| h.get(subsystem))
-            .and_then(|s| s.get("name"))
-            .and_then(|n| n.as_str())
-            .map(|s| s.to_string()))
+        let hardware = self.hardware().await?;
+        Ok(subsystem_of(&hardware, subsystem).and_then(|s| s.name.clone()))
     }
 
     /// The name of the active hardware profile.
     pub async fn active_profile(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let status = self.get_json("status").await?;
-        Ok(status
-            .get("hardware")
-            .and_then(|h| h.get("profile"))
-            .and_then(|p| p.as_str())
-            .map(|s| s.to_string()))
+        Ok(self.hardware().await?.profile)
     }
 
     /// Waits until the player reports it is playing.
@@ -297,6 +298,20 @@ impl Client {
         } else {
             crate::outcome::CheckError::before_assertion(message)
         })
+    }
+}
+
+/// One of the hardware snapshot's subsystems, by its name in the status.
+pub fn subsystem_of<'a>(
+    hardware: &'a HardwareSnapshot,
+    subsystem: &str,
+) -> Option<&'a SubsystemStatus> {
+    match subsystem {
+        "audio" => hardware.audio.as_ref(),
+        "midi" => hardware.midi.as_ref(),
+        "dmx" => hardware.dmx.as_ref(),
+        "trigger" => hardware.trigger.as_ref(),
+        _ => None,
     }
 }
 

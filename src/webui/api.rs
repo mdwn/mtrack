@@ -168,7 +168,6 @@ pub fn router() -> Router<WebUiState> {
                 .put(profiles::put_profile)
                 .delete(profiles::delete_profile_file),
         )
-        .route("/status", get(status::get_status))
         .route("/controllers/restart", post(status::restart_controllers))
         .route("/lock", put(status::put_lock))
         .route("/bluetooth", get(bluetooth::get_bluetooth))

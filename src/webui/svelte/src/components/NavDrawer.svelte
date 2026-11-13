@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import { wsConnected } from "../lib/ws/stores";
+  import { watchConnected } from "../lib/ws/stores";
   import { t } from "svelte-i18n";
   import BrandMark from "./BrandMark.svelte";
 
@@ -168,8 +168,8 @@
     </span>
     <span
       class="drawer__conn"
-      class:drawer__conn--off={!$wsConnected}
-      title={$wsConnected
+      class:drawer__conn--off={!$watchConnected}
+      title={$watchConnected
         ? $t("nav.connection.connected")
         : $t("nav.connection.disconnected")}
       aria-hidden="true"

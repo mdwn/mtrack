@@ -17,23 +17,26 @@ import { ALL_SONGS } from "./helpers.js";
 
 /**
  * These tests exercise the REST API directly to verify the backend
- * is serving real data from the example song repository.
+ * is serving real data from the example song repository (and, for the
+ * status, the stream the web UI reads it from).
  */
 test.describe("Smoke: REST API", () => {
-  test("GET /api/status returns build info and hardware status", async ({
-    request,
+  test("the Watch stream says the build and the hardware status", async ({
+    page,
   }) => {
-    const response = await request.get("/api/status");
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+    // The status page is drawn from the first `hardware` event of the stream.
+    await page.goto("/#/status");
 
     // Build info.
-    expect(body.build).toBeDefined();
-    expect(body.build.version).toBeDefined();
+    await expect(
+      page.locator(".card").filter({ hasText: "Build Info" }),
+    ).toBeVisible();
+    await expect(page.locator(".info-value").first()).not.toHaveText("");
 
     // Hardware info.
-    expect(body.hardware).toBeDefined();
-    expect(body.hardware.audio).toBeDefined();
+    await expect(
+      page.locator(".subsystem-row").filter({ hasText: "Audio" }),
+    ).toBeVisible();
   });
 
   test("GET /api/songs returns all example songs", async ({ request }) => {

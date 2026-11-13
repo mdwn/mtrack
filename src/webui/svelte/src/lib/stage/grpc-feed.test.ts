@@ -272,48 +272,28 @@ describe("the stream into the stores' sink", () => {
 });
 
 describe("the stage stores", () => {
-  type Sock = { onmessage?: (e: { data: string }) => void };
-  let socket: Sock;
-
   beforeEach(() => {
     vi.resetModules();
-    vi.stubGlobal("location", { protocol: "http:", host: "x", search: "" });
-    vi.stubGlobal(
-      "WebSocket",
-      class {
-        constructor() {
-          socket = this as unknown as Sock;
-        }
-        close() {}
-      },
-    );
   });
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  const send = (msg: object) =>
-    socket.onmessage!({ data: JSON.stringify(msg) });
   const get = <T>(store: { subscribe(f: (v: T) => void): () => void }) => {
     let v!: T;
     store.subscribe((x) => (v = x))();
     return v;
   };
 
-  it("ignore the websocket's old stage messages and are timed on the stream's writes", async () => {
+  it("are untouched by the Watch stream's messages, and are timed on the stage stream's writes", async () => {
     const stores = await import("../ws/stores");
-    stores.connect();
 
-    send({
-      type: "state",
-      fixtures: { a: { dimmer: 1 } },
-      poses: {},
-      cells: {},
-      strobe_rates: {},
-      active_effects: [],
-      under_test: [],
+    // What the dashboard's stream says does not reach the stage's stores.
+    stores.applyWatchMessage({
+      type: "logs",
+      lines: [{ level: "INFO", target: "t", message: "hi" }],
     });
-    send({ type: "metadata", fixtures: { a: { type: "t" } }, venue: null });
+    expect(get(stores.logStore).length).toBe(1);
     expect(get(stores.fixtureStore)).toEqual({});
     expect(get(stores.metadataStore)).toEqual({});
 
@@ -323,10 +303,6 @@ describe("the stage stores", () => {
     stores.applyStageState({ fixtures: { c: { dimmer: 3 } } });
     expect(Object.keys(get(stores.fixtureStore))).toEqual(["c"]);
     expect(timing.stageTiming.recorder.summary().count).toBe(1);
-
-    // Other websocket messages are untouched.
-    send({ type: "logs", lines: [{ level: "INFO", message: "hi" }] });
-    expect(get(stores.logStore).length).toBe(1);
   });
 
   it("hold the stream open while watched, and open nothing with no lease", async () => {

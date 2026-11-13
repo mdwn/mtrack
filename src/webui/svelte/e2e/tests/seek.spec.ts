@@ -14,7 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { playbackState as sharedPlaybackState } from "../support/playback";
 
 let testCounter = 0;
@@ -46,7 +46,7 @@ test.describe("Seek", () => {
   });
 
   test("clicking the progress bar sends a Seek gRPC call", async ({ page }) => {
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     const scrub = page.locator(".scrub");
     await expect(scrub).toBeVisible();
@@ -64,7 +64,7 @@ test.describe("Seek", () => {
   test("arrow keys on the focused progress bar seek instead of navigating", async ({
     page,
   }) => {
-    await sendWs(page, wsId, playbackState());
+    await sendWatch(page, wsId, playbackState());
 
     const scrub = page.locator(".scrub");
     await scrub.focus();
@@ -77,7 +77,7 @@ test.describe("Seek", () => {
   });
 
   test("pending seek position marker shows while stopped", async ({ page }) => {
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({
@@ -90,7 +90,7 @@ test.describe("Seek", () => {
     await expect(page.locator(".scrub__pending")).toBeVisible();
 
     // Marker disappears once playback starts (pending consumed).
-    await sendWs(
+    await sendWatch(
       page,
       wsId,
       playbackState({ is_playing: true, pending_start_ms: null }),

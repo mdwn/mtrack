@@ -13,14 +13,30 @@
 //
 
 import { test, expect } from "@playwright/test";
+import type { Status } from "../../src/gen/rules/mtrack_rules";
 import { StatusPageModel } from "../pages/status.page.js";
+import { STATUS } from "../mock-server/test-data";
+import { sendWatch, type WatchPush } from "../support/watch";
+
+let testCounter = 0;
+
+/** The mock's status with `change` made to a copy, as the player's
+ *  `hardware` event says it. */
+function hardware(change: (status: Status) => void): WatchPush {
+  const status: Status = structuredClone(STATUS);
+  change(status);
+  return { type: "hardware", ...status };
+}
 
 test.describe("Status Page", () => {
   let status: StatusPageModel;
+  let wsId: string;
 
   test.beforeEach(async ({ page }) => {
+    // The worker index keeps ids unique across parallel workers.
+    wsId = `status-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
     status = new StatusPageModel(page);
-    await status.goto();
+    await status.goto(wsId);
   });
 
   test("shows Status heading", async () => {
@@ -130,17 +146,20 @@ test.describe("Status Page", () => {
     expect(restartCalled).toBe(true);
   });
 
-  test("shows error banner on API failure", async ({ page }) => {
-    // Navigate away from status first, then set up the intercept,
-    // then navigate back so the component remounts and refetches.
-    await page.goto("/#/");
-    await page.route("**/api/status", async (route) => {
-      await route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Internal server error" }),
-      });
-    });
+  test("shows error banner when the Watch stream fails", async ({ page }) => {
+    // A stream the player answers with an error: the page opens it as it
+    // starts, so the route goes in before the page loads.
+    await page.route("**/player.v1.PlayerService/Watch", (route) =>
+      route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "application/grpc-web+proto",
+          "grpc-status": "13",
+          "grpc-message": "Internal server error",
+        },
+        body: "",
+      }),
+    );
 
     await page.goto("/#/status");
     const freshStatus = new StatusPageModel(page);
@@ -148,6 +167,7 @@ test.describe("Status Page", () => {
     await expect(freshStatus.errorBanner).toContainText(
       "Failed to load status",
     );
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** The failure this whole surface exists for.
@@ -160,35 +180,29 @@ test.describe("Status Page", () => {
   test("audio row reports a stalled callback, not a green Connected", async ({
     page,
   }) => {
-    await page.goto("/#/");
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.audio_output = {
-        status: "stalled",
-        callback_alive: false,
-        writing_signal: false,
-        since_last_callback_ms: 4200,
-        since_last_signal_ms: 4200,
-        callbacks: 1477,
-        recoveries: 0,
-        underruns: 0,
-        last_error: null,
-      };
-      await route.fulfill({ json: body });
-    });
+    await sendWatch(
+      page,
+      wsId,
+      hardware((s) => {
+        s.hardware.audio_output = {
+          status: "stalled",
+          callback_alive: false,
+          writing_signal: false,
+          since_last_callback_ms: 4200,
+          since_last_signal_ms: 4200,
+          callbacks: 1477,
+          recoveries: 0,
+          underruns: 0,
+          last_error: null,
+        };
+      }),
+    );
 
-    await page.goto("/#/status");
     const audioRow = page
       .locator(".subsystem-row")
       .filter({ hasText: "Audio" });
     await expect(audioRow).toContainText("Open, but not playing out");
     await expect(audioRow).not.toContainText("Connected");
-
-    // The page polls every 5s and this handler awaits route.fetch(), so a poll
-    // landing as the test ends raises "Target page ... has been closed while
-    // running route callback".
-    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** The point of coming up degraded: init gives up on a device that will never
@@ -198,22 +212,21 @@ test.describe("Status Page", () => {
   test("a subsystem that gave up reports Failed with the reason", async ({
     page,
   }) => {
-    await page.goto("/#/");
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.init_done = true;
-      body.hardware.audio = {
-        status: "failed",
-        name: null,
-        error:
-          "'hw:CARD=WING,DEV=0' was found but could not be opened: Unsupported bit depth for integer format: 24",
-      };
-      body.hardware.audio_output = null;
-      await route.fulfill({ json: body });
-    });
+    await sendWatch(
+      page,
+      wsId,
+      hardware((s) => {
+        s.hardware.init_done = true;
+        s.hardware.audio = {
+          status: "failed",
+          name: null,
+          error:
+            "'hw:CARD=WING,DEV=0' was found but could not be opened: Unsupported bit depth for integer format: 24",
+        };
+        s.hardware.audio_output = null;
+      }),
+    );
 
-    await page.goto("/#/status");
     const audioRow = page
       .locator(".subsystem-row")
       .filter({ hasText: "Audio" });
@@ -224,8 +237,6 @@ test.describe("Status Page", () => {
     await expect(page.locator(".subsystem-error")).toContainText(
       "Unsupported bit depth",
     );
-
-    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** Audio that came up with a profile mapping tracks past the device's
@@ -241,20 +252,19 @@ test.describe("Status Page", () => {
     await expect(audioRow).toContainText("Connected");
     await expect(audioRow.locator(".subsystem-link")).toHaveCount(0);
 
-    await page.goto("/#/");
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.audio = {
-        ...body.hardware.audio,
-        status: "connected",
-        error:
-          "audio device alsa:plughw:CARD=Headphones,DEV=0 has 8 channels, but the profile maps tracks past them (bass -> 9); songs using those tracks will not play",
-      };
-      await route.fulfill({ json: body });
-    });
+    await sendWatch(
+      page,
+      wsId,
+      hardware((s) => {
+        s.hardware.audio = {
+          ...s.hardware.audio,
+          status: "connected",
+          error:
+            "audio device alsa:plughw:CARD=Headphones,DEV=0 has 8 channels, but the profile maps tracks past them (bass -> 9); songs using those tracks will not play",
+        };
+      }),
+    );
 
-    await page.goto("/#/status");
     await expect(audioRow).toContainText("Connected");
     await expect(page.locator(".subsystem-error")).toContainText(
       "maps tracks past them",
@@ -262,8 +272,6 @@ test.describe("Status Page", () => {
     await expect(
       audioRow.getByRole("link", { name: "Fix Audio" }),
     ).toBeVisible();
-
-    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** A rig whose audio gave up must not read as healthy anywhere. `init_done`
@@ -272,53 +280,44 @@ test.describe("Status Page", () => {
   test("a failed subsystem shows as an error in the nav health indicator", async ({
     page,
   }) => {
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.init_done = true;
-      body.hardware.audio = {
-        status: "failed",
-        name: null,
-        error: "'hw:CARD=WING,DEV=0' was found but could not be opened",
-      };
-      body.hardware.audio_output = null;
-      await route.fulfill({ json: body });
-    });
+    await sendWatch(
+      page,
+      wsId,
+      hardware((s) => {
+        s.hardware.init_done = true;
+        s.hardware.audio = {
+          status: "failed",
+          name: null,
+          error: "'hw:CARD=WING,DEV=0' was found but could not be opened",
+        };
+        s.hardware.audio_output = null;
+      }),
+    );
 
-    // A reload, not a hash navigation: the nav's health comes from the app's
-    // own status poller, a module-level singleton that a route change does not
-    // restart. Hash-navigating back left the indicator waiting for the next
-    // poll, and that poll is 5s apart — the same as the expect timeout, which
-    // made it a coin flip. Reloading with the route already installed means
-    // the poller's very first fetch is the failed one.
-    await page.reload();
     // The indicator carries its verdict in the class and the accessible label;
     // the label is what a person actually reads out.
     await expect(page.locator(".topnav__conn--error")).toBeVisible();
-
-    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   test("audio row distinguishes recovering from stalled", async ({ page }) => {
-    await page.goto("/#/");
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.audio_output = {
-        status: "recovering",
-        callback_alive: false,
-        writing_signal: false,
-        since_last_callback_ms: 900,
-        since_last_signal_ms: 900,
-        callbacks: 1477,
-        recoveries: 2,
-        underruns: 0,
-        last_error: "ALSA function 'snd_pcm_open' failed",
-      };
-      await route.fulfill({ json: body });
-    });
+    await sendWatch(
+      page,
+      wsId,
+      hardware((s) => {
+        s.hardware.audio_output = {
+          status: "recovering",
+          callback_alive: false,
+          writing_signal: false,
+          since_last_callback_ms: 900,
+          since_last_signal_ms: 900,
+          callbacks: 1477,
+          recoveries: 2,
+          underruns: 0,
+          last_error: "ALSA function 'snd_pcm_open' failed",
+        };
+      }),
+    );
 
-    await page.goto("/#/status");
     const audioRow = page
       .locator(".subsystem-row")
       .filter({ hasText: "Audio" });
@@ -328,8 +327,6 @@ test.describe("Status Page", () => {
     // only trace left.
     await expect(audioRow).toContainText("2 stream recoveries");
     await expect(audioRow).toContainText("snd_pcm_open");
-
-    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** A healthy device must look ordinary: the fault styling is worthless if it

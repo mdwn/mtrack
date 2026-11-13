@@ -27,7 +27,8 @@ import type {
 import { writable } from "svelte/store";
 import type { FeedLease } from "../stage/grpc-feed";
 import { stageTiming } from "../stage/timing";
-import { connect as openSocket, on, onConnectionStatus } from "./connection";
+import { openWatch, type WatchMessage } from "../grpc/watch";
+import { statusStore } from "./status";
 
 /** The playback status, with `received_at`: performance.now() when the
  *  frame was received, so consumers extrapolate `elapsed_ms` smoothly
@@ -36,7 +37,13 @@ export type PlaybackState = Playback & { received_at: number };
 
 // --- Stores ---
 
-export const wsConnected = writable(false);
+/** Whether the tab's `Watch` stream is up: it has delivered, and not
+ *  ended since. */
+export const watchConnected = writable(false);
+
+/** Why the stream last failed; null while it is up, and before it has
+ *  failed. */
+export const watchError = writable<string | null>(null);
 
 /** Before the first frame; a frame's missing fields keep these too. */
 const IDLE: PlaybackState = {
@@ -125,13 +132,40 @@ export const reloadStore = writable<ShowReload | null>(null);
 
 // --- Wire up ---
 
-onConnectionStatus((connected) => {
-  wsConnected.set(connected);
-});
-
-on("playback", (m) => {
-  playbackStore.set({ ...IDLE, ...m, received_at: performance.now() });
-});
+/** Puts what the stream said in the stores. */
+export function applyWatchMessage(m: WatchMessage): void {
+  switch (m.type) {
+    case "playback":
+      playbackStore.set({
+        ...IDLE,
+        ...m.playback,
+        received_at: performance.now(),
+      });
+      break;
+    case "logs":
+      logStore.update((prev) => {
+        const next = [...prev, ...m.lines];
+        return next.length > MAX_LOG_LINES
+          ? next.slice(next.length - MAX_LOG_LINES)
+          : next;
+      });
+      break;
+    case "waveform":
+      waveformStore.set(m.waveform);
+      break;
+    case "reload":
+      reloadStore.set(m.reload);
+      // Clear after 3 seconds
+      setTimeout(() => reloadStore.set(null), 3000);
+      break;
+    case "hardware":
+      statusStore.set(m.status);
+      break;
+    case "config_changed":
+      // Nothing on the page reads it yet.
+      break;
+  }
+}
 
 /**
  * Puts the stage's state in the stores: a frame of the gRPC stage stream
@@ -157,31 +191,29 @@ export function applyStageMetadata(m: Partial<StageMetadata>): void {
   venueStore.set(m.venue ?? null);
 }
 
-on("logs", (m) => {
-  logStore.update((prev) => {
-    const next = [...prev, ...m.lines];
-    return next.length > MAX_LOG_LINES
-      ? next.slice(next.length - MAX_LOG_LINES)
-      : next;
-  });
-});
-
-on("waveform", (m) => {
-  waveformStore.set({ song_name: m.song_name, tracks: m.tracks ?? [] });
-});
-
-on("reload", (m) => {
-  reloadStore.set(m);
-  // Clear after 3 seconds
-  setTimeout(() => reloadStore.set(null), 3000);
-});
+let closeWatch: (() => void) | null = null;
 
 /**
- * Opens the websocket that fills these stores, and keeps it open. The app
- * calls this once as it starts (main.ts). Importing this module opens
+ * Opens the `Watch` stream that fills these stores, and keeps it open. The
+ * app calls this once as it starts (main.ts). Importing this module opens
  * nothing: a page fed another way (the stage-only page, which is given the
- * gRPC stage stream) imports the stores and never calls it.
+ * gRPC stage stream) imports the stores and never calls it. Called again, it
+ * closes the stream and opens a new one, which opens as every stream does:
+ * with the player's playback, waveform and hardware as they are now.
  */
 export function connect(): void {
-  openSocket();
+  closeWatch?.();
+  closeWatch = openWatch({
+    message: applyWatchMessage,
+    connected: () => {
+      watchError.set(null);
+      watchConnected.set(true);
+    },
+    disconnected: (error) => {
+      watchConnected.set(false);
+      if (error !== null) {
+        watchError.set(error instanceof Error ? error.message : String(error));
+      }
+    },
+  });
 }

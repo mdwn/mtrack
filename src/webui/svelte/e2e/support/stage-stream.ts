@@ -76,7 +76,7 @@ function pose(p: PoseSnapshot) {
 /** One gRPC-Web message frame: a flag byte (0), the length (4 bytes, big
  *  endian), the message. (The mock server's stream is never ended, so it
  *  has no trailer frame, flag 0x80.) */
-function dataFrame(message: Uint8Array): Buffer {
+export function dataFrame(message: Uint8Array): Buffer {
   const header = Buffer.alloc(5);
   header.writeUInt32BE(message.length, 1);
   return Buffer.concat([header, message]);

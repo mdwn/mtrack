@@ -465,25 +465,25 @@ pub async fn a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured() 
 
     // The gRPC controller answering at all means Phase 3 ran, which it could
     // not have while Phase 1 was still spinning.
-    let status = client.get_json("status").await?;
-    let audio = &status["hardware"]["audio"];
+    let hardware = client.hardware().await?;
+    let audio = hardware.audio.clone().unwrap_or_default();
     check!(
-        audio["status"] == "failed",
+        audio.status == "failed",
         "a device that will never open reported '{}', not 'failed'.\n\n\
          Anything else reads as still-trying or not-configured, and neither tells the \
          operator that the rig has stopped waiting for them.",
-        audio["status"]
+        audio.status
     );
-    let reason = audio["error"].as_str().unwrap_or_default();
+    let reason = audio.error.as_deref().unwrap_or_default();
     check!(
         reason.contains("could not be opened"),
         "the failed audio subsystem gave no usable reason: {:?}.\n\n\
          'failed' without the reason leaves the operator exactly where the perpetual \
          retry did.",
-        audio["error"]
+        audio.error
     );
     check!(
-        status["hardware"]["init_done"] == true,
+        hardware.init_done,
         "hardware init never completed, so the rig is still held up by the one device \
          that will never come."
     );

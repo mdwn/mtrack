@@ -148,7 +148,7 @@ rmcp = { version = "3.4", default-features = false, features = [
     "transport-streamable-http-server",
 ] }
 schemars = "1"
-axum = { version = "0.8", features = ["ws", "multipart"] }
+axum = { version = "0.8", features = ["multipart"] }
 http = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
@@ -180,7 +180,6 @@ criterion = "0.7"
 hound = "3.5.1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 serial_test = "3.4.0"
-tokio-tungstenite = "0.28"
 
 [build-dependencies]
 jiff = "0.2"

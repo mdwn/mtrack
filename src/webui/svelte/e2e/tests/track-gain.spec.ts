@@ -16,7 +16,7 @@ import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
 import { DashboardPage } from "../pages/dashboard.page.js";
 import { PLAYBACK_STATE } from "../mock-server/test-data.js";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 
 let testCounter = 0;
 
@@ -90,7 +90,7 @@ test.describe("Track Gain Sliders", () => {
 
     // Mute state is server-authoritative: the button reflects the next
     // WS frame, and the gain readout is untouched.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       tracks: [
         { name: "kick", output_channels: [0, 1], gain_db: 0, muted: true },
@@ -103,7 +103,7 @@ test.describe("Track Gain Sliders", () => {
   });
 
   test("server-pushed gain updates the slider when idle", async ({ page }) => {
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       tracks: [
         { name: "kick", output_channels: [0, 1], gain_db: 3 },

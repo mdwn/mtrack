@@ -234,7 +234,7 @@ impl Server {
 
     async fn wait_until_ready(&mut self, require_init: bool) -> Result<(), StartFailure> {
         let client = reqwest::Client::new();
-        let url = format!("{}/api/status", self.base_url());
+        let base_url = self.base_url();
         let deadline = Instant::now() + READY_TIMEOUT;
 
         let mut last_state = String::from("no response");
@@ -246,28 +246,15 @@ impl Server {
                 )));
             }
 
-            match client.get(&url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    let body: serde_json::Value = match response.json().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            last_state = format!("status body did not parse: {e}");
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            continue;
-                        }
-                    };
-                    let init_done = body
-                        .get("hardware")
-                        .and_then(|h| h.get("init_done"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if init_done || !require_init {
+            match crate::watch::read_hardware(&client, &base_url).await {
+                Ok(status) => {
+                    let hardware = status.hardware.unwrap_or_default();
+                    if hardware.init_done || !require_init {
                         return Ok(());
                     }
-                    last_state = format!("hardware still initializing: {}", body["hardware"]);
+                    last_state = format!("hardware still initializing: {hardware:?}");
                 }
-                Ok(response) => last_state = format!("HTTP {}", response.status()),
-                Err(e) => last_state = e.to_string(),
+                Err(e) => last_state = e,
             }
 
             tokio::time::sleep(Duration::from_millis(200)).await;

@@ -1175,8 +1175,8 @@ impl PlayerService for PlayerServer {
 
     type WatchStream = watch::WatchStream;
 
-    /// What the web UI's websocket and status poll carry, as one stream: see
-    /// [`watch::watch`]. A read, so open while locked.
+    /// What the web UI watches (playback, logs, waveform, hardware, reloads),
+    /// as one stream: see [`watch::watch`]. A read, so open while locked.
     async fn watch(
         &self,
         request: Request<WatchRequest>,

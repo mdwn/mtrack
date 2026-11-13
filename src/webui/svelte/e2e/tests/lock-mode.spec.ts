@@ -13,7 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { sendWs } from "../support/ws";
+import { sendWatch } from "../support/watch";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let lockTestCounter = 0;
@@ -61,8 +61,8 @@ test.describe("Lock Mode", () => {
       page.getByRole("heading", { name: "Hardware Profiles" }),
     ).toBeVisible();
 
-    // Lock the player via WebSocket
-    await sendWs(page, wsId, {
+    // Lock the player via the Watch stream
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
@@ -98,7 +98,7 @@ test.describe("Lock Mode", () => {
     );
 
     // Send unlocked first so we can dirty the playlist, then lock it.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
@@ -125,7 +125,7 @@ test.describe("Lock Mode", () => {
     await addBtn.click();
 
     // Now lock — the Save button should immediately become disabled.
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
@@ -149,7 +149,7 @@ test.describe("Lock Mode", () => {
   test("LIVE-locked stripe surfaces when locked", async ({ page }) => {
     const wsId = `lock-stripe-${++lockTestCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/`);
-    await sendWs(page, wsId, {
+    await sendWatch(page, wsId, {
       ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,

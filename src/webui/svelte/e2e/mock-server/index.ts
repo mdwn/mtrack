@@ -46,7 +46,6 @@ import express from "express";
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
 import { createServer } from "http";
-import { WebSocketServer, WebSocket } from "ws";
 import {
   SONGS,
   PLAYLISTS,
@@ -71,6 +70,7 @@ import {
   MVR_EXPORT_SUMMARY,
 } from "./test-data.js";
 import { StageStream, type StageMessage } from "../support/stage-stream.js";
+import { watchFrame, type WatchPush } from "../support/watch-stream.js";
 
 const app = express();
 app.use(express.json());
@@ -278,10 +278,6 @@ app.put("/api/samples/upload/:filename", (_req, res) => {
 });
 
 // --- Status ---
-
-app.get("/api/status", (_req, res) => {
-  res.json(STATUS);
-});
 
 app.post("/api/controllers/restart", (_req, res) => {
   res.json({ status: "restarted", controllers: STATUS.controllers });
@@ -1019,61 +1015,10 @@ app.delete("/api/calibrate", (_req, res) => {
 });
 
 // --- Test Control ---
-// POST /test/send-ws — broadcast a WebSocket message to all connected clients.
-// Used by Playwright tests to simulate state changes (e.g., playback starting).
-// WebSocket connections indexed by wsId query parameter.
-// Tests navigate to /?wsId=xxx, causing the app to connect with /ws?wsId=xxx.
-// sendWsMessage targets a specific wsId so messages don't leak between tests.
-/** A live test connection, and when its canned opening burst is done. */
-type TestConnection = { ws: WebSocket; ready: Promise<void> };
-const wsConnections = new Map<string, TestConnection>();
-
-// A test's POST races the page it just opened on two counts: the browser may
-// not have connected yet, and the connection's canned opening burst (below)
-// may still be in flight — a burst that would overwrite the very state the
-// test is pushing. Waiting for both here makes the endpoint mean "deliver to
-// this wsId", which is what every caller already assumed it meant.
+// How long a test's POST waits for the page it just opened: the browser may
+// not have opened its stream yet. Waiting makes the endpoints mean "deliver
+// to this wsId", which is what every caller assumes.
 const WS_WAIT_MS = 5000;
-async function waitForWs(wsId: string): Promise<WebSocket | null> {
-  const deadline = Date.now() + WS_WAIT_MS;
-  for (;;) {
-    const conn = wsConnections.get(wsId);
-    if (conn && conn.ws.readyState === WebSocket.OPEN) {
-      await conn.ready;
-      return conn.ws.readyState === WebSocket.OPEN ? conn.ws : null;
-    }
-    if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-// Send a WebSocket message to the connection identified by wsId.
-app.post("/test/send-ws", async (req, res) => {
-  const { _wsId, ...payload } = req.body;
-  const wsId = _wsId as string;
-  const msg = JSON.stringify(payload);
-
-  if (!wsId) {
-    // No wsId: broadcast to all (backward compat for tests that don't use namespacing).
-    let sent = 0;
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(msg);
-        sent++;
-      }
-    }
-    res.json({ sent });
-    return;
-  }
-
-  const ws = await waitForWs(wsId);
-  if (ws) {
-    ws.send(msg);
-    res.json({ sent: 1, wsId });
-  } else {
-    res.json({ sent: 0, wsId });
-  }
-});
 
 // --- The stage: the player's gRPC stream WatchStage ---
 // The page reads the stage from a gRPC-Web server stream. Each page that
@@ -1081,7 +1026,7 @@ app.post("/test/send-ws", async (req, res) => {
 // (the browser names the page in the request's Referer, so the web UI has
 // no test hook for it), and written to as tests push (POST /test/send-stage,
 // see e2e/support/stage.ts). A page that reconnects starts from the default
-// stage again, as a reconnecting websocket gets its opening burst again.
+// stage again, as a reopened stream gets its opening events again.
 /** A page's open stage stream. */
 type StageSession = { res: express.Response; stream: StageStream };
 const stageSessions = new Map<string, StageSession>();
@@ -1155,49 +1100,104 @@ app.post("/test/send-stage", async (req, res) => {
   }
 });
 
-// --- HTTP + WebSocket server ---
+// --- The dashboard's feed: the player's gRPC stream Watch ---
+// The page reads its playback, waveform, log lines, reloads and hardware
+// status from a gRPC-Web server stream, held open here per page like the
+// stage's, keyed by the wsId of the page it came from, and written to as
+// tests push (POST /test/send-watch, see e2e/support/watch.ts). A stream
+// opens as the player's does: with the playback, the waveform and the
+// hardware status (and the log lines the mock has), each the default unless
+// the test set the page's own (POST /test/watch-opening).
+/** A page's open Watch stream. */
+type WatchSession = { res: express.Response };
+const watchSessions = new Map<string, WatchSession>();
+/** Every open Watch stream, including those of pages that share an id (or
+ *  have none): a broadcast reaches all of them. */
+const allWatchSessions = new Set<WatchSession>();
 
-const server = createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+/** What a page's stream opens with in place of the defaults, by event. */
+const watchOpenings = new Map<string, Map<WatchPush["type"], WatchPush>>();
 
-// The opening burst every connection gets, in the same order as the real
-// server. Resolves once the last message is out: a test's own push has to
-// land after it, or the burst overwrites what the test just set up. (The
-// stage is not here: it is the gRPC stream above.)
-function sendInitialState(ws: WebSocket): Promise<void> {
-  const later: [number, unknown][] = [
-    [50, PLAYBACK_STATE],
-    [150, WAVEFORM_DATA],
-    [200, LOG_LINES],
-  ];
-  let last = 0;
-  for (const [delay, message] of later) {
-    last = Math.max(last, delay);
-    setTimeout(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
-      }
-    }, delay);
-  }
-  // Registered after the last send's timer, so it runs after it.
-  return new Promise((resolve) => setTimeout(resolve, last));
+/** Writes `message` into a page's stream. */
+function writeWatch(session: WatchSession, message: WatchPush): void {
+  session.res.write(watchFrame(message));
 }
 
-wss.on("connection", (ws, req) => {
-  // Extract wsId from query parameter for test isolation.
-  const url = new URL(req.url ?? "", "http://localhost");
-  const wsId = url.searchParams.get("wsId");
-  const ready = sendInitialState(ws);
-  if (wsId) {
-    wsConnections.set(wsId, { ws, ready });
-    // Only if this socket is still the registered one: a reconnect under the
-    // same wsId registers the new socket first, and an unconditional delete
-    // would then evict the live connection.
-    ws.on("close", () => {
-      if (wsConnections.get(wsId)?.ws === ws) wsConnections.delete(wsId);
-    });
+app.post("/player.v1.PlayerService/Watch", (req, res) => {
+  const wsId = wsIdOfReferer(req.headers.referer);
+  res.status(200).set({
+    "content-type": "application/grpc-web+proto",
+    "cache-control": "no-cache",
+    "x-accel-buffering": "no",
+  });
+  res.flushHeaders();
+  const session: WatchSession = { res };
+  const own = watchOpenings.get(wsId);
+  const opening = (message: WatchPush) => own?.get(message.type) ?? message;
+  writeWatch(session, opening(PLAYBACK_STATE as WatchPush));
+  writeWatch(session, opening(WAVEFORM_DATA as WatchPush));
+  writeWatch(session, opening({ type: "hardware", ...STATUS }));
+  writeWatch(session, opening(LOG_LINES as WatchPush));
+  watchSessions.set(wsId, session);
+  allWatchSessions.add(session);
+  // Only if this stream is still the registered one: a reconnect under the
+  // same wsId registers the new one first.
+  res.on("close", () => {
+    allWatchSessions.delete(session);
+    if (watchSessions.get(wsId) === session) watchSessions.delete(wsId);
+  });
+});
+
+async function waitForWatch(wsId: string): Promise<WatchSession | null> {
+  const deadline = Date.now() + WS_WAIT_MS;
+  for (;;) {
+    const session = watchSessions.get(wsId);
+    if (session && !session.res.writableEnded && !session.res.destroyed) {
+      return session;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+// Put a message on the page identified by wsId, or on every page without
+// one. `sent` is how many streams it went to.
+app.post("/test/send-watch", async (req, res) => {
+  const { _wsId, ...message } = req.body;
+  const wsId = (_wsId as string | undefined) ?? "";
+  if (!wsId) {
+    for (const session of allWatchSessions) {
+      writeWatch(session, message as WatchPush);
+    }
+    res.json({ sent: allWatchSessions.size });
+    return;
+  }
+  const session = await waitForWatch(wsId);
+  if (session) {
+    writeWatch(session, message as WatchPush);
+    res.json({ sent: 1, wsId });
+  } else {
+    res.json({ sent: 0, wsId });
   }
 });
+
+// Set what the streams of the page identified by wsId open with.
+app.post("/test/watch-opening", (req, res) => {
+  const { _wsId, ...message } = req.body;
+  const wsId = (_wsId as string | undefined) ?? "";
+  if (!wsId || typeof message.type !== "string") {
+    res.status(400).json({ error: "a wsId and a message with a type" });
+    return;
+  }
+  const own = watchOpenings.get(wsId) ?? new Map();
+  own.set(message.type, message as WatchPush);
+  watchOpenings.set(wsId, own);
+  res.json({ set: message.type, wsId });
+});
+
+// --- HTTP server ---
+
+const server = createServer(app);
 
 const PORT = 3111;
 server.listen(PORT, "127.0.0.1", () => {

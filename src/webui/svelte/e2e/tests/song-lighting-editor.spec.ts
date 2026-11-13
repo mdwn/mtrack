@@ -260,6 +260,11 @@ test.describe("Song Lighting Editor - Implicit file creation", () => {
   }) => {
     await page.goto("/#/songs/Test%20Song%20Beta/lighting");
     await expect(page.locator(".lighting-section")).toBeVisible();
+    // The page is locked until the player's first status arrives, and a
+    // locked page opens no dialog.
+    await expect(page.locator(".topnav__lock")).not.toHaveClass(
+      /topnav__lock--locked/,
+    );
 
     await page.getByRole("button", { name: /\+ DSL/i }).click();
     const dialog = page.locator('[role="dialog"]');

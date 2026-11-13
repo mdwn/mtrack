@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
 import { card } from "../support/locators";
 import type { VenueList } from "../../src/gen/rules/mtrack_rules";
-import { api, expect, synthGdtf, synthMvr, test } from "./harness";
+import { api, expect, status, synthGdtf, synthMvr, test } from "./harness";
 
 // The Lighting area against the real binary: each journey does what a user
 // does, then checks what persisted — through a fresh page load, the API and
@@ -367,10 +367,7 @@ test.describe("The fixture's settings", () => {
       project.read(`lighting/fixture_types/${renamed.owner!.file}`),
     ).toContain('fixture_type "Brick-Two"');
     expect(project.exists("lighting/fixture_types/brick.fixture")).toBe(false);
-    const status = await api<{
-      hardware: { lighting_venue: { status: string } };
-    }>(project, "/status");
-    expect(status.hardware.lighting_venue.status).toBe("ok");
+    expect((await status(project)).hardware.lighting_venue.status).toBe("ok");
   });
 });
 
@@ -525,13 +522,7 @@ test.describe("A GDTF copied into the library by hand", () => {
       expect(patch.spans.map((s) => s.footprint)).toEqual([4, 5]);
       await expect
         .poll(
-          async () =>
-            (
-              await api<{ hardware: { lighting_venue: { status: string } } }>(
-                project,
-                "/status",
-              )
-            ).hardware.lighting_venue.status,
+          async () => (await status(project)).hardware.lighting_venue.status,
         )
         .toBe("ok");
     };

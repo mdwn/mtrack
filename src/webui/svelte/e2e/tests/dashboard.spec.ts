@@ -28,7 +28,7 @@ test.describe("Dashboard", () => {
     await expect(dashboard.grid).toBeVisible();
   });
 
-  test("shows current song name from WebSocket", async () => {
+  test("shows current song name from the Watch stream", async () => {
     await expect(dashboard.songName).toBeVisible();
     await expect(dashboard.songName).toHaveText("Test Song Alpha");
   });
@@ -74,7 +74,7 @@ test.describe("Dashboard", () => {
     await expect(options).toHaveCount(2);
   });
 
-  test("shows tracks from WebSocket", async () => {
+  test("shows tracks from the Watch stream", async () => {
     await expect(dashboard.trackRows.first()).toBeVisible();
     await expect(dashboard.trackRows).toHaveCount(3);
     await expect(dashboard.trackRows.nth(0)).toContainText("kick");

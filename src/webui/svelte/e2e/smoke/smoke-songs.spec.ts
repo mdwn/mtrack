@@ -13,12 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { ALL_SONGS, waitForWebSocket } from "./helpers.js";
+import { ALL_SONGS, waitForWatch } from "./helpers.js";
 
 test.describe("Smoke: Song Browser", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/songs");
-    await waitForWebSocket(page);
+    await waitForWatch(page);
   });
 
   test("song browser lists all example songs", async ({ page }) => {

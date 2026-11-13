@@ -28,8 +28,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { FIT, STATUS } from "../mock-server/test-data";
-import type { GdtfMode, Readiness } from "../../src/gen/rules/mtrack_rules";
+import type {
+  GdtfMode,
+  Readiness,
+  Status,
+} from "../../src/gen/rules/mtrack_rules";
 import { sendStageUnchecked } from "../support/stage";
+import {
+  sendWatchUnchecked,
+  setWatchOpening,
+  type WatchPush,
+} from "../support/watch";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_IMAGES = path.resolve(
@@ -569,34 +578,43 @@ samples: {}
 `;
 
 interface StatusExtras {
-  test_output?: Record<string, unknown> | null;
-  lighting_venue?: Record<string, unknown>;
-  build_time?: () => string;
+  test_output?: Status["hardware"]["test_output"];
+  lighting_venue?: Status["hardware"]["lighting_venue"];
+  /** The server's build times: the page opens on the first, and the
+   *  player's stream says the second after it (a restart under the tab). */
+  build_time?: [string, string];
   /** The venue's fixtures as its file holds them (default: the rig's). */
   fixtures?: Fixture[];
 }
 
 /** Serves the whole rig: fixture types, the GDTF's facts and settings,
  *  the venue and its patch, readiness, the profile, and the status. */
+const rigged = new WeakMap<Page, WatchPush>();
+
+/** Opens `url` as the page `wsId`, its stream opening with the rig's status
+ *  (when `rig` has been called). */
+async function visit(page: Page, wsId: string, url: string) {
+  const status = rigged.get(page);
+  if (status) await setWatchOpening(page, wsId, status);
+  await page.goto(url);
+}
+
 async function rig(page: Page, status: StatusExtras = {}) {
   const fixtures = status.fixtures ?? FIXTURES;
   await page.route(/\/api\/lighting\/assets\/docs-(brick|bar)\//, (route) =>
     json(route, decoded(route).includes("docs-bar/") ? BAR_RIG : BRICK_RIG),
   );
-  await page.route("**/api/status", (route) => {
-    const body = structuredClone(STATUS) as typeof STATUS & {
-      hardware: Record<string, unknown>;
-    };
-    body.hardware.dmx = { status: "connected", name: "OLA" };
-    body.hardware.lighting_venue = status.lighting_venue ?? {
-      name: "house",
-      status: "ok",
-      error: null,
-    };
-    body.hardware.test_output = status.test_output ?? null;
-    if (status.build_time) body.build.build_time = status.build_time();
-    return json(route, body);
-  });
+  // What the player's stream opens with: the status of this rig.
+  const body: Status = structuredClone(STATUS);
+  body.hardware.dmx = { status: "connected", name: "OLA" };
+  body.hardware.lighting_venue = status.lighting_venue ?? {
+    name: "house",
+    status: "ok",
+    error: null,
+  };
+  body.hardware.test_output = status.test_output ?? null;
+  if (status.build_time) body.build.build_time = status.build_time[0];
+  rigged.set(page, { type: "hardware", ...body } as WatchPush);
   await page.route("**/api/config/store", async (route) => {
     const res = await route.fetch();
     const data = await res.json();
@@ -750,7 +768,7 @@ async function open(
   state: Record<string, unknown> = stateWith(),
 ) {
   const wsId = `docs-lighting-${++counter}-${Date.now()}`;
-  await page.goto(`/?wsId=${wsId}${hash}`);
+  await visit(page, wsId, `/?wsId=${wsId}${hash}`);
   // The mock's own burst comes first; ours replaces it.
   await page.waitForTimeout(400);
   await sendStageUnchecked(page, wsId, METADATA);
@@ -983,7 +1001,7 @@ function rainbowState() {
 async function openCells(page: Page, hash: string) {
   await rig(page);
   const wsId = `docs-cells-${++counter}-${Date.now()}`;
-  await page.goto(`/?wsId=${wsId}${hash}`);
+  await visit(page, wsId, `/?wsId=${wsId}${hash}`);
   await page.waitForTimeout(400);
   await sendStageUnchecked(page, wsId, CELLS_METADATA);
   await sendStageUnchecked(page, wsId, rainbowState());
@@ -1118,7 +1136,7 @@ test("banner-venue-failed", async ({ page }) => {
         'fixture "Brick 5" names mode "9: RGBW", which "PB15 PixelBrick" does not have (lighting/venues/house.venue)',
     },
   });
-  await page.goto("/#/");
+  await visit(page, "docs-banner-venue", "/?wsId=docs-banner-venue#/");
   await navWithBanner(page, "venue-failed-banner", "banner-venue-failed.png");
 });
 
@@ -1133,17 +1151,18 @@ test("banner-test-output", async ({ page }) => {
       expires_in_secs: 4,
     },
   });
-  await page.goto("/#/");
+  await visit(page, "docs-banner-test", "/?wsId=docs-banner-test#/");
   await navWithBanner(page, "test-output-banner", "banner-test-output.png");
 });
 
 test("banner-ui-updated", async ({ page }) => {
-  // The server's build changes after the first poll: a restart under the tab.
-  let polls = 0;
+  // The server's build changes after the page opened: a restart under the tab.
   await rig(page, {
-    build_time: () =>
-      polls++ === 0 ? "2026-01-01T00:00:00Z" : "2026-02-02T00:00:00Z",
+    build_time: ["2026-01-01T00:00:00Z", "2026-02-02T00:00:00Z"],
   });
-  await page.goto("/#/");
+  await visit(page, "docs-banner-ui", "/?wsId=docs-banner-ui#/");
+  const later = structuredClone(rigged.get(page)!) as { build?: object };
+  later.build = { ...STATUS.build, build_time: "2026-02-02T00:00:00Z" };
+  await sendWatchUnchecked(page, "docs-banner-ui", later as WatchPush);
   await navWithBanner(page, "ui-updated", "banner-ui-updated.png");
 });

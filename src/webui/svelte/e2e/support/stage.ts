@@ -16,7 +16,7 @@
 //
 // The page reads the stage from the player's gRPC stream `WatchStage`. The
 // mock server answers that call with a gRPC-Web response it keeps open per
-// page (keyed by the page's `wsId`, as the websocket is) and writes each
+// page (keyed by the page's `wsId`, as the Watch stream is) and writes each
 // pushed message into as it comes: what ./stage-stream.ts encodes. Every
 // helper here answers once the message is written, or fails: the mock
 // server waits (up to 5 s) for the page's stream to open first.

@@ -84,9 +84,9 @@ test.describe("Navigation", () => {
     await expect(page.getByText("Not Found")).toBeVisible();
   });
 
-  test("WebSocket status indicator shows connected", async () => {
+  test("Watch stream status indicator shows connected", async () => {
     await expect(nav.statusIndicator).toBeVisible();
-    // The "off" modifier is absent when the WebSocket is connected.
+    // The "off" modifier is absent when the Watch stream is connected.
     await expect(nav.statusIndicator).not.toHaveClass(/topnav__conn--off/);
   });
 
@@ -94,7 +94,7 @@ test.describe("Navigation", () => {
     await expect(nav.lockToggle).toBeVisible();
   });
 
-  test("now-playing shows song name from WebSocket", async () => {
+  test("now-playing shows song name from the Watch stream", async () => {
     await expect(nav.nowPlayingSong).toBeVisible();
     await expect(nav.nowPlayingSong).toHaveText("Test Song Alpha");
   });

@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The websocket's messages (`/ws`): the playback status, log lines,
-//! waveforms and reload notices. (The stage is not here: it is the gRPC
+//! The feeds' messages: the playback status, log lines, waveforms and
+//! reload notices, which `Watch` sends. (The stage is not here: it is the gRPC
 //! stream `WatchStage`; its types below are what the web UI reads it into.)
 
 use std::collections::{BTreeMap, HashMap};
@@ -27,10 +27,9 @@ use crate::lighting::geometry::Vec3;
 use crate::playlist::AmbientSource;
 use crate::state::PoseSnapshot;
 
-/// A websocket message, by its `type`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// One message of the hub's feeds: what the player's pollers and watchers
+/// report, which `Watch` maps to its events.
+#[derive(Clone, Debug, PartialEq)]
 pub enum SocketMessage {
     Playback(Box<Playback>),
     Logs {

@@ -51,7 +51,7 @@ subsystems, polled every 5 seconds:
   required when the active profile has them configured. The current venue not loading is red
   too, and puts a banner on every page (see
   [When a venue does not load](../lighting/configuration.md#when-a-venue-does-not-load)).
-- **Pulsing red** — The WebSocket connection itself is down. The lighting editor also shows a
+- **Pulsing red** — The web UI's `Watch` stream from the player is down. The lighting editor also shows a
   yellow warning banner in this state.
 
 Click the dot to jump to the [Status page](#status-page) for details and one-click "Configure →"
@@ -753,7 +753,10 @@ layout:
 - **Controllers** — Per-controller status (running / error) with a Restart button.
 - **Profile** — The matched hostname and active profile name.
 
-The page auto-refreshes every 5 seconds with an "Updated Xs ago" indicator. The top nav
+The page is live: the player sends its status when the page opens and again whenever it changes
+(within about a second), and the page says "Updating live" while it does. If the stream is lost
+it says how long ago the status it still shows was current. **Refresh** opens the stream again,
+which sends the status as it is now. The top nav
 health dot reflects the worst-case state of all required subsystems on this page (see
 [Connection & Health Indicator](#connection--health-indicator)).
 
@@ -792,10 +795,17 @@ configuration changes from the web UI.
 ## REST API
 
 The web UI exposes a comprehensive REST API for all management operations. Playback control
-uses gRPC-Web (PlayerService), and so does the light view (the stage plot and 3D): it reads the
-`WatchStage` stream (see [gRPC](grpc.md)), opened when a page first shows the stage. The rest of the
-real-time state (playback status, logs, waveforms and reload notices) uses WebSocket (`/ws`). The
-WebSocket no longer carries the stage: its `metadata` and `state` messages were removed.
+uses gRPC-Web (PlayerService), and so does everything the page watches: the `Watch` stream
+carries the playback status, log lines, the waveform, show reload notices and the build, hardware
+and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
+`WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no
+websocket, and no `/api/status`: the player's status is the `hardware` event of `Watch`.
+
+A reverse proxy in front of the web UI must pass streamed responses without buffering them
+(for nginx, `proxy_buffering off;` for these paths), or the live feeds stall.
+
+To check that a player is up from a script, fetch the page (`curl -sf http://host:8080/`), or use
+the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 
 All mutating REST endpoints are blocked when the player is in lock mode, returning
 HTTP 423 (Locked). These always work: read endpoints, playback control, the lock toggle,

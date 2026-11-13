@@ -217,6 +217,7 @@
   "status.audioRecoveries": "{count} stream {count, plural, one {recovery} other {recoveries}}",
   "status.audioUnderruns": "{count} {count, plural, one {underrun} other {underruns}}",
   "status.notConfigured": "Not Configured",
+  "status.live": "Updating live",
   "status.lastUpdated": "Updated {seconds}s ago",
   "status.audio": "Audio",
   "status.midi": "MIDI",

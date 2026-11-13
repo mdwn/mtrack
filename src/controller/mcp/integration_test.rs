@@ -2664,7 +2664,7 @@ async fn mcp_diff_shows_reports_resolved_changes() -> Result<(), Box<dyn Error>>
 // ---------------------------------------------------------------------------
 
 /// The lighting feed exists — a 20Hz sampler on a watch channel that the web
-/// UI's `/ws` already streams. This connects it to MCP so a monitoring client
+/// UI's stage stream already reads. This connects it to MCP so a monitoring client
 /// gets pushes instead of polling `status` + `get_active_effects` at 120
 /// requests a second, which is the load #332 was suspected of being induced by.
 #[tokio::test(flavor = "multi_thread")]

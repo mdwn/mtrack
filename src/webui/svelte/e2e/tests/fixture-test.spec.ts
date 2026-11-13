@@ -13,8 +13,8 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { sendWs } from "../support/ws";
-import { PLAYBACK_STATE } from "../mock-server/test-data";
+import { sendWatch, setWatchOpening } from "../support/watch";
+import { PLAYBACK_STATE, STATUS } from "../mock-server/test-data";
 
 // "Test this fixture" on a fixture's page: does the light answer when
 // mtrack sends to it, and if not, why not. Every test records what the page
@@ -57,7 +57,7 @@ async function options(
 }
 
 async function playback(page: Page, id: string, extra: object) {
-  await sendWs(page, id, { ...PLAYBACK_STATE, tracks: [], ...extra });
+  await sendWatch(page, id, { ...PLAYBACK_STATE, tracks: [], ...extra });
 }
 
 /** Opens a fixture's page and its test section. */
@@ -255,23 +255,24 @@ test("the nav says a test is live on every page, and stops it", async ({
   page,
 }) => {
   const sent = await record(page);
-  let live = true;
-  await page.route("**/api/status", async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    body.hardware.test_output = live
-      ? {
-          universe: 1,
-          address: 5,
-          footprint: 4,
-          fixture_type: "pixelbrick",
-          mode: "8: RGBS",
-          expires_in_secs: 4,
-        }
-      : null;
-    await route.fulfill({ response: res, json: body });
+  const id = wsId();
+  // The player's status says a test is live.
+  await setWatchOpening(page, id, {
+    type: "hardware",
+    ...STATUS,
+    hardware: {
+      ...STATUS.hardware,
+      test_output: {
+        universe: 1,
+        address: 5,
+        footprint: 4,
+        fixture_type: "pixelbrick",
+        mode: "8: RGBS",
+        expires_in_secs: 4,
+      },
+    },
   });
-  await page.goto(`/?wsId=${wsId()}#/`);
+  await page.goto(`/?wsId=${id}#/`);
   const banner = page.getByTestId("test-output-banner");
   await expect(banner).toContainText(
     "Test output is live on universe 1, addresses 5–8 (pixelbrick).",
@@ -280,7 +281,6 @@ test("the nav says a test is live on every page, and stops it", async ({
     "href",
     "#/lighting/fixtures/pixelbrick",
   );
-  live = false;
   await page.getByTestId("test-output-stop").click();
   await expect.poll(() => sent.at(-1)?.method).toBe("DELETE");
   await expect(banner).toHaveCount(0);
