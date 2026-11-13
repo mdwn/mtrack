@@ -1128,6 +1128,432 @@ message StageFrame {
     uint32 layout = 7;
 }
 
+// WatchTopic is one of the feeds of the Watch stream.
+enum WatchTopic {
+    // Not a topic. Ignored when it is in WatchRequest.topics.
+    WATCH_TOPIC_UNSPECIFIED = 0;
+    // What the player is doing: Playback events.
+    WATCH_TOPIC_PLAYBACK = 1;
+    // The player's log lines: LogLines events.
+    WATCH_TOPIC_LOGS = 2;
+    // The current song's waveform: Waveform events.
+    WATCH_TOPIC_WAVEFORM = 3;
+    // That the config changed: ConfigChanged events.
+    WATCH_TOPIC_CONFIG_CHANGED = 4;
+    // That a song's light show was reloaded from disk: ShowReload events.
+    WATCH_TOPIC_RELOAD = 5;
+    // The build, the hardware and the controllers: HardwareStatus events.
+    WATCH_TOPIC_HARDWARE = 6;
+}
+
+// WatchRequest opens the Watch stream.
+message WatchRequest {
+    // The feeds the caller wants. Empty means every topic. Unspecified and
+    // unknown values are ignored; a list of only those means every topic
+    // too.
+    repeated WatchTopic topics = 1;
+}
+
+// WatchEvent is one message of the Watch stream: one feed's news.
+message WatchEvent {
+    oneof event {
+        // What the player is doing. About five times a second, while it is
+        // watched.
+        Playback playback = 1;
+        // Log lines the player wrote since the last event.
+        LogLines logs = 2;
+        // The waveform of the song the playlist is on.
+        Waveform waveform = 3;
+        // The config store changed: read again what is shown of it.
+        ConfigChanged config_changed = 4;
+        // A song's light show was reloaded from disk, or failed to.
+        ShowReload reload = 5;
+        // The build, the hardware and the controllers. Sent when the stream
+        // opens and again whenever it changes.
+        HardwareStatus hardware = 6;
+    }
+}
+
+// Playback is everything the player says about what it is doing: the
+// transport, the playlist, the song's tracks and sections, and what comes
+// next. It carries more than RemoteStatus and StatusResponse do, for a
+// client that draws the whole dashboard from one message.
+message Playback {
+    // True while a song is playing.
+    bool is_playing = 1;
+    // How far into the song the player is: on the playback clock while
+    // playing, the position kept for the next play while stopped.
+    google.protobuf.Duration elapsed = 2;
+    // The name of the song the playlist is on. Empty when it has none.
+    string song_name = 3;
+    // How long that song plays, its lighting included.
+    google.protobuf.Duration song_duration = 4;
+    // The name of the current playlist.
+    string playlist_name = 5;
+    // The index of the entry the playlist is on. While playlist_off_list
+    // is true it is the entry the playlist sits before.
+    uint32 playlist_position = 6;
+    // A song an edit took off the list is playing on: the playlist sits
+    // before the entry at playlist_position rather than on it.
+    bool playlist_off_list = 7;
+    // True when Previous has no entry to move back to.
+    bool playlist_at_first = 8;
+    // True when Next has no entry to move on to.
+    bool playlist_at_last = 9;
+    // The names of the current playlist's songs, in playing order.
+    repeated string playlist_songs = 10;
+    // The current song's output tracks, with their mixer settings.
+    repeated PlaybackTrack tracks = 11;
+    // The names of the playlists the player has.
+    repeated string available_playlists = 12;
+    // The name of the playlist the player starts with: the one saved in its
+    // config, which may differ from the current one.
+    string persisted_playlist_name = 13;
+    // Whether the player is locked.
+    bool locked = 14;
+    // The last deferred hardware reload generation started (or refused). A
+    // config save's deferral is over once this reaches the generation the
+    // save's reply named. What each device then does is HardwareStatus's to
+    // say.
+    uint64 hardware_reload_started = 15;
+    // The deferred hardware reloads that were refused, with why.
+    repeated RefusedReload hardware_reload_refused = 16;
+    // Which process the generations are: a restart counts from none again.
+    // A string, as it is more than a double holds exactly.
+    string process_id = 17;
+    // The song's beat grid. Absent when it has none.
+    optional PlaybackGrid beat_grid = 18;
+    // The current song's sections.
+    repeated Section available_sections = 19;
+    // The section the playhead is in. Absent when it is in none.
+    optional ActiveSection active_section = 20;
+    // Whether the current song loops.
+    bool looping = 21;
+    // The reactive section loop's state, with the section it is about.
+    LoopState reactive_loop_state = 22;
+    // The position the next play starts from, set by seeking while stopped.
+    // Absent when none is.
+    optional google.protobuf.Duration pending_start = 23;
+    // The song's pilot hints, resolved against its tracks and sections.
+    repeated PilotHint pilot_hints = 24;
+    // The tempo and metre from the song's tempo map, at the playhead. Absent
+    // when the song has no tempo map.
+    optional PlaybackTempo tempo = 25;
+    // The song waiting to start by itself, its entry's auto play gap
+    // running. Absent when none is.
+    optional AutoPlayStatus auto_play = 26;
+    // A looping song fading out after a stop, with nothing after it; a
+    // second stop cuts it. Absent when none is.
+    optional PlaybackEnding ending = 27;
+    // The show the rig plays while no song is: present with a DMX engine,
+    // whatever the mode, or (with available false) that the read of the
+    // engine did not answer. Absent without a DMX engine.
+    optional AmbientStatus ambient = 28;
+    // What comes after the current song and how it arrives. Absent with no
+    // current song.
+    optional NextUp next = 29;
+}
+
+// PlaybackTrack is an output track of the current song, with its mixer
+// settings.
+message PlaybackTrack {
+    // The track's name.
+    string name = 1;
+    // The output channels the track plays on.
+    repeated uint32 output_channels = 2;
+    // The track's output gain in dB.
+    double gain_db = 3;
+    // Whether the track is muted (independently of the gain).
+    bool muted = 4;
+}
+
+// RefusedReload is a deferred hardware reload the player refused.
+message RefusedReload {
+    // The reload's generation.
+    uint64 generation = 1;
+    // Why it was refused.
+    string error = 2;
+}
+
+// PlaybackGrid is the song's beat grid, with the accent levels the
+// metronome plays.
+message PlaybackGrid {
+    // The beat grid itself.
+    BeatGrid grid = 1;
+    // One level per beat: 0 silent, 1 normal, 2 half, 3 accent. What the
+    // audio metronome plays, for a visual one. Absent when the song has no
+    // metronome.
+    optional bytes accent_levels = 2;
+}
+
+// ActiveSection is the section of the song the playhead is in.
+message ActiveSection {
+    // The section's name.
+    string name = 1;
+    // Where the section starts in the song.
+    google.protobuf.Duration start = 2;
+    // Where the section ends in the song.
+    google.protobuf.Duration end = 3;
+}
+
+// LoopState is the reactive section loop's state, with the section it is
+// about.
+message LoopState {
+    // "idle", "section_offered", "loop_armed", "looping" or
+    // "break_requested".
+    string state = 1;
+    // The section the state is about. Absent when the state is "idle".
+    optional string section_name = 2;
+}
+
+// PilotHint is a pilot track's cue, resolved to times in the song.
+message PilotHint {
+    // The cue's label.
+    string label = 1;
+    // Where the cue falls in the song.
+    google.protobuf.Duration at = 2;
+    // Where its audio starts in the song.
+    google.protobuf.Duration start = 3;
+    // Where its audio ends in the song.
+    google.protobuf.Duration end = 4;
+    // Whether the cue has audio.
+    bool has_audio = 5;
+}
+
+// PlaybackTempo is a tempo and metre: at the playhead.
+message PlaybackTempo {
+    // Beats per minute.
+    double bpm = 1;
+    // The top of the time signature.
+    uint32 numerator = 2;
+    // The bottom of the time signature.
+    uint32 denominator = 3;
+}
+
+// PlaybackEnding is a looping song fading out after a stop.
+message PlaybackEnding {
+    // The song fading out.
+    string song = 1;
+    // How long until it is gone.
+    google.protobuf.Duration remaining = 2;
+}
+
+// NextUp is the song after the current one. A looping song that is
+// playing goes on only by a loop break, with the playlist's fades;
+// otherwise the next song starts by itself after its auto play gap, or
+// waits for Play. A field a case does not decide is absent; one a case
+// decides to have no value is present and empty, which is how an absent
+// and a null value stay apart.
+message NextUp {
+    // The next song's name. Absent at the end of the playlist.
+    optional string song = 1;
+    // Whether Play or Next breaks the loop of the song playing, to go on.
+    optional bool breaks_loop = 2;
+    // At the end of the playlist, with a looping song playing: Next (or
+    // Previous on the first entry) ends the song over fade_out rather than
+    // moving on.
+    optional bool ends_loop = 3;
+    // The fade the current song ends over. Absent when the case does not
+    // decide it.
+    optional NextFade fade_out = 4;
+    // The fade the next song starts over. Absent when the case does not
+    // decide it.
+    optional NextFade fade_in = 5;
+    // How long the next song waits to start by itself. Absent when the case
+    // does not decide it.
+    optional NextAutoPlay auto_play = 6;
+}
+
+// NextFade is a fade a case of NextUp decides on, or decides there is none
+// of.
+message NextFade {
+    // The fade. Absent: the case has no fade.
+    optional Fade fade = 1;
+}
+
+// NextAutoPlay is the gap before the next song starts by itself, or that
+// it does not.
+message NextAutoPlay {
+    // The gap in milliseconds, exact and not rounded. Absent: the song
+    // waits for Play.
+    optional double gap_ms = 1;
+}
+
+// LogLines are log lines the player wrote, oldest first.
+message LogLines {
+    repeated LogLine lines = 1;
+}
+
+// LogLine is one line of the player's log.
+message LogLine {
+    // "ERROR", "WARN", "INFO", "DEBUG" or "TRACE".
+    string level = 1;
+    // The part of the player that wrote it.
+    string target = 2;
+    // What it says.
+    string message = 3;
+}
+
+// Waveform is the peaks of the current song's tracks, for drawing them.
+message Waveform {
+    // The song's name.
+    string song_name = 1;
+    // The song's tracks, in order.
+    repeated WaveformTrack tracks = 2;
+}
+
+// WaveformTrack is one track's waveform.
+message WaveformTrack {
+    // The track's name.
+    string name = 1;
+    // The peaks, one per bucket across the song's length.
+    repeated float peaks = 2;
+}
+
+// ConfigChanged says the config store changed. It has no fields.
+message ConfigChanged {}
+
+// ShowReload says a song's light show was reloaded from disk, or failed to.
+message ShowReload {
+    // Why the reload failed. Absent when it succeeded.
+    optional string error = 1;
+}
+
+// HardwareStatus is the build, the hardware and the controllers: what the
+// web UI's status page shows.
+message HardwareStatus {
+    // The player's build.
+    BuildInfo build = 1;
+    // The hardware subsystems.
+    HardwareSnapshot hardware = 2;
+    // The controllers.
+    repeated ControllerStatus controllers = 3;
+    // Whether the player is locked.
+    bool locked = 4;
+}
+
+// BuildInfo says which build the player is, and which web UI it serves.
+message BuildInfo {
+    // The player's version.
+    string version = 1;
+    // The git commit it was built from.
+    string git_hash = 2;
+    // When it was built.
+    string build_time = 3;
+    // The web UI this server serves. Absent when its build stamped none.
+    optional string ui_build = 4;
+}
+
+// HardwareSnapshot is the status of every hardware subsystem.
+message HardwareSnapshot {
+    // Whether the first initialisation of the hardware is over.
+    bool init_done = 1;
+    // This machine's host name, which profiles are picked by. Absent when
+    // it has none.
+    optional string hostname = 2;
+    // The active hardware profile's name. Absent when there is none.
+    optional string profile = 3;
+    // The file the active profile was loaded from ("stage.yml"), which the
+    // web UI links it by. Absent for an inline profile.
+    optional string profile_file = 4;
+    // The audio output.
+    SubsystemStatus audio = 5;
+    // What the audio output callback is doing. Absent when the device
+    // cannot report it.
+    optional AudioOutputHealth audio_output = 6;
+    // The MIDI output.
+    SubsystemStatus midi = 7;
+    // The DMX output.
+    SubsystemStatus dmx = 8;
+    // The audio triggers.
+    SubsystemStatus trigger = 9;
+    // Whether the current lighting venue's fixtures are registered. DMX can
+    // be connected while the venue failed, and then nothing lights.
+    LightingVenueStatus lighting_venue = 10;
+    // A fixture test's output, while one is live. Absent when none is.
+    optional TestOutputStatus test_output = 11;
+}
+
+// SubsystemStatus is the status of one hardware subsystem.
+message SubsystemStatus {
+    // "connected", "initializing", "failed" or "not_connected".
+    string status = 1;
+    // The device's name. Absent when there is none.
+    optional string name = 2;
+    // Why initialisation gave up, for "failed"; for "connected", a problem
+    // found at startup that did not stop it. Absent when there is none.
+    optional string error = 3;
+}
+
+// AudioOutputHealth is what the audio output callback is doing, as distinct
+// from whether the device opened. AudioHealth is the short form StatusResponse
+// carries; this is everything the web UI's status page shows.
+message AudioOutputHealth {
+    // "healthy", "recovering", "stalled" or "never_started".
+    string status = 1;
+    // Whether the callback has run recently. False means the stream is open
+    // but stalled.
+    bool callback_alive = 2;
+    // Whether non-silent audio was handed to the device recently.
+    bool writing_signal = 3;
+    // How long since the callback last ran. Absent if it never has.
+    optional google.protobuf.Duration since_last_callback = 4;
+    // How long since non-silent audio was last written. Absent if it never
+    // was.
+    optional google.protobuf.Duration since_last_signal = 5;
+    // Callbacks served since the device was opened.
+    uint64 callbacks = 6;
+    // Streams rebuilt after a backend error since the device was opened.
+    uint64 recoveries = 7;
+    // Buffer underruns since the device was opened.
+    uint64 underruns = 8;
+    // The most recent backend error, retained after recovery. Absent when
+    // there has been none.
+    optional string last_error = 9;
+}
+
+// LightingVenueStatus is whether the current lighting venue's fixtures are
+// registered.
+message LightingVenueStatus {
+    // The venue. Absent when there is none.
+    optional string name = 1;
+    // "ok", "failed", or "none" (no DMX engine, no lighting system, or no
+    // current venue).
+    string status = 2;
+    // Why it failed: the fixture and the reason. Absent unless "failed".
+    optional string error = 3;
+}
+
+// TestOutputStatus is a fixture test's live output: which universe and
+// addresses it holds, and for how much longer without an update.
+message TestOutputStatus {
+    // The universe the test writes to.
+    uint32 universe = 1;
+    // The first address it holds.
+    uint32 address = 2;
+    // How many addresses it holds.
+    uint32 footprint = 3;
+    // The fixture type under test.
+    string fixture_type = 4;
+    // The mode under test. Absent when the type has no modes.
+    optional string mode = 5;
+    // Seconds until the test lets go without an update, as a fraction.
+    double expires_in_secs = 6;
+}
+
+// ControllerStatus is the status of one controller.
+message ControllerStatus {
+    // The kind of controller: "grpc", "osc" or "midi".
+    string kind = 1;
+    // Whether it started.
+    string status = 2;
+    // Extra information, such as a port or a device name. Absent when
+    // there is none.
+    optional string detail = 3;
+    // Why it failed to start. Absent when it did not.
+    optional string error = 4;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -1296,6 +1722,17 @@ service PlayerService {
     // client is sent the latest status and skips those between. Open while
     // locked.
     rpc WatchStatus(WatchStatusRequest) returns (stream RemoteStatus);
+
+    // Watch is one stream of what changes, for a client that draws the whole
+    // dashboard: the playback status (about five times a second), log
+    // lines, the current song's waveform, that the config changed, that a
+    // light show was reloaded, and the build, hardware and controllers.
+    // WatchRequest.topics picks the feeds; none picks all. On opening, the
+    // stream sends the current playback, the waveform of the current song if
+    // one is ready, and the hardware status (when asked for); then each
+    // feed's news as it happens. A client that reads slowly skips what it
+    // missed. Open while locked.
+    rpc Watch(WatchRequest) returns (stream WatchEvent);
 
     // GetNetworkInfo tells where the player is on the network: its host
     // name, its addresses and the port of its gRPC controller. A phone

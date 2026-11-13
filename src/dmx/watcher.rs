@@ -22,7 +22,6 @@ use tracing::{error, info, warn};
 use super::engine::Engine;
 use crate::lighting::validation::validate_light_shows;
 use crate::util::FileStamp;
-use crate::webui::state::to_json;
 use crate::webui::wire::messages::{ShowReload, SocketMessage};
 
 /// Handle to a running file watcher, shuts down when dropped.
@@ -47,7 +46,7 @@ pub fn start_watching(
     generation: u64,
     file_paths: Vec<PathBuf>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
-    broadcast_tx: broadcast::Sender<String>,
+    broadcast_tx: broadcast::Sender<SocketMessage>,
 ) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
     // Canonicalize paths so they match what the OS reports in events.
     let paths: Vec<PathBuf> = file_paths
@@ -166,16 +165,13 @@ pub fn start_watching(
                         }
                         Ok(true) => {
                             info!("Light show reloaded successfully");
-                            let _ =
-                                broadcast_tx.send(to_json(&SocketMessage::Reload(ShowReload::Ok)));
+                            let _ = broadcast_tx.send(SocketMessage::Reload(ShowReload::Ok));
                         }
                         Err(e) => {
                             warn!("Light show reload failed: {}", e);
-                            let _ = broadcast_tx.send(to_json(&SocketMessage::Reload(
-                                ShowReload::Error {
-                                    error: e.to_string(),
-                                },
-                            )));
+                            let _ = broadcast_tx.send(SocketMessage::Reload(ShowReload::Error {
+                                error: e.to_string(),
+                            }));
                         }
                     }
                 }
@@ -634,6 +630,7 @@ show "test" {
         while start.elapsed() < Duration::from_secs(5) {
             match rx.try_recv() {
                 Ok(msg) => {
+                    let msg = crate::webui::state::to_json(&msg);
                     assert!(
                         msg.contains("reload"),
                         "Expected reload message, got: {}",
@@ -701,7 +698,9 @@ show "test" {
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
-        let status = status.expect("an edit to an included file reloads the show");
+        let status = crate::webui::state::to_json(
+            &status.expect("an edit to an included file reloads the show"),
+        );
         assert!(status.contains("\"ok\""), "reload failed: {status}");
         assert!(engine.current_song_timeline.lock().is_some());
     }
@@ -736,6 +735,7 @@ show "test" {
         while start.elapsed() < Duration::from_secs(5) {
             match rx.try_recv() {
                 Ok(msg) => {
+                    let msg = crate::webui::state::to_json(&msg);
                     assert!(
                         msg.contains("error"),
                         "Expected error reload message, got: {}",

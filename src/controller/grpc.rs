@@ -17,6 +17,7 @@ mod playlists;
 mod remote;
 mod songs;
 mod stage;
+mod watch;
 
 use crate::config::store::ConfigSection;
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
@@ -51,8 +52,8 @@ use crate::{
         StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
         SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
         UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, UpdateSongSettingsRequest, WatchStageRequest, WatchStatusRequest,
-        FILE_DESCRIPTOR_SET,
+        UpdateProfileRequest, UpdateSongSettingsRequest, WatchRequest, WatchStageRequest,
+        WatchStatusRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -580,12 +581,18 @@ fn position_arg(position: Option<prost_types::Duration>) -> Result<std::time::Du
 fn ambient_to_proto(
     ambient: Option<crate::player::DmxRead<crate::player::AmbientStatus>>,
 ) -> Option<AmbientStatus> {
+    Some(ambient_state_to_proto(&ambient?.view()))
+}
+
+/// Ambient light as the status reports it on every surface, as the wire
+/// carries it: the read's answer, or `available: false` and why.
+fn ambient_state_to_proto(ambient: &crate::webui::wire::messages::AmbientState) -> AmbientStatus {
     use crate::webui::wire::messages::AmbientState;
-    Some(match ambient?.view() {
+    match ambient {
         AmbientState::Read(ambient) => AmbientStatus {
             mode: ambient.mode.as_str().to_string(),
-            state: ambient.state,
-            show: ambient.show,
+            state: ambient.state.clone(),
+            show: ambient.show.clone(),
             source: ambient.source.map(|source| source.as_str().to_string()),
             available: None,
             reason: None,
@@ -596,9 +603,9 @@ fn ambient_to_proto(
             show: None,
             source: None,
             available: Some(unread.available),
-            reason: Some(unread.reason),
+            reason: Some(unread.reason.clone()),
         },
-    })
+    }
 }
 
 /// A fault as a gRPC status: the one table from [`FaultKind`] to a code.
@@ -1164,6 +1171,20 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<Self::WatchStageStream>, Status> {
         let watch = StageWatch::new(self.player.clone(), request.into_inner().max_rate);
         Ok(Response::new(watch.into_stream()))
+    }
+
+    type WatchStream = watch::WatchStream;
+
+    /// What the web UI's websocket and status poll carry, as one stream: see
+    /// [`watch::watch`]. A read, so open while locked.
+    async fn watch(
+        &self,
+        request: Request<WatchRequest>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
+        Ok(Response::new(watch::watch(
+            self.player.clone(),
+            request.into_inner(),
+        )))
     }
 
     type WatchStatusStream = remote::StatusStream;
@@ -2763,6 +2784,44 @@ mod test {
         drop(stream);
         eventually(
             || state_tx.receiver_count() == 0,
+            "the stream outlived its client",
+        );
+        Ok(())
+    }
+
+    /// Over the wire, native: `Watch` is a read, open while the player is
+    /// locked (the lock layer lets it through), sends the hardware status at
+    /// once and the hub's news after it, and a client that goes away takes
+    /// its watch with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watch_is_open_while_locked_and_ends_with_its_client() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{watch_event::Event, WatchRequest, WatchTopic};
+        use crate::webui::wire::messages::{ShowReload, SocketMessage};
+        let (player, mut client, _device) = setup_grpc().await?;
+        player.set_locked(true);
+        let sender = player.watch_hub().sender();
+
+        let mut stream = client
+            .watch(WatchRequest {
+                topics: vec![WatchTopic::Hardware as i32, WatchTopic::Reload as i32],
+            })
+            .await?
+            .into_inner();
+        let Some(Event::Hardware(hardware)) = stream.message().await?.and_then(|e| e.event) else {
+            panic!("the hardware status comes first");
+        };
+        assert!(hardware.locked);
+        assert_eq!(sender.receiver_count(), 1, "the stream's own");
+
+        sender.send(SocketMessage::Reload(ShowReload::Ok))?;
+        let Some(Event::Reload(reload)) = stream.message().await?.and_then(|e| e.event) else {
+            panic!("a reload");
+        };
+        assert_eq!(reload.error, None);
+
+        drop(stream);
+        eventually(
+            || sender.receiver_count() == 0,
             "the stream outlived its client",
         );
         Ok(())

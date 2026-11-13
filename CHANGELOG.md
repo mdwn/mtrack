@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and for `player.v1.PlayerService`. `grpcurl -plaintext host:43234 grpc.health.v1.Health/Check`,
   `grpc_health_probe` and load balancers can use it to tell the player is up. It answers while the
   player is locked. See [gRPC](docs/src/interfaces/grpc.md#health-checking).
+- **`Watch` gRPC RPC**: one stream of what the web UI's live feeds carry, for a client that draws the
+  whole dashboard: the playback status (about five times a second), the player's log lines, the
+  waveform of the song the playlist is on, that the config changed, that a song's light show was
+  reloaded (or failed to), and the build, hardware and controllers that the status page shows,
+  sent when the stream opens and again whenever they change. The request names the topics it
+  wants; none means all, so `grpcurl -plaintext -d '{}' host:43234 player.v1.PlayerService/Watch`
+  shows everything. It works on the gRPC port and, over gRPC-Web, on the web UI's port, and is open
+  while the player is locked. It is not allowed over Bluetooth, which has `WatchStatus`'s compact
+  status. See [gRPC](docs/src/interfaces/grpc.md).
 
 ### Changed
 
