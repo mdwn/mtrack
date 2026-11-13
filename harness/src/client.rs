@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 
 use mtrack::proto::player::v1::player_service_client::PlayerServiceClient;
 use mtrack::proto::player::v1::{
-    HardwareSnapshot, HardwareStatus, StatusRequest, StatusResponse, SubsystemStatus,
+    HardwareSnapshot, HardwareStatus, SetLockRequest, SetLockResponse, StatusRequest,
+    StatusResponse, SubsystemStatus,
 };
 use tonic::transport::Channel;
 
@@ -70,15 +71,18 @@ impl Client {
 
     /// Sets the player's lock, which gates every state-altering endpoint.
     pub async fn set_locked(&self, locked: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{}/api/lock", self.base_url);
-        let response = self
-            .http
-            .put(&url)
-            .json(&serde_json::json!({ "locked": locked }))
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(format!("could not set lock={locked}: HTTP {}", response.status()).into());
+        // Over the web port's gRPC-Web, which answers for a player whose
+        // gRPC port is not open as well.
+        let answer: SetLockResponse = crate::grpc_web::unary(
+            &self.http,
+            &self.base_url,
+            "SetLock",
+            &SetLockRequest { locked },
+        )
+        .await
+        .map_err(|e| format!("could not set lock={locked}: {e}"))?;
+        if answer.locked != locked {
+            return Err(format!("set lock={locked}, but the player says {}", answer.locked).into());
         }
         Ok(())
     }

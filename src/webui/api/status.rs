@@ -44,17 +44,3 @@ pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl
             .into_response(),
     }
 }
-
-/// PUT /api/lock — sets the lock state.
-pub(super) async fn put_lock(
-    State(state): State<WebUiState>,
-    Json(body): Json<LockRequest>,
-) -> impl IntoResponse {
-    state.player.set_locked(body.locked);
-    Json(json!({"locked": state.player.is_locked()}))
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct LockRequest {
-    locked: bool,
-}

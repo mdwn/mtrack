@@ -12,7 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The songs API's payloads (`/api/songs`).
+//! The songs API's payloads, and the shape the web UI holds of the song
+//! list (`SongList`, which it maps `ListSongs` messages into:
+//! src/lib/grpc/library.ts).
 
 use serde::Serialize;
 
@@ -21,8 +23,8 @@ use crate::audio::guessed_tempo::GuessedTempo;
 use crate::config::{Section, TempoConfig};
 pub use crate::songs::FileKind;
 
-/// `GET /api/songs`: the songs the player knows, and those that failed to
-/// load.
+/// The songs the player knows, and those that failed to load
+/// (`ListSongs`, detailed).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongList {

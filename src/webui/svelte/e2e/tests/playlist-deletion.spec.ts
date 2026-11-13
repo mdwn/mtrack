@@ -13,7 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import type { PlaylistInfo } from "../../src/gen/rules/mtrack_rules";
+import { listPlaylistsReply } from "../support/library-rpc";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Playlist Deletion", () => {
   test.beforeEach(async ({ page }) => {
@@ -24,19 +27,8 @@ test.describe("Playlist Deletion", () => {
   });
 
   test("confirm delete calls API", async ({ page }) => {
-    let deleteCalled = false;
-    await page.route("**/api/playlists/setlist", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted", name: "setlist" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.deletePlaylist, {});
 
     const setlist = page.locator(".playlist-list li", { hasText: "setlist" });
 
@@ -45,47 +37,36 @@ test.describe("Playlist Deletion", () => {
     // Confirm
     await setlist.locator(".btn-icon.danger", { hasText: "Confirm" }).click();
 
-    expect(deleteCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.deletePlaylist).length)
+      .toBe(1);
+    expect(rpc.calls(PlayerService.method.deletePlaylist)[0].name).toBe(
+      "setlist",
+    );
   });
 
   test("delete removes playlist from list", async ({ page }) => {
-    await page.route("**/api/playlists/setlist", async (route) => {
-      if (route.request().method() === "DELETE") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted", name: "setlist" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.deletePlaylist, {});
 
     // After delete, mock playlists returns without setlist
-    await page.route("**/api/playlists", async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify([
-            {
-              name: "all_songs",
-              song_count: 2,
-              is_active: false,
-              reserved: true,
-            },
-            {
-              name: "rehearsal",
-              song_count: 2,
-              is_active: false,
-              reserved: false,
-            },
-          ] satisfies PlaylistInfo[]),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    rpc.unary(
+      PlayerService.method.listPlaylists,
+      listPlaylistsReply([
+        {
+          name: "all_songs",
+          song_count: 2,
+          is_active: false,
+          reserved: true,
+        },
+        {
+          name: "rehearsal",
+          song_count: 2,
+          is_active: false,
+          reserved: false,
+        },
+      ] satisfies PlaylistInfo[]),
+    );
 
     const setlist = page.locator(".playlist-list li", { hasText: "setlist" });
     await setlist.locator('.btn-icon[title="Delete"]').click();

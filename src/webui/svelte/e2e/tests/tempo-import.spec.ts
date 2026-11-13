@@ -14,6 +14,10 @@
 
 import { test, expect } from "@playwright/test";
 import { parse } from "yaml";
+import { SONGS } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { listSongsReply } from "../support/library-rpc";
+import { mockRpc } from "../support/rpc";
 
 // A light show whose tempo map (128 BPM, one change at m5) differs from the
 // song timeline's (132 BPM) so each import direction is observable.
@@ -77,18 +81,15 @@ test.describe("Tempo import between timeline and light shows", () => {
     // tempo map and a lighting file on top of the mock server's config.
     // The lighting files list lives on the songs-list JSON; the tempo
     // block lives in the song's YAML config.
-    await page.route("**/api/songs", async (route) => {
-      if (route.request().method() !== "GET") return route.continue();
-      const res = await route.fetch();
-      const data = await res.json();
-      for (const s of data.songs ?? []) {
-        if (s.name === "Test Song Beta") {
-          s.has_lighting = true;
-          s.lighting_files = ["show.light"];
-        }
+    const data = structuredClone(SONGS);
+    for (const s of data.songs) {
+      if (s.name === "Test Song Beta") {
+        s.has_lighting = true;
+        s.lighting_files = ["show.light"];
       }
-      await route.fulfill({ response: res, json: data });
-    });
+    }
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
     await page.route("**/api/songs/Test%20Song%20Beta", async (route) => {
       if (route.request().method() !== "GET") return route.continue();
       const res = await route.fetch();

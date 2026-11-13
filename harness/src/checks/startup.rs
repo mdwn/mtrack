@@ -87,26 +87,26 @@ pub async fn generated_project_loads_all_songs() -> CheckOutcome {
     crate::runner::require_area("startup")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
-    let client = Client::connect(&server).await?;
+    let mut client = Client::connect(&server).await?;
 
-    let songs = client.get_json("songs").await?;
-    let listed = songs
-        .as_array()
-        .map(|a| a.len())
-        .or_else(|| {
-            songs
-                .get("songs")
-                .and_then(|s| s.as_array())
-                .map(|a| a.len())
+    // The songs that loaded: the library lists those that failed as well.
+    let library = client
+        .grpc()
+        .list_songs(mtrack::proto::player::v1::ListSongsRequest {
+            start: 0,
+            detailed: true,
         })
-        .unwrap_or(0)
-        + crate::sabotage::pick(0, 1);
+        .await?
+        .into_inner();
+    let listed =
+        library.songs.iter().filter(|s| s.failure.is_none()).count() + crate::sabotage::pick(0, 1);
 
     check_eq!(
         listed,
         project.songs().len(),
-        "expected {} generated songs to load, got {listed}: {songs}",
-        project.songs().len()
+        "expected {} generated songs to load, got {listed}: {:?}",
+        project.songs().len(),
+        library.songs
     );
 
     server.check_clean_log(&[])?;

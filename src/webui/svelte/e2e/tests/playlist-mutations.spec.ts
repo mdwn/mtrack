@@ -13,7 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Playlist Mutations", () => {
   let playlists: PlaylistEditorPage;
@@ -70,17 +72,8 @@ test.describe("Playlist Mutations", () => {
   });
 
   test("save calls API", async ({ page }) => {
-    await page.route("**/api/playlists/setlist", async (route) => {
-      if (route.request().method() === "PUT") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved", name: "setlist" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.savePlaylist, (req) => ({ name: req.name }));
 
     await playlists.selectPlaylist("setlist");
     const addBtn = playlists
@@ -89,31 +82,32 @@ test.describe("Playlist Mutations", () => {
       .locator('.btn-icon[title="Add"]');
     await addBtn.click();
 
-    const saveRequest = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/playlists/setlist") && req.method() === "PUT",
-    );
     await playlists.saveButton.click();
-    await saveRequest;
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.savePlaylist).length)
+      .toBe(1);
+    const [saved] = rpc.calls(PlayerService.method.savePlaylist);
+    expect(saved.name).toBe("setlist");
+    // The playlist exists: it is saved, not created.
+    expect(saved.create).toBe(false);
+    expect(saved.songs).toEqual(["Test Song Alpha", "Test Song Beta"]);
   });
 
   test("activate playlist calls API for non-active playlist", async ({
     page,
   }) => {
-    let activateCalled = false;
-    await page.route("**/api/playlists/rehearsal/activate", async (route) => {
-      activateCalled = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "activated", name: "rehearsal" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.switchToPlaylist, {});
 
     // rehearsal is not active, so it should show the ▶ activate button
     const rehearsal = playlists.playlistByName("rehearsal");
     await rehearsal.locator('.btn-icon[title="Activate"]').click();
-    expect(activateCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.switchToPlaylist).length)
+      .toBe(1);
+    expect(
+      rpc.calls(PlayerService.method.switchToPlaylist)[0].playlistName,
+    ).toBe("rehearsal");
   });
 
   test("delete button shows on non-all_songs playlists", async () => {

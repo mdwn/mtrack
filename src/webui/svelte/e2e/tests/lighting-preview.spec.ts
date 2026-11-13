@@ -14,6 +14,11 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
+import type { SongList } from "../../src/gen/rules/mtrack_rules";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { listSongsReply } from "../support/library-rpc";
+import { mockRpc } from "../support/rpc";
+
 import { sendStage } from "../support/stage";
 
 // The venue card's 3D Preview (lighting UI design, section 12.1), on the
@@ -42,14 +47,12 @@ function songsWithSections() {
   };
 }
 
-async function routeSongs(page: Page, body: object = songsWithSections()) {
-  await page.route("**/api/songs", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
-  });
+async function routeSongs(
+  page: Page,
+  body: SongList = songsWithSections() as SongList,
+) {
+  const rpc = await mockRpc(page);
+  rpc.unary(PlayerService.method.listSongs, listSongsReply(body));
 }
 
 interface Asked {

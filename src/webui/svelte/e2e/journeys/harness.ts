@@ -37,7 +37,9 @@ import {
   WatchTopic,
 } from "../../src/gen/player/v1/player_pb";
 import type { Status } from "../../src/gen/rules/mtrack_rules";
+import { mapSongList } from "../../src/lib/grpc/library";
 import { mapWatchEvent } from "../../src/lib/grpc/watch";
+import { playerClientAt } from "../support/player-client";
 import { dataFrame } from "../support/stage-stream";
 
 /** The repository root (this file is src/webui/svelte/e2e/journeys/). */
@@ -304,11 +306,7 @@ export async function startProject(
     child.stderr?.on("data", (d) => log.push(String(d)));
     await waitUp(url, child, log);
     // It comes up locked, as a show machine should; a journey edits.
-    await fetch(`${url}/api/lock`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ locked: false }),
-    });
+    await playerClientAt(url).setLock({ locked: false });
   };
   const halt = async () => {
     if (child.exitCode !== null) return;
@@ -375,6 +373,14 @@ export function status(project: Project): Promise<Status> {
 }
 
 /** GET a JSON API path of the project. */
+/** The player's song library as the song pages see it: the songs that
+ *  loaded, and those that failed (`ListSongs`). */
+export async function songList(project: Project) {
+  return mapSongList(
+    await playerClientAt(project.url).listSongs({ detailed: true }),
+  );
+}
+
 export async function api<T = Record<string, unknown>>(
   project: Project,
   rel: string,

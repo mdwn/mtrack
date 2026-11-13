@@ -510,14 +510,96 @@ mod test {
         assert_eq!(resp.status(), 200);
     }
 
+    /// The song list, the playlists and the lock are gRPC-Web calls on the
+    /// web port (they were `GET /api/songs`, `GET /api/playlists` and
+    /// `PUT /api/lock`): each answers, the lock toggle answers the lock as
+    /// it now stands, and none of the REST routes is left.
     #[tokio::test]
-    async fn server_api_songs_empty() {
+    async fn the_song_list_playlists_and_lock_are_grpc_web_calls() {
+        use crate::proto::player::v1::{
+            ListPlaylistsRequest, ListPlaylistsResponse, ListSongsRequest, ListSongsResponse,
+            SetLockRequest, SetLockResponse,
+        };
+        use prost::Message;
         let (_handle, base_url, _dir) = start_test_server().await;
+        let client = reqwest::Client::new();
+        let call = |method: &'static str, request: Vec<u8>| {
+            let client = client.clone();
+            let base_url = base_url.clone();
+            async move {
+                let mut frame = vec![0u8];
+                frame.extend_from_slice(&(request.len() as u32).to_be_bytes());
+                frame.extend_from_slice(&request);
+                let resp = client
+                    .post(format!("{base_url}/player.v1.PlayerService/{method}"))
+                    .header("content-type", "application/grpc-web+proto")
+                    .header("x-grpc-web", "1")
+                    .body(frame)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), 200, "{method}");
+                let body = resp.bytes().await.unwrap().to_vec();
+                let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
+                let trailers = String::from_utf8_lossy(&body[5 + len..]).to_string();
+                assert!(trailers.contains("grpc-status:0"), "{method}: {trailers}");
+                body[5..5 + len].to_vec()
+            }
+        };
 
-        let resp = reqwest::get(format!("{}/api/songs", base_url))
-            .await
+        let songs = ListSongsResponse::decode(
+            &call(
+                "ListSongs",
+                ListSongsRequest {
+                    start: 0,
+                    detailed: true,
+                }
+                .encode_to_vec(),
+            )
+            .await[..],
+        )
+        .unwrap();
+        assert_eq!(songs.total as usize, songs.songs.len());
+        let playlists = ListPlaylistsResponse::decode(
+            &call(
+                "ListPlaylists",
+                ListPlaylistsRequest { detailed: true }.encode_to_vec(),
+            )
+            .await[..],
+        )
+        .unwrap();
+        assert!(playlists.names.contains(&"all_songs".to_string()));
+        assert_eq!(playlists.playlists.len(), playlists.names.len());
+        for locked in [true, false] {
+            let answer = SetLockResponse::decode(
+                &call("SetLock", SetLockRequest { locked }.encode_to_vec()).await[..],
+            )
             .unwrap();
-        assert_eq!(resp.status(), 200);
+            assert_eq!(answer.locked, locked);
+        }
+
+        // The REST routes are gone: what answers is not the API's JSON.
+        for (method, path) in [
+            ("GET", "/api/songs"),
+            ("GET", "/api/playlists"),
+            ("PUT", "/api/lock"),
+            ("GET", "/api/playlists/all_songs"),
+        ] {
+            let resp = client
+                .request(method.parse().unwrap(), format!("{base_url}{path}"))
+                .send()
+                .await
+                .unwrap();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap().to_string())
+                .unwrap_or_default();
+            assert!(
+                !content_type.contains("json"),
+                "{method} {path} still answers JSON ({content_type})"
+            );
+        }
     }
 
     #[tokio::test]

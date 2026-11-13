@@ -42,7 +42,6 @@ import type {
   MvrKeep,
   MvrKept,
   NoiseFloor,
-  PlaylistBody,
   PlaylistDetail,
   PlaylistInfo,
   ProbeAudioRequest,
@@ -64,6 +63,14 @@ import type {
   VenueSaved,
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
+import { playerClient } from "../grpc/client";
+import {
+  callError,
+  mapPlaylistDetail,
+  mapPlaylistList,
+  savePlaylistRequest,
+  type PlaylistSettings,
+} from "../grpc/library";
 import { readAnswer } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import {
@@ -87,12 +94,11 @@ export function channelsLabel(device: AudioDeviceInfo): string {
 }
 
 export async function setLocked(locked: boolean): Promise<void> {
-  const res = await fetch("/api/lock", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locked }),
-  });
-  if (!res.ok) throw new Error(`Failed to set lock state: ${res.status}`);
+  try {
+    await playerClient.setLock({ locked });
+  } catch (e) {
+    throw callError(e, "Failed to set lock state");
+  }
 }
 
 export async function fetchConfigStore(): Promise<StoreSnapshot> {
@@ -840,41 +846,59 @@ export type PlaylistAmbient = PlaylistDetail["ambient"];
 /** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null`. */
 export type AutoPlay = PlaylistDetail["auto_play"][number];
 
-/** What a save sets beyond the songs; each left out is kept as it is. */
-export type PlaylistSettings = Omit<PlaylistBody, "songs">;
+export type { PlaylistSettings };
 
 export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
-  const res = await get("/playlists");
-  if (!res.ok) throw new Error(`Failed to fetch playlists: ${res.status}`);
-  return res.json();
+  try {
+    return mapPlaylistList(
+      await playerClient.listPlaylists({ detailed: true }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to fetch playlists");
+  }
 }
 
 export async function fetchPlaylist(name: string): Promise<PlaylistDetail> {
-  const res = await get(`/playlists/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
-  return res.json();
+  try {
+    return mapPlaylistDetail(
+      await playerClient.getPlaylist({ name, withLibrary: true }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to fetch playlist");
+  }
 }
 
+/** Saves `songs` (and `settings`) as the playlist `name`, which must exist;
+ *  with `create`, makes it and refuses a name that is taken. */
 export async function savePlaylist(
   name: string,
   songs: string[],
   settings: PlaylistSettings = {},
+  create = false,
 ): Promise<void> {
-  const res = await put(
-    `/playlists/${encodeURIComponent(name)}`,
-    JSON.stringify({ songs, ...settings }),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to save playlist");
+  try {
+    await playerClient.savePlaylist(
+      savePlaylistRequest(name, songs, settings, create),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to save playlist");
+  }
 }
 
 export async function deletePlaylist(name: string): Promise<void> {
-  const res = await del(`/playlists/${encodeURIComponent(name)}`);
-  if (!res.ok) throw await apiError(res, "Failed to delete playlist");
+  try {
+    await playerClient.deletePlaylist({ name });
+  } catch (e) {
+    throw callError(e, "Failed to delete playlist");
+  }
 }
 
 export async function activatePlaylist(name: string): Promise<void> {
-  const res = await post(`/playlists/${encodeURIComponent(name)}/activate`);
-  if (!res.ok) throw await apiError(res, "Failed to activate playlist");
+  try {
+    await playerClient.switchToPlaylist({ playlistName: name });
+  } catch (e) {
+    throw callError(e, "Failed to activate playlist");
+  }
 }
 
 // ---- Lighting Show Files ----

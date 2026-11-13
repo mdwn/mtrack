@@ -178,6 +178,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   player.v1.PlayerService/Watch`). To check that a player is up, use the standard gRPC health
   service (`grpc.health.v1.Health`, for `grpc_health_probe` and the like), or, with only `curl`,
   fetch the web UI's page (`curl -sf http://host:8080/`). See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for playlists, the lock and the song list**: `GET /api/playlists`,
+  `GET`, `PUT` and `DELETE /api/playlists/<name>`, `POST /api/playlists/<name>/activate`,
+  `PUT /api/lock` and `GET /api/songs` are gone; the web UI calls the gRPC service for all of
+  them. A script that used them should call `ListPlaylists` (with `detailed: true` for each
+  playlist's song count and whether it is the player's own `all_songs`), `GetPlaylist` (with
+  `with_library: true` for the songs a playlist could have and each one's tracks), `SavePlaylist`
+  (`create: true` makes a new playlist and refuses a name that is taken; a playlist that does not
+  exist is otherwise `NOT_FOUND`, where `PUT` made it), `DeletePlaylist`, `SwitchToPlaylist`,
+  `SetLock` and `ListSongs` (with `detailed: true`, every song at once with its tracks, files, beat
+  grid and sections, and a failed song's error in full), over gRPC or gRPC-Web; for example
+  `grpcurl -plaintext -d '{"detailed":true}' host:43234 player.v1.PlayerService/ListSongs`. Each
+  refusal is a status: a locked player is `FAILED_PRECONDITION`, a playlist that is not valid or
+  names a song the player does not have is `INVALID_ARGUMENT`, a missing one is `NOT_FOUND`. The
+  rest of `/api/songs/<name>` is unchanged. See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.2] - 2026-11-13
 

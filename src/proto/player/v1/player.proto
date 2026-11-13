@@ -482,7 +482,12 @@ message GetTrackGainsResponse {
 }
 
 // ListPlaylistsRequest is the message for listing the player's playlists.
-message ListPlaylistsRequest {}
+message ListPlaylistsRequest {
+    // Whether to answer `playlists` as well as `names`: what the web UI's
+    // playlist list shows. Left unset (as the phone app does) the answer is
+    // as it was, the names alone.
+    bool detailed = 1;
+}
 
 // ListPlaylistsResponse names the player's playlists.
 message ListPlaylistsResponse {
@@ -490,12 +495,30 @@ message ListPlaylistsResponse {
     repeated string names = 1;
     // The name of the active playlist, as StatusResponse reports it.
     string active = 2;
+    // Each playlist in `names`, in that order, with what a list of them
+    // shows. Empty unless the request was detailed.
+    repeated PlaylistSummary playlists = 3;
+}
+
+// PlaylistSummary is one playlist as a list of them shows it.
+message PlaylistSummary {
+    // The playlist's name.
+    string name = 1;
+    // How many songs the playlist has.
+    uint32 song_count = 2;
+    // Whether this is the player's own playlist of every song (all_songs),
+    // which has no file to edit or delete.
+    bool reserved = 3;
 }
 
 // GetPlaylistRequest is the message for reading one playlist's songs.
 message GetPlaylistRequest {
     // The playlist's name. Empty means the active playlist.
     string name = 1;
+    // Whether to answer `available_songs` and `song_tracks` as well: what
+    // the web UI's playlist editor offers to add and to leave out of a
+    // fade. Left unset (as the phone app does) the answer is as it was.
+    bool with_library = 2;
 }
 
 // PlaylistEntry is one entry of a playlist: its song, without the song's
@@ -590,6 +613,12 @@ message GetPlaylistResponse {
     // the playlist changed since it was read. Empty from a player from
     // before settings could be read.
     string revision = 5;
+    // The names of the songs the player has loaded, sorted: those a playlist
+    // can have. Empty unless the request had with_library.
+    repeated string available_songs = 6;
+    // Each loaded song's tracks, by the song's name, for choosing the ones a
+    // fade leaves out. Empty unless the request had with_library.
+    map<string, TrackNames> song_tracks = 7;
 }
 
 // SavePlaylistRequest replaces the songs of a playlist, or makes one.
@@ -644,6 +673,12 @@ message ListSongsRequest {
     // The index to start from: 0 for the first page, else the `next` of the
     // page before.
     uint32 start = 1;
+    // Whether to list each song with everything the web UI's song pages
+    // show (the fields of SongListing from `channels` on), its failures in
+    // full, and every song from `start` in one answer. Left unset (as the
+    // phone app does) a page holds what fits one Bluetooth message, and
+    // those fields are empty.
+    bool detailed = 2;
 }
 
 // SongListing is one song of the library, as a list shows it.
@@ -669,6 +704,30 @@ message SongListing {
     // directory. A list groups songs by the part before the last "/".
     // Absent from a player from before it was sent: read as the top.
     optional string base_dir = 8;
+    // The fields below are sent only for a detailed request.
+    // How many channels the song's audio has, in all its tracks.
+    uint32 channels = 9;
+    // The sample format the song's audio is played in ("int" or "float").
+    string sample_format = 10;
+    // The song's tracks, by name, in order.
+    repeated string tracks = 11;
+    // The song's .light files, relative to the songs directory.
+    repeated string lighting_files = 12;
+    // The song's MIDI DMX files, relative to the songs directory.
+    repeated string midi_dmx_files = 13;
+    // The song's beat grid, from its tempo map or click track. Absent when
+    // it has none.
+    BeatGrid beat_grid = 14;
+    // Whether the song has an explicit tempo map.
+    bool has_tempo_map = 15;
+    // How long a loop's passes overlap, in whole milliseconds. Absent when
+    // the song has no crossfade.
+    optional uint64 loop_crossfade_ms = 16;
+    // The tracks that cut over at the crossfade's midpoint instead of
+    // fading.
+    repeated string loop_crossfade_cut = 17;
+    // The song's named sections.
+    repeated Section sections = 18;
 }
 
 // ListSongsResponse is a page of the library: every song, loaded or not,

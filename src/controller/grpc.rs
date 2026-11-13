@@ -43,17 +43,17 @@ use crate::{
         ListLightShowsResponse, ListPlaylistsRequest, ListPlaylistsResponse, ListSongsRequest,
         ListSongsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
         NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
-        PlayResponse, PlaySongFromRequest, PlaylistEntry, PreviousRequest, PreviousResponse,
-        RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest, SectionAckResponse,
-        SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
+        PlayResponse, PlaySongFromRequest, PlaylistEntry, PlaylistSummary, PreviousRequest,
+        PreviousResponse, RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest,
+        SectionAckResponse, SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
         SetAmbientModeResponse, SetLockRequest, SetLockResponse, SetTrackGainRequest,
         SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StageFrame,
         StageLayout, StageUpdate, StatusRequest, StatusResponse, StopRequest, StopResponse,
         StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, UpdateSongSettingsRequest, WatchRequest, WatchStageRequest,
-        WatchStatusRequest, FILE_DESCRIPTOR_SET,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, TrackNames,
+        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
+        UpdateMidiRequest, UpdateProfileRequest, UpdateSongSettingsRequest, WatchRequest,
+        WatchStageRequest, WatchStatusRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -1053,11 +1053,26 @@ impl PlayerService for PlayerServer {
 
     async fn list_playlists(
         &self,
-        _: Request<ListPlaylistsRequest>,
+        request: Request<ListPlaylistsRequest>,
     ) -> Result<Response<ListPlaylistsResponse>, Status> {
+        let names = self.player.list_playlists();
+        let playlists = if request.into_inner().detailed {
+            let loaded = self.player.playlists_snapshot();
+            names
+                .iter()
+                .map(|name| PlaylistSummary {
+                    name: name.clone(),
+                    song_count: loaded.get(name).map(|p| p.songs().len()).unwrap_or(0) as u32,
+                    reserved: crate::playlist::is_reserved_name(name),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Response::new(ListPlaylistsResponse {
-            names: self.player.list_playlists(),
+            names,
             active: self.player.get_playlist().name().to_string(),
+            playlists,
         }))
     }
 
@@ -1065,7 +1080,8 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<GetPlaylistRequest>,
     ) -> Result<Response<GetPlaylistResponse>, Status> {
-        let name = request.into_inner().name;
+        let request = request.into_inner();
+        let name = request.name;
         let playlist = if name.is_empty() {
             self.player.get_playlist()
         } else {
@@ -1075,7 +1091,22 @@ impl PlayerService for PlayerServer {
                 .cloned()
                 .ok_or_else(|| Status::not_found(format!("Playlist '{name}' not found")))?
         };
-        Ok(Response::new(playlist_response(&playlist)?))
+        let mut response = playlist_response(&playlist)?;
+        if request.with_library {
+            // The songs a playlist could have, and each one's tracks, as the
+            // web UI's editor offers them.
+            let library = self.player.songs();
+            for song in library.sorted_list() {
+                response.available_songs.push(song.name().to_string());
+                response.song_tracks.insert(
+                    song.name().to_string(),
+                    TrackNames {
+                        names: song.output_track_names(),
+                    },
+                );
+            }
+        }
+        Ok(Response::new(response))
     }
 
     async fn save_playlist(
@@ -1112,11 +1143,20 @@ impl PlayerService for PlayerServer {
         request: Request<ListSongsRequest>,
     ) -> Result<Response<ListSongsResponse>, Status> {
         let root = songs::listing_root(&self.player, self.config_store.as_deref()).await;
+        let request = request.into_inner();
+        // A detailed list is the web UI's: every song at once, not a page
+        // that fits a Bluetooth message.
+        let (budget, detail) = if request.detailed {
+            (usize::MAX, songs::Detail::Full)
+        } else {
+            (songs::PAGE_BUDGET, songs::Detail::Brief)
+        };
         Ok(Response::new(songs::list(
             &self.player,
             root.as_deref(),
-            request.into_inner().start,
-            songs::PAGE_BUDGET,
+            request.start,
+            budget,
+            detail,
         )))
     }
 
@@ -1252,6 +1292,8 @@ fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylist
         position: playlist.entry().map(|index| index as u32),
         ambient: settings.ambient,
         revision: settings.revision,
+        available_songs: Vec::new(),
+        song_tracks: std::collections::HashMap::new(),
     })
 }
 
@@ -1578,7 +1620,9 @@ mod test {
     async fn test_grpc_list_playlists() -> Result<(), Box<dyn Error>> {
         let (player, mut client, _device) = setup_grpc().await?;
 
-        let listed = client.list_playlists(ListPlaylistsRequest {}).await?;
+        let listed = client
+            .list_playlists(ListPlaylistsRequest::default())
+            .await?;
         let listed = listed.into_inner();
         assert_eq!(listed.names, player.list_playlists());
         assert_eq!(listed.names, ["all_songs", "playlist"]);
@@ -1589,7 +1633,9 @@ mod test {
                 playlist_name: "all_songs".to_string(),
             })
             .await?;
-        let listed = client.list_playlists(ListPlaylistsRequest {}).await?;
+        let listed = client
+            .list_playlists(ListPlaylistsRequest::default())
+            .await?;
         assert_eq!(listed.into_inner().active, "all_songs");
         Ok(())
     }
@@ -1602,6 +1648,7 @@ mod test {
         let active = client
             .get_playlist(GetPlaylistRequest {
                 name: String::new(),
+                ..Default::default()
             })
             .await?
             .into_inner();
@@ -1620,6 +1667,7 @@ mod test {
         let moved = client
             .get_playlist(GetPlaylistRequest {
                 name: "playlist".to_string(),
+                ..Default::default()
             })
             .await?
             .into_inner();
@@ -1629,6 +1677,7 @@ mod test {
         let all = client
             .get_playlist(GetPlaylistRequest {
                 name: "all_songs".to_string(),
+                ..Default::default()
             })
             .await?
             .into_inner();
@@ -1639,6 +1688,7 @@ mod test {
         let status = client
             .get_playlist(GetPlaylistRequest {
                 name: "nonexistent".to_string(),
+                ..Default::default()
             })
             .await
             .expect_err("an unknown playlist is not found");
@@ -1954,6 +2004,76 @@ mod test {
             .await?;
         assert_eq!(player.get_playlist().name(), "playlist");
 
+        Ok(())
+    }
+
+    /// What the web UI's playlist activation did, now that it is this call:
+    /// an unknown playlist is not found, a song playing refuses the switch
+    /// (told apart from not found by its code, as the web UI's was by its
+    /// status), and the lock does not stand in its way.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_playlists_answers_as_the_web_ui_did() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, device) = setup_grpc().await?;
+        let err = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "nonexistent".to_string(),
+            })
+            .await
+            .expect_err("an unknown playlist is not found");
+        assert_eq!(err.code(), tonic::Code::NotFound);
+
+        // A playback control: open while locked.
+        player.set_locked(true);
+        client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "all_songs".to_string(),
+            })
+            .await?;
+        assert_eq!(player.get_playlist().name(), "all_songs");
+        player.set_locked(false);
+
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        let err = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "playlist".to_string(),
+            })
+            .await
+            .expect_err("a song is playing");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(player.get_playlist().name(), "all_songs");
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    /// The lock toggle, which the web UI's `PUT /api/lock` was: it answers
+    /// the lock as it now stands, and it is open while locked (the way to
+    /// unlock), as the lock policy lists it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_lock_answers_the_lock_and_is_open_while_locked() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::SetLockRequest;
+        let (player, mut client, _device) = setup_grpc().await?;
+        let locked = client
+            .set_lock(SetLockRequest { locked: true })
+            .await?
+            .into_inner();
+        assert!(locked.locked);
+        assert!(player.is_locked());
+        // Locking again, and unlocking, while locked.
+        assert!(
+            client
+                .set_lock(SetLockRequest { locked: true })
+                .await?
+                .into_inner()
+                .locked
+        );
+        let unlocked = client
+            .set_lock(SetLockRequest { locked: false })
+            .await?
+            .into_inner();
+        assert!(!unlocked.locked);
+        assert!(!player.is_locked());
         Ok(())
     }
 

@@ -241,7 +241,7 @@ message UpdateSongSettingsRequest {
   folders down, are 47.6 kB, one page (22 kB before `base_dir`). A test
   holds both. A bigger library takes more pages, not a bigger one.
 - **Folders, as the web UI has them.** The web UI's Songs page
-  (`SongList.svelte`) groups songs by `base_dir` from `GET /api/songs`
+  (`SongList.svelte`) groups songs by `base_dir` from the song list (`ListSongs`)
   (the song's directory relative to the songs directory): each song goes
   under its `base_dir` less the last part, so `Live/2026/Encore` is under
   `Live/2026` and `Encore` is at the top. Every folder is one flat group

@@ -13,7 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Playlist Editor", () => {
   let playlists: PlaylistEditorPage;
@@ -87,23 +89,19 @@ test.describe("Playlist Editor", () => {
   });
 
   test("create new playlist calls API", async ({ page }) => {
-    let createCalled = false;
-    await page.route("**/api/playlists/my-playlist", async (route) => {
-      if (route.request().method() === "PUT") {
-        createCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved", name: "my-playlist" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.savePlaylist, (req) => ({ name: req.name }));
 
     await playlists.newButton.click();
     await playlists.newPlaylistInput.fill("my-playlist");
     await playlists.createButton.click();
-    expect(createCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.savePlaylist).length)
+      .toBe(1);
+    // A new playlist: made, with no songs.
+    const [saved] = rpc.calls(PlayerService.method.savePlaylist);
+    expect(saved.name).toBe("my-playlist");
+    expect(saved.create).toBe(true);
+    expect(saved.songs).toEqual([]);
   });
 });

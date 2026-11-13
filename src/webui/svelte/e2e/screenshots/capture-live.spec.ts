@@ -18,13 +18,15 @@
 // Run via `npm run screenshots:live` (assumes mtrack on http://localhost:8080;
 // override with MTRACK_URL=...).
 //
-// Picks songs/playlists dynamically from /api/songs and /api/playlists so
+// Picks songs/playlists dynamically from the player's ListSongs and ListPlaylists so
 // the spec doesn't bake in operator-specific names.
 
 import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
+import { mapPlaylistList, mapSongList } from "../../src/lib/grpc/library";
+import { playerClientAt } from "../support/player-client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,11 +67,15 @@ async function fetchJson<T>(page: Page, urlPath: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** The player's gRPC service, on the server the shots are of. */
+function player() {
+  return playerClientAt(process.env.MTRACK_URL ?? "http://localhost:8080");
+}
+
 async function pickSong(
-  page: Page,
   predicate: (s: SongSummary) => boolean,
 ): Promise<string> {
-  const data = await fetchJson<{ songs: SongSummary[] }>(page, "/api/songs");
+  const data = mapSongList(await player().listSongs({ detailed: true }));
   const match = data.songs.find(predicate) ?? data.songs[0];
   if (!match) {
     throw new Error("no songs available on the live server");
@@ -77,8 +83,10 @@ async function pickSong(
   return match.name;
 }
 
-async function pickPlaylist(page: Page): Promise<string> {
-  const playlists = await fetchJson<PlaylistSummary[]>(page, "/api/playlists");
+async function pickPlaylist(): Promise<string> {
+  const playlists: PlaylistSummary[] = mapPlaylistList(
+    await player().listPlaylists({ detailed: true }),
+  );
   // Prefer the active playlist with the most songs, ignoring the player's
   // own (`reserved`), which renders differently and isn't representative.
   const candidates = playlists.filter((p) => !p.reserved);
@@ -109,7 +117,6 @@ test("song-detail", async ({ page }) => {
   // A song with both lighting and sections gives the detail page the most
   // to render — beat grid, section markers, lighting summary.
   const song = await pickSong(
-    page,
     (s) => !!s.has_lighting && (s.sections?.length ?? 0) > 0,
   );
   await page.goto(`/#/songs/${encodeURIComponent(song)}`);
@@ -119,7 +126,7 @@ test("song-detail", async ({ page }) => {
 });
 
 test("song-sections", async ({ page }) => {
-  const song = await pickSong(page, (s) => (s.sections?.length ?? 0) > 1);
+  const song = await pickSong((s) => (s.sections?.length ?? 0) > 1);
   await page.goto(`/#/songs/${encodeURIComponent(song)}/sections`);
   await expect(page.locator(".tab.active")).toContainText("Timeline");
   await page.waitForTimeout(400);
@@ -130,7 +137,6 @@ test("timeline-editor", async ({ page }) => {
   // Prefer a song with sections too — those are usually the ones with
   // authored lighting cues, not just an empty .light file.
   const song = await pickSong(
-    page,
     (s) => !!s.has_lighting && (s.sections?.length ?? 0) > 0,
   );
   await page.goto(`/#/songs/${encodeURIComponent(song)}/lighting`);
@@ -143,7 +149,7 @@ test("timeline-editor", async ({ page }) => {
 });
 
 test("playlist-editor", async ({ page }) => {
-  const playlist = await pickPlaylist(page);
+  const playlist = await pickPlaylist();
   await page.goto(`/#/playlists/${encodeURIComponent(playlist)}`);
   await expect(page.locator(".song-columns")).toBeVisible();
   await page.waitForTimeout(300);
@@ -188,7 +194,7 @@ test("bulk-import-result", async ({ page }) => {
   // Bulk import is a config change, and a live player starts locked
   // (the server answers 423 while locked). Unlock for the shot, and
   // restore the lock afterwards so the instance is left as found.
-  await page.request.put("/api/lock", { data: { locked: false } });
+  await player().setLock({ locked: false });
   try {
     await page.goto("/#/songs");
     await page.getByRole("button", { name: /import from filesystem/i }).click();
@@ -215,7 +221,7 @@ test("bulk-import-result", async ({ page }) => {
       path: path.join(DOCS_IMAGES, "bulk-import-result.png"),
     });
   } finally {
-    await page.request.put("/api/lock", { data: { locked: true } });
+    await player().setLock({ locked: true });
   }
 });
 

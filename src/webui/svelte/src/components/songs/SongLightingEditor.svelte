@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { ConnectError } from "@connectrpc/connect";
+  import { onDestroy } from "svelte";
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     fetchLightingFile,
@@ -126,7 +127,11 @@
 
   // Playback state derived from the `Watch` playback store
   let pbState = $state(get(playbackStore));
+  // Released when the editor goes, not when the effect below is cleaned up:
+  // that runs again whenever a state it read changes, and the lock would
+  // then stay as the first status left it.
   const unsubPlayback = playbackStore.subscribe((v) => (pbState = v));
+  onDestroy(unsubPlayback);
 
   // Connection state (accessed via $watchConnected in template)
 
@@ -788,7 +793,6 @@
     loadLighting();
     loadVenueGroups();
     return () => {
-      unsubPlayback();
       stopInterpolation();
     };
   });

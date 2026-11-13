@@ -13,7 +13,7 @@
 //
 
 import type { Page } from "@playwright/test";
-import { api, expect, test } from "./harness";
+import { expect, songList, test } from "./harness";
 import { silentWav } from "../support/wav";
 
 // A song's lighting files live in the song's folder and song.yaml names
@@ -31,11 +31,6 @@ const HOUSE = `venue "house" {
   fixture "Par 1" Par @ 1:1
 }
 `;
-
-interface Songs {
-  songs: { name: string; lighting_files: string[] }[];
-  failures: { name: string; error: string }[];
-}
 
 test.use({
   files: {
@@ -84,7 +79,7 @@ test("a light show added in the song editor is written to the song's folder and 
   expect(project.read("songs/Lit/song.yaml")).toContain("file: verse.light");
 
   // The player loads the song with the show.
-  let songs = await api<Songs>(project, "/songs");
+  let songs = await songList(project);
   expect(songs.failures).toEqual([]);
   expect(songs.songs.find((s) => s.name === "Lit")?.lighting_files).toEqual([
     "Lit/verse.light",
@@ -105,7 +100,7 @@ test("a light show added in the song editor is written to the song's folder and 
 
   expect(project.exists("songs/Lit/verse.light")).toBe(false);
   expect(project.read("songs/Lit/song.yaml")).not.toContain("lighting");
-  songs = await api<Songs>(project, "/songs");
+  songs = await songList(project);
   expect(songs.failures).toEqual([]);
   expect(songs.songs.find((s) => s.name === "Lit")?.lighting_files).toEqual([]);
 });
@@ -129,7 +124,7 @@ test("a show typed into a lighting-less song's Raw DSL tab is saved in the song'
   expect(project.exists("songs/Lit.light")).toBe(false);
   expect(project.read("songs/Lit/Lit.light")).toContain('show "Main"');
   expect(project.read("songs/Lit/song.yaml")).toContain("file: Lit.light");
-  const songs = await api<Songs>(project, "/songs");
+  const songs = await songList(project);
   expect(songs.failures).toEqual([]);
   expect(songs.songs.find((s) => s.name === "Lit")?.lighting_files).toEqual([
     "Lit/Lit.light",
@@ -155,7 +150,7 @@ test("the song's own name for the first show gives one file", async ({
   expect(project.read("songs/Lit/Lit.light")).toContain('show "Lit"');
   const yaml = project.read("songs/Lit/song.yaml");
   expect(yaml.match(/file: Lit\.light/g)).toHaveLength(1);
-  const songs = await api<Songs>(project, "/songs");
+  const songs = await songList(project);
   expect(songs.failures).toEqual([]);
   expect(songs.songs.find((s) => s.name === "Lit")?.lighting_files).toEqual([
     "Lit/Lit.light",

@@ -15,7 +15,7 @@
 import { test, expect } from "@playwright/test";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { sendWatch } from "../support/watch";
-import { capturePlaylistPut } from "../support/playlists";
+import { capturePlaylistPut, stubPlaylist } from "../support/playlists";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
@@ -82,27 +82,20 @@ test.describe("Playlist editor: transitions", () => {
     page,
   }) => {
     const bodies = await capturePlaylistPut(page);
-    await page.route("**/api/playlists/setlist", async (route) => {
-      if (route.request().method() !== "GET") return route.fallback();
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          name: "setlist",
-          songs: ["Test Song Alpha", "Test Song Beta"],
-          auto_play: [null, null],
-          fades: [
-            { fade_out: "2s", fade_in: null },
-            { fade_out: null, fade_in: { length: "1s", exclude: ["vocals"] } },
-          ],
-          ambient: null,
-          available_songs: [],
-          song_tracks: {
-            "Test Song Alpha": ["kick"],
-            "Test Song Beta": ["guitar", "vocals"],
-          },
-        }),
-      });
+    await stubPlaylist(page, "setlist", {
+      name: "setlist",
+      songs: ["Test Song Alpha", "Test Song Beta"],
+      auto_play: [null, null],
+      fades: [
+        { fade_out: "2s", fade_in: null },
+        { fade_out: null, fade_in: { length: "1s", exclude: ["vocals"] } },
+      ],
+      ambient: null,
+      available_songs: [],
+      song_tracks: {
+        "Test Song Alpha": ["kick"],
+        "Test Song Beta": ["guitar", "vocals"],
+      },
     });
     await playlists.selectPlaylist("setlist");
     const rows = playlists.playlistSongs();

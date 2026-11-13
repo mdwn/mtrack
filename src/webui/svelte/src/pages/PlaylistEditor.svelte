@@ -229,7 +229,7 @@
     }
     try {
       error = "";
-      await savePlaylist(name, []);
+      await savePlaylist(name, [], {}, true);
       newName = "";
       showNewInput = false;
       await loadPlaylists();
