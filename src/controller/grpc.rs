@@ -95,6 +95,9 @@ impl super::Driver for Driver {
         tokio::spawn(async move {
             let reflection_service = tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+                // The health service too, so `grpcurl` can call it with no
+                // proto file to hand.
+                .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
                 .build_v1()
                 .map_err(io::Error::other)?;
 
@@ -2455,6 +2458,45 @@ mod test {
                 "{rpc}"
             );
         }
+        Ok(())
+    }
+
+    /// Reflection lists the health service beside the player's, which is
+    /// what lets `grpcurl` call it with no proto file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reflection_lists_the_health_service() -> Result<(), Box<dyn Error>> {
+        use tonic_reflection::pb::v1::{
+            server_reflection_client::ServerReflectionClient,
+            server_reflection_request::MessageRequest, server_reflection_response::MessageResponse,
+            ServerReflectionRequest,
+        };
+        let (player, _client, _device) = setup_grpc().await?;
+        let driver = Driver::new(config::GrpcController::new(0), player.clone())?;
+        drop(driver.monitor_events());
+        let port = driver.bound.port().await;
+        let channel = Channel::from_shared(format!("http://127.0.0.1:{port}"))?
+            .connect()
+            .await?;
+        let mut reflection = ServerReflectionClient::new(channel);
+
+        let request = ServerReflectionRequest {
+            host: String::new(),
+            message_request: Some(MessageRequest::ListServices(String::new())),
+        };
+        let mut answers = reflection
+            .server_reflection_info(futures_util::stream::iter([request]))
+            .await?
+            .into_inner();
+        let Some(MessageResponse::ListServicesResponse(list)) = answers
+            .message()
+            .await?
+            .and_then(|answer| answer.message_response)
+        else {
+            panic!("a list of services");
+        };
+        let names: Vec<&str> = list.service.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"grpc.health.v1.Health"), "{names:?}");
+        assert!(names.contains(&"player.v1.PlayerService"), "{names:?}");
         Ok(())
     }
 
