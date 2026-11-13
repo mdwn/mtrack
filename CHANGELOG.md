@@ -161,9 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and
   `GET /api/lighting` (the list of `.light` files; `/api/lighting/<name>` stays). The web UI never
   used them. A script that did should use the gRPC `GetConfig`, `UpdateAudio`, `UpdateMidi`,
-  `UpdateDmx` and `UpdateControllers` calls (see [gRPC](docs/src/interfaces/grpc.md)), or
-  `GET /api/config/store` to read the YAML with its checksum, and read the lock from
-  the gRPC `Status`. Replacing the whole config file in one
+  `UpdateDmx` and `UpdateControllers` calls (see [gRPC](docs/src/interfaces/grpc.md)), which
+  `GetConfig` also reads the YAML with its checksum for, and read the lock from the gRPC `Status`. Replacing the whole config file in one
   request has no equivalent; edit the file on disk, or save by section.
 - **Breaking: the web UI's websocket (`/ws`) and `GET /api/status`**: both are gone. Anything
   that read the websocket (a script, a dashboard of your own) should open the `Watch` gRPC stream
@@ -192,6 +191,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal is a status: a locked player is `FAILED_PRECONDITION`, a playlist that is not valid or
   names a song the player does not have is `INVALID_ARGUMENT`, a missing one is `NOT_FOUND`. The
   rest of `/api/songs/<name>` is unchanged. See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for the config store and its profiles**: `GET /api/config/store`,
+  `POST /api/config/profiles`, and `PUT` and `DELETE /api/config/profiles/<index>` are gone; the
+  web UI calls the gRPC service for them. A script that used them should call `GetConfig` (the YAML
+  and its checksum), `AddProfile`, `UpdateProfile` and `RemoveProfile`, over gRPC or gRPC-Web; for
+  example `grpcurl -plaintext host:43234 player.v1.PlayerService/GetConfig`. A write sends the
+  checksum it read as `expected_checksum` and the profile as a JSON string (`profile_json`), where
+  the route took a JSON body with the profile in it, and the checksum of `DELETE` in the query. Each
+  refusal is a status: a checksum that is no longer the config's is `FAILED_PRECONDITION` (the route
+  answered 409), a profile that is not valid or an index that is not there is `INVALID_ARGUMENT`
+  (400), a locked player is `FAILED_PRECONDITION`, and a player with no config store
+  `UNIMPLEMENTED` (503). A write that sends no checksum is a stale one, not a missing one. The
+  answer of the three writes, `UpdateConfigResponse`, now also says which reload it was
+  (`reload`: `applied`, `deferred` or `failed`), a song reload that failed beside it
+  (`songs_error`), and for a deferred reload the generation it waits for (`awaits_reload`) and the
+  process that counts it (`awaits_process`), as the routes' answers did; the fields it had are
+  unchanged, and the section updates (`UpdateAudio`, `UpdateMidi`, `UpdateDmx`,
+  `UpdateControllers`) answer them as well. See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.2] - 2026-11-13
 

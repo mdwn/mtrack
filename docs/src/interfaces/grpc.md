@@ -85,14 +85,26 @@ empty cell means the RPC is available to gRPC clients only.
 | `GetTrackGains` | Returns the gains of all output tracks, in dB. | |
 | `SetAmbientMode` | Sets the [ambient mode](../lighting/configuration.md#ambient-mode): `auto`, `on` or `off`, in any case. Another name is `INVALID_ARGUMENT`. Returns the ambient status after the change. | |
 | `CancelAutoPlay` | Calls off a song waiting to [auto play](../getting-started/playlists.md#auto-play), leaving the player stopped on it with ambient light up. `cancelled` is false when none was waiting. | |
-| `GetConfig` | Returns the current configuration as YAML with a checksum. | |
+| `GetConfig` | Returns the current configuration as YAML with a checksum, which a write presents as its `expected_checksum`. Open while locked. A player with no config store answers `UNIMPLEMENTED`. | |
 | `UpdateAudio` | Updates the audio configuration section. | |
 | `UpdateMidi` | Updates the MIDI configuration section. | |
 | `UpdateDmx` | Updates the DMX configuration section. | |
 | `UpdateControllers` | Updates the controllers configuration. | |
-| `AddProfile` | Adds a hardware profile. | |
-| `UpdateProfile` | Updates the profile at an index. | |
+| `AddProfile` | Adds a hardware profile, given as a JSON string (`profile_json`). | |
+| `UpdateProfile` | Updates the profile at an index. A section `profile_json` leaves out keeps its current value; one sent as `null` is removed. | |
 | `RemoveProfile` | Removes the profile at an index. | |
+
+Each config write sends the `expected_checksum` it read with `GetConfig`; one that is no longer the
+config's (someone else changed it, or none was sent) is `FAILED_PRECONDITION`, a change that would
+not validate, or an index that is not there, is `INVALID_ARGUMENT`, and the config is left as it
+was. The answer, `UpdateConfigResponse`, is the config after the change (`yaml` and `checksum`) and
+what became of the hardware reload: `applied`, and `reload` (`applied`, `deferred` or `failed`) with
+a `message` when it is not applied. A change made while a song plays is saved and its reload
+deferred until the player is idle; `awaits_reload` is then the generation of the reload it waits
+for, which has started once the `Watch` stream's `hardware_reload_started` reaches it, and
+`awaits_process` the process that counts it (a restarted mtrack counts from none, and has loaded the
+saved config). `songs_error` says why the songs could not be reloaded beside it, when they could
+not.
 
 ## Lock mode
 

@@ -17,7 +17,13 @@
 import type { Page } from "@playwright/test";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { ConnectError, Code } from "@connectrpc/connect";
-import { PLAYLIST_DETAILS, PLAYLISTS, SONGS } from "../mock-server/test-data";
+import {
+  CONFIG_STORE,
+  PLAYLIST_DETAILS,
+  PLAYLISTS,
+  SONGS,
+} from "../mock-server/test-data";
+import { getConfigReply } from "./config-rpc";
 import {
   getPlaylistReply,
   listPlaylistsReply,
@@ -27,14 +33,15 @@ import { mockRpc, type GrpcReply } from "./rpc";
 
 export type { GrpcReply };
 
-/** The calls a page makes to read the song library and the playlists. A
- *  spec that stubs the transport controls still needs the pages to have
- *  their songs and playlists, so these are answered as the mock server
- *  answers them, and are not the calls `onCall` counts. */
+/** The calls a page makes to read the song library, the playlists and the
+ *  config. A spec that stubs the transport controls still needs the pages to
+ *  have their songs, playlists and config, so these are answered as the mock
+ *  server answers them, and are not the calls `onCall` counts. */
 const LIBRARY_READS = new Set<string>([
   PlayerService.method.listSongs.name,
   PlayerService.method.listPlaylists.name,
   PlayerService.method.getPlaylist.name,
+  PlayerService.method.getConfig.name,
 ]);
 
 /** Answers every PlayerService call but the streams (`WatchStage`) with
@@ -53,6 +60,7 @@ export async function stubPlayerService(
   });
   rpc.unary(PlayerService.method.listSongs, listSongsReply(SONGS));
   rpc.unary(PlayerService.method.listPlaylists, listPlaylistsReply(PLAYLISTS));
+  rpc.unary(PlayerService.method.getConfig, getConfigReply(CONFIG_STORE));
   rpc.unary(PlayerService.method.getPlaylist, (req) => {
     const detail = PLAYLIST_DETAILS[req.name];
     if (!detail) throw new ConnectError("Playlist not found", Code.NotFound);

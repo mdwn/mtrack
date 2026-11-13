@@ -24,6 +24,9 @@
 // the save made, so nothing re-selects it and clears the "Saved" notice.
 
 import { test, expect, type Page } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { getConfigReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import type {
   ProfileFile,
   ProfileFileInfo,
@@ -59,13 +62,11 @@ async function serveProfiles(
   page: Page,
   files: () => ProfileFileInfo[],
 ): Promise<string[]> {
-  await page.route("**/api/config/store", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ yaml: PROFILES_DIR_YAML, checksum: "dir" }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ yaml: PROFILES_DIR_YAML, checksum: "dir" }),
+  );
   await page.route("**/api/profiles", async (route) => {
     await route.fulfill({
       status: 200,

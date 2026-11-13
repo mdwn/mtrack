@@ -27,8 +27,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { sendWatchUnchecked } from "../support/watch";
-import { SONGS } from "../mock-server/test-data";
+import { CONFIG_STORE, SONGS } from "../mock-server/test-data";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { getConfigReply } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { stubPlaylist } from "../support/playlists";
 import { mockRpc } from "../support/rpc";
@@ -625,14 +626,11 @@ metronome:
 `;
 
 test("config-metronome", async ({ page }) => {
-  await page.route("**/api/config/store", async (route) => {
-    const resp = await route.fetch();
-    const data = await resp.json();
-    await route.fulfill({
-      response: resp,
-      json: { ...data, yaml: CONFIG_WITH_METRONOME },
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ ...CONFIG_STORE, yaml: CONFIG_WITH_METRONOME }),
+  );
   await page.goto("/#/config");
   await expect(page.locator(".list-view")).toBeVisible();
   await expect(page.locator(".metronome-defaults")).toBeVisible();

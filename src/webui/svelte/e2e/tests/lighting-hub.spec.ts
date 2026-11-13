@@ -19,7 +19,10 @@ import type {
   Finding,
   Readiness,
 } from "../../src/gen/rules/mtrack_rules";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { READINESS } from "../mock-server/test-data";
+import { getConfigReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import { openWithStage, sendStage } from "../support/stage";
 
 // Every test routes its own readiness answer with `page.route`, so no test
@@ -89,13 +92,11 @@ async function routeReadiness(
       body: JSON.stringify(facts),
     });
   });
-  await page.route("**/api/config/store", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ yaml: PROFILE_YAML, checksum: "hub" }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ yaml: PROFILE_YAML, checksum: "hub" }),
+  );
 }
 
 const CHECKS = ["fixtures", "venue", "groups", "shows", "output"] as const;

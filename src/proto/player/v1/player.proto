@@ -409,6 +409,18 @@ message UpdateConfigResponse {
     bool applied = 3;
     // Why the change has not been applied yet, when it has not.
     string message = 4;
+    // Which it was: "applied", "deferred" or "failed". Empty from a server
+    // that predates the field: read `applied` then.
+    string reload = 5;
+    // Why the songs could not be reloaded beside the change, when they
+    // could not: the player keeps the songs it had.
+    optional string songs_error = 6;
+    // For a deferred reload, the generation it waits for: it has started
+    // once the playback updates' `hardware_reload_started` reaches it.
+    optional uint64 awaits_reload = 7;
+    // The process whose generation that is. A restarted mtrack counts its
+    // reloads from none, and has loaded the saved config.
+    optional string awaits_process = 8;
 }
 
 // LoopSectionRequest activates section looping for a named section.

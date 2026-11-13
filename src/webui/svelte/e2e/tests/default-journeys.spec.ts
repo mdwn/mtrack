@@ -13,7 +13,10 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { getConfigReply, savedReply } from "../support/config-rpc";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 import { MVR_INSPECTION } from "../mock-server/test-data";
 import { sendStage } from "../support/stage";
 
@@ -369,14 +372,15 @@ profiles:
             name: wash
             constraints: []
 `;
-    await page.route("**/api/config/store", (r) =>
-      r.fulfill(json({ yaml, checksum: "groups" })),
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      PlayerService.method.getConfig,
+      getConfigReply({ yaml, checksum: "groups" }),
     );
-    const puts: Request[] = [];
-    await page.route("**/api/config/profiles/*", (r) => {
-      puts.push(r.request());
-      return r.fulfill(json({ yaml, checksum: "after" }));
-    });
+    rpc.unary(
+      PlayerService.method.updateProfile,
+      savedReply({ yaml, checksum: "after" }),
+    );
     await page.goto("/#/lighting/groups");
     await expect(page.locator(".group-card")).toHaveCount(1);
     const section = (title: string) =>
@@ -399,8 +403,12 @@ profiles:
       .getByRole("button", { name: "Add" })
       .click();
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => puts.length).toBe(1);
-    const lighting = puts[0].postDataJSON().profile.dmx.lighting;
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.updateProfile).length)
+      .toBe(1);
+    const lighting = JSON.parse(
+      rpc.calls(PlayerService.method.updateProfile)[0].profileJson,
+    ).dmx.lighting;
     expect(Object.keys(lighting.groups).sort()).toEqual(["new_group", "wash"]);
     expect(lighting.groups.new_group).toEqual({
       name: "new_group",

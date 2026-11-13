@@ -16,7 +16,12 @@ import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
 import { fromBinary } from "@bufbuild/protobuf";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
-import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
+import {
+  PlayerService,
+  SetAmbientModeRequestSchema,
+} from "../../src/gen/player/v1/player_pb";
+import { getConfigReply, savedReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendWatch } from "../support/watch";
 import { capturePlaylistPut, stubPlaylist } from "../support/playlists";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
@@ -272,24 +277,15 @@ profiles:
       lighting:
         current_venue: test-venue
 `;
-    await page.route("**/api/config/store", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml, checksum: "one" }),
-      });
-    });
-    let put: {
-      profile: { dmx: { lighting: Record<string, unknown> } };
-    } | null = null;
-    await page.route("**/api/config/profiles/*", async (route) => {
-      put = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml, checksum: "two" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      PlayerService.method.getConfig,
+      getConfigReply({ yaml, checksum: "one" }),
+    );
+    rpc.unary(
+      PlayerService.method.updateProfile,
+      savedReply({ yaml, checksum: "two" }),
+    );
     await page.goto("/#/lighting/groups");
     await expect(page.getByTestId("lighting-ambient")).toBeVisible();
     await page.locator("#lighting-ambient-show").fill("lighting/ambient.light");
@@ -297,12 +293,17 @@ profiles:
     await page.locator("#lighting-ambient-fade_in").fill("4s");
     await page.locator("#lighting-ambient-fade_in").press("Enter");
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => put).not.toBeNull();
-    expect(put!.profile.dmx.lighting.ambient).toEqual({
+    await expect
+      .poll(() => rpc.calls(PlayerService.method.updateProfile).length)
+      .toBe(1);
+    const put: { dmx: { lighting: Record<string, unknown> } } = JSON.parse(
+      rpc.calls(PlayerService.method.updateProfile)[0].profileJson,
+    );
+    expect(put.dmx.lighting.ambient).toEqual({
       show: "lighting/ambient.light",
       fade_in: "4s",
     });
-    expect(put!.profile.dmx.lighting.current_venue).toBe("test-venue");
+    expect(put.dmx.lighting.current_venue).toBe("test-venue");
   });
 });
 

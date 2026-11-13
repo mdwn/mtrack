@@ -72,22 +72,28 @@ import {
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code } from "@connectrpc/connect";
 import {
+  AddProfileRequestSchema,
   DeletePlaylistRequestSchema,
   DeletePlaylistResponseSchema,
+  GetConfigResponseSchema,
   GetPlaylistRequestSchema,
   GetPlaylistResponseSchema,
   ListPlaylistsResponseSchema,
   ListSongsResponseSchema,
+  RemoveProfileRequestSchema,
   SavePlaylistRequestSchema,
   SetLockRequestSchema,
   SetLockResponseSchema,
   SwitchToPlaylistResponseSchema,
+  UpdateConfigResponseSchema,
+  UpdateProfileRequestSchema,
 } from "../../src/gen/player/v1/player_pb.js";
 import {
   errorHeaders,
   requestMessage,
   unaryBody,
 } from "../support/grpc-web.js";
+import { getConfigReply, savedReply } from "../support/config-rpc.js";
 import {
   getPlaylistReply,
   listPlaylistsReply,
@@ -101,7 +107,7 @@ app.use(express.json());
 app.use(express.text({ type: "text/*" }));
 
 // --- The player's gRPC-Web calls that the pages make for the song list, the
-// playlists and the lock ---
+// playlists, the lock and the config store ---
 // Answered from the same fixtures the REST routes of the other pages use; a
 // spec that needs other answers or the requests uses mockRpc
 // (e2e/support/rpc.ts), which is consulted first.
@@ -194,6 +200,41 @@ grpcUnary("SetLock", (request) => {
   );
 });
 
+// The config store: a read answers the fixture, and a profile write answers
+// the fixture under a new checksum, applied at once, as the REST routes they
+// replace did.
+grpcUnary("GetConfig", () =>
+  toBinary(
+    GetConfigResponseSchema,
+    create(GetConfigResponseSchema, getConfigReply(CONFIG_STORE)),
+  ),
+);
+
+function profileSaved(checksum: string): Uint8Array {
+  return toBinary(
+    UpdateConfigResponseSchema,
+    create(
+      UpdateConfigResponseSchema,
+      savedReply({ ...CONFIG_STORE, checksum }),
+    ),
+  );
+}
+
+grpcUnary("AddProfile", (request) => {
+  fromBinary(AddProfileRequestSchema, request);
+  return profileSaved("new-checksum-1");
+});
+
+grpcUnary("UpdateProfile", (request) => {
+  fromBinary(UpdateProfileRequestSchema, request);
+  return profileSaved("new-checksum-2");
+});
+
+grpcUnary("RemoveProfile", (request) => {
+  fromBinary(RemoveProfileRequestSchema, request);
+  return profileSaved("new-checksum-3");
+});
+
 // --- Songs ---
 
 app.get("/api/songs/:name", (req, res) => {
@@ -277,12 +318,6 @@ app.post("/api/songs/:name/import", (_req, res) => {
   res.json({ status: "imported" });
 });
 
-// --- Config ---
-
-app.get("/api/config/store", (_req, res) => {
-  res.json(CONFIG_STORE);
-});
-
 // --- Devices ---
 
 app.get("/api/devices/audio", (_req, res) => {
@@ -308,30 +343,6 @@ app.get("/api/devices/midi", (_req, res) => {
 
 /** A save's hardware reload, run at once. */
 const APPLIED: ConfigReload = { applied: true, reload: "applied" };
-
-app.post("/api/config/profiles", (_req, res) => {
-  res.json({
-    ...CONFIG_STORE,
-    checksum: "new-checksum-1",
-    ...APPLIED,
-  } satisfies ConfigSaved);
-});
-
-app.put("/api/config/profiles/:index", (_req, res) => {
-  res.json({
-    ...CONFIG_STORE,
-    checksum: "new-checksum-2",
-    ...APPLIED,
-  } satisfies ConfigSaved);
-});
-
-app.delete("/api/config/profiles/:index", (_req, res) => {
-  res.json({
-    ...CONFIG_STORE,
-    checksum: "new-checksum-3",
-    ...APPLIED,
-  } satisfies ConfigSaved);
-});
 
 app.get("/api/profiles", (_req, res) => {
   res.json(PROFILE_FILES);

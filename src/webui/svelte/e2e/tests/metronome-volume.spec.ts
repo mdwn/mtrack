@@ -22,6 +22,10 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { parse } from "yaml";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { CONFIG_STORE } from "../mock-server/test-data";
+import { getConfigReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 
 const CONFIG_YAML = `songs: songs
 profiles:
@@ -56,14 +60,11 @@ interface MetronomeDefaults {
 }
 
 async function openConfig(page: Page) {
-  await page.route("**/api/config/store", async (route) => {
-    const res = await route.fetch();
-    const data = await res.json();
-    await route.fulfill({
-      response: res,
-      json: { ...data, yaml: CONFIG_YAML },
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ ...CONFIG_STORE, yaml: CONFIG_YAML }),
+  );
   await page.goto("/#/config");
   await expect(page.locator(".metronome-defaults")).toBeVisible();
 }
