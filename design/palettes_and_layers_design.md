@@ -166,9 +166,7 @@ dmx:
 
 - When it's left out, it's `[background, midground, foreground]`, so every
   existing show and config behaves exactly as it does now.
-- Names are identifiers, unique, at least one. There's no upper limit in
-  the format; the engine is fine with a handful, and §6.3 asks whether to
-  set a cap.
+- Names are identifiers, unique, between one and 16 of them.
 - A show's default layer (when an effect names none) stays the **bottom**
   layer.
 
@@ -254,12 +252,11 @@ built side by side.
 2. **Where colours come from: show default, then song override, then
    playlist-entry override.** Decided.
 3. **Layers are a named, ordered list in the player config, defaulting to
-   the current three.** Decided. Open: cap the count (recommended: 16,
-   because the multiplier channels are per layer per fixture)?
+   the current three, at most 16.** Decided.
 4. **Dimming of a `replace` effect with more than three layers** (§3.3).
    Open. Recommended: only the top layer escapes lower multipliers, which
    keeps today's behaviour exactly and is the smaller change; layer-*k*
    generalisation can come later if a show needs it.
-5. **Slot reference spelling: `palette.primary`** (§2.2). Recommended.
+5. **Slot reference spelling: `palette.primary`** (§2.2). Decided.
 6. **A show must give every slot a default** (§2.2). Recommended: yes, so
    a show always plays and previews without a song or playlist.
