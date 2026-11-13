@@ -54,6 +54,7 @@
   "overrides": {
     "svelte-i18n": {
       "esbuild": "$esbuild"
-    }
+    },
+    "minimatch": "11.0.3"
   }
 }
