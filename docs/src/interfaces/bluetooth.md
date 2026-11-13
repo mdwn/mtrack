@@ -356,6 +356,12 @@ sets another), and gets its status from `WatchStatus`.
   again every twenty seconds, and moves over to Wi-Fi when the player answers, once no call is
   waiting for an answer. If the Wi-Fi link goes, it reconnects over whichever answers. The top
   bar and the settings sheet say which is in use.
+- **A network with no internet.** A player on a network of its own has none, and a phone with
+  mobile data then keeps sending its traffic that way: the app does not find the player on Wi-Fi
+  and stays on Bluetooth. When the phone says the Wi-Fi network has no internet, choose to stay
+  connected (on Android, **Stay connected**, with **Don't ask again for this network**). The
+  phone then uses that network, and the app moves to Wi-Fi within twenty seconds. Turning mobile
+  data off does the same.
 - **Another device at the address.** The app remembers the host name the player gave it, and
   checks it against what answers on Wi-Fi each time. A different name (the address was given to
   another device, or the player was renamed) is not used: the app goes to Bluetooth.

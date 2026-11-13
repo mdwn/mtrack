@@ -64,7 +64,8 @@ String describeWifiFailure(Object error, RememberedPlayer target) {
   final where = target.hosts.isEmpty ? 'that address' : target.hosts.first;
   return 'Nothing answered at $where. Check that your phone is on the '
       "player's network, and that the player's gRPC controller is turned "
-      'on.';
+      'on. If your phone said the network has no internet, choose to stay '
+      'connected.';
 }
 
 /// The name of a radio for a person: `Wi-Fi` or `Bluetooth`.

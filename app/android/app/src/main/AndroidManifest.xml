@@ -26,10 +26,6 @@
          view to 127.0.0.1 and nowhere else, and the page asks for nothing but
          its own files. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- To learn when the phone has a Wi-Fi network, so the app's sockets can
-         be kept on it: a player's own network has no internet, and Android
-         would otherwise send them over mobile data (MainActivity). -->
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:networkSecurityConfig="@xml/network_security_config"
