@@ -172,6 +172,23 @@ sequence "Verse Pattern" {
 }
 ```
 
+Cues inside a sequence count from the sequence's own `@1/1` (or `@0.000`, for one written in
+times), and that moment is where the sequence is used. A sequence that rests before its first
+sound therefore says so in its cues, so a backbeat on beats 2 and 4 is written as it is heard:
+
+```light
+sequence "Backbeat", length: 1measure {
+    @1/2
+    snare_wash: static color: "white", dimmer: 100%, layer: foreground, duration: 0.5beats
+
+    @1/4
+    snare_wash: static color: "white", dimmer: 100%, layer: foreground, duration: 0.5beats
+}
+```
+
+Used at `@5/1`, it hits on beats 2 and 4 of that bar, and looped it repeats every bar. A
+sequence written in a mix of times and `@measure/beat` positions counts from `@0.000`.
+
 **Referencing a sequence:**
 ```light
 show "Song" {
@@ -196,7 +213,8 @@ show "Song" {
 
 A pass of a sequence normally lasts until its last effect ends, so a looped sequence whose last
 effect stops short of the bar drifts off it. Declare `length:` to fix how long one pass lasts,
-counted from the sequence's first cue:
+counted from the sequence's own `@1/1` (`@0.000` for one written in times, or one mixing the
+two):
 
 ```light
 sequence "Centre Beats", length: 1measure {
@@ -212,6 +230,19 @@ Looped, each pass starts exactly one measure after the one before, even though t
 half a beat early. An effect that runs past the length is cut when the next pass starts. The
 length takes the same units as `duration:` (`2s`, `500ms`, `4beats`, `1measure`). Every cue must
 start inside it: a cue at or past the length is a parse error.
+
+Without a `length:`, a pass runs from the sequence's `@1/1` until its last effect ends. A
+sequence numbered by the score whose first cue is a whole bar or more past its own `@1/1` is
+refused unless it declares a length, since it would rest that long every time it is used:
+
+```
+Sequence 'Verse': its first cue is at @17/1.00, 16 bars after its own @1/1. A sequence's cues
+count from its own @1/1, the moment it is used: number them from @1/1, or declare a length: if
+the sequence is meant to rest first.
+```
+
+Inline loops count the same way: a cue written `@0.500` in a loop body plays half a second after
+the loop's own cue.
 
 **Sequence parameters (colours, groups and values bound where it is used):**
 
