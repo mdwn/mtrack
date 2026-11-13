@@ -241,7 +241,8 @@ above it.**
    (colour × level). On an RGB-only fixture it goes straight to RGB. On
    a fixture with a dimmer channel it's split into a level and a colour:
    the dimmer gets the highest level among the layers that contribute
-   colour, and each layer's colour is scaled by its own level relative to
+   colour (`replace`, `add`, `screen`, `overlay`; a `multiply` only
+   filters what's beneath and contributes none), and each layer's colour is scaled by its own level relative to
    that before blending, so the light out is the same. When one layer
    provides all the colour, which is the common case, the dimmer is that
    layer's level and RGB is its colour unchanged, so the DMX values match
@@ -274,6 +275,15 @@ changelog):
 Before B1 lands, lint gains a check that names each place in a show where
 the new rule changes brightness (colour on a layer above one that dims
 the same fixtures at the same time), and the prod shows are run through it.
+
+Worked example, layers A (bottom), B, C (top):
+
+| Show | Light | RGB-only fixture | Dimmer-channel fixture | Today, dimmer-channel |
+|---|---|---|---|---|
+| A red, A dimmer 50%; C `multiply` white | 50% red, as A alone | RGB 50% red | dimmer 50%, red | the same |
+| A red, A dimmer 50%; C `replace` blue | full blue | RGB blue | dimmer 100%, blue | 50% blue |
+| A red, A dimmer 50%; B `replace` blue | full blue | RGB blue (today 50% blue) | dimmer 100%, blue | 50% blue |
+| A red; C `replace` blue, C dimmer 50% | 50% blue | RGB 50% blue | dimmer 50%, blue | the same |
 
 ### 3.5 Surfaces
 
