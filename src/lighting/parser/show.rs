@@ -944,8 +944,12 @@ fn expand_unexpanded_sequence_cue(
                     // For loop iterations > 0, stop the previous iteration's effects
                     // at the start of each new iteration. This prevents effects from
                     // accumulating across iterations (e.g., multiply chases compounding).
+                    // The stop is marked as a pass restart, so the timeline does
+                    // not take it for a `stop sequence` even when this first cue
+                    // starts nothing of its own (an empty anchor).
                     if iteration > 0 && cue_index == 0 {
                         expanded_cue.stop_sequences.push(seq_name.clone());
+                        expanded_cue.pass_restarts.push(seq_name.clone());
                     }
 
                     // Mark the first cue of the first iteration as a sequence start.
@@ -979,6 +983,7 @@ fn expand_unexpanded_sequence_cue(
                     layer_commands: unexpanded.layer_commands,
                     stop_sequences: unexpanded.stop_sequences,
                     start_sequences: vec![],
+                    pass_restarts: vec![],
                 });
             } else {
                 expanded_cues[0].effects.extend(unexpanded.effects);
@@ -1005,6 +1010,7 @@ fn expand_unexpanded_sequence_cue(
         layer_commands: unexpanded.layer_commands,
         stop_sequences: unexpanded.stop_sequences,
         start_sequences: vec![],
+        pass_restarts: vec![],
     }])
 }
 
@@ -1347,6 +1353,7 @@ fn parse_cue_definition(
                 layer_commands: layer_commands.clone(),
                 stop_sequences: stop_sequences.clone(),
                 start_sequences: vec![],
+                pass_restarts: vec![],
             });
             base_cue_index = Some(expanded_cues.len() - 1);
         }
@@ -1369,6 +1376,9 @@ fn parse_cue_definition(
                         expanded_cues[base_idx]
                             .start_sequences
                             .extend(loop_cue.start_sequences);
+                        expanded_cues[base_idx]
+                            .pass_restarts
+                            .extend(loop_cue.pass_restarts);
                         continue;
                     }
                 }
@@ -1435,8 +1445,12 @@ fn parse_cue_definition(
                     // For loop iterations > 0, stop the previous iteration's effects
                     // at the start of each new iteration. This prevents effects from
                     // accumulating across iterations (e.g., multiply chases compounding).
+                    // The stop is marked as a pass restart, so the timeline does
+                    // not take it for a `stop sequence` even when this first cue
+                    // starts nothing of its own (an empty anchor).
                     if iteration > 0 && cue_index == 0 {
                         expanded_cue.stop_sequences.push(seq_name.clone());
+                        expanded_cue.pass_restarts.push(seq_name.clone());
                     }
 
                     // Mark the first cue of the first iteration as a sequence start.
@@ -1477,6 +1491,9 @@ fn parse_cue_definition(
                             expanded_cues[base_idx]
                                 .start_sequences
                                 .extend(expanded_cue.start_sequences);
+                            expanded_cues[base_idx]
+                                .pass_restarts
+                                .extend(expanded_cue.pass_restarts);
                             continue;
                         }
                     }
@@ -1539,6 +1556,7 @@ fn parse_cue_definition(
             layer_commands,
             stop_sequences,
             start_sequences: vec![],
+            pass_restarts: vec![],
         }],
         new_offset,
         Some(cumulative_measure_offset_seq),
@@ -1720,6 +1738,7 @@ mod tests {
             layer_commands: vec![],
             stop_sequences: vec![],
             start_sequences: vec![],
+            pass_restarts: vec![],
         }
     }
 
