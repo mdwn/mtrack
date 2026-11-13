@@ -192,16 +192,67 @@ checked against the venue's groups:
   to files. `is_multiplier_channel` matches the new form.
 - The hand-written triple product in `state.rs:252` becomes a loop over
   the layers.
-- **The foreground rule becomes the top-layer rule** (§6.4): a `replace`
-  effect on the top layer is dimmed only by the top layer's multipliers;
-  everything else is dimmed by all of them. With the default three layers
-  that's exactly today's behaviour. The alternative is a general rule: a
-  `replace` on layer *k* is dimmed only by layers *k* and above. That
-  changes midground today (a midground replace would stop following a
-  background dimmer), so it isn't recommended.
+- In L1 the foreground rule (`state.rs:262`) becomes "the top layer", so
+  output doesn't change. §3.4 then replaces it.
 - Status and the web UI's live state report layers by name.
 
-### 3.4 Surfaces
+### 3.4 Brightness: one model for every fixture
+
+A fixture's hardware decides how mtrack drives it, not what a show means.
+Today brightness means different things depending on whether a fixture has
+a dimmer channel:
+
+| | Dimmer-channel fixture | RGB-only fixture |
+|---|---|---|
+| Colour `replace` on a higher layer, lower layer dimmed | Still dimmed: colour writes only RGB, and the dimmer channel blends separately | Not dimmed on foreground, dimmed on midground (`state.rs:262`) |
+| Dimmer `replace` on a higher layer, lower layer dimmed | Replaces the lower level (normal channel blending) | Multiplies with it: the blend mode is ignored and every brightness effect becomes a multiplier (`fixture.rs:291`) |
+
+The new model, the same on every fixture:
+
+1. **Intensity is a logical value, kept per layer.** Dimmer, pulse, chase
+   and strobe effects contribute to their layer's intensity with their own
+   blend mode (`replace` sets it, `multiply` scales it, and so on), the
+   same way any channel blends.
+2. **A colour `replace` on layer *k* starts a new look.** Intensity from
+   layers below *k* no longer applies; the fixture's intensity is
+   combined from layer *k* upward, starting at full. While the colour
+   fades in (a `replace` with a crossfade), the lower intensity fades out
+   with it, so a crossfade doesn't jump in brightness.
+3. **Effects that blend rather than replace** (`multiply`, `add`,
+   `overlay`, `screen`) build on what's beneath, so they don't start a
+   new look and lower intensity still applies.
+4. **Output depends on the hardware.** The combined intensity goes to the
+   dimmer channel when the fixture has one. Otherwise it scales the RGB
+   channels. A fixture with no colour (a plain dimmer) never gets a
+   colour effect, so rule 2 never fires and its intensity blends exactly
+   as its dimmer channel does today. CMY and colour-wheel fixtures follow
+   rule 2 when their colour is replaced, like RGB.
+
+The per-layer `_dimmer/_pulse/_chase_mult_*` channels give way to one
+intensity value per layer, held per fixture and per cell (design §17.3).
+Strobe's RGB fallback on fixtures without a dimmer or strobe channel
+becomes an intensity contribution, so a strobe flashes the colour beneath
+it instead of writing RGB.
+
+**Output that changes for existing shows** (all on purpose, listed in the
+changelog):
+
+- On dimmer-channel fixtures, a colour `replace` on midground or
+  foreground is no longer dimmed by background/midground dimmers. This is
+  the biggest change: a show that sets brightness on background and colour
+  on a higher layer will play brighter. The fix in the show is to put the
+  level on the colour's layer (`static color: red, dimmer: 30%`) or to
+  blend instead of replace.
+- On RGB-only fixtures, a midground colour `replace` is no longer dimmed
+  by background dimmers.
+- On RGB-only fixtures, a higher-layer dimmer `replace` sets the level
+  instead of multiplying with the levels below.
+
+Before L2 lands, lint gains a check that names each place in a show where
+the new rule changes brightness (colour `replace` above a layer that dims
+the same fixtures at the same time), and the prod shows are run through it.
+
+### 3.5 Surfaces
 
 - The player reports its layer list (in the existing lighting status/config
   REST response, and a `repeated string layers` on the gRPC call the app
@@ -226,8 +277,13 @@ checked against the venue's groups:
 - Layers: the default list reproduces today's output on the golden and
   visual-consistency suites exactly (no output change is the bar for
   L1); a five-layer config with effects on each; unknown layer refused at
-  load; clear/freeze/master on a configured layer; the dimming rule
-  (§3.3) on every layer.
+  load; clear/freeze/master on a configured layer.
+- Brightness (§3.4): every row of the §3.4 table, on a dimmer-channel and
+  an RGB-only fixture, gives the same result on both; a crossfading colour
+  `replace` fades the lower intensity out with no jump; a plain dimmer
+  fixture is unchanged; cells follow the same rule. Each golden and
+  visual-consistency diff L2 causes is checked against the list of
+  intended changes, and nothing else may move.
 - Web UI: journeys for editing a slot in the show, overriding it in a
   playlist entry, and a show on a custom layer drawing its lane.
 
@@ -236,14 +292,16 @@ checked against the venue's groups:
 | # | What | Size |
 |---|---|---|
 | L1 | Layers in the engine: `EffectLayer(u8)`, `LayerSet`, index multiplier channels, loop in `state.rs`; default list only; no output change | Medium |
-| L2 | Layers configurable: `dmx.lighting.layers`, parser checks names, status/gRPC report them, web UI lanes and dropdown, settings editor, docs | Medium |
+| L2 | One brightness model (§3.4): per-layer intensity, colour `replace` starts a new look, output by hardware; lint check for affected shows, run on the prod shows first; changelog | Medium–large |
+| L3 | Layers configurable: `dmx.lighting.layers`, parser checks names, status/gRPC report them, web UI lanes and dropdown, settings editor, docs | Medium |
 | P1 | Palettes in the DSL and engine: `palette {}` block, `palette.<slot>`, `ColorRef`, resolve before first frame, defaults only; writer round-trip; docs | Medium |
 | P2 | Overrides: song YAML and playlist entry fields, resolution order at play, warnings | Small |
 | P3 | Palette UI: show editor panel and slot pickers, song editor overrides, playlist editor overrides and colour strip | Medium |
 | P4 | Over gRPC and in the app: `EntrySettings.palette`, entry sheet | Small; after phone-remote phase 3 P1 |
 
-The layer and palette tracks don't depend on each other. L1 and P1 can be
-built side by side.
+L2 changes output on purpose, so it's its own PR, after L1 and before or
+beside L3. The layer and palette tracks don't depend on each other. L1 and
+P1 can be built side by side.
 
 ## 6. Decisions
 
@@ -253,10 +311,9 @@ built side by side.
    playlist-entry override.** Decided.
 3. **Layers are a named, ordered list in the player config, defaulting to
    the current three, at most 16.** Decided.
-4. **Dimming of a `replace` effect with more than three layers** (§3.3).
-   Open. Recommended: only the top layer escapes lower multipliers, which
-   keeps today's behaviour exactly and is the smaller change; layer-*k*
-   generalisation can come later if a show needs it.
+4. **Brightness is one model on every fixture: a colour `replace` on a
+   layer ignores intensity from the layers below it** (§3.4). Decided.
+   Hardware decides how a fixture is driven, not what the show means.
 5. **Slot reference spelling: `palette.primary`** (§2.2). Decided.
 6. **A show must give every slot a default** (§2.2). Recommended: yes, so
    a show always plays and previews without a song or playlist.
