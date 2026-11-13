@@ -27,8 +27,8 @@ use super::include::{add_included, Include, IncludeReader, IncludingFile, Source
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
-    pass_start, Cue, LayerCommand, LayerCommandParam, LayerCommandType, LightShow, LightShows,
-    ParseContext, Sequence, SequenceCall, SequenceLoop, SEQUENCE_LOOPS,
+    Cue, LayerCommand, LayerCommandParam, LayerCommandType, LightShow, LightShows, ParseContext,
+    Sequence, SequenceCall, SequenceLoop, SEQUENCE_LOOPS,
 };
 use super::utils::{
     items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
@@ -74,6 +74,8 @@ pub(super) struct ParsedCue {
     /// The latest cue time it produces, the passes it references included:
     /// what a standalone `offset` in a zero-time cue after it anchors to.
     last_time: Duration,
+    /// Whether its time is written as `@measure/beat`, not as a time.
+    measured: bool,
 }
 
 /// Where the passes of one sequence reference run, as [`Passes`] laid
@@ -149,6 +151,26 @@ impl CueBlock {
     /// The cues' times as written (see [`ParsedCue::written`]), in order.
     fn written(&self) -> Vec<Duration> {
         self.cues.iter().flat_map(ParsedCue::written).collect()
+    }
+
+    /// Whether it has cues and every one is written as `@measure/beat`.
+    fn all_measured(&self) -> bool {
+        !self.cues.is_empty() && self.cues.iter().all(|c| c.measured)
+    }
+
+    /// Where the block's cues count from: the time of `@1/1` on its tempo
+    /// map when it has cues and every one is written as `@measure/beat`
+    /// (measures and beats count from 1, so none lies before it; the map's
+    /// `start:` offset is included, and a measure `offset` does not move
+    /// it), else zero. Wherever the block is used, this moment lands there.
+    pub(super) fn origin(&self) -> Duration {
+        if !self.all_measured() {
+            return Duration::ZERO;
+        }
+        self.effective_tempo
+            .as_ref()
+            .and_then(|tm| tm.measure_to_time_with_offset(1, 1.0, 0, 0.0))
+            .unwrap_or_default()
     }
 
     /// The block's cues, each with the passes of the sequences it
@@ -463,8 +485,8 @@ pub(super) struct SequenceDefinition {
 }
 
 impl SequenceDefinition {
-    /// The declared `length:` in time from the first cue, or `None` when the
-    /// sequence declares none. Every cue as written must start inside it:
+    /// The declared `length:` in time from the sequence's origin, or `None`
+    /// when the sequence declares none. Every cue as written must start inside it:
     /// one starting at or past the end would land on the next pass's first
     /// cue. (The passes of the sequences it references may run past it; a
     /// pass is cut off by the next, as a longer effect is.)
@@ -472,11 +494,32 @@ impl SequenceDefinition {
         &self,
         tempo_map: Option<&TempoMap>,
     ) -> Result<Option<Duration>, Box<dyn Error>> {
+        let written_times = self.block.written();
+        let start = self.block.origin();
         let Some(written) = &self.length else {
+            // Without a length, a pass runs from its origin to its last
+            // effect. A score-numbered sequence whose first cue is a bar or
+            // more past its own @1/1 would rest that long before sounding:
+            // almost always a score position copied from the show.
+            if let (Some(tm), Some(first)) = (tempo_map, written_times.iter().min().copied()) {
+                if self.block.all_measured() {
+                    let (measure, _) = tm.time_to_measure_beat(first);
+                    if measure >= 2 {
+                        return Err(format!(
+                            "Sequence '{}': its first cue is at {}, {} bars after its own @1/1. \
+                             A sequence's cues count from its own @1/1, the moment it is used: \
+                             number them from @1/1, or declare a length: if the sequence is \
+                             meant to rest first.",
+                            self.name,
+                            tm.position_label(first),
+                            measure - 1
+                        )
+                        .into());
+                    }
+                }
+            }
             return Ok(None);
         };
-        let written_times = self.block.written();
-        let start = written_times.iter().min().copied().unwrap_or_default();
         let length = parse_duration_string(written, &tempo_map.cloned(), Some(start), 0.0)
             .map_err(|e| {
                 format!(
@@ -820,7 +863,7 @@ impl<'a> Passes<'a> {
         at: Duration,
         offset_secs: f64,
     ) -> Self {
-        let base_time = pass_start(&sequence.cues);
+        let base_time = sequence.origin;
         let pass = sequence.pass_length();
         let mut passes = Passes {
             sequence,
@@ -938,9 +981,12 @@ fn place_inline_loop(
     // The body's cues are timed from 0, relative to the loop's start; no
     // sequences are available in an inline loop.
     let library = SequenceLibrary::empty();
+    let block = parse_cue_block(pair.into_inner(), tempo_map, &library)?;
+    let origin = block.origin();
     let body = Sequence {
-        cues: parse_cue_block(pair.into_inner(), tempo_map, &library)?.place(&library)?,
+        cues: block.place(&library)?,
         tempo_map: tempo_map.clone(),
+        origin,
         length: None,
     };
     let passes = Passes::of(Rc::new(body), repeats, tempo_map, at, offset_secs);
@@ -1008,6 +1054,7 @@ fn parse_cue(
         }
     }
 
+    let measured = measure_time_pair.is_some();
     // Resolve measure_time to score-space time: the position on the
     // unshifted map, kept as score_anchor too. The offset is applied to the
     // absolute time below.
@@ -1170,6 +1217,7 @@ fn parse_cue(
         offset_measures: written_offset,
         reset,
         last_time: last_time.max(abs_time),
+        measured,
     })
 }
 
