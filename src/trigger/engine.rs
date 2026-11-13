@@ -677,8 +677,10 @@ mod test {
                 dropped.load(Ordering::SeqCst),
                 "stream still open after drop"
             );
+            // Well under the thread's one-second wait, with room for a busy
+            // machine: 200 ms was missed by 28 ms on CI.
             assert!(
-                started.elapsed() < Duration::from_millis(200),
+                started.elapsed() < Duration::from_millis(500),
                 "drop should wake the thread at once, took {:?}",
                 started.elapsed()
             );
