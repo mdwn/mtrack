@@ -341,16 +341,19 @@ L1 and P1 can be built side by side.
 
 ### 5.1 Backport
 
-B1 is a fix: brightness behaved differently on the two kinds of fixture,
-and dimming reached layers above it (on dimmer-channel fixtures always, on
-RGB-only fixtures everywhere but a foreground `replace`). Both release lines have the same three-layer code (`release/0.18`,
-`release/0.17`), so B1 is written against the enum as it is and goes to
-both, with its lint check, so anyone upgrading can find what will look
-different in their shows. Everything else (configurable layers, palettes)
-is a feature and stays on main.
+**Today's layer behaviour is a bug, and B1 is its fix**, decided by
+Mike. Dimming reaches layers above it: on dimmer-channel fixtures always,
+on RGB-only fixtures everywhere but a foreground `replace`; and the two
+kinds of fixture disagree. Both release lines have the same three-layer
+code, so B1 is written against the enum as it is and is backported to
+`release/0.18` and `release/0.17`, with its lint check, so anyone
+upgrading can find what will look different in their shows.
+
+The fixed count of three layers is not part of the bug. Configurable
+layers and palettes are features and stay on main.
 
 Because a patch release will change how some shows look, the changelog
-entry for each line says so plainly, names the case that plays brighter
+entry for each line goes under **Fixed** and says so plainly, names the case that plays brighter
 (brightness on background, colour `replace` above it, on dimmer-channel
 fixtures), the fix in the show, and the lint command that finds it.
 
