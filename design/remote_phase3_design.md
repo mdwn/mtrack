@@ -488,8 +488,10 @@ built beside them.
   built).
 - iOS, throughout.
 - Wi-Fi where the phone has mobile data and the player's network has no
-  internet: Android may route the app's traffic to mobile data unless the
-  socket is bound to the Wi-Fi network. To test early in P3.
+  internet: Android makes mobile data the default network there. The app
+  now binds its process to the Wi-Fi network whenever the phone has one.
+  Android refused the binding on Mike's Pixel (a VPN was up); the case it
+  is for is untested.
 
 ## 8. Decisions
 

@@ -114,7 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optionally `:port`), such as `mtrack.local`, for a player never paired, which is then reached
   over Wi-Fi alone. The app checks that the host name at a remembered address is the player's
   before using it. Anyone on the player's network can connect over Wi-Fi, as they can to the
-  web UI; Bluetooth keeps its pairing, and the lock still guards edits. The app is not
+  web UI; Bluetooth keeps its pairing, and the lock still guards edits. On Android the app
+  keeps its sockets on Wi-Fi where the player's network has no internet and the phone has
+  mobile data. The app is not
   released; see [Bluetooth Control](docs/src/interfaces/bluetooth.md#over-wi-fi).
 - **`NavigateToSong` gRPC RPC**: makes an entry of the active playlist (by its index, with the
   song's name to catch a playlist that changed) the current one without playing it, with the

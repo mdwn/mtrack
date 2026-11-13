@@ -267,8 +267,8 @@ on a device:
   typed name may not work where an IP does); that the heartbeat finds a phone leaving range in
   about ten seconds and not falsely on a busy network; the Wi-Fi to Bluetooth fallback and the move
   back, on a real network; iOS asking for local network access and what it does when refused; and
-  Android sending the app's sockets over mobile data when the Wi-Fi network has no internet
-  (see [Network permission](#network-permission)).
+  that binding the process to Wi-Fi keeps Android from sending the app's sockets over mobile data
+  when the Wi-Fi network has no internet (see [Network permission](#network-permission)).
 - Keeping the screen on while connected (`wakelock_plus`), and releasing it in the background.
 - Haptics on Play and Stop, and the feel of the 600 ms hold under a real finger.
 - The bundled variable fonts' weights on a real device (the tests load the files but cannot show
@@ -328,11 +328,16 @@ player's own port. The network declarations are:
 
 The stage page asks the network for nothing but its own files: no fonts, no API, no websocket.
 
-Not solved: on Android, when the Wi-Fi network has no internet (a player's own network) and the
-phone has mobile data, the system may send the app's sockets over mobile data and the player
-cannot be reached. Fixing it means binding the app's process to the Wi-Fi network
-(`ConnectivityManager.bindProcessToNetwork`), which needs platform code (a method channel in
-`android/`). Until then the app falls back to Bluetooth, and a phone can turn mobile data off.
+On Android, when the Wi-Fi network has no internet (a player's own network) and the phone has
+mobile data, the system makes mobile data the default network and a socket to the player would
+leave that way. So `MainActivity` binds the app's process to the Wi-Fi network whenever the phone
+has one (`ConnectivityManager.bindProcessToNetwork`, watching with a network callback that does
+not ask for internet), and unbinds when it goes. This needs `ACCESS_NETWORK_STATE`, a normal
+permission the user is not asked about. Android can refuse the binding (it did on a Pixel with a
+VPN up that apps may not bypass, the likely reason); the app logs that and its sockets go where
+the system sends them, as they did before, and on that Pixel Wi-Fi worked as before. Not yet run
+with the binding in force, on a network with or without internet, so that the stage page on
+`127.0.0.1` still loads under it is expected, not seen.
 
 ## Bluetooth permissions
 
