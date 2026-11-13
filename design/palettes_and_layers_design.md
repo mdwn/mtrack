@@ -249,11 +249,53 @@ above it.**
    what the show wrote. CMY and colour-wheel fixtures go through the same
    split.
 
-The per-layer `_dimmer/_pulse/_chase_mult_*` channels give way to one
-intensity value per layer, held per fixture and per cell (design §17.3).
-Strobe's RGB fallback on fixtures without a dimmer or strobe channel
-becomes an intensity contribution, so a strobe flashes the colour beneath
-it instead of writing RGB.
+6. **Colour with nothing dimming it is full brightness**, on every
+   fixture. A dimmer-channel fixture showing a colour gets its dimmer
+   written (at full when nothing dims it) instead of keeping whatever
+   byte was last sent. Decided by Mike.
+7. **A level with no colour beneath it is white**, on every fixture: a
+   strobe, dimmer, pulse or chase on a colour fixture with no colour
+   effect shows white at that level, rather than whatever colour bytes
+   were last sent (dimmer-channel fixtures) or nothing (RGB-only
+   fixtures under a dimmer or pulse). Decided by Mike.
+
+Strobe on a fixture with no strobe channel becomes an intensity
+contribution on every fixture (today: the dimmer on dimmer-channel
+fixtures, RGB on RGB-only ones), so it flashes the colour beneath it, or
+white when there is none.
+
+#### 3.4.1 In the engine
+
+- Effects stop choosing between the dimmer channel and a multiplier.
+  Dimmer, pulse, chase (gating modes) and strobe (without a strobe
+  channel) all emit one internal intensity contribution with the effect's
+  layer and blend mode. Colour effects emit colour channels as now; a
+  chase in a lifting mode (`add`/`screen`) still emits colour.
+- `FixtureState::blend_with` keeps colour channels (`red`, `green`,
+  `blue`, `white`) and intensity contributions as an ordered list of
+  operations, each with its layer, instead of blending them into channels.
+  Other channels blend as they do now.
+- At the end of the frame, before anything reads the states, each fixture
+  is **resolved**: its operations are composited by §3.4 rules 2–3 (per
+  layer, colour operations in order, then intensity operations in order),
+  and the result is written back as plain `red/green/blue/white/dimmer`
+  channels. Everything downstream (DMX output, CMY flags, snapshots, the
+  live views, song crossfades) reads plain channels and loses its
+  multiplier handling.
+- The composite runs on three values per colour channel: the light so
+  far, the same light with every dimmer treated as full (what a dimmer
+  `replace` restores), and the peak level (rule 5). A crossfading
+  `replace` lerps all three.
+- Values a MIDI DMX show wrote to the fixture are the bottom of the
+  stack: their colour (and dimmer) seed the composite, so DSL effects
+  build on them exactly as they blend over them now.
+- **Cells** (design §17.3): a cell's operations are merged with its
+  fixture's by layer (the fixture's first within a layer) and resolved
+  per cell. A fixture-level dimmer shared by cells gets the highest peak
+  among its cells, and each cell's colour is scaled against it, so every
+  cell's light is exact.
+- The engine's multiplier clean-up for completed effects goes away: no
+  state outlives the frame.
 
 **Output that changes for existing shows** (all on purpose, listed in the
 changelog):
@@ -269,12 +311,28 @@ changelog):
 - On every fixture, colour that a higher layer adds (`add`, `screen`,
   `overlay`) is no longer dimmed by dimmers beneath it; the lower colour
   still is.
+- On dimmer-channel fixtures, a colour with no dimmer effect running is
+  at full instead of the last dimmer byte sent; most visibly, a fade-out
+  that ends while its colour runs on no longer stays dark (rule 6).
+- A strobe, dimmer, pulse or chase with no colour beneath it shows white
+  on every fixture (rule 7). On dimmer-channel fixtures it no longer
+  reuses the last colour sent; on RGB-only fixtures a dimmer or pulse
+  over no colour now shows white instead of nothing.
+- On RGB-only fixtures, a strobe over a colour flashes that colour
+  instead of white.
 - On RGB-only fixtures, a higher-layer dimmer `replace` sets the level
   instead of multiplying with the levels below.
 
 Before B1 lands, lint gains a check that names each place in a show where
-the new rule changes brightness (colour on a layer above one that dims
-the same fixtures at the same time), and the prod shows are run through it.
+the new rules change what's seen, and the prod shows are run through it:
+
+- colour on a layer above one that dims the same fixtures at the same
+  time (rules 2–3);
+- a dimmer `replace` above a lower dimmer on the same fixtures (rule 3);
+- on dimmer-channel fixtures, colour running while no intensity effect
+  covers it, after one has ended (rule 6);
+- an intensity effect on colour fixtures with no colour beneath it
+  (rule 7).
 
 Worked example, layers A (bottom), B, C (top):
 
