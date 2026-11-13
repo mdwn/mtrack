@@ -35,7 +35,7 @@ impl ParseContext {
     /// there, as the cue times do. Two other rules apply on purpose: a
     /// sequence's effects are resolved again where the sequence is
     /// expanded (`Effect::resolve_musical_durations`, #529), and its
-    /// `length:` is read from its first cue (`declared_length`), there
+    /// `length:` is read from its origin (`declared_length`), there
     /// being no cue to read it at.
     pub fn duration(&self, value: &str) -> Result<Duration, Box<dyn std::error::Error>> {
         let score_time = self
@@ -65,7 +65,11 @@ pub struct Sequence {
     /// The tempo map its cue times were resolved on: where it is used, a
     /// cue is placed the same number of beats in, counted on this map.
     pub tempo_map: Option<TempoMap>,
-    /// How long one pass lasts, from the first cue, when the sequence declares
+    /// Where its cues count from, on its own timeline: the time of `@1/1`
+    /// when every cue is numbered by measure and beat, else zero. A sequence
+    /// is placed so that this moment lands where it is used.
+    pub origin: Duration,
+    /// How long one pass lasts, from its origin, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
 }
@@ -74,20 +78,16 @@ impl Sequence {
     /// How long one pass lasts: its declared `length:`, else as
     /// [`pass_length`] has it.
     pub fn pass_length(&self) -> Duration {
-        self.length.unwrap_or_else(|| pass_length(&self.cues))
+        self.length
+            .unwrap_or_else(|| pass_length(&self.cues, self.origin))
     }
 }
 
-/// When a pass of `cues` starts: at the earliest of them.
-pub(crate) fn pass_start(cues: &[Cue]) -> Duration {
-    cues.iter().map(|c| c.time).min().unwrap_or_default()
-}
-
 /// How long one pass of `cues` -- a sequence's, or an inline loop body's --
-/// lasts when nothing says: from its earliest cue until its last effect
+/// lasts when nothing says: from its `origin` until its last effect
 /// ends, or, when no cue has an effect, until its last cue.
-pub(crate) fn pass_length(cues: &[Cue]) -> Duration {
-    let start = pass_start(cues);
+pub(crate) fn pass_length(cues: &[Cue], origin: Duration) -> Duration {
+    let start = origin;
     let effects_end = cues
         .iter()
         .flat_map(|c| c.effects.iter().map(move |e| c.time + e.total_duration()))
@@ -628,21 +628,28 @@ mod tests {
 
     #[test]
     fn pass_length_empty() {
-        assert_eq!(pass_length(&[]), Duration::ZERO);
+        assert_eq!(pass_length(&[], Duration::ZERO), Duration::ZERO);
     }
 
     #[test]
-    fn pass_length_runs_from_the_earliest_cue_to_the_last_effect_end() {
+    fn pass_length_runs_from_the_origin_to_the_last_effect_end() {
         let cues = [
             cue(5, vec![static_effect(Duration::from_secs(10))]),
             cue(2, vec![static_effect(Duration::from_secs(3))]),
             cue(20, vec![]),
         ];
-        // From 2 to max(5+10, 2+3) = 15; the effectless cue at 20 does not count.
-        assert_eq!(pass_length(&cues), Duration::from_secs(13));
+        // From the origin (0) to max(5+10, 2+3) = 15; the effectless cue at
+        // 20 does not count.
+        assert_eq!(pass_length(&cues, Duration::ZERO), Duration::from_secs(15));
+        // From an origin of 2: 13.
+        assert_eq!(
+            pass_length(&cues, Duration::from_secs(2)),
+            Duration::from_secs(13)
+        );
         let seq = Sequence {
             cues: cues.to_vec(),
             tempo_map: None,
+            origin: Duration::from_secs(2),
             length: None,
         };
         assert_eq!(seq.pass_length(), Duration::from_secs(13));
@@ -651,10 +658,13 @@ mod tests {
     #[test]
     fn pass_length_without_effects_runs_to_the_last_cue() {
         assert_eq!(
-            pass_length(&[cue(2, vec![]), cue(7, vec![])]),
+            pass_length(&[cue(2, vec![]), cue(7, vec![])], Duration::from_secs(2)),
             Duration::from_secs(5)
         );
-        assert_eq!(pass_length(&[cue(2, vec![])]), Duration::ZERO);
+        assert_eq!(
+            pass_length(&[cue(2, vec![])], Duration::from_secs(2)),
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -666,7 +676,10 @@ mod tests {
                 static_effect(Duration::from_secs(4)), // long: 1+4=5
             ],
         )];
-        assert_eq!(pass_length(&cues), Duration::from_secs(4));
+        assert_eq!(
+            pass_length(&cues, Duration::from_secs(1)),
+            Duration::from_secs(4)
+        );
     }
 
     // ── LayerCommandType ───────────────────────────────────────────

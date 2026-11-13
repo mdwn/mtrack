@@ -1384,7 +1384,10 @@ tempo {
     ]
 }
 
-sequence "inner" {
+// Declared to rest two bars: without a length, a sequence whose first cue
+// is a bar or more past its own @1/1 is refused. Its cues count from its own
+// @1/1, so these are beats 8 and 12 into it.
+sequence "inner", length: 4measures {
     @3/1
     a: static, color: "red", duration: 1s
 
@@ -1395,13 +1398,18 @@ sequence "inner" {
 
 #[test]
 fn test_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
-    // The sequence runs from @3/1 to @4/1 on its map: one bar, four beats at
-    // 60 BPM. Placed at @1/1, its second cue lands a bar later, at @2/1 = 2s.
-    // The bar used to be counted at the map's starting tempo (4s = 8 beats
-    // at 120), landing the cue at @3/1 = 4s.
+    // Its cues are 8 and 12 beats from its @1/1 on its map: 4s and 8s there,
+    // across the change to 60 BPM at @3/1. The show keeps 120 BPM throughout,
+    // so laid by beats they land at 4s and 6s; laid by the sequence's own
+    // times the second would land at 8s.
     let content = format!(
         "{SEQUENCE_PAST_A_CHANGE}
 show \"Test\" {{
+    tempo {{
+        bpm: 120
+        time_signature: 4/4
+    }}
+
     @1/1
     sequence \"inner\"
 }}"
@@ -1409,14 +1417,17 @@ show \"Test\" {{
     let shows = parse_light_shows(&content).expect("show parses");
     let show = shows.get("Test").unwrap();
     let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
-    assert_eq!(times, vec![Duration::ZERO, Duration::from_secs(2)]);
+    assert_eq!(times, vec![Duration::from_secs(4), Duration::from_secs(6)]);
 }
 
 #[test]
 fn test_nested_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
     // The same bar, referenced from an outer sequence placed at @1/1: the
-    // outer's reference cue is at @3/1 on its map, so the inner's cues fall
-    // at @3/1 and @4/1, with the outer's own effect at @1/1.
+    // outer's reference cue is at @3/1 (4s) on its map, which is where the
+    // inner's @1/1 lands, so the inner's cues, 8 and 12 beats on at 60 BPM,
+    // fall at 12s and 16s, with the outer's own effect at @1/1. (Before
+    // sequences counted from their origin the inner started on its first
+    // cue, giving 4s and 8s.)
     let content = format!(
         "{SEQUENCE_PAST_A_CHANGE}
 sequence \"outer\" {{
@@ -1439,8 +1450,8 @@ show \"Test\" {{
         times,
         vec![
             Duration::ZERO,
-            Duration::from_secs(4),
-            Duration::from_secs(8)
+            Duration::from_secs(12),
+            Duration::from_secs(16)
         ]
     );
 }
@@ -1503,7 +1514,7 @@ sequence "inner" {
 }
 
 sequence "outer" {
-    @3/1
+    @1/1
     sequence "inner"
 }
 
@@ -1602,10 +1613,12 @@ show "Test" {
 }
 
 #[test]
-fn test_sequence_pass_starts_at_its_earliest_cue() {
-    // Written out of time order, a sequence still starts at its earliest
-    // cue, as an inline loop body does; it used to start at the first one
-    // written, dropping the earlier cue onto it.
+fn test_sequence_pass_starts_at_its_origin_not_its_earliest_cue() {
+    // Written out of time order, a sequence's cues are still placed
+    // relative to its origin (@0.000 for a sequence written in times), not
+    // to its earliest cue: "b" at @0.000 lands on the use, "a" a second on.
+    // Placing from the earliest cue would be the same here, so the second
+    // sequence rests first: its earliest cue is at @1.000.
     let content = r#"
 sequence "backwards" {
     @1.000
@@ -1615,22 +1628,225 @@ sequence "backwards" {
     b: static, color: "blue", duration: 1s
 }
 
+sequence "resting" {
+    @1.000
+    a: static, color: "red", duration: 1s
+
+    @2.000
+    b: static, color: "blue", duration: 1s
+}
+
 show "Test" {
     @5.000
     sequence "backwards"
 }
+
+show "Rest" {
+    @5.000
+    sequence "resting"
+}
 "#;
     let shows = parse_light_shows(content).expect("show parses");
-    let show = shows.get("Test").unwrap();
-    let placed: Vec<(Duration, &str)> = show
+    let placed = |name: &str| -> Vec<(Duration, String)> {
+        shows
+            .get(name)
+            .unwrap()
+            .cues
+            .iter()
+            .map(|c| (c.time, c.effects[0].groups[0].clone()))
+            .collect()
+    };
+    assert_eq!(
+        placed("Test"),
+        vec![
+            (Duration::from_secs(5), "b".to_string()),
+            (Duration::from_secs(6), "a".to_string())
+        ]
+    );
+    // Resting one second before its first sound.
+    assert_eq!(
+        placed("Rest"),
+        vec![
+            (Duration::from_secs(6), "a".to_string()),
+            (Duration::from_secs(7), "b".to_string())
+        ]
+    );
+}
+
+// ── a sequence's cues count from its origin ──
+
+const LATE_TEMPO: &str = "tempo {\n    start: 0s\n    bpm: 120\n    time_signature: 4/4\n}\n";
+
+fn cue_times(content: &str, show: &str) -> Vec<f64> {
+    let shows = parse_light_shows(content).expect("parses");
+    shows
+        .get(show)
+        .unwrap()
         .cues
         .iter()
-        .map(|c| (c.time, c.effects[0].groups[0].as_str()))
-        .collect();
-    assert_eq!(
-        placed,
-        vec![(Duration::from_secs(5), "b"), (Duration::from_secs(6), "a")]
+        .map(|c| c.time.as_secs_f64())
+        .collect()
+}
+
+fn assert_times(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
+    for (a, e) in actual.iter().zip(expected) {
+        assert!((a - e).abs() < 1e-6, "{actual:?} vs {expected:?}");
+    }
+}
+
+fn late_source(tempo: &str, length: &str, use_params: &str) -> String {
+    format!(
+        "{tempo}sequence \"Late\"{length} {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 0.5beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Late\"{use_params}\n}}\n"
+    )
+}
+
+#[test]
+fn test_sequence_resting_on_beat_one_plays_late_not_early() {
+    // @1/3 at 120 BPM is 1.0s after the sequence's own @1/1, which is where
+    // the show uses it.
+    let src = late_source(LATE_TEMPO, ", length: 1measure", "");
+    assert_times(&cue_times(&src, "t"), &[1.0]);
+    // No length: the same single hit.
+    let src = late_source(LATE_TEMPO, "", "");
+    assert_times(&cue_times(&src, "t"), &[1.0]);
+}
+
+#[test]
+fn test_sequence_resting_loops_on_the_declared_length() {
+    // One measure is 2s at 120 BPM: hits at 1, 3, 5.
+    let src = late_source(LATE_TEMPO, ", length: 1measure", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.0, 3.0, 5.0]);
+}
+
+#[test]
+fn test_sequence_resting_loops_on_its_undeclared_length() {
+    // Without a length a pass runs from the origin (@1/1) to the end of the
+    // half-beat effect that starts at beat 3: 2.5 beats = 1.25s. So the
+    // passes start 1.25s apart and hit at 1.0, 2.25, 3.5.
+    let src = late_source(LATE_TEMPO, "", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.0, 2.25, 3.5]);
+}
+
+#[test]
+fn test_sequence_origin_is_the_time_of_bar_one_with_a_start_offset() {
+    // With start: 98ms, @1/1 is at 98ms, and the hits move with it.
+    let tempo = "tempo {\n    start: 98ms\n    bpm: 120\n    time_signature: 4/4\n}\n";
+    let src = late_source(tempo, ", length: 1measure", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.098, 3.098, 5.098]);
+    let src = late_source(tempo, "", "");
+    assert_times(&cue_times(&src, "t"), &[1.098]);
+}
+
+#[test]
+fn test_sequence_with_one_late_cue_loops_on_the_bar() {
+    // The only cue is at @1/3 and its 2-beat effect ends at the bar line,
+    // so the undeclared pass is a whole measure (2s) and it repeats on the
+    // bar: hits at 1, 3, 5.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Late\" {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 2beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Late\", loop: 3\n}}\n"
     );
+    assert_times(&cue_times(&src, "t"), &[1.0, 3.0, 5.0]);
+}
+
+#[test]
+fn test_inline_loop_body_counts_from_its_origin() {
+    // A body written from @0.000 starts on the loop's cue; one whose first
+    // cue is at @0.500 starts half a second after it. The pass is from the
+    // origin (0) to the effect's end (1.5s), so the second pass is 1.5s on.
+    let content = r#"
+show "t" {
+    @2.000
+    loop {
+        @0.500
+        a: static, color: "red", duration: 1s
+    } repeats: 2
+}
+"#;
+    assert_times(&cue_times(content, "t"), &[2.5, 4.0]);
+    let content = r#"
+show "t" {
+    @2.000
+    loop {
+        @0.000
+        a: static, color: "red", duration: 1s
+    } repeats: 2
+}
+"#;
+    assert_times(&cue_times(content, "t"), &[2.0, 3.0]);
+}
+
+#[test]
+fn test_inline_loop_body_in_measures_counts_from_bar_one() {
+    let src = format!(
+        "{LATE_TEMPO}show \"t\" {{\n    @2/1\n    loop {{\n        @1/3\n        a: static, color: \"red\", duration: 2beats\n    }} repeats: 2\n}}\n"
+    );
+    // The loop is at 2.0s; its body rests a second, then passes are 2s.
+    assert_times(&cue_times(&src, "t"), &[3.0, 5.0]);
+}
+
+#[test]
+fn test_sequence_used_off_the_bar_line_has_its_bar_one_there() {
+    // Used at @2/3 (3.0s), the sequence's @1/1 is there, so @1/3 is a
+    // second on.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Late\", length: 1measure {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 0.5beats\n}}\nshow \"t\" {{\n    @2/3\n    sequence \"Late\", loop: 2\n}}\n"
+    );
+    assert_times(&cue_times(&src, "t"), &[4.0, 6.0]);
+}
+
+#[test]
+fn test_sequence_mixing_times_and_bars_counts_from_zero() {
+    // One timed cue, one bar cue: the origin is zero, not @1/1, so the bar
+    // cue at @1/3 (1.0s) is a second after the use and the timed cue
+    // 0.25s after it.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Mixed\" {{\n    @0.250\n    a: static, color: \"red\", duration: 0.5s\n\n    @1/3\n    b: static, color: \"blue\", duration: 0.5s\n}}\nshow \"t\" {{\n    @5.000\n    sequence \"Mixed\"\n}}\n"
+    );
+    assert_times(&cue_times(&src, "t"), &[5.25, 6.0]);
+    // Even with a start offset (so @1/1 is not zero), a mixed sequence
+    // counts from zero.
+    let tempo = "tempo {\n    start: 98ms\n    bpm: 120\n    time_signature: 4/4\n}\n";
+    let src = src.replace(LATE_TEMPO, tempo);
+    assert_times(&cue_times(&src, "t"), &[5.25, 6.098]);
+}
+
+#[test]
+fn test_sequence_first_cue_a_bar_past_its_origin_needs_a_length() {
+    let body = |length: &str| {
+        format!(
+            "{LATE_TEMPO}sequence \"Verse\"{length} {{\n    @17/1\n    left: static, color: \"#FF0000\", duration: 1beat\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Verse\"\n}}\n"
+        )
+    };
+    let err = parse_light_shows(&body(""))
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("Sequence 'Verse'"), "{err}");
+    assert!(err.contains("@17/1"), "{err}");
+    assert!(err.contains("16 bars"), "{err}");
+    // Declared to rest first, it loads, and plays that long after the use.
+    let src = body(", length: 17measures");
+    assert_times(&cue_times(&src, "t"), &[32.0]);
+    // A first cue inside the first bar is not refused.
+    let src = body("").replace("@17/1", "@1/4");
+    assert_times(&cue_times(&src, "t"), &[1.5]);
+    // Nor is one at @2/1 of a sequence written in times.
+    parse_light_shows(
+        "sequence \"T\" {\n    @5.000\n    left: static, color: \"#FF0000\", duration: 1s\n}\nshow \"t\" {\n    @1.000\n    sequence \"T\"\n}\n",
+    )
+    .expect("a timed sequence may rest");
+}
+
+#[test]
+fn test_measure_offset_in_a_sequence_does_not_move_its_origin() {
+    // `offset 1 measures` shifts the cues after it by a bar but not the
+    // origin: the cue at @1/3 after it lands a bar and a second after the
+    // use, not a second.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Off\", length: 4measures {{\n    @1/1\n    offset 1 measures\n\n    @1/3\n    left: static, color: \"#FF0000\", duration: 0.5beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Off\"\n}}\n"
+    );
+    let times = cue_times(&src, "t");
+    assert_times(&times, &[0.0, 3.0]);
 }
 
 #[test]
