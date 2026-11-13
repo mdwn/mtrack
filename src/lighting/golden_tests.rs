@@ -649,10 +649,11 @@ fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
     let cmy = |f: &[u8; 513]| [f[1], f[2], f[3], f[4]];
     // Red: cyan (which removes red) open, magenta and yellow in full.
     assert_eq!(cmy(&frames[0]), [255, 0, 255, 255], "red");
-    // Colour holds until something changes it, as on an RGB fixture: the
-    // flags keep red through a dimmer-only cue.
+    // Nothing running leaves the last frame on the wire.
     assert_eq!(cmy(&frames[1]), [255, 0, 255, 255], "after red ends");
-    assert_eq!(cmy(&frames[2]), [255, 0, 255, 255], "dimmer only");
+    // A level with no colour beneath it is white (design 3.4, rule 7), not
+    // whatever flags were last sent: all three open.
+    assert_eq!(cmy(&frames[2]), [255, 0, 0, 0], "dimmer only");
     // A mix: green full, blue half, red none.
     let f = cmy(&frames[3]);
     assert_eq!(f[0], 128, "dimmer 50%");
