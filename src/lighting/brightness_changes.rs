@@ -348,7 +348,10 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
     let mut reported: BTreeSet<(usize, EffectLayer)> = BTreeSet::new();
     for (ui, upper) in items.iter().enumerate() {
         let upper_colour = upper.colour() && upper.blend != BlendMode::Multiply;
-        let upper_replace_level = upper.sets_level() && upper.blend == BlendMode::Replace;
+        // Any level that replaces: a dimmer, a static's `dimmer:`, or a
+        // pulse, gating chase or software strobe (which replace by default).
+        let upper_replace_level = upper.blend == BlendMode::Replace
+            && (upper.sets_level() || upper.fixtures.iter().any(|f| upper.intensity_on(f)));
         if !upper_colour && !upper_replace_level {
             continue;
         }
@@ -369,7 +372,12 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                     .collect()
             };
             if upper_colour {
-                let fixtures = shared(&|_| true);
+                // A foreground `replace` already escaped every lower dimmer
+                // on an RGB-only fixture; only dimmer-channel fixtures (and
+                // lower layers' colour) change there.
+                let unchanged =
+                    upper.layer == EffectLayer::Foreground && upper.blend == BlendMode::Replace;
+                let fixtures = shared(&|f| !unchanged || f.dimmer);
                 if !fixtures.is_empty() {
                     reported.insert((ui, lower.layer));
                     out.push(note(
@@ -378,7 +386,7 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                             "show \"{}\" at {}: colour on {} in the {} layer runs over dimming \
                              in the {} layer ({}). It used to be dimmed on some fixtures and now \
                              never is, so it will look brighter. Put the level on the colour's \
-                             layer (`dimmer:` beside the colour), or blend with `multiply`.",
+                             layer (`dimmer:` beside the colour), or use `blend_mode: multiply`.",
                             upper.show,
                             secs(from),
                             groups_of(upper),
@@ -392,18 +400,19 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
             }
             if upper_replace_level {
                 // RGB-only fixtures: a dimmer channel already replaced.
-                let fixtures = shared(&|f| f.rgb && !f.dimmer);
+                let fixtures = shared(&|f| f.rgb && !f.dimmer && upper.intensity_on(f));
                 if !fixtures.is_empty() {
                     reported.insert((ui, lower.layer));
                     out.push(note(
                         "brightness_change_dimmer_replace",
                         format!(
-                            "show \"{}\" at {}: a dimmer `replace` on {} in the {} layer runs \
-                             over a dimmer in the {} layer ({}). On these RGB-only fixtures it \
-                             used to multiply with the lower level; it now sets the level. Use \
-                             `blend: multiply` to keep the old result.",
+                            "show \"{}\" at {}: a {} that replaces on {} in the {} layer \
+                             runs over a dimmer in the {} layer ({}). On these RGB-only fixtures \
+                             it used to multiply with the lower level; it now sets the level. \
+                             Use `blend_mode: multiply` to keep the old result.",
                             upper.show,
                             secs(from),
+                            upper.effect.effect_type.name().to_lowercase(),
                             groups_of(upper),
                             layer_keyword(upper.layer),
                             layer_keyword(lower.layer),
