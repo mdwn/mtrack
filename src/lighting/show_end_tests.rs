@@ -108,7 +108,9 @@ fn lint_end(source: &str) -> Duration {
         }
         // A stop at a pass's own boundary ends that pass only.
         for name in &cue.stop_sequences {
-            if !cue.effects.iter().any(|e| e.sequences.contains(name)) {
+            if !cue.pass_restarts.contains(name)
+                && !cue.effects.iter().any(|e| e.sequences.contains(name))
+            {
                 stopped.insert(name.clone());
             }
         }

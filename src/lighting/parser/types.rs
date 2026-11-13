@@ -137,6 +137,10 @@ pub struct Cue {
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>, // Names of sequences to stop at this cue time
     pub start_sequences: Vec<String>, // Names of sequences starting fresh at this cue time
+    /// Those of `stop_sequences` that only end a looping sequence's pass
+    /// before the one starting here: the sequence plays on, even when this
+    /// cue (an empty first cue of the sequence) starts nothing of its own.
+    pub pass_restarts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -618,6 +622,7 @@ mod tests {
             layer_commands: vec![],
             stop_sequences: vec![],
             start_sequences: vec![],
+            pass_restarts: vec![],
         }
     }
 

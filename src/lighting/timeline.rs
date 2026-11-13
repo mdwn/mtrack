@@ -134,8 +134,8 @@ impl SeekHistory {
 /// cue's sequence starts clear their stopped status, its effects are taken
 /// unless a sequence they were started through is stopped by then, and its
 /// stops then count for the cues after it: an iteration-boundary stop
-/// (where the cue also starts effects from the same sequence) only goes to
-/// the engine, while an explicit stop also suppresses future cues from that
+/// (a pass restart, or where the cue also starts effects from the same
+/// sequence) only goes to the engine, while an explicit stop also suppresses future cues from that
 /// sequence. `fired`
 /// sees each effect started, with its cue's and its own place.
 fn fire<'a>(
@@ -165,7 +165,7 @@ fn fire<'a>(
         let cue_sequence_names: HashSet<&String> =
             cue.effects.iter().flat_map(|e| &e.sequences).collect();
         for seq_name in &cue.stop_sequences {
-            if !cue_sequence_names.contains(seq_name) {
+            if !cue_sequence_names.contains(seq_name) && !cue.pass_restarts.contains(seq_name) {
                 stopped_sequences.insert(seq_name.clone());
             }
             stops.push((cue.time, Step::Stop(seq_name.clone())));
@@ -676,6 +676,7 @@ mod tests {
         let cues = vec![Cue {
             stop_sequences: vec![],
             start_sequences: vec![],
+            pass_restarts: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -954,6 +955,7 @@ mod tests {
         let cues = vec![Cue {
             stop_sequences: vec![],
             start_sequences: vec![],
+            pass_restarts: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -1005,6 +1007,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
@@ -1012,6 +1015,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_millis(0),
@@ -1019,6 +1023,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1072,6 +1077,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
@@ -1079,6 +1085,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1140,6 +1147,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
@@ -1147,6 +1155,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1188,6 +1197,7 @@ mod tests {
                 }],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(1),
@@ -1200,6 +1210,7 @@ mod tests {
                 }],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
@@ -1212,6 +1223,7 @@ mod tests {
                 }],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1293,6 +1305,7 @@ mod tests {
         let cues = vec![Cue {
             stop_sequences: vec![],
             start_sequences: vec![],
+            pass_restarts: vec![],
             time: Duration::from_secs(0),
             effects: vec![effect],
             layer_commands: vec![LayerCommand {
@@ -1347,6 +1360,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
@@ -1354,6 +1368,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
@@ -1361,6 +1376,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1410,6 +1426,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
@@ -1417,6 +1434,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
@@ -1424,6 +1442,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1479,6 +1498,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
@@ -1486,6 +1506,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
@@ -1493,6 +1514,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1614,6 +1636,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @5s: clear foreground only
             Cue {
@@ -1627,6 +1650,7 @@ mod tests {
                 }],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @10s: start a new fg effect
             Cue {
@@ -1635,6 +1659,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1700,6 +1725,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @5s: clear all layers
             Cue {
@@ -1713,6 +1739,7 @@ mod tests {
                 }],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @10s: start one new effect
             Cue {
@@ -1721,6 +1748,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1770,6 +1798,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @5s: explicitly stop sequence A (no new effects from A in this cue)
             Cue {
@@ -1778,6 +1807,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec!["seqA".to_string()],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
             // @8s: new effect from sequence A — should be suppressed
             Cue {
@@ -1786,6 +1816,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
+                pass_restarts: vec![],
             },
         ];
 
@@ -1849,6 +1880,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec!["seqA".to_string()],
+                pass_restarts: vec![],
             },
             // @5s: iteration boundary — stop old seqA, start new seqA effects
             Cue {
@@ -1857,6 +1889,7 @@ mod tests {
                 layer_commands: vec![],
                 stop_sequences: vec!["seqA".to_string()],
                 start_sequences: vec!["seqA".to_string()],
+                pass_restarts: vec![],
             },
         ];
 
