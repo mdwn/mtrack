@@ -488,8 +488,10 @@ built beside them.
   built).
 - iOS, throughout.
 - Wi-Fi where the phone has mobile data and the player's network has no
-  internet: Android may route the app's traffic to mobile data unless the
-  socket is bound to the Wi-Fi network. To test early in P3.
+  internet: Android keeps mobile data as the default network until the
+  user chooses to stay connected to the Wi-Fi. Decided (Mike, 2026-11-12):
+  that choice is the answer, and the app and docs say so; the app does not
+  bind its sockets. Not yet run on such a network.
 
 ## 8. Decisions
 

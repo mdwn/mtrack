@@ -328,11 +328,14 @@ player's own port. The network declarations are:
 
 The stage page asks the network for nothing but its own files: no fonts, no API, no websocket.
 
-Not solved: on Android, when the Wi-Fi network has no internet (a player's own network) and the
-phone has mobile data, the system may send the app's sockets over mobile data and the player
-cannot be reached. Fixing it means binding the app's process to the Wi-Fi network
-(`ConnectivityManager.bindProcessToNetwork`), which needs platform code (a method channel in
-`android/`). Until then the app falls back to Bluetooth, and a phone can turn mobile data off.
+On Android, when the Wi-Fi network has no internet (a player's own network) and the phone has
+mobile data, the system keeps mobile data as the default network, the app's sockets leave that
+way, and the app stays on Bluetooth. The answer is the phone's own: choosing **Stay connected**
+when Android says the network has no internet makes that Wi-Fi the default network (or mobile
+data can be turned off). The docs and the "Nothing answered" message say so. Binding the process
+to Wi-Fi (`ConnectivityManager.bindProcessToNetwork`) was tried and dropped (Mike, 2026-11-12):
+Android refused it on a Pixel with a VPN up, and staying connected covers the case without
+platform code. That staying connected is enough has not been run on a network without internet.
 
 ## Bluetooth permissions
 
