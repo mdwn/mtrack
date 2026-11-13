@@ -187,9 +187,11 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
         (level(&quarter, "dimmer").unwrap() - 0.7).abs() < 1e-9,
         "dimmer fades"
     );
+    // The incoming look is a level with no colour, so it shows white
+    // (design 3.4, rule 7): red is driven on both sides, at full.
     assert!(
-        (level(&quarter, "red").unwrap() - 0.75).abs() < 1e-9,
-        "red fades out, only the outgoing side driving it"
+        (level(&quarter, "red").unwrap() - 1.0).abs() < 1e-9,
+        "red holds, the incoming white driving it too"
     );
     assert_eq!(level(&quarter, "gobo"), Some(0.2), "gobo holds the old");
     let (three_quarters, _) = incoming.crossfade_states(&outgoing, 0.75);
