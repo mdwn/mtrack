@@ -67,7 +67,7 @@ describe("a playlist read", () => {
           fadeIn: { length: "2beats" },
           autoPlay: { gap: "" },
           ambient: { on: false },
-          palette: { primary: "#2040ff", secondary: "cyan" },
+          palette: { slots: { primary: "#2040ff", secondary: "cyan" } },
         },
       },
       {
@@ -194,8 +194,9 @@ describe("a playlist save", () => {
     expect(req.settings[1].ambient?.fadeIn).toBeUndefined();
     expect(req.settings[2].ambient).toBeUndefined();
     // The palette read is the palette sent back.
-    expect(req.settings[0].palette).toEqual({ primary: "#2040ff" });
-    expect(req.settings[1].palette).toEqual({});
+    expect(req.settings[0].palette?.slots).toEqual({ primary: "#2040ff" });
+    // Present and empty clears; a save that sends none keeps (below).
+    expect(req.settings[1].palette?.slots).toEqual({});
     expect(req.setAmbient).toBe(true);
     expect(req.ambient?.on).toBe(false);
   });
@@ -213,19 +214,18 @@ describe("a playlist save", () => {
     expect(() =>
       savePlaylistRequest("s", ["A"], { auto_play: [null] }, false),
     ).toThrow(/together/);
-    // Without the palette a save would clear every entry's.
-    expect(() =>
-      savePlaylistRequest(
-        "s",
-        ["A"],
-        {
-          auto_play: [null],
-          fades: [{ fade_out: null, fade_in: null }],
-          entry_ambient: [null],
-        },
-        false,
-      ),
-    ).toThrow(/palette/);
+    // Without a palette list, no palette is sent: each entry keeps its own.
+    const bare = build(
+      "s",
+      ["A"],
+      {
+        auto_play: [null],
+        fades: [{ fade_out: null, fade_in: null }],
+        entry_ambient: [null],
+      },
+      false,
+    );
+    expect(bare.settings[0].palette).toBeUndefined();
   });
 });
 

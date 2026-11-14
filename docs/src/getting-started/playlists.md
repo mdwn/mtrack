@@ -275,9 +275,9 @@ songs:
 - The colours are decided as the song starts and do not change while it plays; editing the
   playlist or the song while it plays recolours it from the next start. The `all_songs` playlist
   has no entry settings, so a song there plays in its own colours.
-- In gRPC, an entry's `settings.palette` is this map. `SavePlaylist` with `set_settings` replaces
-  it along with the entry's other settings, so a client that sets settings sends back the palette
-  it read; one that sends only the songs keeps it.
+- In gRPC, an entry's `settings.palette` is this map. `SavePlaylist` with `set_settings`
+  keeps an entry's palette when its settings carry none (a client that does not know palettes
+  loses none), replaces it when they carry one, and clears it when they carry one with no slots.
 
 ## See also
 
