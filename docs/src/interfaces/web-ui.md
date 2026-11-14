@@ -802,11 +802,20 @@ restart, and a song's config, files, waveform and tempo guess with the browsing 
 songs, which are `ConfigService` calls; the light show files with their validation and evaluation, the
 Lighting overview's readiness checks, the Fit shows page, the groups a cue can target, the
 fixture test, the fixture types with their GDTF details and settings, and the venues with the MVR
-export's summary and keep, which are `LightingService` calls; and so does everything the page watches: the `Watch` stream
+export's summary and keep, and the GDTF and MVR imports, which are `LightingService` calls; and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no
 websocket, and no `/api/status`: the player's status is the `hardware` event of `Watch`.
+
+What is left of HTTP is bytes. A file the page sends (a track, a sample, a GDTF, an MVR) is
+announced with `BeginUpload`, sent as the body of `PUT /uploads/{id}` on the web server, and used
+by the call that takes it (`AddTrackFiles`, `AddSampleFile`, `ImportGdtf`, `InspectMvr`,
+`ImportMvr`); an MVR export is staged by `ExportMvr` and fetched with `GET /downloads/{id}`,
+which the browser saves; and the 3D models and thumbnails are `GET /api/lighting/assets/...`.
+The upload and download paths are served by the web port only, not the gRPC port (see
+[gRPC](grpc.md#files)). A reverse proxy in front of the web UI must let a request body through
+at the size of the file (for nginx, `client_max_body_size 0;` for `/uploads/`).
 
 A reverse proxy in front of the web UI must pass streamed responses without buffering them
 (for nginx, `proxy_buffering off;` for these paths), or the live feeds stall.
@@ -814,12 +823,14 @@ A reverse proxy in front of the web UI must pass streamed responses without buff
 To check that a player is up from a script, fetch the page (`curl -sf http://host:8080/`), or use
 the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 
-All mutating REST endpoints are blocked when the player is in lock mode, returning
-HTTP 423 (Locked); the gRPC calls that write refuse with `FAILED_PRECONDITION`. These always
-work: read endpoints, playback control, the lock toggle (`SetLock`), playlist activation
-(`SwitchToPlaylist`), the light show validation (`ValidateLightShow`), the controller restart
-(`RestartControllers`), and the lighting calls that only compute or inspect and write nothing
-(preview evaluation, `EvaluateSongLighting`, and MVR inspection). Releasing a fixture test
+The gRPC calls that write refuse with `FAILED_PRECONDITION` when the player is in lock mode
+(and what is left of the REST API only reads). So do the announcements of files to send
+(`BeginUpload`), except that of an MVR to inspect; the `PUT` of the bytes of an upload that was
+announced is not checked again. These always work: read calls, playback control, the lock toggle
+(`SetLock`), playlist activation (`SwitchToPlaylist`), the light show validation
+(`ValidateLightShow`), the controller restart (`RestartControllers`), and the lighting calls that
+only compute or inspect and write nothing (preview evaluation, `EvaluateSongLighting`, MVR
+inspection, `InspectMvr`, and staging an MVR export for download, `ExportMvr`). Releasing a fixture test
 (`StopFixtureTest`) also works, since it only returns the lights to the
 show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they
 change who may control the player.

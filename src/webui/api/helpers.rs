@@ -19,16 +19,6 @@ use std::path::PathBuf;
 use super::super::safe_path::VerifiedRoot;
 use super::lighting_writes::Answer;
 
-/// The project directory: where mtrack.yaml lives.
-///
-/// The one place the server will create a directory on a config's behalf. A
-/// configured path outside it belongs to the operator — creating it turns a
-/// typo into an empty directory, and writes outside the paths the generated
-/// systemd unit fences the service into.
-pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
-    crate::util::project_dir_of(&state.config_path)
-}
-
 /// Validates a resource name for use in file paths.
 ///
 /// Rejects names that would be unsafe as filenames (empty, path traversal, etc.)
@@ -130,24 +120,22 @@ pub(crate) fn written(
     }
 }
 
-/// Creates a configured directory, before anything canonicalizes it.
+/// Creates a configured directory inside the project directory `project`
+/// (where mtrack.yaml lives), before anything canonicalizes it.
+///
+/// The one place the server will create a directory on a config's behalf. A
+/// configured path outside it belongs to the operator -- creating it turns a
+/// typo into an empty directory, and writes outside the paths the generated
+/// systemd unit fences the service into.
 ///
 /// Ordering matters: [`resolve_named_file`] verifies the root by
 /// canonicalizing it, which fails outright when the directory is not there. A
-/// creation placed after that call can never run — the request has already
+/// creation placed after that call can never run -- the request has already
 /// failed with "Root directory not found", which is also what a fresh install
 /// used to meet instead of having the directory made for it.
 ///
 /// A path outside the project or blocked by a file is the operator's to fix, so
 /// it answers 400 rather than 500.
-pub(crate) async fn ensure_configured_dir(
-    dir: &std::path::Path,
-    state: &crate::webui::server::WebUiState,
-) -> Result<PathBuf, axum::response::Response> {
-    ensure_dir_within(dir, &project_dir(state)).await
-}
-
-/// [`ensure_configured_dir`] inside the project directory `project`.
 pub(crate) async fn ensure_dir_within(
     dir: &std::path::Path,
     project: &std::path::Path,
@@ -167,7 +155,7 @@ pub(crate) async fn ensure_dir_within(
     }
 }
 
-/// [`ensure_configured_dir`] on a blocking thread, with `project` the
+/// [`ensure_dir_within`] on a blocking thread, with `project` the
 /// directory it must be inside: the directory made, or the status and why.
 pub(crate) fn make_configured_dir(
     dir: &std::path::Path,

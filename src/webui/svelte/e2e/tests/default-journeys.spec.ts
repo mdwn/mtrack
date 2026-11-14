@@ -12,14 +12,18 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page, type Request } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import {
+  ConfigService,
   LightingService,
   PlayerService,
+  UploadPurpose,
 } from "../../src/gen/player/v1/player_pb";
 import { getConfigReply, savedReply } from "../support/config-rpc";
 import {
+  mvrImportReply,
+  mvrInspectionReply,
   savedTypeRequest,
   savedVenueRequest,
   venueDetailReply,
@@ -51,12 +55,6 @@ import { sendStage } from "../support/stage";
 let counter = 0;
 const unique = (base: string) =>
   `${base}-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
-
-const json = (body: unknown, status = 200) => ({
-  status,
-  contentType: "application/json",
-  body: JSON.stringify(body),
-});
 
 test.describe("Fixture types", () => {
   test("a new channel-map type with the defaults: the name is required, then the default channel is sent", async ({
@@ -114,11 +112,7 @@ test.describe("Fixture types", () => {
   test("a GDTF import is one step: the file alone, no mode, no name", async ({
     page,
   }) => {
-    const imports: Request[] = [];
-    await page.route("**/api/lighting/gdtf/import*", (route) => {
-      imports.push(route.request());
-      return route.fallback();
-    });
+    const rpc = await mockRpc(page);
     await page.goto("/#/lighting/fixtures");
     await page.locator('input[type="file"]').setInputFiles({
       name: "pb15.gdtf",
@@ -126,11 +120,12 @@ test.describe("Fixture types", () => {
       buffer: Buffer.from("not read by the mock"),
     });
     await expect(page.getByTestId("gdtf-report")).toBeVisible();
+    const imports = rpc.calls(LightingService.method.importGdtf);
     expect(imports).toHaveLength(1);
-    const params = new URL(imports[0].url()).searchParams;
-    expect(params.get("mode")).toBeNull();
-    expect(params.get("name")).toBeNull();
-    expect(imports[0].postData()).toContain('filename="pb15.gdtf"');
+    expect(imports[0].name).toBeUndefined();
+    const begun = rpc.calls(ConfigService.method.beginUpload);
+    expect(begun).toHaveLength(1);
+    expect(begun[0].fileName).toBe("pb15.gdtf");
   });
 });
 
@@ -426,32 +421,26 @@ test.describe("MVR import", () => {
   test("the wizard with every default sends the name and origin it showed", async ({
     page,
   }) => {
-    const imports: Request[] = [];
-    await page.route("**/api/lighting/mvr/inspect", (r) =>
-      r.fulfill(json(MVR_INSPECTION)),
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.inspectMvr, () =>
+      mvrInspectionReply(MVR_INSPECTION),
     );
-    await page.route("**/api/lighting/mvr/import", (r) => {
-      imports.push(r.request());
-      const write = /name="write"\r\n\r\ntrue/.test(
-        r.request().postData() ?? "",
-      );
-      return r.fulfill(
-        json(
-          write
-            ? {
-                write: true,
-                report: {
-                  ...MVR_INSPECTION.report,
-                  written: ["lighting/venues/kellys.venue"],
-                  distillation_warnings: {},
-                },
-                reloaded: false,
-                venue_error: null,
-              }
-            : { write: false, plan: MVR_INSPECTION.report },
-        ),
-      );
-    });
+    rpc.unary(LightingService.method.importMvr, (request) =>
+      mvrImportReply(
+        request.write
+          ? {
+              write: true,
+              report: {
+                ...MVR_INSPECTION.report,
+                written: ["lighting/venues/kellys.venue"],
+                distillation_warnings: {},
+              },
+              reloaded: false,
+              venue_error: null,
+            }
+          : { write: false, plan: MVR_INSPECTION.report },
+      ),
+    );
     await page.goto("/#/lighting/import");
     await page.getByTestId("mvr-file").setInputFiles({
       name: "Kellys.mvr",
@@ -468,11 +457,14 @@ test.describe("MVR import", () => {
     await page.getByTestId("mvr-to-review").click();
     await page.getByTestId("mvr-do-import").click();
     await expect(page.getByTestId("mvr-done")).toBeVisible();
-    const written = imports.at(-1)!.postData() ?? "";
-    expect(written).toContain('name="write"\r\n\r\ntrue');
-    expect(written).toContain(`name="name"\r\n\r\n${name}\r\n`);
-    expect(written).toContain(`name="origin"\r\n\r\n${origin}\r\n`);
-    expect(written).toContain('filename="Kellys.mvr"');
+    const written = rpc.calls(LightingService.method.importMvr).at(-1)!;
+    expect(written.write).toBe(true);
+    expect(written.options?.name).toBe(name);
+    const sent = written.options?.originMm;
+    expect(`${sent?.x},${sent?.y},${sent?.z}`).toBe(origin);
+    const begun = rpc.calls(ConfigService.method.beginUpload).at(-1)!;
+    expect(begun.fileName).toBe("Kellys.mvr");
+    expect(begun.purpose).toBe(UploadPurpose.MVR_IMPORT);
   });
 });
 

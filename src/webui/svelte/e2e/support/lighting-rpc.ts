@@ -48,8 +48,15 @@ import {
   type FixtureTypeSettingsSchema,
   type KeepMvrExportResponseSchema,
   type ListFixtureTypesResponseSchema,
+  type ExportMvrResponseSchema,
+  type GdtfImportSchema,
+  type ImportMvrResponseSchema,
   type ListVenuesResponseSchema,
+  type MvrBoundsSchema,
   type MvrExportSummarySchema,
+  type MvrHandEditSchema,
+  type MvrInspectionSchema,
+  type MvrPlanSchema,
   type SaveVenueRequest,
   type SaveVenueResponseSchema,
   type VenueDetailSchema,
@@ -73,6 +80,12 @@ import {
 import type { VenueBody } from "../../src/lib/grpc/lighting";
 import type {
   AimPoints,
+  BoundsMm,
+  GdtfImport,
+  HandEdit,
+  MvrImportAnswer,
+  MvrInspection,
+  MvrPlan,
   Capability,
   Check,
   CheckKey,
@@ -1128,5 +1141,155 @@ export function savedVenueRequest(r: SaveVenueRequest): VenueBody & {
           origin: form.source.origin ? point(form.source.origin) : [0, 0, 0],
         }
       : null,
+  };
+}
+
+// ---- GDTF and MVR import and export ----
+
+/** The metadata of a refused import or inspection: what refused it, in a word
+ *  (`venue`, `record`, `name`, `library`, `write`, `unreadable`). */
+export function importKind(kind: string): HeadersInit {
+  return { "x-import-kind": kind };
+}
+
+/** What a GDTF import did. */
+export function gdtfImportReply(
+  g: GdtfImport,
+): MessageInitShape<typeof GdtfImportSchema> {
+  return {
+    typeName: g.type_name,
+    fixture: g.fixture,
+    manufacturer: g.manufacturer,
+    modes: g.modes,
+    archive: g.archive,
+    alreadyImported: g.already_imported,
+    renamedFrom: g.renamed_from ?? undefined,
+    refusedModes: g.refused_modes,
+    fixtureFile: g.fixture_file ?? undefined,
+  };
+}
+
+const handEdits = (
+  edits: HandEdit[],
+): MessageInitShape<typeof MvrHandEditSchema>[] => edits;
+
+const bounds = (
+  b: BoundsMm | null,
+): MessageInitShape<typeof MvrBoundsSchema> | undefined =>
+  b ? { min: vec3(b.min), max: vec3(b.max) } : undefined;
+
+function planReply(p: MvrPlan): MessageInitShape<typeof MvrPlanSchema> {
+  return {
+    venueName: p.venue_name,
+    venueFile: p.venue_file,
+    archive: p.archive,
+    merge: p.merge,
+    origin: vec3(p.origin),
+    fixtureTypes: p.fixture_types.map((t) => ({
+      name: t.name,
+      archive: t.archive,
+      modes: t.modes,
+      existing: t.existing,
+      fixtureFile: t.fixture_file ?? undefined,
+    })),
+    fixtures: p.fixtures.map((f) => ({
+      name: f.name,
+      layer: f.layer,
+      fixtureType: f.fixture_type ?? undefined,
+      mode: f.mode ?? undefined,
+      patch: f.patch
+        ? { universe: f.patch[0], address: f.patch[1] }
+        : undefined,
+      position: f.position ? vec3(f.position) : undefined,
+      rotation: f.rotation ? vec3(f.rotation) : undefined,
+      tags: f.tags,
+      todo: f.todo ?? undefined,
+      change: f.change ?? undefined,
+      overwrites: handEdits(f.overwrites),
+      keptEdits: f.kept_edits,
+    })),
+    removedFixtures: p.removed_fixtures,
+    keptFixtures: p.kept_fixtures,
+    focusPoints: p.focus_points.map((f) => ({
+      name: f.name,
+      point: vec3(f.point),
+      change: f.change ?? undefined,
+      overwrites: handEdits(f.overwrites),
+      keptEdit: f.kept_edit,
+    })),
+    removedFocusPoints: p.removed_focus_points,
+    keptFocusPoints: p.kept_focus_points,
+    sceneryObjects: p.scenery_objects,
+    sceneryMeshesUndrawn: p.scenery_meshes_undrawn,
+    warnings: p.warnings,
+  };
+}
+
+/** An MVR inspection: the plan, and the file seen from above. */
+export function mvrInspectionReply(
+  i: MvrInspection,
+): MessageInitShape<typeof MvrInspectionSchema> {
+  return {
+    fileName: i.file_name,
+    report: planReply(i.report),
+    scene: {
+      fixtures: i.scene.fixtures.map((f) => ({
+        name: f.name,
+        layer: f.layer,
+        positionMm: f.position_mm ? vec3(f.position_mm) : undefined,
+      })),
+      focusPoints: i.scene.focus_points.map((f) => ({
+        name: f.name,
+        positionMm: f.position_mm ? vec3(f.position_mm) : undefined,
+      })),
+      scenery: i.scene.scenery.map((o) => ({
+        name: o.name,
+        kind: o.kind,
+        deck: o.deck,
+        boundsMm: bounds(o.bounds_mm),
+      })),
+      deck: bounds(i.scene.deck_mm),
+    },
+  };
+}
+
+/** An MVR import's answer: the plan, or the report with the venue's reload. */
+export function mvrImportReply(
+  a: MvrImportAnswer,
+): MessageInitShape<typeof ImportMvrResponseSchema> {
+  const { written, distillation_warnings, ...plan } = a.report ?? {
+    written: [],
+    distillation_warnings: {},
+  };
+  return {
+    write: a.write,
+    plan: a.plan ? planReply(a.plan) : undefined,
+    report: a.report
+      ? {
+          plan: planReply(plan as MvrPlan),
+          written,
+          distillationWarnings: Object.fromEntries(
+            Object.entries(distillation_warnings).map(([type, values]) => [
+              type,
+              { values },
+            ]),
+          ),
+        }
+      : undefined,
+    reloaded: a.reloaded,
+    venueError: a.venue_error ?? undefined,
+  };
+}
+
+/** A staged MVR export: the path to fetch it from, the name it carries. */
+export function exportMvrReply(staged: {
+  path: string;
+  fileName: string;
+  size?: number;
+}): MessageInitShape<typeof ExportMvrResponseSchema> {
+  return {
+    path: staged.path,
+    fileName: staged.fileName,
+    size: BigInt(staged.size ?? 11),
   };
 }

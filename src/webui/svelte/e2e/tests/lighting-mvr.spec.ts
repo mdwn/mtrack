@@ -12,24 +12,39 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page, type Request } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { MVR_INSPECTION, MVR_EXPORT_SUMMARY } from "../mock-server/test-data";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { LightingService } from "../../src/gen/player/v1/player_pb";
-import type { VenueList } from "../../src/gen/rules/mtrack_rules";
+import {
+  ConfigService,
+  LightingService,
+  UploadPurpose,
+  type ImportMvrRequest,
+  type InspectMvrRequest,
+} from "../../src/gen/player/v1/player_pb";
+import type {
+  MvrImport,
+  MvrPlan,
+  VenueError,
+  VenueList,
+} from "../../src/gen/rules/mtrack_rules";
 import {
   aimPointsReply,
+  exportMvrReply,
+  importKind,
   keptReply,
   mvrExportSummaryReply,
+  mvrImportReply,
+  mvrInspectionReply,
   venueListReply,
 } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 
 // MVR import (the wizard at #/lighting/import) and export (the dialog on
-// Venues), design section 11. Every test routes its own answers with
-// `page.route` (the import, which stays on HTTP) or `mockRpc` (the export's
-// summary, aim points and keep), so nothing depends on state another test
-// left behind.
+// Venues), design section 11. Every test answers its own calls with
+// `mockRpc` (the file is announced, its bytes sent to the mock server's
+// `PUT /uploads/{id}`, and `InspectMvr` or `ImportMvr` takes it), so nothing
+// depends on state another test left behind.
 
 type Inspection = typeof MVR_INSPECTION;
 
@@ -39,12 +54,29 @@ const MVR_FILE = {
   buffer: Buffer.from("PK-not-really-an-mvr"),
 };
 
-/** The text fields of a multipart body, by name. */
-function fields(request: Request): Record<string, string> {
-  const body = request.postData() ?? "";
+/** The choices a call carried, as the form fields the wizard used to send:
+ *  `name`, `origin` ("x,y,z" millimeters), `write`, `venues_dir`,
+ *  `fixture_types_dir` and `keep` (JSON); a choice not made has no key. */
+function fields(
+  request: InspectMvrRequest | ImportMvrRequest,
+): Record<string, string> {
   const out: Record<string, string> = {};
-  const re = /name="([^"]+)"(?!; filename)\r\n\r\n([^\r]*)\r\n/g;
-  for (const m of body.matchAll(re)) out[m[1]] = m[2];
+  const o = request.options;
+  if (o?.name) out.name = o.name;
+  if (o?.originMm) {
+    out.origin = `${o.originMm.x},${o.originMm.y},${o.originMm.z}`;
+  }
+  if ("write" in request) out.write = String(request.write);
+  if (o?.venuesDir) out.venues_dir = o.venuesDir;
+  if (o?.fixtureTypesDir) out.fixture_types_dir = o.fixtureTypesDir;
+  if (o?.keep) {
+    out.keep = JSON.stringify({
+      fixtures: Object.fromEntries(
+        Object.entries(o.keep.fixtures).map(([name, f]) => [name, f.fields]),
+      ),
+      focus_points: o.keep.focusPoints,
+    });
+  }
   return out;
 }
 
@@ -54,31 +86,27 @@ function inspection(change: (i: Inspection) => void = () => {}): Inspection {
   return copy;
 }
 
-/** Routes inspect and import; import requests are collected. */
+/** Answers inspect and import; the requests are collected. */
 async function routeImport(
   page: Page,
   opts: {
     inspect?: Inspection;
-    plan?: (origin: string) => object;
-    report?: object;
-    venueError?: object | null;
+    plan?: (origin: string) => MvrPlan;
+    report?: MvrImport;
+    venueError?: VenueError | null;
   } = {},
 ) {
-  const inspected: Request[] = [];
-  const imports: Request[] = [];
-  await page.route("**/api/lighting/mvr/inspect", async (route) => {
-    inspected.push(route.request());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(opts.inspect ?? MVR_INSPECTION),
-    });
+  const rpc = await mockRpc(page);
+  const inspected: InspectMvrRequest[] = [];
+  const imports: ImportMvrRequest[] = [];
+  rpc.unary(LightingService.method.inspectMvr, (request) => {
+    inspected.push(request);
+    return mvrInspectionReply(opts.inspect ?? MVR_INSPECTION);
   });
-  await page.route("**/api/lighting/mvr/import", async (route) => {
-    const request = route.request();
+  rpc.unary(LightingService.method.importMvr, (request) => {
     imports.push(request);
     const f = fields(request);
-    const body =
+    return mvrImportReply(
       f.write === "true"
         ? {
             write: true,
@@ -96,14 +124,10 @@ async function routeImport(
         : {
             write: false,
             plan: opts.plan?.(f.origin) ?? MVR_INSPECTION.report,
-          };
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(body),
-    });
+          },
+    );
   });
-  return { inspected, imports };
+  return { rpc, inspected, imports };
 }
 
 async function chooseFile(page: Page) {
@@ -112,7 +136,7 @@ async function chooseFile(page: Page) {
 
 test.describe("MVR import wizard", () => {
   test("step 1 reads the file and shows what it holds", async ({ page }) => {
-    const { inspected } = await routeImport(page);
+    const { rpc, inspected } = await routeImport(page);
     await page.goto("/#/lighting/import");
 
     // The stepper is an ordered list, with the current step marked.
@@ -139,32 +163,30 @@ test.describe("MVR import wizard", () => {
     await expect(page.getByTestId("mvr-count-without")).toHaveText("1");
     await expect(page.getByTestId("mvr-venue-name")).toHaveValue("Kellys");
 
-    // The browser kept the file and sent it, under its own name.
+    // The browser kept the file and announced it, under its own name, for an
+    // inspection; and sent its bytes to the path that answered.
     expect(inspected).toHaveLength(1);
-    expect(inspected[0].postData()).toContain('filename="Kellys.mvr"');
+    const begun = rpc.calls(ConfigService.method.beginUpload);
+    expect(begun).toHaveLength(1);
+    expect(begun[0].fileName).toBe("Kellys.mvr");
+    expect(begun[0].purpose).toBe(UploadPurpose.MVR_INSPECT);
+    expect(begun[0].size).toBe(BigInt(MVR_FILE.buffer.length));
   });
 
   test("an error at step 1 is shown in place and retry recovers", async ({
     page,
   }) => {
     let calls = 0;
-    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.inspectMvr, () => {
       calls++;
       if (calls === 1) {
-        await route.fulfill({
-          status: 400,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: "not a readable MVR archive (is this an MVR file?)",
-          }),
-        });
-      } else {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MVR_INSPECTION),
-        });
+        throw new ConnectError(
+          "not a readable MVR archive (is this an MVR file?)",
+          Code.InvalidArgument,
+        );
       }
+      return mvrInspectionReply(MVR_INSPECTION);
     });
     await page.goto("/#/lighting/import");
     await chooseFile(page);
@@ -186,26 +208,18 @@ test.describe("MVR import wizard", () => {
     page,
   }) => {
     const names: string[] = [];
-    await page.route("**/api/lighting/mvr/inspect", async (route) => {
-      const name = fields(route.request()).name ?? "";
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.inspectMvr, (request) => {
+      const name = fields(request).name ?? "";
       names.push(name);
       if (name === "Kellys") {
-        await route.fulfill({
-          status: 409,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error:
-              'cannot import venue "Kellys": Defined in all.venue alongside venue "Annex"; edit that file by hand.',
-            kind: "venue",
-          }),
-        });
-      } else {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MVR_INSPECTION),
-        });
+        throw new ConnectError(
+          'cannot import venue "Kellys": Defined in all.venue alongside venue "Annex"; edit that file by hand.',
+          Code.FailedPrecondition,
+          importKind("venue"),
+        );
       }
+      return mvrInspectionReply(MVR_INSPECTION);
     });
     await page.goto("/#/lighting/import");
     await chooseFile(page);
@@ -231,17 +245,13 @@ test.describe("MVR import wizard", () => {
   test("a refusal that another venue name cannot answer offers no rename", async ({
     page,
   }) => {
-    await page.route("**/api/lighting/mvr/inspect", async (route) => {
-      await route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error:
-            'lighting/fixture_types/synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name <name>`, or the Fixtures page)',
-          kind: "record",
-        }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.error(
+      LightingService.method.inspectMvr,
+      Code.FailedPrecondition,
+      'lighting/fixture_types/synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name <name>`, or the Fixtures page)',
+      importKind("record"),
+    );
     await page.goto("/#/lighting/import");
     await chooseFile(page);
 
@@ -258,25 +268,18 @@ test.describe("MVR import wizard", () => {
   }) => {
     let calls = 0;
     const names: (string | undefined)[] = [];
-    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.inspectMvr, (request) => {
       calls++;
-      names.push(fields(route.request()).name);
-      await route.fulfill(
-        calls === 1
-          ? {
-              status: 409,
-              contentType: "application/json",
-              body: JSON.stringify({
-                error: 'cannot import venue "Kellys": Kellys.venue is taken',
-                kind: "venue",
-              }),
-            }
-          : {
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify(MVR_INSPECTION),
-            },
-      );
+      names.push(fields(request).name);
+      if (calls === 1) {
+        throw new ConnectError(
+          'cannot import venue "Kellys": Kellys.venue is taken',
+          Code.FailedPrecondition,
+          importKind("venue"),
+        );
+      }
+      return mvrInspectionReply(MVR_INSPECTION);
     });
     await page.goto("/#/lighting/import");
     await chooseFile(page);
@@ -675,39 +678,34 @@ test.describe("MVR import wizard", () => {
   test("a server refusal at the write is shown with a retry", async ({
     page,
   }) => {
-    await routeImport(page);
+    const { rpc } = await routeImport(page);
     await page.goto("/#/lighting/import");
     await chooseFile(page);
     await page.getByTestId("mvr-continue").click();
     await page.getByTestId("mvr-to-review").click();
+    await expect(page.getByTestId("mvr-step-review")).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
 
-    await page.unroute("**/api/lighting/mvr/import");
     let calls = 0;
-    await page.route("**/api/lighting/mvr/import", async (route) => {
+    rpc.unary(LightingService.method.importMvr, () => {
       calls++;
-      await route.fulfill(
-        calls === 1
-          ? {
-              status: 400,
-              contentType: "application/json",
-              body: JSON.stringify({
-                error: "lighting/library/Kellys.mvr differs",
-              }),
-            }
-          : {
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                write: true,
-                report: {
-                  ...MVR_INSPECTION.report,
-                  written: ["lighting/venues/kellys.venue"],
-                  distillation_warnings: {},
-                },
-                reloaded: false,
-              }),
-            },
-      );
+      if (calls === 1) {
+        throw new ConnectError(
+          "lighting/library/Kellys.mvr differs",
+          Code.InvalidArgument,
+        );
+      }
+      return mvrImportReply({
+        write: true,
+        report: {
+          ...MVR_INSPECTION.report,
+          written: ["lighting/venues/kellys.venue"],
+          distillation_warnings: {},
+        },
+        reloaded: false,
+      });
     });
     await page.getByTestId("mvr-do-import").click();
     await expect(page.getByTestId("mvr-error")).toContainText("differs");
@@ -749,10 +747,11 @@ test.describe("MVR import wizard", () => {
 
 test.describe("MVR export dialog", () => {
   /** Answers the summary, the aim points and the keep; `linked` says whether
-   *  Brick 2 has been aimed. The download is still an HTTP route. */
+   *  Brick 2 has been aimed. An export is staged for download: the answered
+   *  path serves the archive. */
   async function routeExport(page: Page) {
     const state = { linked: false };
-    const downloads: Request[] = [];
+    const staged = new Map<string, string>();
     const kept = new Set<string>();
     const rpc = await mockRpc(page);
     rpc.unary(LightingService.method.keepMvrExport, (request) => {
@@ -772,18 +771,11 @@ test.describe("MVR export dialog", () => {
       }
       return mvrExportSummaryReply(summary);
     });
-    await page.route(/\/api\/lighting\/mvr\/export\?/, async (route) => {
-      downloads.push(route.request());
-      const url = new URL(route.request().url());
-      const file = url.searchParams.get("file") ?? "x.mvr";
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/octet-stream",
-          "content-disposition": `attachment; filename="${file}"`,
-        },
-        body: "PK-mock",
-      });
+    rpc.unary(LightingService.method.exportMvr, (request) => {
+      const file = request.file ?? "x.mvr";
+      const id = `staged-${staged.size + 1}`;
+      staged.set(id, file);
+      return exportMvrReply({ path: `/downloads/${id}`, fileName: file });
     });
     rpc.unary(LightingService.method.addVenueAimPoints, () => {
       state.linked = true;
@@ -800,7 +792,7 @@ test.describe("MVR export dialog", () => {
       rpc,
       summaries: () => rpc.calls(LightingService.method.getMvrExportSummary),
       aims: () => rpc.calls(LightingService.method.addVenueAimPoints),
-      downloads,
+      exports: () => rpc.calls(LightingService.method.exportMvr),
       keeps: () => rpc.calls(LightingService.method.keepMvrExport),
     };
   }
@@ -877,7 +869,7 @@ test.describe("MVR export dialog", () => {
   test("adds an aim point per fixture, refreshes, then downloads", async ({
     page,
   }) => {
-    const { summaries, aims, downloads, keeps } = await routeExport(page);
+    const { summaries, aims, exports, keeps } = await routeExport(page);
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
     await expect(page.getByTestId("mvr-export-unlinked")).toBeVisible();
@@ -901,17 +893,18 @@ test.describe("MVR export dialog", () => {
     await page.getByTestId("mvr-export-keep").check();
     const download = page.waitForEvent("download");
     await page.getByTestId("mvr-export-download").click();
-    expect((await download).suggestedFilename()).toBe("tour.mvr");
+    const saved = await download;
+    expect(saved.suggestedFilename()).toBe("tour.mvr");
+    // The browser fetched the archive from the path that answered.
+    expect(new URL(saved.url()).pathname).toBe("/downloads/staged-1");
 
-    expect(downloads).toHaveLength(1);
-    const params = new URL(downloads[0].url()).searchParams;
-    expect(params.get("venue")).toBe("test-venue");
-    expect(params.get("file")).toBe("tour.mvr");
-    expect(params.get("layers_from_tags")).toBe("true");
-    // A GET never writes: the copy is its own POST, after the download.
-    expect(params.has("keep")).toBe(false);
+    expect(exports()).toHaveLength(1);
+    expect(exports()[0].venue).toBe("test-venue");
+    expect(exports()[0].file).toBe("tour.mvr");
+    expect(exports()[0].layersFromTags).toBe(true);
+    // An export writes nothing: the copy is its own call, after the download.
     // The copy is requested after the download resolves, so wait for the
-    // note the dialog shows once the POST has answered.
+    // note the dialog shows once the call has answered.
     await expect(page.getByTestId("mvr-export-kept")).toContainText(
       "lighting/export/tour.mvr",
     );
@@ -934,7 +927,7 @@ test.describe("MVR export dialog", () => {
   test("Export as is downloads without adding aim points, keep off by default", async ({
     page,
   }) => {
-    const { aims, downloads, keeps } = await routeExport(page);
+    const { aims, exports, keeps } = await routeExport(page);
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
 
@@ -943,10 +936,8 @@ test.describe("MVR export dialog", () => {
     expect((await download).suggestedFilename()).toBe("test_venue.mvr");
 
     expect(aims()).toHaveLength(0);
-    expect(downloads).toHaveLength(1);
-    const params = new URL(downloads[0].url()).searchParams;
-    expect(params.get("layers_from_tags")).toBe("false");
-    expect(params.has("keep")).toBe(false);
+    expect(exports()).toHaveLength(1);
+    expect(exports()[0].layersFromTags).toBe(false);
     expect(keeps()).toHaveLength(0);
   });
 

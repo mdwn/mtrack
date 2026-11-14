@@ -769,3 +769,134 @@ pub(in super::super) fn export_summary(s: &proto::MvrExportSummary) -> Value {
         "warnings": s.warnings,
     })
 }
+
+/// What `POST /api/lighting/gdtf/import` sent.
+pub(in super::super) fn gdtf_import(g: &proto::GdtfImport) -> Value {
+    json!({
+        "type_name": g.type_name,
+        "fixture": g.fixture,
+        "manufacturer": g.manufacturer,
+        "modes": g.modes,
+        "archive": g.archive,
+        "already_imported": g.already_imported,
+        "renamed_from": g.renamed_from,
+        "refused_modes": g.refused_modes.iter()
+            .map(|m| json!({"mode": m.mode, "reason": m.reason}))
+            .collect::<Vec<_>>(),
+        "fixture_file": g.fixture_file,
+    })
+}
+
+fn hand_edits(edits: &[proto::MvrHandEdit]) -> Vec<Value> {
+    edits
+        .iter()
+        .map(|e| json!({"field": e.field, "mine": e.mine, "mvr": e.mvr}))
+        .collect()
+}
+
+fn mvr_plan(p: &proto::MvrPlan) -> Value {
+    json!({
+        "venue_name": p.venue_name,
+        "venue_file": p.venue_file,
+        "archive": p.archive,
+        "merge": p.merge,
+        "origin": p.origin.as_ref().map(point),
+        "fixture_types": p.fixture_types.iter().map(|t| json!({
+            "name": t.name,
+            "archive": t.archive,
+            "modes": t.modes,
+            "existing": t.existing,
+            "fixture_file": t.fixture_file,
+        })).collect::<Vec<_>>(),
+        "fixtures": p.fixtures.iter().map(|f| json!({
+            "name": f.name,
+            "layer": f.layer,
+            "fixture_type": f.fixture_type,
+            "mode": f.mode,
+            "patch": f.patch.as_ref().map(|p| json!([p.universe, p.address])),
+            "position": f.position.as_ref().map(point),
+            "rotation": f.rotation.as_ref().map(point),
+            "tags": f.tags,
+            "todo": f.todo,
+            "change": f.change,
+            "overwrites": hand_edits(&f.overwrites),
+            "kept_edits": f.kept_edits,
+        })).collect::<Vec<_>>(),
+        "removed_fixtures": p.removed_fixtures.iter()
+            .map(|f| json!({"name": f.name, "tags": f.tags}))
+            .collect::<Vec<_>>(),
+        "kept_fixtures": p.kept_fixtures,
+        "focus_points": p.focus_points.iter().map(|f| json!({
+            "name": f.name,
+            "point": f.point.as_ref().map(point),
+            "change": f.change,
+            "overwrites": hand_edits(&f.overwrites),
+            "kept_edit": f.kept_edit,
+        })).collect::<Vec<_>>(),
+        "removed_focus_points": p.removed_focus_points,
+        "kept_focus_points": p.kept_focus_points,
+        "scenery_objects": p.scenery_objects,
+        "scenery_meshes_undrawn": p.scenery_meshes_undrawn,
+        "warnings": p.warnings,
+    })
+}
+
+fn bounds(b: &proto::MvrBounds) -> Value {
+    json!({
+        "min": b.min.as_ref().map(point),
+        "max": b.max.as_ref().map(point),
+    })
+}
+
+/// What `POST /api/lighting/mvr/inspect` sent.
+pub(in super::super) fn mvr_inspection(i: &proto::MvrInspection) -> Value {
+    let scene = i.scene.as_ref().unwrap();
+    json!({
+        "file_name": i.file_name,
+        "report": mvr_plan(i.report.as_ref().unwrap()),
+        "scene": {
+            "fixtures": scene.fixtures.iter().map(|f| json!({
+                "name": f.name,
+                "layer": f.layer,
+                "position_mm": f.position_mm.as_ref().map(point),
+            })).collect::<Vec<_>>(),
+            "focus_points": scene.focus_points.iter().map(|f| json!({
+                "name": f.name,
+                "position_mm": f.position_mm.as_ref().map(point),
+            })).collect::<Vec<_>>(),
+            "scenery": scene.scenery.iter().map(|o| json!({
+                "name": o.name,
+                "kind": o.kind,
+                "deck": o.deck,
+                "bounds_mm": o.bounds_mm.as_ref().map(bounds),
+            })).collect::<Vec<_>>(),
+            "deck_mm": scene.deck.as_ref().map(bounds),
+        },
+    })
+}
+
+/// What `POST /api/lighting/mvr/import` sent: the plan, or the report (the
+/// plan with what was written, flattened), and for a write whether the
+/// engine reloaded and the venue's failure.
+pub(in super::super) fn mvr_import_answer(a: &proto::ImportMvrResponse) -> Value {
+    let mut answer = json!({"write": a.write});
+    if let Some(plan) = &a.plan {
+        answer["plan"] = mvr_plan(plan);
+    }
+    if let Some(report) = &a.report {
+        let mut flat = mvr_plan(report.plan.as_ref().unwrap());
+        flat["written"] = json!(report.written);
+        flat["distillation_warnings"] = report
+            .distillation_warnings
+            .iter()
+            .map(|(k, v)| (k.clone(), json!(v.values)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        answer["report"] = flat;
+    }
+    if a.write {
+        answer["reloaded"] = json!(a.reloaded);
+        answer["venue_error"] = json!(a.venue_error.as_ref().map(venue_error));
+    }
+    answer
+}

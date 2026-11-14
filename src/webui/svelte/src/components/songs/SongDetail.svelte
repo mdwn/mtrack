@@ -704,19 +704,11 @@
     uploadMsg = "";
     uploadOk = false;
     try {
-      let res: Response;
-      if (files.length === 1) {
-        res = await uploadTrack(songName, files[0]);
-      } else {
-        res = await uploadTracks(songName, files);
-      }
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        uploadMsg = data?.error ?? `Upload failed (${res.status})`;
-        return;
-      }
-      const data = await res.json().catch(() => null);
-      if (data?.replaced) {
+      const data =
+        files.length === 1
+          ? await uploadTrack(songName, files[0])
+          : await uploadTracks(songName, files);
+      if ("replaced" in data && data.replaced) {
         uploadMsg = get(t)("songs.detail.replacedFiles", {
           values: { count: files.length },
         });
@@ -759,14 +751,8 @@
     uploadMsg = "";
     uploadOk = false;
     try {
-      const res = await uploadTrack(songName, files[0]);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        uploadMsg = data?.error ?? `Upload failed (${res.status})`;
-        return;
-      }
-      const data = await res.json().catch(() => null);
-      uploadMsg = data?.replaced
+      const data = await uploadTrack(songName, files[0]);
+      uploadMsg = data.replaced
         ? get(t)("songs.detail.midiReplaced")
         : get(t)("songs.detail.midiUploaded");
       uploadOk = true;
@@ -926,12 +912,7 @@
     notifUploading = true;
     notifUploadMsg = "";
     try {
-      const res = await uploadTrack(songName, files[0]);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        notifUploadMsg = data?.error ?? `Upload failed (${res.status})`;
-        return;
-      }
+      await uploadTrack(songName, files[0]);
       notifUploadMsg = get(t)("notifications.uploaded", {
         values: { name: files[0].name },
       });

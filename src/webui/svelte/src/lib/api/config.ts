@@ -99,6 +99,16 @@ import {
   saveVenueRequest,
   type VenueBody,
 } from "../grpc/lighting";
+import {
+  importCallError,
+  mapGdtfImport,
+  mapMvrImportAnswer,
+  mapMvrInspection,
+  mapSampleUploaded,
+  mvrOptions,
+} from "../grpc/uploads";
+import { sendUpload } from "./upload";
+import { UploadPurpose } from "../../gen/player/v1/player_pb";
 import { BadAnswerError } from "../lighting/answer";
 import {
   callError,
@@ -108,7 +118,7 @@ import {
   type PlaylistSettings,
 } from "../grpc/library";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
-import { get, uploadFile, uploadFiles, apiError } from "./rest";
+
 export { ConflictError } from "./rest";
 
 /** Describes a device's channel count without overstating what is known. */
@@ -319,13 +329,19 @@ export async function updateMetronomeDefaults(
   }
 }
 
+/** Uploads a sample file into the project's `samples/` directory: announced,
+ *  its bytes sent to the web server, then stored. Answers the path a sample
+ *  definition names it by. */
 export async function uploadSampleFile(file: File): Promise<SampleUploaded> {
-  const res = await uploadFile(
-    `/samples/upload/${encodeURIComponent(file.name)}`,
-    file,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to upload sample");
-  return res.json();
+  const fail = (e: unknown) => callError(e, "Failed to upload sample");
+  const id = await sendUpload({ purpose: UploadPurpose.SAMPLE }, file, fail);
+  try {
+    return mapSampleUploaded(
+      await configClient.addSampleFile({ uploadId: id }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
 }
 
 // Calibration API
@@ -417,17 +433,31 @@ export async function fetchFixtureTypes(
 }
 
 /** Imports a GDTF in one step: the fixture is usable in a venue in any of
- *  its modes at once. A `mode` makes one the default; none is the norm. */
+ *  its modes at once. A `name` pins the fixture's name in a record; none is
+ *  the norm. */
 export async function importGdtf(
   file: File,
   name?: string,
 ): Promise<GdtfImport> {
-  const params = new URLSearchParams();
-  if (name) params.set("name", name);
-  const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
-  if (!res.ok) throw await apiError(res, "Failed to import GDTF");
+  const fail = (e: unknown) => importCallError(e, "Failed to import GDTF");
+  const id = await sendUpload(
+    { purpose: UploadPurpose.GDTF_IMPORT },
+    file,
+    fail,
+  );
+  let report: GdtfImport;
+  try {
+    report = mapGdtfImport(
+      await lightingClient.importGdtf({
+        uploadId: id,
+        name: name || undefined,
+      }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
   fixtureTypesChanged();
-  return res.json();
+  return report;
 }
 
 // --- MVR import and export (lighting UI design section 11) ---
@@ -438,35 +468,30 @@ export interface MvrDirs {
   fixtureTypesDir?: string;
 }
 
-function mvrForm(
-  file: File,
-  fields: Record<string, string | undefined>,
-  dirs: MvrDirs,
-): FormData {
-  const form = new FormData();
-  for (const [key, value] of Object.entries(fields)) {
-    if (value) form.append(key, value);
-  }
-  if (dirs.venuesDir) form.append("venues_dir", dirs.venuesDir);
-  if (dirs.fixtureTypesDir)
-    form.append("fixture_types_dir", dirs.fixtureTypesDir);
-  form.append("file", file, file.name);
-  return form;
-}
-
 /** Reads an MVR: what an import would do and how the file looks from above.
- *  Writes nothing; refuses what is not an MVR with the parser's reason. */
+ *  Writes nothing; refuses what is not an MVR with the parser's reason. The
+ *  file is sent again at each step (the server keeps nothing between them). */
 export async function inspectMvr(
   file: File,
   name: string | undefined,
   dirs: MvrDirs = {},
 ): Promise<MvrInspection> {
-  const res = await fetch("/api/lighting/mvr/inspect", {
-    method: "POST",
-    body: mvrForm(file, { name }, dirs),
-  });
-  if (!res.ok) throw await apiError(res, "Failed to read the MVR");
-  return res.json();
+  const fail = (e: unknown) => importCallError(e, "Failed to read the MVR");
+  const id = await sendUpload(
+    { purpose: UploadPurpose.MVR_INSPECT },
+    file,
+    fail,
+  );
+  try {
+    return mapMvrInspection(
+      await lightingClient.inspectMvr({
+        uploadId: id,
+        options: mvrOptions({ name, ...dirs }),
+      }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
 }
 
 /** The import's plan (`write` false) or its report (`write` true). */
@@ -475,41 +500,35 @@ export async function importMvr(
   options: { name: string; origin: Vec3; write: boolean; keep?: MvrKeep },
   dirs: MvrDirs = {},
 ): Promise<MvrImportAnswer> {
-  const res = await fetch("/api/lighting/mvr/import", {
-    method: "POST",
-    body: mvrForm(
-      file,
-      {
-        name: options.name,
-        origin: options.origin.join(","),
-        write: options.write ? "true" : "false",
-        keep: options.keep ? JSON.stringify(options.keep) : undefined,
-      },
-      dirs,
-    ),
-  });
-  if (!res.ok) throw await apiError(res, "Failed to import the MVR");
+  const fail = (e: unknown) => importCallError(e, "Failed to import the MVR");
+  const id = await sendUpload(
+    { purpose: UploadPurpose.MVR_IMPORT },
+    file,
+    fail,
+  );
+  let answer: MvrImportAnswer;
+  try {
+    answer = mapMvrImportAnswer(
+      await lightingClient.importMvr({
+        uploadId: id,
+        write: options.write,
+        options: mvrOptions({
+          name: options.name,
+          origin: options.origin,
+          keep: options.keep,
+          ...dirs,
+        }),
+      }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
   if (options.write) {
     // A write adds types and writes (or merges into) a venue.
     fixtureTypesChanged();
     venueChanged(null);
   }
-  return res.json();
-}
-
-function exportParams(
-  venue: string,
-  extra: Record<string, string | undefined>,
-  dirs: MvrDirs,
-): string {
-  const params = new URLSearchParams({ venue });
-  for (const [key, value] of Object.entries(extra)) {
-    if (value !== undefined) params.set(key, value);
-  }
-  if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
-  if (dirs.fixtureTypesDir)
-    params.set("fixture_types_dir", dirs.fixtureTypesDir);
-  return params.toString();
+  return answer;
 }
 
 /** What an export would hold, without sending the archive. */
@@ -530,24 +549,27 @@ export async function fetchMvrExportSummary(
   }
 }
 
-/** Downloads a venue as an MVR: the archive as a blob. A GET, so it writes
- *  nothing; keeping a copy in the project is `keepMvrExport`. */
+/** Stages a venue's MVR export for download: answers the path on the web
+ *  server to fetch it from (any number of times, for ten minutes) and the
+ *  name it carries. Nothing is written to the project; keeping a copy there
+ *  is `keepMvrExport`. */
 export async function downloadMvrExport(
   venue: string,
   options: { file: string; layersFromTags: boolean },
   dirs: MvrDirs = {},
-): Promise<{ blob: Blob; fileName: string }> {
-  const params = exportParams(
-    venue,
-    {
-      file: options.file,
-      layers_from_tags: String(options.layersFromTags),
-    },
-    dirs,
-  );
-  const res = await get(`/lighting/mvr/export?${params}`);
-  if (!res.ok) throw await apiError(res, "Failed to export the venue");
-  return { blob: await res.blob(), fileName: options.file };
+): Promise<{ path: string; fileName: string }> {
+  try {
+    const staged = await lightingClient.exportMvr({
+      venue,
+      file: options.file || undefined,
+      layersFromTags: options.layersFromTags,
+      venuesDir: dirs.venuesDir || undefined,
+      fixtureTypesDir: dirs.fixtureTypesDir || undefined,
+    });
+    return { path: staged.path, fileName: staged.fileName };
+  } catch (e) {
+    throw callError(e, "Failed to export the venue");
+  }
 }
 
 /** The project path of a kept copy, or the name of the file a keep would

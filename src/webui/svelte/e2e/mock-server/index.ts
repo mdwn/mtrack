@@ -14,7 +14,6 @@
 
 import type { VenueBody } from "../../src/lib/grpc/lighting";
 import type {
-  SampleUploaded,
   MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeList,
@@ -75,6 +74,13 @@ import {
 import { Code } from "@connectrpc/connect";
 import {
   AddProfileRequestSchema,
+  AddSampleFileRequestSchema,
+  AddSampleFileResponseSchema,
+  AddTrackFilesRequestSchema,
+  AddTrackFilesResponseSchema,
+  BeginUploadRequestSchema,
+  BeginUploadResponseSchema,
+  UploadPurpose,
   BluetoothStatusSchema,
   BrowseDirectoryRequestSchema,
   BrowseDirectoryResponseSchema,
@@ -137,6 +143,9 @@ import {
   unaryBody,
 } from "../support/grpc-web.js";
 import {
+  addSampleFileReply,
+  addTrackFilesReply,
+  beginUploadReply,
   bluetoothReply,
   browseReply,
   bulkImportReply,
@@ -164,8 +173,12 @@ import {
   listSongsReply,
 } from "../support/library-rpc.js";
 import {
+  exportMvrReply,
   fitReply,
   fixtureSettingsReply,
+  gdtfImportReply,
+  mvrImportReply,
+  mvrInspectionReply,
   fixtureTypeDeletedReply,
   fixtureTypeGdtfReply,
   fixtureTypeInfoReply,
@@ -417,12 +430,131 @@ grpcUnary(
   "ConfigService",
 );
 
-app.put("/api/songs/:name/tracks/:filename", (_req, res) => {
-  res.json({ status: "uploaded" });
-});
+// --- File bytes ---
+// An upload is announced (`BeginUpload`), its bytes `PUT` to the path that
+// answers, and then claimed by the call that uses them, as on the real
+// server: an id is known, sent once, as long as it said, and claimed once,
+// for the purpose it was announced for.
 
-app.post("/api/songs/:name/tracks", (_req, res) => {
-  res.json({ status: "uploaded" });
+interface Announced {
+  purpose: UploadPurpose;
+  fileName: string;
+  size: bigint;
+  song?: string;
+  received: number | null;
+}
+
+const announced = new Map<string, Announced>();
+let uploadCount = 0;
+
+grpcUnary(
+  "BeginUpload",
+  (request) => {
+    const begin = fromBinary(BeginUploadRequestSchema, request);
+    if (begin.size === undefined) {
+      throw new GrpcFailure(Code.InvalidArgument, "size is required");
+    }
+    uploadCount += 1;
+    const id = uploadCount.toString(16).padStart(32, "0");
+    announced.set(id, {
+      purpose: begin.purpose,
+      fileName: begin.fileName,
+      size: begin.size,
+      song: begin.song,
+      received: null,
+    });
+    return toBinary(
+      BeginUploadResponseSchema,
+      create(BeginUploadResponseSchema, beginUploadReply(id)),
+    );
+  },
+  "ConfigService",
+);
+
+app.put(
+  "/uploads/:id",
+  express.raw({ type: () => true, limit: "256mb" }),
+  (req, res) => {
+    const upload = announced.get(req.params.id as string);
+    if (!upload) {
+      res.status(404).json({ error: "No such upload (it may have expired)" });
+      return;
+    }
+    if (upload.received !== null) {
+      res.status(409).json({ error: "This upload has its bytes already" });
+      return;
+    }
+    const length = Buffer.isBuffer(req.body) ? req.body.length : 0;
+    if (BigInt(length) > upload.size) {
+      announced.delete(req.params.id as string);
+      res.status(413).json({ error: "The body is longer than announced" });
+      return;
+    }
+    upload.received = length;
+    res.status(204).end();
+  },
+);
+
+/** Takes the uploads `ids` for a call of `purpose`, as the real claim does:
+ *  each once, sent whole. */
+function claimUploads(ids: string[], purpose: UploadPurpose): Announced[] {
+  const found = ids.map((id) => {
+    const upload = announced.get(id);
+    if (!upload) {
+      throw new GrpcFailure(
+        Code.NotFound,
+        "No such upload (it may have expired)",
+      );
+    }
+    if (upload.purpose !== purpose) {
+      throw new GrpcFailure(
+        Code.FailedPrecondition,
+        "This upload was not made for this call",
+      );
+    }
+    if (upload.received === null || BigInt(upload.received) !== upload.size) {
+      throw new GrpcFailure(
+        Code.FailedPrecondition,
+        "The bytes have not all been sent",
+      );
+    }
+    return upload;
+  });
+  for (const id of ids) announced.delete(id);
+  return found;
+}
+
+grpcUnary(
+  "AddTrackFiles",
+  (request) => {
+    const { song, uploadIds } = fromBinary(AddTrackFilesRequestSchema, request);
+    const files = claimUploads(uploadIds, UploadPurpose.TRACK);
+    return toBinary(
+      AddTrackFilesResponseSchema,
+      create(
+        AddTrackFilesResponseSchema,
+        addTrackFilesReply({
+          song,
+          files: files.map((f) => ({ file: f.fileName })),
+        }),
+      ),
+    );
+  },
+  "ConfigService",
+);
+
+// The staged MVR exports, fetched by `GET /downloads/{id}`.
+const downloads = new Map<string, string>();
+
+app.get("/downloads/:id", (req, res) => {
+  const file = downloads.get(req.params.id as string);
+  if (!file) {
+    res.status(404).json({ error: "No such upload (it may have expired)" });
+    return;
+  }
+  res.set("Content-Type", "application/octet-stream");
+  res.set("Content-Disposition", `attachment; filename="${file}"`);
+  res.send(Buffer.from("PK-mock-mvr"));
 });
 
 grpcUnary(
@@ -586,13 +718,24 @@ grpcUnary(
 
 // --- Samples ---
 
-app.put("/api/samples/upload/:filename", (_req, res) => {
-  res.json({
-    status: "uploaded",
-    file: "sample.wav",
-    path: "/samples/sample.wav",
-  } satisfies SampleUploaded);
-});
+grpcUnary(
+  "AddSampleFile",
+  (request) => {
+    const { uploadId } = fromBinary(AddSampleFileRequestSchema, request);
+    const [upload] = claimUploads([uploadId], UploadPurpose.SAMPLE);
+    return toBinary(
+      AddSampleFileResponseSchema,
+      create(
+        AddSampleFileResponseSchema,
+        addSampleFileReply({
+          file: upload.fileName,
+          path: `samples/${upload.fileName}`,
+        }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
 // --- Bluetooth ---
 
@@ -968,9 +1111,10 @@ lightingUnary(LightingService.method.getFixtureTypeGdtfDetails, (req) => {
 
 // One-step import: no mode, no name. The mock answers as if the archive
 // became the mock's "pixelbrick", so the page it opens exists.
-app.post("/api/lighting/gdtf/import", (req, res) => {
-  res.json({
-    type_name: (req.query.name as string) || "pixelbrick",
+lightingUnary(LightingService.method.importGdtf, (req) => {
+  claimUploads([req.uploadId], UploadPurpose.GDTF_IMPORT);
+  return gdtfImportReply({
+    type_name: req.name || "pixelbrick",
     fixture: "PB15 PixelBrick",
     manufacturer: "Astera LED Technology",
     modes: 2,
@@ -983,13 +1127,15 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
 });
 
 // MVR import and export (lighting UI design section 11). Tests that need a
-// different answer route their own with `page.route`.
-app.post("/api/lighting/mvr/inspect", (_req, res) => {
-  res.json(MVR_INSPECTION);
+// different answer use `mockRpc`.
+lightingUnary(LightingService.method.inspectMvr, (req) => {
+  claimUploads([req.uploadId], UploadPurpose.MVR_INSPECT);
+  return mvrInspectionReply(MVR_INSPECTION);
 });
 
-app.post("/api/lighting/mvr/import", (_req, res) => {
-  res.json({
+lightingUnary(LightingService.method.importMvr, (req) => {
+  claimUploads([req.uploadId], UploadPurpose.MVR_IMPORT);
+  return mvrImportReply({
     write: false,
     plan: { ...MVR_INSPECTION.report, origin: [0, 1, 0.5] },
   } satisfies MvrImportAnswer);
@@ -999,11 +1145,14 @@ lightingUnary(LightingService.method.getMvrExportSummary, () =>
   mvrExportSummaryReply(MVR_EXPORT_SUMMARY),
 );
 
-app.get("/api/lighting/mvr/export", (req, res) => {
-  const file = (req.query.file as string) || "kellys.mvr";
-  res.set("Content-Type", "application/octet-stream");
-  res.set("Content-Disposition", `attachment; filename="${file}"`);
-  res.send(Buffer.from("PK-mock-mvr"));
+// An export is staged for download: the path answers the archive as an
+// attachment, any number of times.
+lightingUnary(LightingService.method.exportMvr, (req) => {
+  const file = req.file || "kellys.mvr";
+  uploadCount += 1;
+  const id = `d${uploadCount.toString(16).padStart(31, "0")}`;
+  downloads.set(id, file);
+  return exportMvrReply({ path: `/downloads/${id}`, fileName: file });
 });
 
 // Keeping a copy: the first keep of a name succeeds and a second leaves the

@@ -58,6 +58,17 @@ impl SafePath {
         Ok(SafePath { path: canonical })
     }
 
+    /// What [`SafePath::create_dir`] requires of the directory `name` in
+    /// `parent`, without making it: a single safe segment, and a new name's
+    /// rules unless the directory is there already.
+    pub fn validate_dir_to_create(parent: &Path, name: &str) -> Result<(), SafePathError> {
+        Self::validate_name(name)?;
+        if !parent.join(name).exists() {
+            Self::validate_new_name(name)?;
+        }
+        Ok(())
+    }
+
     /// Creates a single directory under the given root and returns the verified path.
     /// The name must be a single path segment (no slashes). A directory not
     /// there yet takes a new name, so it must pass
@@ -67,10 +78,9 @@ impl SafePath {
         name: &str,
         root: &VerifiedRoot,
     ) -> Result<Self, SafePathError> {
-        Self::validate_name(name)?;
+        Self::validate_dir_to_create(&parent.path, name)?;
         let target = parent.path.join(name);
         if !target.exists() {
-            Self::validate_new_name(name)?;
             crate::util::create_dir_all(&target).map_err(SafePathError::Io)?;
         }
         let canonical = target.canonicalize().map_err(|_| SafePathError::NotFound)?;

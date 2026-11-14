@@ -13,9 +13,15 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { Code } from "@connectrpc/connect";
+import {
+  ConfigService,
+  LightingService,
+  UploadPurpose,
+} from "../../src/gen/player/v1/player_pb";
 import {
   fixtureTypeListReply,
+  gdtfImportReply,
   fixtureTypeSavedReply,
   savedTypeRequest,
   typeEntry,
@@ -433,28 +439,39 @@ test.describe("GDTF Import", () => {
     await page.goto("/#/lighting/fixtures");
   });
 
+  const GDTF_FILE = {
+    name: "pb15.gdtf",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("not read by the mock"),
+  };
+
   test("choosing a file imports it in one step and opens the fixture", async ({
     page,
   }) => {
-    const imports: string[] = [];
+    const rpc = await mockRpc(page);
+    const puts: string[] = [];
     page.on("request", (req) => {
-      if (req.url().includes("/api/lighting/gdtf/")) imports.push(req.url());
+      if (req.method() === "PUT" && req.url().includes("/uploads/")) {
+        puts.push(req.url());
+      }
     });
-    await page.locator('input[type="file"]').setInputFiles({
-      name: "pb15.gdtf",
-      mimeType: "application/octet-stream",
-      buffer: Buffer.from("not read by the mock"),
-    });
+    await page.locator('input[type="file"]').setInputFiles(GDTF_FILE);
     const report = page.getByTestId("gdtf-report");
     await expect(report).toHaveText(
       "Imported PB15 PixelBrick (Astera LED Technology) — 2 modes.",
     );
-    // One request: the import itself, with no mode and no name.
+    // One announcement of the file, its bytes sent once to the path that
+    // answered, and one import, with no name.
+    const begun = rpc.calls(ConfigService.method.beginUpload);
+    expect(begun).toHaveLength(1);
+    expect(begun[0].purpose).toBe(UploadPurpose.GDTF_IMPORT);
+    expect(begun[0].fileName).toBe("pb15.gdtf");
+    expect(begun[0].size).toBe(BigInt(GDTF_FILE.buffer.length));
+    expect(puts).toHaveLength(1);
+    const imports = rpc.calls(LightingService.method.importGdtf);
     expect(imports).toHaveLength(1);
-    const url = new URL(imports[0]);
-    expect(url.pathname).toBe("/api/lighting/gdtf/import");
-    expect(url.searchParams.get("mode")).toBeNull();
-    expect(url.searchParams.get("name")).toBeNull();
+    expect(imports[0].name).toBeUndefined();
+    expect(puts[0]).toContain(`/uploads/${imports[0].uploadId}`);
     // The fixture's page is open.
     await expect(page.getByTestId("ft-title")).toHaveText("pixelbrick");
     await expect(page.getByTestId("ft-details")).toBeVisible();
@@ -477,47 +494,75 @@ test.describe("GDTF Import", () => {
     ],
   ] as const) {
     test(`an import that was ${what} says so`, async ({ page }) => {
-      await page.route("**/api/lighting/gdtf/import*", (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            type_name: "pixelbrick",
-            fixture: "PB15 PixelBrick",
-            manufacturer: "Astera LED Technology",
-            modes: 2,
-            archive: "lighting/library/pb15.gdtf",
-            already_imported: false,
-            renamed_from: null,
-            refused_modes: [],
-            warnings: [],
-            ...answer,
-          }),
+      const rpc = await mockRpc(page);
+      rpc.unary(
+        LightingService.method.importGdtf,
+        gdtfImportReply({
+          type_name: "pixelbrick",
+          fixture: "PB15 PixelBrick",
+          manufacturer: "Astera LED Technology",
+          modes: 2,
+          archive: "lighting/library/pb15.gdtf",
+          already_imported: false,
+          renamed_from: null,
+          refused_modes: [],
+          fixture_file: null,
+          ...answer,
         }),
       );
-      await page.locator('input[type="file"]').setInputFiles({
-        name: "pb15.gdtf",
-        mimeType: "application/octet-stream",
-        buffer: Buffer.from("not read by the mock"),
-      });
+      await page.locator('input[type="file"]').setInputFiles(GDTF_FILE);
       await expect(page.getByTestId("gdtf-report")).toHaveText(said);
       await expect(page.getByTestId("ft-title")).toHaveText("pixelbrick");
     });
   }
 
   test("an unparseable upload surfaces the error", async ({ page }) => {
-    await page.route("**/api/lighting/gdtf/import*", async (route) => {
-      await route.fulfill({
-        status: 400,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Not a parseable GDTF: not a zip" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.error(
+      LightingService.method.importGdtf,
+      Code.InvalidArgument,
+      "Not a parseable GDTF: not a zip",
+    );
     await page.locator('input[type="file"]').setInputFiles({
       name: "junk.gdtf",
       mimeType: "application/octet-stream",
       buffer: Buffer.from("junk"),
     });
     await expect(page.getByTestId("gdtf-error")).toContainText("not a zip");
+  });
+
+  test("a file the server will not take is refused before its bytes are sent", async ({
+    page,
+  }) => {
+    const rpc = await mockRpc(page);
+    rpc.error(
+      ConfigService.method.beginUpload,
+      Code.InvalidArgument,
+      "No file uploaded",
+    );
+    let puts = 0;
+    page.on("request", (req) => {
+      if (req.method() === "PUT" && req.url().includes("/uploads/")) puts += 1;
+    });
+    await page.locator('input[type="file"]').setInputFiles(GDTF_FILE);
+    await expect(page.getByTestId("gdtf-error")).toContainText("No file");
+    expect(puts).toBe(0);
+    expect(rpc.calls(LightingService.method.importGdtf)).toHaveLength(0);
+  });
+
+  test("bytes the server refuses are an error, and nothing is imported", async ({
+    page,
+  }) => {
+    const rpc = await mockRpc(page);
+    await page.route("**/uploads/*", (route) =>
+      route.fulfill({
+        status: 413,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "The body is longer than announced" }),
+      }),
+    );
+    await page.locator('input[type="file"]').setInputFiles(GDTF_FILE);
+    await expect(page.getByTestId("gdtf-error")).toContainText("longer");
+    expect(rpc.calls(LightingService.method.importGdtf)).toHaveLength(0);
   });
 });

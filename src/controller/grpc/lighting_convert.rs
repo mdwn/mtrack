@@ -23,6 +23,7 @@ use crate::lighting::fit::{self, Capability, Depth, Height, Want};
 use crate::lighting::fixture_test::{
     ControlSupport, DegreeRange, DimmerControl, FrameChannel, HzRange,
 };
+use crate::lighting::mvr_types::{BoundsMm, HandEdit, MvrPlan, SceneView};
 use crate::lighting::types::{FixtureType, MovementLimits, StrobeCurve};
 use crate::proto::player::v1 as proto;
 use crate::webui::wire::fixture_test as test_wire;
@@ -1101,6 +1102,179 @@ pub(super) fn mvr_export_summary(
             })
             .collect(),
         warnings: e.warnings.clone(),
+    }
+}
+
+// ---- GDTF and MVR import ----
+
+pub(super) fn gdtf_import(g: &crate::lighting::import::GdtfImport) -> proto::GdtfImport {
+    proto::GdtfImport {
+        type_name: g.type_name.clone(),
+        fixture: g.fixture.clone(),
+        manufacturer: g.manufacturer.clone(),
+        modes: count(g.modes),
+        archive: g.archive.clone(),
+        already_imported: g.already_imported,
+        renamed_from: g.renamed_from.clone(),
+        refused_modes: g
+            .refused_modes
+            .iter()
+            .map(|m| proto::GdtfRefusedMode {
+                mode: m.mode.clone(),
+                reason: m.reason.clone(),
+            })
+            .collect(),
+        fixture_file: g.fixture_file.clone(),
+    }
+}
+
+fn hand_edits(edits: &[HandEdit]) -> Vec<proto::MvrHandEdit> {
+    edits
+        .iter()
+        .map(|e| proto::MvrHandEdit {
+            field: e.field.clone(),
+            mine: e.mine.clone(),
+            mvr: e.mvr.clone(),
+        })
+        .collect()
+}
+
+fn mvr_plan(p: &MvrPlan) -> proto::MvrPlan {
+    proto::MvrPlan {
+        venue_name: p.venue_name.clone(),
+        venue_file: p.venue_file.clone(),
+        archive: p.archive.clone(),
+        merge: p.merge,
+        origin: Some(vec3(p.origin)),
+        fixture_types: p
+            .fixture_types
+            .iter()
+            .map(|t| proto::MvrPlannedType {
+                name: t.name.clone(),
+                archive: t.archive.clone(),
+                modes: t.modes.clone(),
+                existing: t.existing,
+                fixture_file: t.fixture_file.clone(),
+            })
+            .collect(),
+        fixtures: p
+            .fixtures
+            .iter()
+            .map(|f| proto::MvrPlannedFixture {
+                name: f.name.clone(),
+                layer: f.layer.clone(),
+                fixture_type: f.fixture_type.clone(),
+                mode: f.mode.clone(),
+                patch: f.patch.map(|(universe, address)| proto::MvrPatch {
+                    universe: u32::from(universe),
+                    address: u32::from(address),
+                }),
+                position: f.position.map(vec3),
+                rotation: f.rotation.map(vec3),
+                tags: f.tags.clone(),
+                todo: f.todo.clone(),
+                change: f.change.clone(),
+                overwrites: hand_edits(&f.overwrites),
+                kept_edits: f.kept_edits.clone(),
+            })
+            .collect(),
+        removed_fixtures: p
+            .removed_fixtures
+            .iter()
+            .map(|f| proto::MvrRemovedFixture {
+                name: f.name.clone(),
+                tags: f.tags.clone(),
+            })
+            .collect(),
+        kept_fixtures: p.kept_fixtures.clone(),
+        focus_points: p
+            .focus_points
+            .iter()
+            .map(|f| proto::MvrPlannedFocusPoint {
+                name: f.name.clone(),
+                point: Some(vec3(f.point)),
+                change: f.change.clone(),
+                overwrites: hand_edits(&f.overwrites),
+                kept_edit: f.kept_edit,
+            })
+            .collect(),
+        removed_focus_points: p.removed_focus_points.clone(),
+        kept_focus_points: p.kept_focus_points.clone(),
+        scenery_objects: count(p.scenery_objects),
+        scenery_meshes_undrawn: count(p.scenery_meshes_undrawn),
+        warnings: p.warnings.clone(),
+    }
+}
+
+fn bounds(b: &BoundsMm) -> proto::MvrBounds {
+    proto::MvrBounds {
+        min: Some(vec3(b.min)),
+        max: Some(vec3(b.max)),
+    }
+}
+
+fn mvr_scene(s: &SceneView) -> proto::MvrScene {
+    proto::MvrScene {
+        fixtures: s
+            .fixtures
+            .iter()
+            .map(|f| proto::MvrSceneFixture {
+                name: f.name.clone(),
+                layer: f.layer.clone(),
+                position_mm: f.position_mm.map(vec3),
+            })
+            .collect(),
+        focus_points: s
+            .focus_points
+            .iter()
+            .map(|f| proto::MvrSceneFocusPoint {
+                name: f.name.clone(),
+                position_mm: f.position_mm.map(vec3),
+            })
+            .collect(),
+        scenery: s
+            .scenery
+            .iter()
+            .map(|o| proto::MvrScenery {
+                name: o.name.clone(),
+                kind: o.kind.clone(),
+                deck: o.deck,
+                bounds_mm: o.bounds_mm.as_ref().map(bounds),
+            })
+            .collect(),
+        deck: s.deck_mm.as_ref().map(bounds),
+    }
+}
+
+pub(super) fn mvr_inspection(i: &crate::webui::wire::mvr::MvrInspection) -> proto::MvrInspection {
+    proto::MvrInspection {
+        file_name: i.file_name.clone(),
+        report: Some(mvr_plan(&i.report)),
+        scene: Some(mvr_scene(&i.scene)),
+    }
+}
+
+pub(super) fn mvr_import_answer(
+    a: &crate::webui::wire::mvr::MvrImportAnswer,
+) -> proto::ImportMvrResponse {
+    proto::ImportMvrResponse {
+        write: a.write,
+        plan: a.plan.as_ref().map(mvr_plan),
+        report: a.report.as_ref().map(|r| proto::MvrImportReport {
+            plan: Some(mvr_plan(&r.plan)),
+            written: r.written.clone(),
+            distillation_warnings: r
+                .distillation_warnings
+                .iter()
+                .map(|(k, v)| (k.clone(), proto::MvrStrings { values: v.clone() }))
+                .collect(),
+        }),
+        reloaded: a.reloaded,
+        venue_error: a
+            .venue_error
+            .as_ref()
+            .and_then(|e| e.as_ref())
+            .map(venue_error),
     }
 }
 

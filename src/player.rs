@@ -356,6 +356,9 @@ pub struct Player {
     /// cache. The player owns them so every server it has reaches the same
     /// ones.
     watch_hub: crate::webui::hub::WatchHub,
+    /// The uploads announced and the downloads staged, whose bytes the web
+    /// server carries and the gRPC services hand out and use.
+    transfers: crate::webui::transfers::Transfers,
     /// Watch channel to signal hardware init completion.
     init_done_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// State sampler watch sender. Shared so async init can start the sampler
@@ -737,6 +740,7 @@ impl Player {
             deferred_reloads: Arc::default(),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(Some(watch_hub.sender()))),
             watch_hub,
+            transfers: crate::webui::transfers::Transfers::new(),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
             stage_layout_tx: Arc::new(tokio::sync::watch::channel(0).0),
@@ -925,6 +929,12 @@ impl Player {
     /// The feeds the gRPC `Watch` stream reads, with the waveform cache.
     pub fn watch_hub(&self) -> &crate::webui::hub::WatchHub {
         &self.watch_hub
+    }
+
+    /// The registry of uploads and staged downloads, for the gRPC services
+    /// that announce and use them and the web server that carries the bytes.
+    pub fn transfers(&self) -> &crate::webui::transfers::Transfers {
+        &self.transfers
     }
 
     /// Stores the state sampler watch sender. When the DMX engine comes up

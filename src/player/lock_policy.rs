@@ -174,9 +174,15 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GetVenuePatch"),
     (Grpc, "GetVenueScene"),
     (Grpc, "GetMvrExportSummary"),
-    // Web: the pure read that happens to be a POST (the MVR inspector, which
-    // writes nothing).
-    (Web, "POST /lighting/mvr/inspect"),
+    // The file bytes. InspectMvr is the MVR inspector, a pure read that was
+    // a POST. ExportMvr stages a download and writes nothing to the project,
+    // as the GET it replaced. BeginUpload is open here, and refuses every
+    // purpose but MVR_INSPECT itself while locked (the purpose is in the
+    // request, not in the RPC's name): the claiming calls (AddTrackFiles,
+    // AddSampleFile, ImportGdtf, ImportMvr) stay locked out.
+    (Grpc, "BeginUpload"),
+    (Grpc, "InspectMvr"),
+    (Grpc, "ExportMvr"),
 ];
 
 /// Whether `operation`, as `surface` names it, stays open while the player
@@ -215,8 +221,10 @@ mod tests {
     #[test]
     fn web_gets_are_open_and_other_methods_are_listed() {
         assert!(open_while_locked(Web, "GET /lighting/assets/{*path}"));
-        assert!(open_while_locked(Web, "POST /lighting/mvr/inspect"));
+        // The routes that moved to the gRPC services are no longer listed.
+        assert!(!open_while_locked(Web, "POST /lighting/mvr/inspect"));
         assert!(!open_while_locked(Web, "POST /lighting/mvr/import"));
+        assert!(!open_while_locked(Web, "PUT /uploads/{upload_id}"));
         // The routes that moved to LightingService are no longer listed.
         assert!(!open_while_locked(Web, "POST /lighting/mvr/export/keep"));
         assert!(!open_while_locked(Web, "PUT /lighting/venues/{name}"));
@@ -285,6 +293,9 @@ mod tests {
             "GetVenuePatch",
             "GetVenueScene",
             "GetMvrExportSummary",
+            "BeginUpload",
+            "InspectMvr",
+            "ExportMvr",
         ] {
             assert!(open_while_locked(Grpc, open), "{open}");
         }
@@ -299,6 +310,10 @@ mod tests {
             "DeleteVenue",
             "AddVenueAimPoints",
             "KeepMvrExport",
+            "AddTrackFiles",
+            "AddSampleFile",
+            "ImportGdtf",
+            "ImportMvr",
         ] {
             assert!(!open_while_locked(Grpc, locked), "{locked}");
         }

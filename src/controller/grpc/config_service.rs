@@ -495,6 +495,38 @@ impl ConfigService for ConfigServer {
             .map(Response::new)
     }
 
+    async fn begin_upload(
+        &self,
+        request: Request<proto::BeginUploadRequest>,
+    ) -> Result<Response<proto::BeginUploadResponse>, Status> {
+        let store = self.player.config_store();
+        super::config_uploads::begin(
+            &self.player,
+            store.as_ref().map(|store| store.path()),
+            request.into_inner(),
+        )
+        .map(Response::new)
+    }
+
+    async fn add_track_files(
+        &self,
+        request: Request<proto::AddTrackFilesRequest>,
+    ) -> Result<Response<proto::AddTrackFilesResponse>, Status> {
+        super::config_uploads::add_tracks(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn add_sample_file(
+        &self,
+        request: Request<proto::AddSampleFileRequest>,
+    ) -> Result<Response<proto::AddSampleFileResponse>, Status> {
+        let store = self.store()?;
+        super::config_uploads::add_sample(&self.player, store.path(), request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
     async fn get_bluetooth(
         &self,
         _: Request<proto::GetBluetoothRequest>,

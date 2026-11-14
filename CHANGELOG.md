@@ -15,11 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StartCalibration`, `CaptureCalibration`, `StopCalibration`, `CancelCalibration`,
   `RestartControllers`, `GetSongConfig`, `CreateSong`, `SaveSongConfig`, `DeleteSong`,
   `GetSongWaveform`, `GuessSongTempo`, `ListSongFiles`, `ImportSongFile`, `BrowseDirectory`,
-  `CreateSongInDirectory`, `BulkImportSongs`, `GetBluetooth`, `SetBluetoothPairing` and
-  `ForgetBluetoothDevice` (`player.v1.ConfigService`, in `player.proto`;
+  `CreateSongInDirectory`, `BulkImportSongs`, `GetBluetooth`, `SetBluetoothPairing`,
+  `ForgetBluetoothDevice`, and the three that take a file: `BeginUpload`, `AddTrackFiles` and
+  `AddSampleFile` (`player.v1.ConfigService`, in `player.proto`;
   the rest of the config editor's calls follow it in later releases). It is served on the gRPC
   port and by the web UI's gRPC-Web, behind the same lock as `PlayerService` (the writes, the
-  audio probe, the calibration calls and the song writes and imports are refused while locked;
+  audio probe, the calibration calls, the song writes and imports and the file uploads, but for an
+  MVR inspection, are refused while locked;
   the reads, the device lists, the song reads, the Bluetooth status and the controller restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
@@ -31,12 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture's modes, the venue fixtures using it and the paths of its rig model and thumbnail; not
   the archive), `GetFixtureTypeSettings` and `SaveFixtureTypeSettings`, and the venues:
   `ListVenues`, `GetVenue`, `SaveVenue`, `DeleteVenue`, `GetVenuePatch`, `GetVenueScene`,
-  `AddVenueAimPoints`, `GetMvrExportSummary` and `KeepMvrExport` (`player.v1.LightingService`, in
-  `player.proto`; the MVR import and download and the GDTF import follow in a later release). It is
+  `AddVenueAimPoints`, `GetMvrExportSummary` and `KeepMvrExport`, and the GDTF and MVR files:
+  `ImportGdtf`, `InspectMvr`, `ImportMvr` and `ExportMvr` (`player.v1.LightingService`, in
+  `player.proto`). It is
   served on the gRPC port and by the web UI's gRPC-Web, behind the same lock as the other services
   (saving and deleting a light show, a fixture type or a venue, saving or planning a fixture's
-  settings, adding aim points, keeping an MVR export and starting a fixture test are refused while
-  locked; the reads, the validation, the evaluation and the release of a test are open), listed in
+  settings, adding aim points, keeping an MVR export, importing a GDTF or an MVR and starting a
+  fixture test are refused while
+  locked; the reads, the validation, the evaluation, the release of a test, the MVR inspection
+  and the MVR export's staging are open), listed in
   reflection and reported by the health service. It is not reachable over Bluetooth. The
   answers are typed messages, not JSON strings: the Lighting overview's readiness checks and the Fit
   shows page's report are messages a client can read field by field. Validation answers normally
@@ -212,8 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reason`), `StopFixtureTest` and `GetFixtureTestOptions`, over gRPC or gRPC-Web; for example
   `grpcurl -plaintext -d '{"name":"my_song/lighting/show.light"}' host:43234
   player.v1.LightingService/GetLightShow`. A locked player is `FAILED_PRECONDITION` where it was
-  HTTP 423. The routes for MVR files, GDTF import and the lighting assets are unchanged.
-  See [gRPC](docs/src/interfaces/grpc.md).
+  HTTP 423. See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: the web API's routes for fixture types and their settings**: `GET`, `PUT` and
   `DELETE /api/lighting/fixture-types/<name>`, `GET /api/lighting/fixture-types`,
   `GET /api/lighting/fixture-types/<name>/gdtf` and `GET` and
@@ -253,8 +257,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures is a venue with none, where a body without `fixtures` was refused. The listing answers
   empty `errors` and `revisions` for a directory that is not there, where the route left them out.
   For example `grpcurl -plaintext -d '{"name":"house"}' host:43234
-  player.v1.LightingService/GetVenue`. The MVR inspector, import and download, and the GDTF
-  import, are unchanged.
+  player.v1.LightingService/GetVenue`.
+- **Breaking: the web API's routes that carried file bytes**: `PUT /api/songs/<name>/tracks/<file>`
+  and `POST /api/songs/<name>/tracks` (multipart), `PUT /api/samples/upload/<file>`,
+  `POST /api/lighting/gdtf/import`, `POST /api/lighting/mvr/inspect`,
+  `POST /api/lighting/mvr/import` and `GET /api/lighting/mvr/export` are gone, with the multipart
+  forms. Calls are gRPC and bytes are HTTP: a file is announced with `ConfigService.BeginUpload`
+  (its `purpose` `TRACK` of a `song`, `SAMPLE`, `GDTF_IMPORT`, `MVR_INSPECT` or `MVR_IMPORT`, its
+  `file_name`, and its `size`, which is required), which answers an `upload_id` and a `path`;
+  the bytes are the body of `PUT <path>` on the web server (the web port, not the gRPC port, serves
+  it); and the call that uses the file names the upload: `AddTrackFiles` (replaces both track
+  routes; it answers `replaced` for each file, where the single route's `status` said `replaced`
+  and the multipart route's did not), `AddSampleFile`, `LightingService.ImportGdtf` (the old
+  `?name=` is `name`), `InspectMvr` and `ImportMvr` (the old form fields are `options`: `name`,
+  `origin_mm`, `venues_dir`, `fixture_types_dir` and `keep`, and `write` is a field of the
+  request). The answers are typed messages with the routes' fields; a sample's no longer says
+  `status: "uploaded"`. An MVR export is `ExportMvr`, which stages the archive and answers a
+  `path` (`/downloads/<id>`) to `GET` from the web port, as often as needed for ten minutes. For
+  example:
+
+  ```
+  $ grpcurl -plaintext -d '{"purpose":"UPLOAD_PURPOSE_SAMPLE","file_name":"kick.wav","size":441044}' \
+      host:43234 player.v1.ConfigService/BeginUpload
+  { "uploadId": "9f0c…", "path": "/uploads/9f0c…" }
+  $ curl -sf -T kick.wav http://host:8080/uploads/9f0c…
+  $ grpcurl -plaintext -d '{"upload_id":"9f0c…"}' host:43234 player.v1.ConfigService/AddSampleFile
+  { "file": "kick.wav", "path": "samples/kick.wav" }
+  ```
+
+  The name and song are checked by the same rules as before, when the upload is announced and
+  again when it is used. An upload nobody uses is dropped ten minutes after its last byte (ten after
+  `BeginUpload` if none was sent), at most 32 uploads and staged downloads are pending, a GDTF or
+  an MVR may declare at most 272 MiB, a body longer than announced is refused (413) and one
+  shorter is refused by the call that uses it. `BeginUpload` is refused while the player is locked
+  (`FAILED_PRECONDITION`, as HTTP 423 was) for every purpose but `MVR_INSPECT`, and so are the
+  calls that use an upload, but `InspectMvr`; `ExportMvr` is open, as the `GET` was. The lighting
+  assets (`GET /api/lighting/assets/...`) are unchanged. See [gRPC](docs/src/interfaces/grpc.md#files).
 - **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
   `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and

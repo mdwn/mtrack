@@ -90,6 +90,13 @@ export default defineConfig({
       "/player.v1.LightingService": {
         target: proxyTarget,
       },
+      // File bytes: `PUT /uploads/{id}` and `GET /downloads/{id}`.
+      "/uploads": {
+        target: proxyTarget,
+      },
+      "/downloads": {
+        target: proxyTarget,
+      },
     },
   },
 });

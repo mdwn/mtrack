@@ -2014,6 +2014,41 @@ service ConfigService {
     // this player; FAILED_PRECONDITION when Bluetooth is not running;
     // UNAVAILABLE when the radio stack refuses. Refused while locked.
     rpc ForgetBluetoothDevice(ForgetBluetoothDeviceRequest) returns (BluetoothStatus);
+
+    // BeginUpload announces a file the web server is about to be sent: a
+    // track of a song, a sample, a GDTF or an MVR. It answers an upload id
+    // and `path`, a path on the WEB server (the gRPC port does not serve
+    // it): the bytes are sent as the body of `PUT <path>`, exactly `size` of
+    // them, once; the id is then used once, by the call that takes that
+    // purpose (AddTrackFiles, AddSampleFile, ImportGdtf, InspectMvr,
+    // ImportMvr). The name is checked here by the same rules the claiming
+    // call holds it to (and the claim checks it again), and `size` is
+    // required. A TRACK names its `song`. A GDTF or an MVR may declare at
+    // most 272 MiB, and an MVR's name must end in `.mvr`; for them the name
+    // is the final component of what is sent. INVALID_ARGUMENT for a purpose,
+    // name, song or size that is not valid; RESOURCE_EXHAUSTED when 32
+    // uploads and staged downloads are pending. An upload not yet sent is
+    // dropped 10 minutes after this call, a received one nobody claimed 10
+    // minutes after its last byte. Refused while locked for every purpose
+    // but MVR_INSPECT (a pure read), with the lock's FAILED_PRECONDITION.
+    rpc BeginUpload(BeginUploadRequest) returns (BeginUploadResponse);
+
+    // AddTrackFiles adds the uploaded files (purpose TRACK, begun for this
+    // song) to a song, which is made, with its config, when it is new, then
+    // reloads the songs. Each file is named as BeginUpload announced it and
+    // checked again. A file already in the song is replaced. An upload that
+    // is not known (or has expired) is NOT_FOUND; one sent for another
+    // purpose or song, not sent whole or not as long as announced is
+    // FAILED_PRECONDITION. The uploads are spent whatever the outcome.
+    // INVALID_ARGUMENT for no uploads, or a name or file type that is not
+    // valid. Refused while locked.
+    rpc AddTrackFiles(AddTrackFilesRequest) returns (AddTrackFilesResponse);
+
+    // AddSampleFile stores the uploaded file (purpose SAMPLE) as a sample in
+    // the project's `samples/` directory, made if need be, and answers the
+    // path a sample definition names it by. Errors as AddTrackFiles'.
+    // Refused while locked.
+    rpc AddSampleFile(AddSampleFileRequest) returns (AddSampleFileResponse);
 }
 
 message ListAudioDevicesRequest {}
@@ -2755,6 +2790,49 @@ service LightingService {
     // An existing file is left alone, and the answer names it in `existing`,
     // unless `overwrite` is set. Refused while locked.
     rpc KeepMvrExport(KeepMvrExportRequest) returns (KeepMvrExportResponse);
+
+    // ImportGdtf imports the uploaded GDTF (purpose GDTF_IMPORT) through the
+    // importer behind the CLI and MCP: a copy into `lighting/library/`,
+    // where it is a fixture, and a warmed rig for its page. One step: a venue
+    // fixture can use any of its modes straight away. `name`, when given,
+    // pins the fixture's name in a record. The answer says what the user has
+    // (`already_imported` when the same archive was imported before and
+    // nothing was written; `renamed_from` when the archive's fixture name
+    // was taken). FAILED_PRECONDITION for a different archive of a file name
+    // already in the library, or a record name or file that is taken (the
+    // `x-import-kind` metadata says which); INVALID_ARGUMENT for anything
+    // else refused. Errors of an unknown or wrong upload as AddTrackFiles'.
+    // The upload is spent whatever the outcome. Refused while locked.
+    rpc ImportGdtf(ImportGdtfRequest) returns (GdtfImport);
+
+    // InspectMvr reads the uploaded MVR (purpose MVR_INSPECT): what an
+    // import would do, and the file seen from above. It writes nothing.
+    // INVALID_ARGUMENT for a file the importer refuses, with the parser's
+    // reason; FAILED_PRECONDITION for a venue name (or an embedded GDTF's
+    // record) the one rule for lighting files refuses, the
+    // `x-import-kind` metadata saying `venue`, `record` and so on; the
+    // directory refusals of ListVenues. Open while locked.
+    rpc InspectMvr(InspectMvrRequest) returns (MvrInspection);
+
+    // ImportMvr imports the uploaded MVR (purpose MVR_IMPORT). With `write`
+    // false it only plans, as InspectMvr's report does and writes nothing;
+    // with `write` true it performs the import: the archive and its embedded
+    // GDTFs into `lighting/library/`, a record per referenced type, and a
+    // seeded (or merged) venue, and says whether the running engine re-read
+    // the venue it is playing. Importing never makes the venue current.
+    // Errors as InspectMvr's. Refused while locked.
+    rpc ImportMvr(ImportMvrRequest) returns (ImportMvrResponse);
+
+    // ExportMvr builds the MVR archive of a venue and stages it for download:
+    // the answer's `path` is a path on the WEB server (the gRPC port does not
+    // serve it), where `GET <path>` answers the archive as an attachment
+    // named `file_name`, any number of times, until 10 minutes after this
+    // call. Nothing is written to the project (KeepMvrExport does that). A
+    // staged download counts toward the 32 uploads and downloads allowed at
+    // once (RESOURCE_EXHAUSTED beyond). INVALID_ARGUMENT, with the reason,
+    // when the export cannot be made; the directory refusals of ListVenues.
+    // Open while locked.
+    rpc ExportMvr(ExportMvrRequest) returns (ExportMvrResponse);
 }
 
 // ---- Light show files ----
@@ -4137,4 +4215,318 @@ message KeepMvrExportResponse {
         // `overwrite` was not set.
         string existing = 2;
     }
+}
+
+// ---- Uploads ----
+
+// UploadPurpose is what an upload is for. An upload is good for its purpose
+// alone.
+enum UploadPurpose {
+    UPLOAD_PURPOSE_UNSPECIFIED = 0;
+    // A track (audio, MIDI or light show file) of a song.
+    UPLOAD_PURPOSE_TRACK = 1;
+    // A sample.
+    UPLOAD_PURPOSE_SAMPLE = 2;
+    // A GDTF to import.
+    UPLOAD_PURPOSE_GDTF_IMPORT = 3;
+    // An MVR to inspect.
+    UPLOAD_PURPOSE_MVR_INSPECT = 4;
+    // An MVR to import.
+    UPLOAD_PURPOSE_MVR_IMPORT = 5;
+}
+
+message BeginUploadRequest {
+    UploadPurpose purpose = 1;
+    // The file's name.
+    string file_name = 2;
+    // How many bytes will be sent. Required.
+    optional uint64 size = 3;
+    // The song a TRACK is for (a new song's name is made).
+    optional string song = 4;
+}
+
+message BeginUploadResponse {
+    // 128 random bits, hex.
+    string upload_id = 1;
+    // `/uploads/<upload_id>`, on the web server.
+    string path = 2;
+}
+
+message AddTrackFilesRequest {
+    // The song, as BeginUpload was given it.
+    string song = 1;
+    repeated string upload_ids = 2;
+}
+
+message AddTrackFilesResponse {
+    // The name the song has: a new one's may not be the one asked for, when
+    // that is taken.
+    string song = 1;
+    repeated TrackFileAdded files = 2;
+}
+
+message TrackFileAdded {
+    // The file's name in the song.
+    string file = 1;
+    // A file of that name was there, and was replaced.
+    bool replaced = 2;
+}
+
+message AddSampleFileRequest {
+    string upload_id = 1;
+}
+
+message AddSampleFileResponse {
+    // The file's name.
+    string file = 1;
+    // Relative to the project, as a sample definition names it.
+    string path = 2;
+}
+
+// ---- GDTF and MVR import and export ----
+
+message ImportGdtfRequest {
+    string upload_id = 1;
+    // A name for the fixture; given, a record pins it.
+    optional string name = 2;
+}
+
+// GdtfImport is what a GDTF import did, in the user's terms.
+message GdtfImport {
+    // The fixture type's name: what venues and shows call it.
+    string type_name = 1;
+    // The archive's own fixture name.
+    string fixture = 2;
+    string manufacturer = 3;
+    // How many modes the archive has.
+    uint32 modes = 4;
+    // Where the archive is, project-relative.
+    string archive = 5;
+    // The archive was already in the project as `type_name`: nothing was
+    // written.
+    bool already_imported = 6;
+    // The name the archive's fixture name would have given, when another
+    // fixture already has it and the archive's file stem was added.
+    optional string renamed_from = 7;
+    // Modes mtrack cannot drive, and why.
+    repeated GdtfRefusedMode refused_modes = 8;
+    // mtrack's record of the type, project-relative, when one was written.
+    optional string fixture_file = 9;
+}
+
+message GdtfRefusedMode {
+    string mode = 1;
+    string reason = 2;
+}
+
+// MvrOptions are the choices an MVR inspection or import takes. A text left
+// blank is not given.
+message MvrOptions {
+    // The venue's name; the archive's file stem when unset.
+    optional string name = 1;
+    // The MVR-space point, in millimeters, that becomes the stage origin.
+    // Unset keeps a merged venue's recorded origin, and is (0, 0, 0) for a
+    // fresh seed. Every number must be finite.
+    optional LightingVec3 origin_mm = 2;
+    optional string venues_dir = 3;
+    optional string fixture_types_dir = 4;
+    // The hand edits a merge keeps rather than overwrites.
+    optional MvrKeep keep = 5;
+}
+
+message MvrKeep {
+    // Fixture name to the fields to keep: `position`, `rotation`, `patch`,
+    // `mode`, `type`.
+    map<string, MvrKeepFields> fixtures = 1;
+    // Focus points whose position to keep.
+    repeated string focus_points = 2;
+}
+
+message MvrKeepFields {
+    repeated string fields = 1;
+}
+
+message InspectMvrRequest {
+    string upload_id = 1;
+    optional MvrOptions options = 2;
+}
+
+message ImportMvrRequest {
+    string upload_id = 1;
+    // False plans and writes nothing.
+    bool write = 2;
+    optional MvrOptions options = 3;
+}
+
+// MvrInspection is what an import would do, and the file seen from above.
+message MvrInspection {
+    // The name the archive is kept under.
+    string file_name = 1;
+    MvrPlan report = 2;
+    MvrScene scene = 3;
+}
+
+// MvrPlan is everything an import would do, resolved but not written.
+message MvrPlan {
+    string venue_name = 1;
+    // The venue file, project-relative.
+    string venue_file = 2;
+    // Where the MVR lands, project-relative.
+    string archive = 3;
+    // An MVR-seeded venue of this name exists and is being merged.
+    bool merge = 4;
+    // The stage origin in MVR space, meters.
+    LightingVec3 origin = 5;
+    repeated MvrPlannedType fixture_types = 6;
+    repeated MvrPlannedFixture fixtures = 7;
+    // Fixtures the venue removed since the last import.
+    repeated MvrRemovedFixture removed_fixtures = 8;
+    // Fixtures of the existing venue the MVR never knew about.
+    repeated string kept_fixtures = 9;
+    repeated MvrPlannedFocusPoint focus_points = 10;
+    repeated string removed_focus_points = 11;
+    repeated string kept_focus_points = 12;
+    uint32 scenery_objects = 13;
+    // Scenery meshes in formats the 3D view does not draw.
+    uint32 scenery_meshes_undrawn = 14;
+    // What was skipped, approximated or guessed.
+    repeated string warnings = 15;
+}
+
+message MvrPlannedType {
+    string name = 1;
+    // The GDTF archive, project-relative.
+    string archive = 2;
+    repeated string modes = 3;
+    // The archive is already in the library.
+    bool existing = 4;
+    optional string fixture_file = 5;
+}
+
+message MvrPatch {
+    uint32 universe = 1;
+    uint32 address = 2;
+}
+
+message MvrHandEdit {
+    // `position`, `rotation`, `patch`, `mode` or `type`.
+    string field = 1;
+    // The venue file's value, as the file spells it.
+    string mine = 2;
+    // The MVR's value.
+    string mvr = 3;
+}
+
+message MvrPlannedFixture {
+    string name = 1;
+    // The MVR layer it sits on.
+    string layer = 2;
+    // Unset when the fixture is a TODO.
+    optional string fixture_type = 3;
+    optional string mode = 4;
+    optional MvrPatch patch = 5;
+    // Stage position, meters.
+    optional LightingVec3 position = 6;
+    // Mounting rotation, degrees.
+    optional LightingVec3 rotation = 7;
+    repeated string tags = 8;
+    // Why the fixture could not be resolved, when it could not.
+    optional string todo = 9;
+    // On a merge, what changed against the existing venue.
+    optional string change = 10;
+    repeated MvrHandEdit overwrites = 11;
+    repeated string kept_edits = 12;
+}
+
+message MvrRemovedFixture {
+    string name = 1;
+    repeated string tags = 2;
+}
+
+message MvrPlannedFocusPoint {
+    string name = 1;
+    // Stage position, meters.
+    LightingVec3 point = 2;
+    optional string change = 3;
+    repeated MvrHandEdit overwrites = 4;
+    bool kept_edit = 5;
+}
+
+// MvrScene is the file seen from above, in the file's millimeters.
+message MvrScene {
+    repeated MvrSceneFixture fixtures = 1;
+    repeated MvrSceneFocusPoint focus_points = 2;
+    repeated MvrScenery scenery = 3;
+    // The stage floor's bounds, when the scenery carries one.
+    optional MvrBounds deck = 4;
+}
+
+message MvrSceneFixture {
+    string name = 1;
+    string layer = 2;
+    optional LightingVec3 position_mm = 3;
+}
+
+message MvrSceneFocusPoint {
+    string name = 1;
+    optional LightingVec3 position_mm = 2;
+}
+
+message MvrScenery {
+    string name = 1;
+    string kind = 2;
+    // Recognised as (part of) the stage floor.
+    bool deck = 3;
+    optional MvrBounds bounds_mm = 4;
+}
+
+message MvrBounds {
+    LightingVec3 min = 1;
+    LightingVec3 max = 2;
+}
+
+// ImportMvrResponse is the plan (`write` false) or what the import did
+// (`write` true).
+message ImportMvrResponse {
+    bool write = 1;
+    optional MvrPlan plan = 2;
+    optional MvrImportReport report = 3;
+    // After a write: the running engine re-read the venue.
+    optional bool reloaded = 4;
+    // After a write: the current venue no longer loads, and why.
+    optional LightingVenueError venue_error = 5;
+}
+
+message MvrImportReport {
+    // The plan that was carried out.
+    MvrPlan plan = 1;
+    // Every file written, project-relative.
+    repeated string written = 2;
+    // GDTF distillation warnings per fixture type, for the modes the venue
+    // uses ("mode: warning").
+    map<string, MvrStrings> distillation_warnings = 3;
+}
+
+message MvrStrings {
+    repeated string values = 1;
+}
+
+message ExportMvrRequest {
+    string venue = 1;
+    // One layer per first tag.
+    bool layers_from_tags = 2;
+    // The archive's file name (bare, `.mvr`); `<venue>.mvr` when unset or
+    // blank.
+    optional string file = 3;
+    optional string venues_dir = 4;
+    optional string fixture_types_dir = 5;
+}
+
+message ExportMvrResponse {
+    // `/downloads/<id>`, on the web server.
+    string path = 1;
+    // The name the download carries.
+    string file_name = 2;
+    // The archive's length in bytes.
+    uint64 size = 3;
 }

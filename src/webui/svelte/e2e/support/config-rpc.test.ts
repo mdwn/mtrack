@@ -17,6 +17,9 @@
 import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import {
+  AddSampleFileResponseSchema,
+  AddTrackFilesResponseSchema,
+  BeginUploadResponseSchema,
   BrowseDirectoryResponseSchema,
   BulkImportSongsResponseSchema,
   GetConfigResponseSchema,
@@ -38,6 +41,10 @@ import {
 } from "../../src/lib/grpc/songs";
 import { mapWaveform } from "../../src/lib/grpc/watch";
 import {
+  mapSampleUploaded,
+  mapTrackUploaded,
+} from "../../src/lib/grpc/uploads";
+import {
   mapConfigSaved,
   mapConfigStore,
   mapFileSaved,
@@ -45,6 +52,9 @@ import {
   mapProfileFiles,
 } from "../../src/lib/grpc/config";
 import {
+  addSampleFileReply,
+  addTrackFilesReply,
+  beginUploadReply,
   browseReply,
   bulkImportReply,
   getConfigReply,
@@ -267,5 +277,42 @@ describe("answers made from the profile files' own shapes", () => {
         create(GetSongConfigResponseSchema, getSongConfigReply("y")),
       ),
     ).toBe("y");
+  });
+});
+
+describe("the uploads' answers", () => {
+  it("an announced upload carries its id and the path of its bytes", () => {
+    const begun = create(BeginUploadResponseSchema, beginUploadReply("abc123"));
+    expect([begun.uploadId, begun.path]).toEqual(["abc123", "/uploads/abc123"]);
+  });
+
+  it("track files added read back through the page's mapping", () => {
+    expect(
+      mapTrackUploaded(
+        create(
+          AddTrackFilesResponseSchema,
+          addTrackFilesReply({
+            song: "Song",
+            files: [{ file: "kick.wav", replaced: true }],
+          }),
+        ),
+      ),
+    ).toEqual({
+      status: "replaced",
+      replaced: true,
+      song: "Song",
+      file: "kick.wav",
+    });
+  });
+
+  it("a stored sample reads back through the page's mapping", () => {
+    expect(
+      mapSampleUploaded(
+        create(
+          AddSampleFileResponseSchema,
+          addSampleFileReply({ file: "k.wav", path: "samples/k.wav" }),
+        ),
+      ),
+    ).toEqual({ status: "uploaded", file: "k.wav", path: "samples/k.wav" });
   });
 });

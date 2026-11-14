@@ -33,6 +33,7 @@ import {
   SaveFixtureTypeRequestSchema,
   SaveFixtureTypeResponseSchema,
   AddVenueAimPointsResponseSchema,
+  ExportMvrResponseSchema,
   KeepMvrExportResponseSchema,
   ListVenuesResponseSchema,
   MvrExportSummarySchema,
@@ -83,6 +84,7 @@ import type {
 import { FIT, READINESS } from "../mock-server/test-data";
 import {
   aimPointsReply,
+  exportMvrReply,
   fitReply,
   fixtureSettingsReply,
   fixtureTypeDeletedReply,
@@ -91,6 +93,7 @@ import {
   fixtureTypeListReply,
   fixtureTypeSavedReply,
   groupsReply,
+  importKind,
   keptReply,
   mvrExportSummaryReply,
   savedSettingsRequest,
@@ -1045,5 +1048,23 @@ describe("the venue answers made from the page's own shapes", () => {
       version: "r1",
       text: null,
     });
+  });
+});
+
+describe("the MVR export's staged download and the import's refusals", () => {
+  it("a staged export reads back with its path, name and size", () => {
+    const staged = create(
+      ExportMvrResponseSchema,
+      exportMvrReply({ path: "/downloads/abc", fileName: "tour.mvr", size: 7 }),
+    );
+    expect([staged.path, staged.fileName, staged.size]).toEqual([
+      "/downloads/abc",
+      "tour.mvr",
+      7n,
+    ]);
+  });
+
+  it("names the kind of an import's refusal in the metadata the page reads", () => {
+    expect(new Headers(importKind("venue")).get("x-import-kind")).toBe("venue");
   });
 });

@@ -52,12 +52,8 @@
     uploading = true;
     uploadMsg = "";
     try {
-      const res = await uploadTrack(songName, dropped[0]);
-      if (!res.ok) {
-        throw new Error(`Upload failed (${res.status})`);
-      }
-      const data = await res.json();
-      onchange((data.file as string) ?? dropped[0].name);
+      const data = await uploadTrack(songName, dropped[0]);
+      onchange(data.file ?? dropped[0].name);
       uploadMsg = get(t)("songFile.uploaded", {
         values: { name: dropped[0].name },
       });

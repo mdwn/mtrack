@@ -12,33 +12,28 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! MVR import and export over HTTP (lighting UI design §11): the browser's
-//! import wizard and export dialog. Every handler is a thin wrapper over the
+//! MVR import and export (lighting UI design §11): the browser's import
+//! wizard and export dialog. Every function is a thin wrapper over the
 //! library functions behind the CLI and the MCP tools
 //! (`import::inspect_mvr_bytes`, `import::import_mvr_bytes`,
-//! `export::export_mvr_bytes`), so the three surfaces cannot disagree.
+//! `export::export_mvr_bytes`), so the surfaces cannot disagree. The gRPC
+//! services call them with a file already uploaded (`transfers`).
 //!
-//! The server holds nothing between requests: the wizard uploads the file at
+//! The server holds nothing between calls: the wizard uploads the file at
 //! each step. Every write goes through a directory proven to be inside the
 //! project (the same containment the GDTF import and the venue save use).
 
 use crate::webui::wire::mvr::{
     AimPoint, AimPoints, MvrExportSummary, MvrImportAnswer, MvrInspection, MvrKept,
 };
-use std::collections::HashMap;
 
-use axum::{
-    extract::{Query, State},
-    http::{header, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::http::StatusCode;
 use serde_json::json;
 
-use super::super::server::WebUiState;
 use super::lighting_api::{
-    content_version, lighting_dir, project_root, reload_if_current_venue, resolve_lighting_dir,
-    stale_venue_response, validate_lighting_name, venue_error_of, LightingDir, VENUE_WRITES,
+    archive_file_name, content_version, lighting_dir, project_root, reload_if_current_venue,
+    resolve_lighting_dir, stale_venue_response, validate_lighting_name, venue_error_of,
+    LightingDir, VENUE_WRITES,
 };
 use super::lighting_writes::Answer;
 use crate::lighting;
@@ -46,106 +41,28 @@ use crate::lighting::export::MvrExportOptions;
 use crate::lighting::import::MvrImportOptions;
 use crate::lighting::types::Vec3;
 
-/// The most a text field of an upload may hold.
-const MAX_FIELD_BYTES: usize = 4096;
-
-/// The `keep` field lists a name and fields per hand-edited fixture, so it
-/// is allowed to be far longer than the other text fields.
-const MAX_KEEP_BYTES: usize = 1024 * 1024;
-
-fn bad_request(message: impl Into<String>) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error": message.into()})),
-    )
-        .into_response()
-}
-
-/// An uploaded MVR and the text fields sent with it.
-struct MvrForm {
-    file_name: String,
-    bytes: Vec<u8>,
-    fields: HashMap<String, String>,
-}
-
-impl MvrForm {
-    fn field(&self, key: &str) -> Option<&str> {
-        self.fields
-            .get(key)
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-    }
-}
-
-/// Reads a multipart body: the first file, and every other field as text.
-/// The file name keeps only its final component, as the GDTF upload does —
-/// it becomes a path in the library.
-#[allow(clippy::result_large_err)]
-async fn read_form(multipart: &mut axum::extract::Multipart) -> Result<MvrForm, Response> {
-    let mut file: Option<(String, Vec<u8>)> = None;
-    let mut fields = HashMap::new();
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| bad_request(format!("Failed to read multipart field: {e}")))?
-    {
-        if let Some(raw) = field.file_name().map(|f| f.to_string()) {
-            let name = std::path::Path::new(&raw)
-                .file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if name.is_empty() || file.is_some() {
-                continue;
-            }
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| bad_request(format!("Failed to read file data: {e}")))?;
-            file = Some((name, bytes.to_vec()));
-        } else if let Some(key) = field.name().map(str::to_string) {
-            let text = field
-                .text()
-                .await
-                .map_err(|e| bad_request(format!("Failed to read field {key}: {e}")))?;
-            let limit = if key == "keep" {
-                MAX_KEEP_BYTES
-            } else {
-                MAX_FIELD_BYTES
-            };
-            if text.len() > limit {
-                return Err(bad_request(format!("Field {key} is too long")));
-            }
-            fields.insert(key, text);
-        }
-    }
-    let Some((file_name, bytes)) = file else {
-        return Err(bad_request("No file uploaded"));
+/// What an upload of an MVR announces: the name the archive is kept under
+/// (see [`archive_file_name`]), which must be an `.mvr`.
+pub(crate) fn check_mvr_upload(file_name: &str) -> Result<String, Answer> {
+    let Some(name) = archive_file_name(file_name) else {
+        return Err(Answer::bad("No file uploaded"));
     };
-    if !file_name.to_ascii_lowercase().ends_with(".mvr") {
-        return Err(bad_request(format!(
-            "{file_name} is not an .mvr file; choose the venue's MVR export"
+    if !name.to_ascii_lowercase().ends_with(".mvr") {
+        return Err(Answer::bad(format!(
+            "{name} is not an .mvr file; choose the venue's MVR export"
         )));
     }
-    Ok(MvrForm {
-        file_name,
-        bytes,
-        fields,
-    })
+    Ok(name)
 }
 
-/// Parses `"x,y,z"` millimeters.
-#[allow(clippy::result_large_err)]
-fn parse_origin(text: &str) -> Result<Vec3, Response> {
-    let parts: Vec<f64> = text
-        .split(',')
-        .map(|p| p.trim().parse::<f64>().ok().filter(|v| v.is_finite()))
-        .collect::<Option<_>>()
-        .unwrap_or_default();
-    match parts.as_slice() {
-        [x, y, z] => Ok([*x, *y, *z]),
-        _ => Err(bad_request(
+/// The point, in millimeters, an import takes as the stage's origin.
+pub(crate) fn origin_mm(x: f64, y: f64, z: f64) -> Result<Vec3, Answer> {
+    if [x, y, z].iter().all(|v| v.is_finite()) {
+        Ok([x, y, z])
+    } else {
+        Err(Answer::bad(
             "origin must be three numbers in millimeters, \"x,y,z\"",
-        )),
+        ))
     }
 }
 
@@ -163,163 +80,155 @@ fn checked_dir(
     Ok(dir)
 }
 
-/// The import options a form asks for, directories checked.
-#[allow(clippy::result_large_err)]
-fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions, Response> {
+/// What an inspection or an import is asked for. A text left blank is
+/// not given.
+#[derive(Default)]
+pub(crate) struct MvrAsk {
+    pub name: Option<String>,
+    pub origin_mm: Option<Vec3>,
+    pub venues_dir: Option<String>,
+    pub fixture_types_dir: Option<String>,
+    /// The hand edits a merge keeps.
+    pub keep: lighting::mvr_types::MvrKeep,
+}
+
+/// A text that is given: trimmed, and not empty.
+fn given(text: Option<&str>) -> Option<&str> {
+    text.map(str::trim).filter(|t| !t.is_empty())
+}
+
+/// The import options an ask has, directories checked.
+fn import_options(config_path: &std::path::Path, ask: &MvrAsk) -> Result<MvrImportOptions, Answer> {
     Ok(MvrImportOptions {
-        name: form.field("name").map(str::to_string),
-        origin_mm: form.field("origin").map(parse_origin).transpose()?,
+        name: given(ask.name.as_deref()).map(str::to_string),
+        origin_mm: ask.origin_mm,
         fixture_types_dir: checked_dir(
-            &state.config_path,
-            form.field("fixture_types_dir"),
+            config_path,
+            given(ask.fixture_types_dir.as_deref()),
             LightingDir::FixtureTypes,
         )?,
         venues_dir: checked_dir(
-            &state.config_path,
-            form.field("venues_dir"),
+            config_path,
+            given(ask.venues_dir.as_deref()),
             LightingDir::Venues,
         )?,
-        keep: match form.field("keep") {
-            Some(text) => serde_json::from_str(text).map_err(|e| {
-                bad_request(format!(
-                    "keep must be {{\"fixtures\": {{name: [fields]}}, \"focus_points\": [names]}}: {e}"
-                ))
-            })?,
-            None => Default::default(),
-        },
+        keep: ask.keep.clone(),
     })
 }
 
-/// POST /api/lighting/mvr/inspect — multipart: the file (and optionally
-/// `name`, `origin`, `venues_dir`, `fixture_types_dir`). Answers
-/// `{file_name, report, scene}`: `report` is the MCP `inspect_mvr` plan
-/// (what an import would do), `scene` is the file seen from above — every
+/// Reads the staged MVR `file`: what an import would do (`report`, the MCP
+/// `inspect_mvr` plan) and the file seen from above (`scene`: every
 /// fixture's and focus point's position in the file's millimeters, the
-/// scenery and, when the scenery carries a stage floor, its bounds
-/// (`scene.deck_mm`, else null). Writes nothing. A file the importer
-/// refuses (not an MVR, over the caps) is a 400 with the parser's reason; a
-/// venue name (or an embedded GDTF's record) the one rule for lighting
-/// files refuses is a 409 with the reason, as the import answers it.
-pub(super) async fn inspect_mvr(
-    State(state): State<WebUiState>,
-    mut multipart: axum::extract::Multipart,
-) -> impl IntoResponse {
-    let form = read_form(&mut multipart).await?;
-    let options = import_options(&state, &form)?;
-    let project = project_root(&state.config_path)?;
-    let file_name = form.file_name.clone();
-    let outcome = super::helpers::spawn_blocking_io("inspect MVR", move || {
+/// scenery and, when the scenery carries a stage floor, its bounds,
+/// `deck_mm`, else null). Writes nothing. A file the importer refuses (not
+/// an MVR, over the caps) is a 400 with the parser's reason; a venue name
+/// (or an embedded GDTF's record) the one rule for lighting files refuses is
+/// a 409 with the reason, as the import answers it. The staged file is
+/// deleted whether this succeeds or not.
+pub(crate) async fn inspect_mvr(
+    config_path: &std::path::Path,
+    file: crate::webui::transfers::Claimed,
+    ask: &MvrAsk,
+) -> Result<MvrInspection, Answer> {
+    check_mvr_upload(&file.file_name)?;
+    let options = import_options(config_path, ask)?;
+    let project = project_root(config_path)?;
+    let file_name = file.file_name.clone();
+    let outcome = super::helpers::blocking_answer("inspect MVR", move || {
+        let bytes = file.read().map_err(|e| e.to_string())?;
         Ok::<_, String>((|| {
-            let report = lighting::import::inspect_mvr_bytes(
-                &form.bytes,
-                &form.file_name,
-                &options,
-                &project,
-            )
-            .map_err(|e| super::lighting_writes::import_error(e.as_ref()))?;
-            let scene = lighting::import::scene_view::scene_view(&form.bytes)
+            let report =
+                lighting::import::inspect_mvr_bytes(&bytes, &file.file_name, &options, &project)
+                    .map_err(|e| super::lighting_writes::import_error(e.as_ref()))?;
+            let scene = lighting::import::scene_view::scene_view(&bytes)
                 .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error": e.to_string()})))?;
             Ok::<_, (StatusCode, serde_json::Value)>((report, scene))
         })())
     })
     .await?
-    .map_err(|(status, body)| (status, Json(body)).into_response())?;
+    .map_err(|(status, body)| Answer { status, body })?;
     let (report, scene) = outcome;
-    Ok::<_, Response>(
-        (
-            StatusCode::OK,
-            Json(MvrInspection {
-                file_name,
-                report,
-                scene,
-            }),
-        )
-            .into_response(),
-    )
+    Ok(MvrInspection {
+        file_name,
+        report,
+        scene,
+    })
 }
 
-/// POST /api/lighting/mvr/import — multipart: the file, `name`, `origin`
-/// ("x,y,z" millimeters), `write` ("true" / "false", required), and
-/// optionally `venues_dir`, `fixture_types_dir` and `keep` (JSON,
-/// `{"fixtures": {"<name>": ["position", ...]}, "focus_points": [...]}`: the
-/// hand edits a merge keeps rather than overwrites; the plan lists them as
-/// `overwrites`). `write=false` answers
-/// `{write: false, plan}` (what `import-mvr` prints without `--write`);
-/// `write=true` performs the import and answers `{write: true, report,
-/// reloaded}`, `reloaded` saying whether the running engine re-read the
-/// venue it is playing. Importing never makes the venue current. A venue
-/// whose file is not its alone, or whose new file is taken, is a 409 (the
-/// venue save's rule); anything else refused is a 400.
-pub(super) async fn import_mvr(
-    State(state): State<WebUiState>,
-    mut multipart: axum::extract::Multipart,
-) -> impl IntoResponse {
-    let form = read_form(&mut multipart).await?;
-    let write = match form.field("write") {
-        Some("true") => true,
-        Some("false") => false,
-        _ => return Err(bad_request("write must be \"true\" or \"false\"")),
-    };
-    let options = import_options(&state, &form)?;
-    let project = project_root(&state.config_path)?;
+/// Imports the staged MVR `file`, or, with `write` false, plans the import
+/// (what `import-mvr` prints without `--write`). `write` true performs it
+/// and answers the report, `reloaded` saying whether the running engine
+/// re-read the venue it is playing. Importing never makes the venue
+/// current. A venue whose file is not its alone, or whose new file is
+/// taken, is a 409 (the venue save's rule); anything else refused is a 400.
+/// The staged file is deleted whether this succeeds or not.
+pub(crate) async fn import_mvr(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &std::path::Path,
+    file: crate::webui::transfers::Claimed,
+    ask: &MvrAsk,
+    write: bool,
+) -> Result<MvrImportAnswer, Answer> {
+    check_mvr_upload(&file.file_name)?;
+    let options = import_options(config_path, ask)?;
+    let project = project_root(config_path)?;
     let venues_path = project.join(&options.venues_dir);
     if write {
         // Directories the import writes into are created, and proven to be
         // inside the project, before anything is written.
+        let project_dir = crate::util::project_dir_of(config_path);
         for dir in [
             options.fixture_types_dir.as_str(),
             options.venues_dir.as_str(),
             "lighting/library",
         ] {
-            super::helpers::ensure_configured_dir(&project.join(dir), &state).await?;
+            if let Err(response) =
+                super::helpers::ensure_dir_within(&project.join(dir), &project_dir).await
+            {
+                return Err(Answer::of_response(response).await);
+            }
         }
     }
-    let outcome = super::helpers::spawn_blocking_io("import MVR", move || {
+    let outcome = super::helpers::blocking_answer("import MVR", move || {
+        let bytes = file.read().map_err(|e| e.to_string())?;
         // A re-import merges into the venue file it reads: held from that
         // read to its write, or a venue save between the two is lost (#578).
         let _guard = write.then(|| VENUE_WRITES.blocking_lock());
         Ok::<_, String>(
             if write {
-                lighting::import::import_mvr_bytes(&form.bytes, &form.file_name, &options, &project)
+                lighting::import::import_mvr_bytes(&bytes, &file.file_name, &options, &project)
                     .map(Imported::Report)
             } else {
-                lighting::import::inspect_mvr_bytes(
-                    &form.bytes,
-                    &form.file_name,
-                    &options,
-                    &project,
-                )
-                .map(Imported::Plan)
+                lighting::import::inspect_mvr_bytes(&bytes, &file.file_name, &options, &project)
+                    .map(Imported::Plan)
             }
             .map_err(|e| super::lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(|(status, body)| (status, Json(body)).into_response())?;
+    .map_err(|(status, body)| Answer { status, body })?;
     let report = match outcome {
         Imported::Plan(plan) => {
-            let answer = MvrImportAnswer {
+            return Ok(MvrImportAnswer {
                 write: false,
                 plan: Some(plan),
                 report: None,
                 reloaded: None,
                 venue_error: None,
-            };
-            return Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response());
+            });
         }
         Imported::Report(report) => report,
     };
     let venue = report.plan.venue_name.clone();
-    let reloaded = reload_if_current_venue(&state.player, &venue).await;
-    let venue_error = venue_error_of(&state.player, &state.config_path, &venue, &venues_path).await;
-    let answer = MvrImportAnswer {
+    let reloaded = reload_if_current_venue(player, &venue).await;
+    let venue_error = venue_error_of(player, config_path, &venue, &venues_path).await;
+    Ok(MvrImportAnswer {
         write: true,
         plan: None,
         report: Some(report),
         reloaded: Some(reloaded),
         venue_error: Some(venue_error),
-    };
-    Ok((StatusCode::OK, Json(answer)).into_response())
+    })
 }
 
 /// An import's outcome: the plan, or what the import did.
@@ -338,30 +247,6 @@ pub(crate) struct ExportAsk {
     pub file: Option<String>,
     pub venues_dir: Option<String>,
     pub fixture_types_dir: Option<String>,
-}
-
-/// Query for the export download.
-#[derive(serde::Deserialize)]
-pub(super) struct ExportQuery {
-    venue: String,
-    /// One layer per first tag.
-    layers_from_tags: Option<bool>,
-    /// The archive's file name (bare, `.mvr`); default `<venue>.mvr`.
-    file: Option<String>,
-    venues_dir: Option<String>,
-    fixture_types_dir: Option<String>,
-}
-
-impl From<ExportQuery> for ExportAsk {
-    fn from(query: ExportQuery) -> Self {
-        ExportAsk {
-            venue: query.venue,
-            layers_from_tags: query.layers_from_tags.unwrap_or(false),
-            file: query.file,
-            venues_dir: query.venues_dir,
-            fixture_types_dir: query.fixture_types_dir,
-        }
-    }
 }
 
 fn export_options(
@@ -406,39 +291,30 @@ pub(crate) async fn export_summary(
     })
 }
 
-/// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file= — the
-/// archive itself, `application/octet-stream` with a `Content-Disposition`
-/// attachment carrying the file name. A GET writes nothing; keeping a copy
-/// in the project is [`keep_export`].
-pub(super) async fn export_mvr(
-    State(state): State<WebUiState>,
-    Query(query): Query<ExportQuery>,
-) -> impl IntoResponse {
-    let options = export_options(&state.config_path, &query.into())?;
-    let project = project_root(&state.config_path)?;
-    let (bytes, report) = super::helpers::spawn_blocking_io("export MVR", move || {
+/// Builds the export archive: its bytes and the name it carries, the
+/// report's output without its directories. Nothing is written; keeping a
+/// copy in the project is [`keep_export`]. A name that is not a bare `.mvr`
+/// and a venue that is not there are a 400.
+pub(crate) async fn build_export(
+    config_path: &std::path::Path,
+    ask: &ExportAsk,
+) -> Result<(Vec<u8>, String), Answer> {
+    let options = export_options(config_path, ask)?;
+    let project = project_root(config_path)?;
+    let (bytes, report) = super::helpers::blocking_answer("export MVR", move || {
         Ok::<_, String>(
             lighting::export::export_mvr_bytes(&options, &project).map_err(|e| e.to_string()),
         )
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(Answer::bad)?;
     let file_name = report
         .output
         .rsplit('/')
         .next()
         .unwrap_or(&report.output)
         .to_string();
-    let mut response = (StatusCode::OK, bytes).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
-    );
-    if let Ok(value) = HeaderValue::from_str(&content_disposition(&file_name)) {
-        headers.insert(header::CONTENT_DISPOSITION, value);
-    }
-    Ok::<_, Response>(response)
+    Ok((bytes, file_name))
 }
 
 /// Writes the archive under `lighting/export/` (the CLI's location) and
@@ -486,33 +362,6 @@ pub(crate) enum Kept {
 enum KeepError {
     Exists(String),
     Failed(String),
-}
-
-/// `attachment; filename="..."` with an ASCII fallback and, when the name
-/// has anything else in it, the RFC 5987 `filename*` form.
-fn content_disposition(file_name: &str) -> String {
-    let ascii: String = file_name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if ascii == file_name {
-        return format!("attachment; filename=\"{ascii}\"");
-    }
-    let mut encoded = String::new();
-    for byte in file_name.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 /// Adds the venue's aim points: for each fixed fixture (no pan or tilt)
@@ -700,11 +549,7 @@ fn add_aim_points_blocking(
 
 #[cfg(test)]
 pub(crate) mod test {
-    use super::super::router;
-    use super::super::test_helpers::*;
     use super::*;
-    use axum::body::Body;
-    use tower::ServiceExt;
 
     const SYNTH_SCENE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
@@ -737,544 +582,23 @@ pub(crate) mod test {
         ])
     }
 
-    fn multipart(file_name: &str, bytes: &[u8], fields: &[(&str, &str)]) -> (String, Vec<u8>) {
-        let boundary = "mtrack-test-boundary";
-        let mut body = Vec::new();
-        for (key, value) in fields {
-            body.extend_from_slice(
-                format!(
-                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n"
-                )
-                .as_bytes(),
-            );
-        }
-        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        body.extend_from_slice(
-            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
-                .as_bytes(),
-        );
-        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
-        body.extend_from_slice(bytes);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        (format!("multipart/form-data; boundary={boundary}"), body)
-    }
-
-    async fn post(
-        app: &axum::Router,
-        uri: &str,
-        file_name: &str,
-        bytes: &[u8],
-        fields: &[(&str, &str)],
-    ) -> (StatusCode, serde_json::Value) {
-        let (content_type, body) = multipart(file_name, bytes, fields);
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("content-type", content_type)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let text = response_body(response).await;
-        (status, serde_json::from_str(&text).unwrap_or_default())
-    }
-
-    async fn get(app: &axum::Router, uri: &str) -> axum::response::Response {
-        app.clone()
-            .oneshot(
-                http::Request::builder()
-                    .uri(uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-    }
-
-    /// The synthetic MVR imported as `kellys` through the web import (a
-    /// route that stays on HTTP), for the calls that act on its venue.
-    pub(crate) async fn import_kellys(state: super::super::super::server::WebUiState) {
-        imported(&router().with_state(state)).await;
-    }
-
-    #[tokio::test]
-    async fn inspect_reports_positions_and_deck_bounds_and_writes_nothing() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "Kellys.mvr",
-            &synthetic_mvr(true),
-            &[],
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["file_name"], "Kellys.mvr");
-        assert_eq!(body["report"]["venue_name"], "Kellys");
-        assert_eq!(body["report"]["fixtures"].as_array().unwrap().len(), 3);
-        let fixtures = body["scene"]["fixtures"].as_array().unwrap();
-        assert_eq!(fixtures[0]["position_mm"], json!([-2000.0, 3500.0, 4200.0]));
-        assert_eq!(fixtures[2]["position_mm"], json!(null), "Lost has none");
-        assert_eq!(
-            body["scene"]["deck_mm"],
-            json!({"min": [-3000.0, 1000.0, 0.0], "max": [3000.0, 5000.0, 500.0]})
-        );
-        assert!(
-            !dir.path().join("lighting").exists(),
-            "inspect must not write"
-        );
-
-        // No object that says it is a deck: null, and the wizard falls back.
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "Kellys.mvr",
-            &synthetic_mvr(false),
-            &[],
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body["scene"]["deck_mm"].is_null(), "{body}");
-        assert_eq!(body["scene"]["scenery"][0]["deck"], false);
-    }
-
-    #[tokio::test]
-    async fn inspect_refuses_what_is_not_an_mvr_with_the_reason() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-        let (status, body) =
-            post(&app, "/lighting/mvr/inspect", "junk.mvr", b"not a zip", &[]).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("not a readable MVR archive"),
-            "{body}"
-        );
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "rig.zip",
-            &synthetic_mvr(true),
-            &[],
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].as_str().unwrap().contains(".mvr"), "{body}");
-        // A directory that escapes the project is refused, not followed.
-        let (status, _) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "rig.mvr",
-            &synthetic_mvr(true),
-            &[("venues_dir", "../elsewhere")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn import_plans_without_writing_and_then_writes() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let mvr = synthetic_mvr(true);
-        let fields = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "false"),
-        ];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["write"], false);
-        assert_eq!(body["plan"]["venue_name"], "kellys");
-        assert_eq!(body["plan"]["merge"], false);
-        assert_eq!(body["plan"]["origin"], json!([0.0, 1.0, 0.0]));
-        assert!(body["plan"]["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f["name"] == "Lost" && f["todo"].is_string()));
-        assert!(
-            !dir.path().join("lighting").exists(),
-            "a plan must not write"
-        );
-
-        let fields = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "true"),
-        ];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["write"], true);
-        assert_eq!(body["report"]["venue_name"], "kellys");
-        assert!(dir.path().join("lighting/venues/kellys.venue").exists());
-        assert!(dir.path().join("lighting/library/Kellys.mvr").exists());
-        let venue =
-            std::fs::read_to_string(dir.path().join("lighting/venues/kellys.venue")).unwrap();
-        assert!(venue.contains("# TODO fixture \"Lost\""), "{venue}");
-
-        // The same again is a merge.
-        let (_, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
-        assert_eq!(body["report"]["merge"], true, "{body}");
-    }
-
-    #[tokio::test]
-    async fn a_merge_plan_lists_hand_edits_and_the_keep_list_keeps_them() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let mvr = synthetic_mvr(true);
-        let write = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "true"),
-        ];
-        post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &write).await;
-
-        // Hand-move Brick 1 (the MVR puts it at x = -2).
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("position (-2, 2.5, 4.2)"), "{text}");
-        std::fs::write(
-            &path,
-            format!(
-                "# mine\n{}",
-                text.replace("position (-2, 2.5, 4.2)", "position (-1, 2.5, 4.2)")
-            ),
-        )
-        .unwrap();
-
-        let plan = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "false"),
-        ];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &plan).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let brick1 = body["plan"]["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["name"] == "Brick 1")
-            .unwrap();
-        assert_eq!(brick1["overwrites"][0]["field"], "position", "{brick1}");
-        assert_eq!(brick1["overwrites"][0]["mine"], "(-1, 2.5, 4.2)");
-
-        let keep = r#"{"fixtures":{"Brick 1":["position"]}}"#;
-        let fields = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "true"),
-            ("keep", keep),
-        ];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.starts_with("# mine\n"), "{after}");
-        assert!(after.contains("position (-1, 2.5, 4.2)"), "{after}");
-
-        // A keep list that is not JSON is refused before anything is written.
-        let bad = [("write", "true"), ("keep", "nope")];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &bad).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].as_str().unwrap().contains("keep"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn import_needs_an_explicit_write_flag_and_a_sane_origin() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let mvr = synthetic_mvr(true);
-        let (status, _) = post(&app, "/lighting/mvr/import", "K.mvr", &mvr, &[]).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/import",
-            "K.mvr",
-            &mvr,
-            &[("write", "true"), ("origin", "1,2")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].as_str().unwrap().contains("origin"), "{body}");
-        assert!(!dir.path().join("lighting").exists());
-    }
-
-    /// Imports the synthetic MVR as `kellys` with the origin at the deck's
+    /// The synthetic MVR imported as `kellys` with the origin at the deck's
     /// front edge, so its bricks hang 4.2 m up over the deck.
-    async fn imported(app: &axum::Router) {
-        let (status, body) = post(
-            app,
-            "/lighting/mvr/import",
+    pub(crate) async fn import_kellys(state: super::super::super::server::WebUiState) {
+        let transfers = state.player.transfers();
+        let staged = transfers.stage_for_test(
+            crate::webui::transfers::Purpose::MvrImport,
             "Kellys.mvr",
             &synthetic_mvr(true),
-            &[
-                ("name", "kellys"),
-                ("origin", "0,1000,0"),
-                ("write", "true"),
-            ],
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-
-    #[tokio::test]
-    async fn a_re_import_into_a_shared_venue_file_is_a_conflict_and_writes_nothing() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let venues = dir.path().join("lighting/venues");
-        let mut shared = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
-        shared.push_str("venue \"Annex\" {\n}\n");
-        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
-        std::fs::write(venues.join("all.venue"), &shared).unwrap();
-
-        for write in ["false", "true"] {
-            let (status, body) = post(
-                &app,
-                "/lighting/mvr/import",
-                "Kellys.mvr",
-                &synthetic_mvr(true),
-                &[("name", "kellys"), ("write", write)],
-            )
-            .await;
-            assert_eq!(status, StatusCode::CONFLICT, "{body}");
-            assert_eq!(body["kind"], "venue", "{body}");
-            assert_eq!(
-                body["error"],
-                "cannot import venue \"kellys\": Defined in all.venue alongside venue \
-                 \"Annex\"; edit that file by hand."
-            );
-        }
-        // The inspection says so too, so the wizard can ask for another name.
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "Kellys.mvr",
-            &synthetic_mvr(true),
-            &[("name", "kellys")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["kind"], "venue", "{body}");
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("alongside venue \"Annex\""),
-            "{body}"
         );
-        assert_eq!(
-            std::fs::read_to_string(venues.join("all.venue")).unwrap(),
-            shared
-        );
-        assert!(!venues.join("kellys.venue").exists());
-    }
-
-    #[tokio::test]
-    async fn an_embedded_gdtf_s_taken_record_is_a_record_conflict_not_a_venue_one() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let types = dir.path().join("lighting/fixture_types");
-        std::fs::create_dir_all(&types).unwrap();
-        let par = |name: &str| {
-            format!(
-                "fixture_type \"{name}\" {{\n  channels: 1\n  channel_map: {{\"dimmer\": 1}}\n}}\n"
-            )
+        let ask = MvrAsk {
+            name: Some("kellys".to_string()),
+            origin_mm: Some([0.0, 1000.0, 0.0]),
+            ..Default::default()
         };
-        std::fs::write(types.join("synth_brick.light"), par("Synth Brick")).unwrap();
-        std::fs::write(types.join("synth_brick_astera_pb15.fixture"), par("Other")).unwrap();
-
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "Kellys.mvr",
-            &synthetic_mvr(true),
-            &[("name", "kellys")],
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["kind"], "record", "{body}");
-        assert!(
-            body["error"].as_str().unwrap().starts_with(
-                "lighting/fixture_types/synth_brick_astera_pb15.fixture holds \"Other\""
-            ),
-            "{body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_venues_directory_that_cannot_be_read_is_not_a_venue_refusal() {
-        use std::os::unix::fs::PermissionsExt;
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let venues = dir.path().join("lighting/venues");
-        std::fs::create_dir_all(&venues).unwrap();
-        // Written to and walked through, never listed.
-        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o300)).unwrap();
-        if std::fs::read_dir(&venues).is_ok() {
-            std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
-            return; // running as root
-        }
-
-        let (status, body) = post(
-            &app,
-            "/lighting/mvr/inspect",
-            "Kellys.mvr",
-            &synthetic_mvr(true),
-            &[("name", "kellys")],
-        )
-        .await;
-        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        assert_eq!(body["kind"], "unreadable", "{body}");
-        assert!(
-            body["error"].as_str().unwrap().contains("cannot be read"),
-            "{body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_export_download_sets_its_headers_and_writes_nothing() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-
-        let response = get(
-            &app,
-            "/lighting/mvr/export?venue=kellys&layers_from_tags=true",
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["content-type"],
-            "application/octet-stream"
-        );
-        assert_eq!(
-            response.headers()["content-disposition"],
-            "attachment; filename=\"kellys.mvr\""
-        );
-        assert!(response.headers().get("x-mtrack-kept").is_none());
-        use http_body_util::BodyExt;
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(
-            crate::lighting::mvr::parse_archive(&bytes).is_ok(),
-            "the download is an MVR"
-        );
-        assert!(
-            !dir.path().join("lighting/export").exists(),
-            "nothing is written unless asked"
-        );
-
-        // A GET never writes, whatever the query says.
-        let response = get(
-            &app,
-            "/lighting/mvr/export?venue=kellys&file=tour.mvr&keep=true",
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["content-disposition"],
-            "attachment; filename=\"tour.mvr\""
-        );
-        assert!(response.headers().get("x-mtrack-kept").is_none());
-        assert!(!dir.path().join("lighting/export").exists());
-
-        // A name that is not a bare .mvr, and a venue that is not there.
-        let response = get(&app, "/lighting/mvr/export?venue=kellys&file=..%2Fx.mvr").await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let response = get(&app, "/lighting/mvr/export?venue=nope").await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    /// The imported venue with `mode "<mode>"` written onto one fixture's
-    /// line, after its type, as a hand edit would put it.
-    /// `text` with the mode on `fixture`'s line changed to `mode` — what a
-    /// hand edit of a seeded line does (every seeded GDTF line has one).
-    fn with_line_mode(text: &str, fixture: &str, mode: &str) -> String {
-        let needle = format!("fixture \"{fixture}\" ");
-        text.lines()
-            .map(|line| {
-                let Some(at) = line.find(&needle) else {
-                    return line.to_string();
-                };
-                let from = at
-                    + line[at..]
-                        .find(" mode \"")
-                        .unwrap_or_else(|| panic!("no mode on {line}"))
-                    + " mode \"".len();
-                let to = from + line[from..].find('"').unwrap();
-                format!("{}{mode}{}", &line[..from], &line[to..])
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n"
-    }
-
-    fn line_of(text: &str, fixture: &str) -> String {
-        text.lines()
-            .find(|l| l.contains(&format!("fixture \"{fixture}\"")))
-            .unwrap_or_else(|| panic!("no line for {fixture} in {text}"))
-            .to_string()
-    }
-
-    #[tokio::test]
-    async fn a_merge_keeps_a_hand_set_mode_when_asked_and_keeps_other_modes_regardless() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let text = std::fs::read_to_string(&path).unwrap();
-        // Brick 1 hand-moded; Brick 2 hand-moved (its mode is the file's).
-        let moded = with_line_mode(&text, "Brick 1", "Mover 16bit");
-        std::fs::write(&path, &moded).unwrap();
-
-        let plan = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "false"),
-        ];
-        let mvr = synthetic_mvr(true);
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &plan).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let brick1 = body["plan"]["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["name"] == "Brick 1")
-            .unwrap()
-            .clone();
-        assert!(
-            brick1["overwrites"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|o| o["field"] == "mode"),
-            "{brick1}"
-        );
-
-        let fields = [
-            ("name", "kellys"),
-            ("origin", "0,1000,0"),
-            ("write", "true"),
-            ("keep", r#"{"fixtures":{"Brick 1":["mode"]}}"#),
-        ];
-        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            line_of(&after, "Brick 1").contains("mode \"Mover 16bit\""),
-            "{after}"
-        );
+        import_mvr(&state.player, &state.config_path, staged, &ask, true)
+            .await
+            .unwrap_or_else(|e| panic!("{}", e.message()));
     }
 
     #[test]
@@ -1308,19 +632,5 @@ pub(crate) mod test {
         // No position, no point.
         let unplaced = Fixture::new("F".into(), "T".into(), 1, 1, vec![]);
         assert_eq!(lighting::export::aim_point(&unplaced), None);
-    }
-
-    #[test]
-    fn content_disposition_is_safe_for_awkward_names() {
-        assert_eq!(
-            content_disposition("kellys.mvr"),
-            "attachment; filename=\"kellys.mvr\""
-        );
-        let awkward = content_disposition("Bühne \"1\".mvr");
-        assert!(awkward.contains("filename=\"B_hne _1_.mvr\""), "{awkward}");
-        assert!(
-            awkward.contains("filename*=UTF-8''B%C3%BChne%20%221%22.mvr"),
-            "{awkward}"
-        );
     }
 }
