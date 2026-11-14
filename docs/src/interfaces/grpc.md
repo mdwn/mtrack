@@ -114,7 +114,8 @@ not.
 gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
 service, and is not reachable over Bluetooth. The web UI's config editor calls it for the samples,
 the metronome defaults, the hardware profile files of the `profiles_dir`, the audio and MIDI
-device lists, the audio device test, the trigger calibration, and the restart of the controllers;
+device lists, the audio device test, the trigger calibration, the restart of the controllers, and
+the Bluetooth pairing;
 the song pages and the import pages call it for a song's config, its files, its waveform and tempo
 guess, and for browsing the project and importing songs from it.
 
@@ -145,6 +146,9 @@ guess, and for browsing the project and importing songs from it.
 | `BrowseDirectory` | Lists a folder of the project (`path`, relative to the folder holding `mtrack.yaml`; empty for the folder itself), directories first, then files by name, hidden ones left out. `NOT_FOUND` for a path that is not a folder within the project, symlinks that leave it included. Open while locked. |
 | `CreateSongInDirectory` | Makes a song of a project folder: scans it for audio, MIDI and lighting files, splits stereo and multichannel files into a track per channel, writes the `song.yaml` and reloads the songs. `name` is optional (the folder's, past the names taken). `ALREADY_EXISTS` when the folder has a config or `name` is another song's (with `x-taken-name-bin`); `INVALID_ARGUMENT` for a path that is not a folder; `NOT_FOUND` for one outside the project. Refused while locked. |
 | `BulkImportSongs` | Makes a song of each song folder below a project folder that has no config, and reloads the songs once. Folders with a config are `skipped`; a folder that fails is in `failed`, not an error. Errors as `CreateSongInDirectory`. Refused while locked. |
+| `GetBluetooth` | The Bluetooth controller as it is now, as a `BluetoothStatus`: `configured` (the running config has a `ble` controller), `running` (it is up), `error` (why it is not running, or what the adapter refused when listing phones), the `pairing` window (`open`, `seconds_left`, rounded up, 0 when closed) and the paired `devices` (`address`, `name` when the phone gave one, `connected`). A device the owner trusts in BlueZ (a BLE MIDI pedal, say) is not listed. Open while locked. |
+| `SetBluetoothPairing` | Opens the pairing window for `seconds` (120 when absent, kept between 10 and 600) or, with `open: false`, closes it, and answers the `BluetoothStatus` after. `FAILED_PRECONDITION` when Bluetooth is not running; `UNAVAILABLE` when the radio stack refuses. Refused while locked. |
+| `ForgetBluetoothDevice` | Forgets a paired phone by `address` (it must pair again) and answers the `BluetoothStatus` after. `INVALID_ARGUMENT` for an address that is none; `NOT_FOUND` for one that is not a phone paired with the player (the owner's own trusted devices included); `FAILED_PRECONDITION` when Bluetooth is not running; `UNAVAILABLE` when the radio stack refuses. Refused while locked. |
 
 The refusals are statuses: a version the file has since left, or a `create` onto a file that is
 there (including one a stem reaches, `stage.yaml` with only `stage.yaml.yaml`), is `ABORTED` (the
@@ -161,7 +165,8 @@ While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAud
 `UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile`, `RemoveProfile`
 and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
 `DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
-`DeleteSong`, `ImportSongFile`, `CreateSongInDirectory` and `BulkImportSongs`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `SetBluetoothPairing` and
+`ForgetBluetoothDevice`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are

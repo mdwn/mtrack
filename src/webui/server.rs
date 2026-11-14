@@ -603,7 +603,8 @@ mod test {
     /// directory to read), and the REST routes it replaced (the sample and
     /// metronome saves, the profile files, the device lists, the audio probe,
     /// the calibration, the controller restart and the song config, file,
-    /// waveform, tempo, browse and import calls) are gone.
+    /// waveform, tempo, browse and import calls, and the Bluetooth pairing) are
+    /// gone.
     #[tokio::test]
     async fn config_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -709,6 +710,9 @@ mod test {
             ("GET", "/api/browse"),
             ("POST", "/api/browse/create-song"),
             ("POST", "/api/browse/bulk-import"),
+            ("GET", "/api/bluetooth"),
+            ("POST", "/api/bluetooth/pairing"),
+            ("DELETE", "/api/bluetooth/devices/00:00:00:00:00:01"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

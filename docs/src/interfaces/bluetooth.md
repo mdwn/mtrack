@@ -82,9 +82,10 @@ Open **Config**, the profile, then **Controllers**: the Bluetooth card has the p
 To remove a phone, click **Forget** beside it and confirm; it must then pair again, through the
 window. Opening or closing the window and forgetting a phone change who can control the player,
 so the web UI refuses them while the player is [locked](web-ui.md): unlock it first. The same
-operations are the REST endpoints `GET /api/bluetooth`, `POST /api/bluetooth/pairing`
-(`{"open": true, "seconds": 120}` or `{"open": false}`; the time is kept between 10 and 600
-seconds) and `DELETE /api/bluetooth/devices/{address}`.
+operations are the [`ConfigService`](grpc.md#configservice) RPCs `GetBluetooth`,
+`SetBluetoothPairing` (`{"open": true, "seconds": 120}` or `{"open": false}`; the time is kept
+between 10 and 600 seconds) and `ForgetBluetoothDevice` (`{"address": "AA:BB:CC:DD:EE:FF"}`), on
+the gRPC port and the web port's gRPC-Web. They are not reachable over Bluetooth itself.
 
 ### Without a network
 

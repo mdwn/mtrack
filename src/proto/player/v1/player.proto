@@ -1994,6 +1994,26 @@ service ConfigService {
     // INVALID_ARGUMENT when the path is not a folder; NOT_FOUND when it is
     // outside the project. Refused while locked.
     rpc BulkImportSongs(BulkImportSongsRequest) returns (BulkImportSongsResponse);
+
+    // GetBluetooth answers the Bluetooth controller as it is now: whether the
+    // running config has one, whether it is up, the pairing window and the
+    // phones paired (not the owner's own trusted devices). A controller that
+    // is not running says why in `error`. Open while locked.
+    rpc GetBluetooth(GetBluetoothRequest) returns (BluetoothStatus);
+
+    // SetBluetoothPairing opens the pairing window for `seconds` (120 by
+    // default, kept between 10 and 600) or closes it, and answers the
+    // controller as it is after. FAILED_PRECONDITION when Bluetooth is not
+    // running; UNAVAILABLE when the radio stack refuses. Refused while
+    // locked.
+    rpc SetBluetoothPairing(SetBluetoothPairingRequest) returns (BluetoothStatus);
+
+    // ForgetBluetoothDevice forgets a paired phone, which must pair again,
+    // and answers the controller as it is after. INVALID_ARGUMENT for an
+    // address that is none; NOT_FOUND for one that is not a phone paired with
+    // this player; FAILED_PRECONDITION when Bluetooth is not running;
+    // UNAVAILABLE when the radio stack refuses. Refused while locked.
+    rpc ForgetBluetoothDevice(ForgetBluetoothDeviceRequest) returns (BluetoothStatus);
 }
 
 message ListAudioDevicesRequest {}
@@ -2475,4 +2495,50 @@ message BulkImportSongsResponse {
 message ImportFailure {
     string name = 1;
     string error = 2;
+}
+
+message GetBluetoothRequest {}
+
+message SetBluetoothPairingRequest {
+    // Open the window (true) or close it.
+    bool open = 1;
+    // How long to keep it open, in seconds. 120 when absent, kept between 10
+    // and 600. Ignored when closing.
+    optional uint32 seconds = 2;
+}
+
+message ForgetBluetoothDeviceRequest {
+    // AA:BB:CC:DD:EE:FF.
+    string address = 1;
+}
+
+// BluetoothStatus is the Bluetooth controller as it is now, and what every
+// change to it answers.
+message BluetoothStatus {
+    // Whether the running config has a Bluetooth controller.
+    bool configured = 1;
+    // Whether the controller is up and answering. Closed and empty when it
+    // is not.
+    bool running = 2;
+    // Why it is not running when it is configured, or what the adapter
+    // refused when listing phones.
+    optional string error = 3;
+    BluetoothPairingWindow pairing = 4;
+    repeated BluetoothPhone devices = 5;
+}
+
+// BluetoothPairingWindow says whether phones may pair.
+message BluetoothPairingWindow {
+    bool open = 1;
+    // Whole seconds until it closes by itself, rounded up; 0 when closed.
+    uint32 seconds_left = 2;
+}
+
+// BluetoothPhone is a phone paired with the player.
+message BluetoothPhone {
+    // AA:BB:CC:DD:EE:FF.
+    string address = 1;
+    // The name it gave, when it gave one.
+    optional string name = 2;
+    bool connected = 3;
 }

@@ -14,18 +14,22 @@
 
 /**
  * The Bluetooth controller's pairing: whether it runs, whether the pairing
- * window is open, and the phones paired.
+ * window is open, and the phones paired. `ConfigService`'s Bluetooth calls.
  */
 
 import type { BluetoothStatus } from "../../gen/rules/mtrack_rules";
-import { apiError, del, get, post } from "./rest";
+import { configClient } from "../grpc/client";
+import { mapBluetooth } from "../grpc/bluetooth";
+import { callError } from "../grpc/library";
 
 export async function fetchBluetooth(
   signal?: AbortSignal,
 ): Promise<BluetoothStatus> {
-  const res = await get("/bluetooth", signal);
-  if (!res.ok) throw await apiError(res, "Failed to read Bluetooth");
-  return res.json();
+  try {
+    return mapBluetooth(await configClient.getBluetooth({}, { signal }));
+  } catch (e) {
+    throw callError(e, "Failed to read Bluetooth");
+  }
 }
 
 /** Opens the pairing window for `seconds`, or closes it. The answer is the
@@ -34,19 +38,25 @@ export async function setBluetoothPairing(
   open: boolean,
   seconds?: number,
 ): Promise<BluetoothStatus> {
-  const res = await post(
-    "/bluetooth/pairing",
-    JSON.stringify(open ? { open, seconds } : { open }),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to change pairing");
-  return res.json();
+  try {
+    return mapBluetooth(
+      await configClient.setBluetoothPairing({
+        open,
+        seconds: open ? seconds : undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to change pairing");
+  }
 }
 
 /** Forgets a paired phone, which must pair again. */
 export async function forgetBluetoothPhone(
   address: string,
 ): Promise<BluetoothStatus> {
-  const res = await del(`/bluetooth/devices/${encodeURIComponent(address)}`);
-  if (!res.ok) throw await apiError(res, "Failed to forget the phone");
-  return res.json();
+  try {
+    return mapBluetooth(await configClient.forgetBluetoothDevice({ address }));
+  } catch (e) {
+    throw callError(e, "Failed to forget the phone");
+  }
 }

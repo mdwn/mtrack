@@ -768,6 +768,9 @@ mod tests {
             "BrowseDirectory",
             "CreateSongInDirectory",
             "BulkImportSongs",
+            "GetBluetooth",
+            "SetBluetoothPairing",
+            "ForgetBluetoothDevice",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }

@@ -32,7 +32,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde_json::json;
@@ -120,12 +120,6 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/lighting/fit", get(lighting_api::get_fit))
         .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
-        .route("/bluetooth", get(bluetooth::get_bluetooth))
-        .route("/bluetooth/pairing", post(bluetooth::post_pairing))
-        .route(
-            "/bluetooth/devices/{address}",
-            delete(bluetooth::delete_device),
-        )
         .route(
             "/lighting/fixture-types",
             get(lighting_api::get_fixture_types),
