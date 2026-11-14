@@ -531,6 +531,10 @@ message GetPlaylistRequest {
     // the web UI's playlist editor offers to add and to leave out of a
     // fade. Left unset (as the phone app does) the answer is as it was.
     bool with_library = 2;
+    // Whether to answer `song_palettes` for just this playlist's songs,
+    // without the library: what the phone app asks for to show an entry's
+    // colours. `with_library` answers them too, for every loaded song.
+    bool with_palettes = 3;
 }
 
 // PlaylistEntry is one entry of a playlist: its song, without the song's

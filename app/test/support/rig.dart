@@ -532,8 +532,18 @@ class Rig {
         return FakeReply.error(5, "Playlist '$name' not found");
       }
       final response = _playlistResponse(name, list);
-      if (pp.GetPlaylistRequest.fromBuffer(request.payload).withLibrary &&
-          !_noSettings) {
+      final ask = pp.GetPlaylistRequest.fromBuffer(request.payload);
+      // The lean read gives this playlist's songs' palettes and no library;
+      // with_library every song's.
+      if (ask.withPalettes && !_noSettings) {
+        for (final song in list) {
+          final palette = songPalettes[song.name];
+          if (palette != null) {
+            response.songPalettes[song.name] = palette;
+          }
+        }
+      }
+      if (ask.withLibrary && !_noSettings) {
         response.songPalettes.addAll(songPalettes);
       }
       return FakeReply.ok(response);

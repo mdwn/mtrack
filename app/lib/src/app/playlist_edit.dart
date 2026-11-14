@@ -373,8 +373,8 @@ class PlaylistEdit extends ChangeNotifier {
     }
   }
 
-  /// Each loaded song's lighting palette by the song's name, for the
-  /// entries' colours; null until fetched, or when it could not be. A song
+  /// The lighting palette of each song of the playlist (as read, so a song
+  /// added since is not in it, nor any song of a new playlist), by the song's name, for the entries' colours; null until fetched, or when it could not be. A song
   /// with no palette is not in it.
   Map<String, player.SongPalette>? get songPalettes => _songPalettes;
 
@@ -383,6 +383,11 @@ class PlaylistEdit extends ChangeNotifier {
   /// answers none.
   Future<void> loadSongPalettes() async {
     final client = _client();
+    if (isNew) {
+      // Not on the player yet, so there is nothing to read.
+      _songPalettes ??= const {};
+      return;
+    }
     if (_songPalettes != null ||
         _loadingSongPalettes ||
         client == null ||
@@ -391,7 +396,7 @@ class PlaylistEdit extends ChangeNotifier {
     }
     _loadingSongPalettes = true;
     try {
-      final response = await client.getPlaylistWithLibrary(allSongsName);
+      final response = await client.getPlaylistWithPalettes(name);
       if (!_disposed) {
         _songPalettes = Map.unmodifiable(response.songPalettes);
       }

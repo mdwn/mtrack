@@ -196,12 +196,13 @@ class PlayerClient {
     player.GetPlaylistResponse.fromBuffer,
   );
 
-  /// The playlist [name] as [getPlaylist] has it, with what the player has
-  /// loaded as well: each song's lighting palette (`songPalettes`).
-  Future<player.GetPlaylistResponse> getPlaylistWithLibrary(String name) =>
+  /// The playlist [name] as [getPlaylist] has it, with the lighting palette
+  /// of each of its songs (`songPalettes`). Not the whole library, which is
+  /// too large for Bluetooth.
+  Future<player.GetPlaylistResponse> getPlaylistWithPalettes(String name) =>
       call(
         'GetPlaylist',
-        player.GetPlaylistRequest(name: name, withLibrary: true),
+        player.GetPlaylistRequest(name: name, withPalettes: true),
         player.GetPlaylistResponse.fromBuffer,
       );
 
