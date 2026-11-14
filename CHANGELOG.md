@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reads, the device lists, the song reads, the Bluetooth status and the controller restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
+- **`bind_address` for the gRPC controller**: the address it listens on, every interface
+  (`0.0.0.0`) by default as before. `bind_address: 127.0.0.1` keeps gRPC to the player's own
+  machine; the phone app then stays on Bluetooth, since `GetNetworkInfo` names no port.
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
   network at all. Add `- kind: ble` (optionally with a `name` to advertise, which defaults to the
   hostname) to a profile's `controllers`. Phones pair once and are trusted from then on. The

@@ -5,7 +5,10 @@ show, and the calls below) and `ConfigService` (what the editor pages use; see
 [ConfigService](#configservice)), defined in
 [`player.proto`](https://github.com/mdwn/mtrack/blob/main/src/proto/player/v1/player.proto).
 The gRPC controller listens on port 43234 unless the profile's `grpc` controller sets another
-`port` (see [Player Configuration](../configuration/player-config.md)).
+`port` (see [Player Configuration](../configuration/player-config.md)). It listens on every
+interface unless the controller sets `bind_address`: `127.0.0.1` keeps it to the player's own
+machine, where the `mtrack` CLI still reaches it, the phone app does not connect over Wi-Fi, and
+`GetNetworkInfo` names no port.
 
 Any number of clients can connect, including clients on other machines. That makes it a
 fallback for when a MIDI controller is not behaving: you can still start, stop and move
