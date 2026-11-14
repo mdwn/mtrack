@@ -33,9 +33,19 @@ import {
 } from "../../src/gen/player/v1/player_pb";
 import { CONFIG_STORE, FIT, STATUS } from "../mock-server/test-data";
 import { getConfigReply } from "../support/config-rpc";
-import { readinessReply, testOptionsReply } from "../support/lighting-rpc";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  fixtureSettingsReply,
+  fixtureTypeGdtfReply,
+  fixtureTypeInfoReply,
+  fixtureTypeListReply,
+  readinessReply,
+  settingsSavedReply,
+  testOptionsReply,
+} from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import type {
+  FixtureTypeEntry,
   GdtfMode,
   Readiness,
   Status,
@@ -72,7 +82,7 @@ const PAR = "LED Par";
 const MOVER = "Spot Mover";
 
 /** The PB15's modes, as the archive gives them. */
-const MODES = [
+const MODES: GdtfMode[] = [
   {
     name: "1: RGB",
     footprint: 3,
@@ -227,7 +237,7 @@ function stateWith(extra: Record<string, unknown> = {}) {
   };
 }
 
-const FIXTURE_TYPES = {
+const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
   [BRICK]: {
     fixture_type: {
       name: BRICK,
@@ -237,6 +247,8 @@ const FIXTURE_TYPES = {
       strobe_dmx_offset: null,
     },
     file: null,
+    owner: null,
+    form_editable: false,
     extension: "gdtf",
     referential: true,
     rich: false,
@@ -263,6 +275,8 @@ const FIXTURE_TYPES = {
       strobe_dmx_offset: null,
     },
     file: "led_par.light",
+    owner: { file: "led_par.light", editable: true, reason: null },
+    form_editable: true,
     extension: "light",
     referential: false,
     rich: false,
@@ -278,6 +292,8 @@ const FIXTURE_TYPES = {
       strobe_dmx_offset: null,
     },
     file: "spot_mover.fixture",
+    owner: { file: "spot_mover.fixture", editable: true, reason: null },
+    form_editable: false,
     extension: "fixture",
     referential: false,
     rich: true,
@@ -632,70 +648,71 @@ async function rig(page: Page, status: StatusExtras = {}) {
     LightingService.method.getLightingReadiness,
     readinessReply(READINESS as Readiness),
   );
-  await page.route(/\/api\/lighting\/fixture-types(\/|\?|$)/, (route) => {
-    const url = decoded(route);
-    const m = url.match(/fixture-types\/([^/?]+)(\/[a-z]+)?/);
-    if (!m) return json(route, { fixture_types: FIXTURE_TYPES, errors: [] });
-    const [, name, sub] = m;
-    const entry = FIXTURE_TYPES[name as keyof typeof FIXTURE_TYPES];
-    if (!entry) return route.fallback();
-    if (sub === "/gdtf") {
-      return json(route, {
-        archive: "lighting/library/pb15.gdtf",
-        rig: "docs-brick/rig-v1.json",
-        thumbnail: null,
-        beam: {
-          type: "Wash",
-          beam_angle: 13,
-          field_angle: 25,
-          luminous_flux: 475,
-          color_temperature: 5500,
-          power: 12,
-        },
-        about:
-          "Battery-powered uplight and spotlight; bricks connect into clusters.",
-        venues: [
-          {
-            name: "house",
-            fixtures: FIXTURES.filter((f) => f.fixture_type === BRICK).map(
-              (f) => ({ name: f.name, mode: f.mode }),
-            ),
-          },
-        ],
-        inspection: {
-          fixture: "PB15 PixelBrick",
-          manufacturer: "Astera LED Technology",
-          suggested_name: BRICK,
-          fixture_types_dir: "lighting/fixture_types",
-          modes: MODES,
-        },
-      });
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({ fixture_types: FIXTURE_TYPES, errors: [] }),
+  );
+  rpc.unary(LightingService.method.getFixtureType, (req) => {
+    const entry = FIXTURE_TYPES[req.name];
+    if (!entry) {
+      throw new ConnectError(
+        `Fixture type not found: ${req.name}`,
+        Code.NotFound,
+      );
     }
-    if (sub === "/settings") {
-      if (route.request().method() !== "GET")
-        return json(route, {
-          version: "v2",
-          rename: null,
-          venue_versions: {},
-          config_references: [],
-          venue_error: null,
-        });
-      return json(route, {
-        name,
-        movement: { max_pan_speed: null, max_tilt_speed: null },
-        strobe_curve: null,
-        strobe: { steps: 0, automatic: "declared" },
-        version: "v1",
-      });
-    }
-    return json(route, {
+    return fixtureTypeInfoReply({
       ...entry,
+      footprint: undefined,
+      gdtf: undefined,
       dsl:
-        name === PAR
+        req.name === PAR
           ? 'fixture_type "LED Par" {\n  channels: 4\n  channel_map: { "red": 1, "green": 2, "blue": 3, "dimmer": 4 }\n}\n'
           : "",
     });
   });
+  rpc.unary(LightingService.method.getFixtureTypeGdtfDetails, () =>
+    fixtureTypeGdtfReply({
+      archive: "lighting/library/pb15.gdtf",
+      rig: "docs-brick/rig-v1.json",
+      thumbnail: null,
+      beam: {
+        type: "Wash",
+        beam_angle: 13,
+        field_angle: 25,
+        luminous_flux: 475,
+        color_temperature: 5500,
+        power: 12,
+      },
+      about:
+        "Battery-powered uplight and spotlight; bricks connect into clusters.",
+      venues: [
+        {
+          name: "house",
+          fixtures: FIXTURES.filter((f) => f.fixture_type === BRICK).map(
+            (f) => ({ name: f.name, mode: f.mode }),
+          ),
+        },
+      ],
+      inspection: { modes: MODES },
+    }),
+  );
+  rpc.unary(LightingService.method.getFixtureTypeSettings, (req) =>
+    fixtureSettingsReply({
+      name: req.name,
+      movement: { max_pan_speed: null, max_tilt_speed: null },
+      strobe_curve: null,
+      strobe: { steps: 0, automatic: "declared" },
+      version: "v1",
+    }),
+  );
+  rpc.unary(LightingService.method.saveFixtureTypeSettings, () =>
+    settingsSavedReply({
+      version: "v2",
+      rename: null,
+      venue_versions: {},
+      venue_error: null,
+    }),
+  );
   rpc.unary(LightingService.method.getFixtureTestOptions, (req) =>
     testOptionsReply(testOptions(req.fixtureType || BRICK) as TestOptions),
   );

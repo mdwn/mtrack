@@ -16,6 +16,9 @@ import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
+  FixtureStrobeCurve,
+  FixtureTypeFile,
+  FixtureTypeSettingsSchema,
   LightingFitSchema,
   LightingReadinessSchema,
   StartFixtureTestRequestSchema,
@@ -23,7 +26,10 @@ import {
 import { BadAnswerError } from "../lighting/answer";
 import {
   mapFit,
+  mapFixtureSettings,
   mapReadiness,
+  saveFixtureSettingsRequest,
+  saveFixtureTypeRequest,
   startFixtureTestRequest,
   testCallError,
   TestRefused,
@@ -139,5 +145,75 @@ describe("an answer the page cannot read", () => {
       BadAnswerError,
     );
     expect(() => mapFit(create(LightingFitSchema, {}))).toThrow(BadAnswerError);
+  });
+});
+
+describe("a fixture type's save", () => {
+  it("sends the form asked for, the old name and the directories", () => {
+    const r = saveFixtureTypeRequest(
+      "Wash",
+      { text: "t" },
+      { ext: "light", dir: "types", from: "Par", venuesDir: "venues" },
+    );
+    expect(r.fileForm).toBe(FixtureTypeFile.LIGHT);
+    expect([r.from, r.dir, r.venuesDir]).toEqual(["Par", "types", "venues"]);
+    expect(r.body).toEqual({ case: "dsl", value: "t" });
+    const none = saveFixtureTypeRequest("Wash", { text: "t" });
+    expect(none.fileForm).toBe(FixtureTypeFile.UNSPECIFIED);
+    expect([none.from, none.dir, none.venuesDir]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("sends the channel-map form as its own body, with the strobe figures it states", () => {
+    const r = saveFixtureTypeRequest("Par", {
+      channels: { dimmer: 1 },
+      min_strobe_frequency: 0.5,
+      strobe_dmx_offset: null,
+    });
+    expect(r.body).toEqual({
+      case: "channelMap",
+      value: {
+        channels: { dimmer: 1 },
+        maxStrobeFrequency: undefined,
+        minStrobeFrequency: 0.5,
+        strobeDmxOffset: undefined,
+      },
+    });
+  });
+});
+
+describe("a fixture's settings", () => {
+  it("send an automatic strobe curve as none, and a stated one as itself", () => {
+    const base = {
+      name: "Brick",
+      movement: { max_pan_speed: 90, max_tilt_speed: null },
+      write: false,
+    };
+    const automatic = saveFixtureSettingsRequest("Brick", base, {});
+    expect(automatic.strobeCurve).toBe(FixtureStrobeCurve.UNSPECIFIED);
+    expect(automatic.expectedRevision).toBeUndefined();
+    expect(automatic.movement).toEqual({
+      maxPanSpeed: 90,
+      maxTiltSpeed: undefined,
+    });
+    const stated = saveFixtureSettingsRequest(
+      "Brick",
+      { ...base, strobe_curve: "linear" as const },
+      { dir: "t" },
+      "rev",
+    );
+    expect(stated.strobeCurve).toBe(FixtureStrobeCurve.LINEAR);
+    expect([stated.expectedRevision, stated.dir]).toEqual(["rev", "t"]);
+  });
+
+  it("read as an answer the page cannot misread", () => {
+    expect(() =>
+      mapFixtureSettings(
+        create(FixtureTypeSettingsSchema, { strobeCurve: 99 as never }),
+      ),
+    ).toThrow(BadAnswerError);
   });
 });

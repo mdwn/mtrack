@@ -14,6 +14,7 @@
 
 import { api, expect, synthGdtf, test } from "./harness";
 import { card } from "../support/locators";
+import { lightingClientAt } from "../support/player-client";
 
 // Fixture types and venues kept in subdirectories: the engine always read
 // them, and the Lighting area must see the same project — listed, opened
@@ -51,15 +52,13 @@ test.describe("Project files in subdirectories", () => {
     for (const name of ["Par", "Brick"])
       await expect(card(page, name)).toBeVisible();
 
-    const list = await api<{
-      fixture_types: Record<string, { file: string | null }>;
-      errors: unknown[];
-    }>(project, "/lighting/fixture-types");
+    const lighting = lightingClientAt(project.url);
+    const list = await lighting.listFixtureTypes({});
     expect(list.errors).toEqual([]);
-    expect(list.fixture_types.Par.file).toBe("rig/par.light");
-    expect(list.fixture_types.Brick.file).toBe("rig/gdtf/brick.fixture");
-    await api(project, "/lighting/fixture-types/Par");
-    await api(project, "/lighting/fixture-types/Brick/gdtf");
+    expect(list.fixtureTypes.Par.file).toBe("rig/par.light");
+    expect(list.fixtureTypes.Brick.file).toBe("rig/gdtf/brick.fixture");
+    await lighting.getFixtureType({ name: "Par" });
+    await lighting.getFixtureTypeGdtfDetails({ name: "Brick" });
 
     const venues = await api<{ venues: Record<string, unknown> }>(
       project,
@@ -68,15 +67,16 @@ test.describe("Project files in subdirectories", () => {
     expect(Object.keys(venues.venues)).toEqual(["house"]);
     await api(project, "/lighting/venues/house");
 
-    const res = await fetch(`${project.url}/api/lighting/fixture-types/Par`, {
-      method: "PUT",
-      headers: { "content-type": "text/plain" },
-      body: PAR.replace('"blue": 3', '"blue": 3, "white": 4').replace(
-        "channels: 3",
-        "channels: 4",
-      ),
+    await lighting.saveFixtureType({
+      name: "Par",
+      body: {
+        case: "dsl",
+        value: PAR.replace('"blue": 3', '"blue": 3, "white": 4').replace(
+          "channels: 3",
+          "channels: 4",
+        ),
+      },
     });
-    expect(res.status, await res.text()).toBe(200);
     expect(project.read("lighting/fixture_types/rig/par.light")).toContain(
       '"white": 4',
     );

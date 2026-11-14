@@ -14,6 +14,9 @@
 
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The Venues page's plot for a venue that is not the current one: it shows
@@ -46,7 +49,7 @@ let counter = 0;
 const uniq = (prefix: string) =>
   `${prefix}-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
 
-const BRICK_TYPE = {
+const BRICK_TYPE = typeEntry("brick", {
   fixture_type: {
     name: "brick",
     channels: { red: 1, green: 2, blue: 3 },
@@ -56,9 +59,7 @@ const BRICK_TYPE = {
   },
   file: "brick.fixture",
   extension: "fixture",
-  referential: false,
-  rich: false,
-};
+});
 
 /** An in-memory venues directory behind `page.route`: the list, each venue's
  *  GET, and PUT with the version check the server makes (409 on a stale
@@ -156,19 +157,14 @@ async function routeVenues(
       });
     },
   );
-  await page.route("**/api/lighting/fixture-types*", async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    if (/fixture-types\/[^?]/.test(route.request().url()))
-      return route.fallback();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        fixture_types: { brick: BRICK_TYPE },
-        errors: [],
-      }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({
+      fixture_types: { brick: BRICK_TYPE },
+      errors: [],
+    }),
+  );
   return {
     puts,
     file: (name: string) => files.get(name)!.body,

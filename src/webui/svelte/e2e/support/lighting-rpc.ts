@@ -29,8 +29,10 @@ import {
   FitCapability,
   FitDepth,
   FitHeight,
+  FixtureStrobeCurve,
   FixtureTestDimmer,
   FixtureTestUnavailable,
+  FixtureTypeFile,
   LightingSeverity,
   LightingWant,
   ReadinessCheckKey,
@@ -38,6 +40,15 @@ import {
   type FitGroupSchema,
   type FixtureTestAnswerSchema,
   type FixtureTestOptionsSchema,
+  type DeleteFixtureTypeResponseSchema,
+  type FixtureTypeGdtfDetailsSchema,
+  type FixtureTypeInfoSchema,
+  type FixtureTypeSettingsSavedSchema,
+  type FixtureTypeSettingsSchema,
+  type ListFixtureTypesResponseSchema,
+  type SaveFixtureTypeRequest,
+  type SaveFixtureTypeResponseSchema,
+  type SaveFixtureTypeSettingsRequest,
   type GetLightShowResponseSchema,
   type LightingFitSchema,
   type LightingPreviewSchema,
@@ -62,17 +73,28 @@ import type {
   FitGroup,
   FitReport,
   Fix,
+  FixtureSettingsData,
+  FixtureTypeDeleted,
+  FixtureTypeEntry,
+  FixtureTypeGdtf,
+  FixtureTypeList,
+  FixtureTypeSaved,
   Height,
   LightingGroup,
   LightingValidation,
   Preview,
   Readiness,
+  Rename,
+  SettingsRequest,
+  SettingsSaved,
   Severity,
+  StrobeCurve,
   Summary,
   TestAnswer,
   TestOptions,
   TestUnavailable,
   Vec3,
+  VenueError,
   Want,
   Warning,
 } from "../../src/gen/rules/mtrack_rules";
@@ -566,5 +588,283 @@ export function testAnswerReply(
           };
       }
     }),
+  };
+}
+
+// ---- Fixture types ----
+
+const STROBE_CURVES: Record<StrobeCurve, FixtureStrobeCurve> = {
+  period: FixtureStrobeCurve.PERIOD,
+  linear: FixtureStrobeCurve.LINEAR,
+  declared: FixtureStrobeCurve.DECLARED,
+};
+
+const curve = (c: StrobeCurve | null): FixtureStrobeCurve =>
+  c ? STROBE_CURVES[c] : FixtureStrobeCurve.UNSPECIFIED;
+
+/** A fixture type's entry with everything filled in, for a spec that states
+ *  only what it is about: a hand-written type with a file `<name>.light`
+ *  unless `over` says otherwise. */
+export function typeEntry(
+  name: string,
+  over: Partial<FixtureTypeEntry> = {},
+): FixtureTypeEntry {
+  const extension = over.extension === undefined ? "light" : over.extension;
+  const file =
+    over.file === undefined && extension ? `${name}.${extension}` : over.file;
+  return {
+    referential: false,
+    rich: false,
+    fixture_type: {
+      name,
+      channels: {},
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: file ?? null,
+    extension,
+    owner: file ? { file, editable: true, reason: null } : null,
+    form_editable: false,
+    ...over,
+  };
+}
+
+/** A fixture type, as `GetFixtureType` and the listing answer it. */
+export function fixtureTypeInfoReply(
+  e: FixtureTypeEntry,
+): MessageInitShape<typeof FixtureTypeInfoSchema> {
+  return {
+    referential: e.referential,
+    footprint: e.footprint ?? undefined,
+    rich: e.rich,
+    fixtureType: {
+      name: e.fixture_type.name,
+      channels: e.fixture_type.channels,
+      maxStrobeFrequency: e.fixture_type.max_strobe_frequency ?? undefined,
+      minStrobeFrequency: e.fixture_type.min_strobe_frequency ?? undefined,
+      strobeDmxOffset: e.fixture_type.strobe_dmx_offset ?? undefined,
+    },
+    file: e.file ?? undefined,
+    extension: e.extension ?? undefined,
+    owner: e.owner
+      ? {
+          file: e.owner.file,
+          editable: e.owner.editable,
+          reason: e.owner.reason ?? undefined,
+        }
+      : undefined,
+    formEditable: e.form_editable,
+    gdtf: e.gdtf
+      ? {
+          fixture: e.gdtf.fixture,
+          manufacturer: e.gdtf.manufacturer,
+          modes: e.gdtf.modes,
+          beam: e.gdtf.beam
+            ? {
+                beamType: e.gdtf.beam.type ?? undefined,
+                angle: e.gdtf.beam.angle ?? undefined,
+              }
+            : undefined,
+          thumbnail: e.gdtf.thumbnail ?? undefined,
+          usedBy: e.gdtf.used_by,
+          inUse: e.gdtf.in_use,
+        }
+      : undefined,
+    dsl: e.dsl ?? undefined,
+  };
+}
+
+/** The fixture types of a directory. */
+export function fixtureTypeListReply(
+  list: FixtureTypeList,
+): MessageInitShape<typeof ListFixtureTypesResponseSchema> {
+  return {
+    fixtureTypes: Object.fromEntries(
+      Object.entries(list.fixture_types).map(([name, e]) => [
+        name,
+        fixtureTypeInfoReply(e),
+      ]),
+    ),
+    errors: list.errors,
+  };
+}
+
+/** What a GDTF fixture's archive holds. */
+export function fixtureTypeGdtfReply(
+  g: FixtureTypeGdtf,
+): MessageInitShape<typeof FixtureTypeGdtfDetailsSchema> {
+  return {
+    archive: g.archive,
+    rig: g.rig ?? undefined,
+    thumbnail: g.thumbnail ?? undefined,
+    beam: g.beam
+      ? {
+          beamType: g.beam.type ?? undefined,
+          beamAngle: g.beam.beam_angle ?? undefined,
+          fieldAngle: g.beam.field_angle ?? undefined,
+          luminousFlux: g.beam.luminous_flux ?? undefined,
+          colorTemperature: g.beam.color_temperature ?? undefined,
+          power: g.beam.power ?? undefined,
+        }
+      : undefined,
+    about: g.about ?? undefined,
+    venues: g.venues.map((v) => ({
+      name: v.name,
+      fixtures: v.fixtures.map((f) => ({
+        name: f.name,
+        mode: f.mode ?? undefined,
+      })),
+    })),
+    modes: g.inspection.modes.map((m) => ({
+      name: m.name,
+      footprint: m.footprint,
+      outcome:
+        m.refused !== undefined
+          ? { case: "refused" as const, value: m.refused }
+          : {
+              case: "facts" as const,
+              value: {
+                capabilities: (m.capabilities ?? []).map(
+                  (c) => CAPABILITIES[c],
+                ),
+                wants: (m.wants ?? []).map((w) => WANTS[w]),
+                cells: m.cells ?? 0,
+                strobeRange: m.strobe_range
+                  ? {
+                      minHz: m.strobe_range.min_hz ?? undefined,
+                      maxHz: m.strobe_range.max_hz,
+                    }
+                  : undefined,
+                channels: (m.channels ?? []).map(([offset, name]) => ({
+                  offset,
+                  name,
+                })),
+              },
+            },
+    })),
+  };
+}
+
+function renameReply(r: Rename | null) {
+  return r ?? undefined;
+}
+
+function venueErrorReply(e: VenueError | null) {
+  return e ?? undefined;
+}
+
+/** A fixture type saved; a rename says what it did to the venues. */
+export function fixtureTypeSavedReply(
+  s: Pick<FixtureTypeSaved, "name"> &
+    Partial<Pick<FixtureTypeSaved, "rename" | "venue_error">>,
+): MessageInitShape<typeof SaveFixtureTypeResponseSchema> {
+  return {
+    name: s.name,
+    rename: renameReply(s.rename ?? null),
+    venueError: venueErrorReply(s.venue_error ?? null),
+  };
+}
+
+/** A fixture type deleted, and what became of its archive. */
+export function fixtureTypeDeletedReply(
+  d: Pick<FixtureTypeDeleted, "name"> & Partial<FixtureTypeDeleted>,
+): MessageInitShape<typeof DeleteFixtureTypeResponseSchema> {
+  return {
+    name: d.name,
+    archiveRemoved: d.archive_removed ?? undefined,
+    archiveKept: d.archive_kept ?? false,
+  };
+}
+
+/** A GDTF fixture's own settings. */
+export function fixtureSettingsReply(
+  s: FixtureSettingsData,
+): MessageInitShape<typeof FixtureTypeSettingsSchema> {
+  return {
+    name: s.name,
+    movement: {
+      maxPanSpeed: s.movement.max_pan_speed ?? undefined,
+      maxTiltSpeed: s.movement.max_tilt_speed ?? undefined,
+    },
+    strobeCurve: curve(s.strobe_curve),
+    strobe: s.strobe
+      ? { steps: s.strobe.steps, automatic: curve(s.strobe.automatic) }
+      : undefined,
+    revision: s.version,
+  };
+}
+
+/** What a settings save did, or, planned, would do. */
+export function settingsSavedReply(
+  s: SettingsSaved,
+): MessageInitShape<typeof FixtureTypeSettingsSavedSchema> {
+  return {
+    revision: s.version,
+    rename: renameReply(s.rename),
+    venueRevisions: s.venue_versions,
+    venueError: venueErrorReply(s.venue_error),
+  };
+}
+
+/** What a `SaveFixtureType` call sent, as the page's old `PUT` carried it:
+ *  the name, the directories and the old name of a rename, the form asked
+ *  for, and the body (the file's text, or the channel-map form). */
+export function savedTypeRequest(r: SaveFixtureTypeRequest) {
+  const ext =
+    r.fileForm === FixtureTypeFile.LIGHT
+      ? "light"
+      : r.fileForm === FixtureTypeFile.FIXTURE
+        ? "fixture"
+        : null;
+  return {
+    name: r.name,
+    from: r.from ?? null,
+    dir: r.dir ?? null,
+    venuesDir: r.venuesDir ?? null,
+    ext,
+    text: r.body.case === "dsl" ? r.body.value : null,
+    form:
+      r.body.case === "channelMap"
+        ? {
+            channels: { ...r.body.value.channels },
+            max_strobe_frequency: r.body.value.maxStrobeFrequency ?? null,
+            min_strobe_frequency: r.body.value.minStrobeFrequency ?? null,
+            strobe_dmx_offset: r.body.value.strobeDmxOffset ?? null,
+          }
+        : null,
+  };
+}
+
+/** What a `SaveFixtureTypeSettings` call sent, as the page's old `POST`
+ *  carried it: the body, and the revision it was made against (the old
+ *  `If-Match`). */
+export function savedSettingsRequest(
+  r: SaveFixtureTypeSettingsRequest,
+): SettingsRequest & {
+  type: string;
+  revision: string | null;
+  dir: string | null;
+  venuesDir: string | null;
+} {
+  const curves: Record<FixtureStrobeCurve, StrobeCurve | null> = {
+    [FixtureStrobeCurve.UNSPECIFIED]: null,
+    [FixtureStrobeCurve.PERIOD]: "period",
+    [FixtureStrobeCurve.LINEAR]: "linear",
+    [FixtureStrobeCurve.DECLARED]: "declared",
+  };
+  return {
+    type: r.name,
+    name: r.newName,
+    movement: {
+      max_pan_speed: r.movement?.maxPanSpeed ?? null,
+      max_tilt_speed: r.movement?.maxTiltSpeed ?? null,
+    },
+    strobe_curve: curves[r.strobeCurve],
+    write: r.write,
+    venue_versions: { ...r.venueRevisions },
+    revision: r.expectedRevision ?? null,
+    dir: r.dir ?? null,
+    venuesDir: r.venuesDir ?? null,
   };
 }

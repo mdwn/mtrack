@@ -23,8 +23,10 @@ use crate::lighting::fit::{self, Capability, Depth, Height, Want};
 use crate::lighting::fixture_test::{
     ControlSupport, DegreeRange, DimmerControl, FrameChannel, HzRange,
 };
+use crate::lighting::types::{FixtureType, MovementLimits, StrobeCurve};
 use crate::proto::player::v1 as proto;
 use crate::webui::wire::fixture_test as test_wire;
+use crate::webui::wire::fixture_types as types_wire;
 use crate::webui::wire::preview as preview_wire;
 use crate::webui::wire::readiness as ready;
 
@@ -656,5 +658,242 @@ pub(super) fn test_answer(a: &test_wire::TestAnswer) -> proto::FixtureTestAnswer
         expires_in_secs: a.expires_in_secs,
         frame: a.frame.iter().map(frame_channel).collect(),
         warnings: a.warnings.iter().map(test_warning).collect(),
+    }
+}
+
+// ---- Fixture types ----
+
+fn fixture_type_channels(t: &FixtureType) -> proto::FixtureTypeChannels {
+    proto::FixtureTypeChannels {
+        name: t.name().to_string(),
+        channels: t
+            .channels()
+            .iter()
+            .map(|(name, offset)| (name.clone(), u32::from(*offset)))
+            .collect(),
+        max_strobe_frequency: t.max_strobe_frequency(),
+        min_strobe_frequency: t.min_strobe_frequency(),
+        strobe_dmx_offset: t.strobe_dmx_offset().map(u32::from),
+    }
+}
+
+fn file_owner(o: &types_wire::LightingOwner) -> proto::FixtureFileOwner {
+    proto::FixtureFileOwner {
+        file: o.file.clone(),
+        editable: o.editable,
+        reason: o.reason.clone(),
+    }
+}
+
+fn gdtf_card(g: &types_wire::GdtfSummary) -> proto::GdtfCard {
+    proto::GdtfCard {
+        fixture: g.fixture.clone(),
+        manufacturer: g.manufacturer.clone(),
+        modes: count(g.modes),
+        beam: g.beam.as_ref().map(|b| proto::GdtfBeamBrief {
+            beam_type: b.beam_type.clone(),
+            angle: b.angle,
+        }),
+        thumbnail: g.thumbnail.clone(),
+        used_by: count(g.used_by),
+        in_use: g
+            .in_use
+            .iter()
+            .map(|m| proto::GdtfModeUse {
+                mode: m.mode.clone(),
+                count: count(m.count),
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn fixture_type_info(e: &types_wire::FixtureTypeEntry) -> proto::FixtureTypeInfo {
+    proto::FixtureTypeInfo {
+        referential: e.referential,
+        footprint: e.footprint.flatten().map(u32::from),
+        rich: e.rich,
+        fixture_type: Some(fixture_type_channels(&e.fixture_type)),
+        file: e.file.clone(),
+        extension: e.extension.clone(),
+        owner: e.owner.as_ref().map(file_owner),
+        form_editable: e.form_editable,
+        gdtf: e.gdtf.as_ref().and_then(Option::as_ref).map(gdtf_card),
+        dsl: e.dsl.clone().flatten(),
+    }
+}
+
+pub(super) fn fixture_type_list(
+    l: &types_wire::FixtureTypeList,
+) -> proto::ListFixtureTypesResponse {
+    proto::ListFixtureTypesResponse {
+        fixture_types: l
+            .fixture_types
+            .iter()
+            .map(|(name, entry)| (name.clone(), fixture_type_info(entry)))
+            .collect(),
+        errors: l
+            .errors
+            .iter()
+            .map(|e| proto::LightingFileProblem {
+                file: e.file.clone(),
+                error: e.error.clone(),
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn rename(r: &types_wire::Rename) -> proto::FixtureTypeRename {
+    proto::FixtureTypeRename {
+        from: r.from.clone(),
+        to: r.to.clone(),
+        venues: r
+            .venues
+            .iter()
+            .map(|v| proto::FixtureTypeRenamedLines {
+                venue: v.venue.clone(),
+                file: v.file.clone(),
+                lines: count(v.lines),
+            })
+            .collect(),
+        lines: count(r.lines),
+    }
+}
+
+pub(super) fn fixture_type_saved(
+    s: &types_wire::FixtureTypeSaved,
+) -> proto::SaveFixtureTypeResponse {
+    proto::SaveFixtureTypeResponse {
+        name: s.name.clone(),
+        rename: s.rename.as_ref().map(rename),
+        venue_error: s.venue_error.as_ref().map(venue_error),
+    }
+}
+
+pub(super) fn fixture_type_deleted(
+    d: &types_wire::FixtureTypeDeleted,
+) -> proto::DeleteFixtureTypeResponse {
+    proto::DeleteFixtureTypeResponse {
+        name: d.name.clone(),
+        archive_removed: d.archive_removed.clone(),
+        archive_kept: d.archive_kept,
+    }
+}
+
+fn gdtf_beam(b: &types_wire::GdtfBeam) -> proto::GdtfBeam {
+    proto::GdtfBeam {
+        beam_type: b.beam_type.clone(),
+        beam_angle: b.beam_angle,
+        field_angle: b.field_angle,
+        luminous_flux: b.luminous_flux,
+        color_temperature: b.color_temperature,
+        power: b.power,
+    }
+}
+
+fn gdtf_mode(m: &types_wire::GdtfMode) -> proto::GdtfModeInfo {
+    use proto::gdtf_mode_info::Outcome;
+    let outcome = match &m.refused {
+        Some(reason) => Outcome::Refused(reason.clone()),
+        None => Outcome::Facts(proto::GdtfModeFacts {
+            capabilities: m.capabilities.iter().flatten().map(capability).collect(),
+            wants: wants(m.wants.as_deref().unwrap_or_default()),
+            cells: count(m.cells.unwrap_or_default()),
+            strobe_range: m.strobe_range.as_ref().map(|r| proto::GdtfStrobeRange {
+                min_hz: r.min_hz,
+                max_hz: r.max_hz,
+            }),
+            channels: m
+                .channels
+                .iter()
+                .flatten()
+                .map(|(offset, name)| proto::GdtfChannel {
+                    offset: u32::from(*offset),
+                    name: name.clone(),
+                })
+                .collect(),
+        }),
+    };
+    proto::GdtfModeInfo {
+        name: m.name.clone(),
+        footprint: u32::from(m.footprint),
+        outcome: Some(outcome),
+    }
+}
+
+pub(super) fn fixture_type_gdtf(g: &types_wire::FixtureTypeGdtf) -> proto::FixtureTypeGdtfDetails {
+    proto::FixtureTypeGdtfDetails {
+        archive: g.archive.clone(),
+        rig: g.rig.clone(),
+        thumbnail: g.thumbnail.clone(),
+        beam: g.beam.as_ref().map(gdtf_beam),
+        about: g.about.clone(),
+        venues: g
+            .venues
+            .iter()
+            .map(|v| proto::GdtfTypeVenue {
+                name: v.name.clone(),
+                fixtures: v
+                    .fixtures
+                    .iter()
+                    .map(|f| proto::GdtfTypeVenueFixture {
+                        name: f.name.clone(),
+                        mode: f.mode.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        modes: g.inspection.modes.iter().map(gdtf_mode).collect(),
+    }
+}
+
+pub(super) fn strobe_curve(c: StrobeCurve) -> i32 {
+    (match c {
+        StrobeCurve::Period => proto::FixtureStrobeCurve::Period,
+        StrobeCurve::Linear => proto::FixtureStrobeCurve::Linear,
+        StrobeCurve::Declared => proto::FixtureStrobeCurve::Declared,
+    }) as i32
+}
+
+/// A curve a request states; none for the automatic one, and for a number
+/// that names no curve.
+pub(super) fn strobe_curve_of(value: i32) -> Option<StrobeCurve> {
+    match proto::FixtureStrobeCurve::try_from(value) {
+        Ok(proto::FixtureStrobeCurve::Period) => Some(StrobeCurve::Period),
+        Ok(proto::FixtureStrobeCurve::Linear) => Some(StrobeCurve::Linear),
+        Ok(proto::FixtureStrobeCurve::Declared) => Some(StrobeCurve::Declared),
+        _ => None,
+    }
+}
+
+pub(super) fn movement(m: &MovementLimits) -> proto::FixtureMovementLimits {
+    proto::FixtureMovementLimits {
+        max_pan_speed: m.max_pan_speed,
+        max_tilt_speed: m.max_tilt_speed,
+    }
+}
+
+pub(super) fn fixture_settings(s: &types_wire::FixtureSettingsData) -> proto::FixtureTypeSettings {
+    proto::FixtureTypeSettings {
+        name: s.name.clone(),
+        movement: Some(movement(&s.movement)),
+        strobe_curve: s.strobe_curve.map(strobe_curve).unwrap_or_default(),
+        strobe: s.strobe.as_ref().map(|t| proto::FixtureStrobeTable {
+            steps: count(t.steps),
+            automatic: strobe_curve(t.automatic),
+        }),
+        revision: s.version.clone(),
+    }
+}
+
+pub(super) fn settings_saved(s: &types_wire::SettingsSaved) -> proto::FixtureTypeSettingsSaved {
+    proto::FixtureTypeSettingsSaved {
+        revision: s.version.clone(),
+        rename: s.rename.as_ref().map(rename),
+        venue_revisions: s
+            .venue_versions
+            .iter()
+            .map(|(file, version)| (file.clone(), version.clone()))
+            .collect(),
+        venue_error: s.venue_error.as_ref().map(venue_error),
     }
 }

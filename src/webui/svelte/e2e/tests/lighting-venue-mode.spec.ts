@@ -14,6 +14,13 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import {
+  fixtureTypeGdtfReply,
+  fixtureTypeListReply,
+  typeEntry,
+} from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The venue inspector's mode select and patch strip (venue-exchange design
@@ -141,48 +148,32 @@ async function routeAll(page: Page, name: string, initial: VenueBody) {
         }),
       ),
   );
-  await page.route("**/api/lighting/fixture-types*", (route) => {
-    if (/fixture-types\/[^?]/.test(route.request().url()))
-      return route.fallback();
-    return route.fulfill(
-      json({
-        fixture_types: {
-          brick: {
-            fixture_type: {
-              name: "brick",
-              channels: {},
-              max_strobe_frequency: null,
-              min_strobe_frequency: null,
-              strobe_dmx_offset: null,
-            },
-            file: "brick.fixture",
-            extension: "fixture",
-            referential: true,
-            footprint: null,
-            rich: false,
-            gdtf: null,
-          },
-        },
-        errors: [],
-      }),
-    );
-  });
-  await page.route("**/api/lighting/fixture-types/brick/gdtf*", (route) =>
-    route.fulfill(
-      json({
-        archive: "library/pb15.gdtf",
-        rig: null,
-        thumbnail: null,
-        beam: null,
-        about: null,
-        venues: [],
-        inspection: {
-          fixture: "PB15 PixelBrick",
-          manufacturer: "Astera LED Technology",
-          modes: MODES,
-        },
-      }),
-    ),
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({
+      fixture_types: {
+        brick: typeEntry("brick", {
+          extension: "fixture",
+          referential: true,
+          footprint: null,
+          gdtf: null,
+        }),
+      },
+      errors: [],
+    }),
+  );
+  rpc.unary(
+    LightingService.method.getFixtureTypeGdtfDetails,
+    fixtureTypeGdtfReply({
+      archive: "library/pb15.gdtf",
+      rig: null,
+      thumbnail: null,
+      beam: null,
+      about: null,
+      venues: [],
+      inspection: { modes: MODES },
+    }),
   );
   return { puts };
 }

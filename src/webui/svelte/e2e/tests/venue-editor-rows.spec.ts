@@ -13,6 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 
 // The venue editor's rows: a new row continues the patch and has a name, and
 // a row that cannot be saved blocks the save instead of being dropped. Every
@@ -29,42 +32,25 @@ interface Put {
 }
 
 function type(footprint: number | null) {
-  return {
-    fixture_type: {
-      name: "t",
-      channels: {},
-      max_strobe_frequency: null,
-      min_strobe_frequency: null,
-      strobe_dmx_offset: null,
-    },
-    file: "t.light",
-    extension: "light",
-    referential: false,
-    rich: false,
-    footprint,
-  };
+  return typeEntry("t", { footprint });
 }
 
 async function setUp(page: Page) {
   const puts: Put[] = [];
-  await page.route("**/api/lighting/fixture-types*", (route) => {
-    if (/fixture-types\/[^?]/.test(route.request().url()))
-      return route.fallback();
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        fixture_types: {
-          // Listed in this order, "apar" sorts first: a new row after a
-          // "wash" row must still be a "wash".
-          apar: type(3),
-          wash: type(4),
-          mystery: type(null),
-        },
-        errors: [],
-      }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({
+      fixture_types: {
+        // Listed in this order, "apar" sorts first: a new row after a
+        // "wash" row must still be a "wash".
+        apar: type(3),
+        wash: type(4),
+        mystery: type(null),
+      },
+      errors: [],
+    }),
+  );
   await page.route(/\/api\/lighting\/venues\/[^/?]+(\?.*)?$/, (route) => {
     if (route.request().method() !== "PUT") return route.fallback();
     puts.push(route.request().postDataJSON());

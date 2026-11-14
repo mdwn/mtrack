@@ -13,11 +13,30 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { Code } from "@connectrpc/connect";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import type { FixtureTypeGdtf } from "../../src/gen/rules/mtrack_rules";
+import { fixtureTypeGdtfReply } from "../support/lighting-rpc";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
-// A GDTF-referential type's details: what its archive holds, read from
-// GET /api/lighting/fixture-types/{name}/gdtf. Every test here only reads
-// the mock; nothing is saved, so no test sees another's state.
+// A GDTF-referential type's details: what its archive holds, read with
+// GetFixtureTypeGdtfDetails. Every test here only reads the mock; nothing is
+// saved, so no test sees another's state.
+
+/** The details of an archive, with only what a test is about stated. */
+function details(over: Partial<FixtureTypeGdtf>): FixtureTypeGdtf {
+  return {
+    archive: "library/pb15.gdtf",
+    rig: null,
+    thumbnail: null,
+    beam: null,
+    about: null,
+    venues: [],
+    inspection: { modes: [] },
+    ...over,
+  };
+}
 
 test.describe("Fixture type details (GDTF)", () => {
   test.beforeEach(async ({ page }) => {
@@ -138,16 +157,11 @@ test.describe("Fixture type details (GDTF)", () => {
   test("a fixture whose mode the archive lacks is named in red", async ({
     page,
   }) => {
-    await page.route("**/api/lighting/fixture-types/pixelbrick/gdtf*", (r) =>
-      r.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          archive: "library/pb15.gdtf",
-          rig: null,
-          thumbnail: null,
-          beam: null,
-          about: null,
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.getFixtureTypeGdtfDetails,
+      fixtureTypeGdtfReply(
+        details({
           venues: [
             {
               name: "club",
@@ -158,15 +172,13 @@ test.describe("Fixture type details (GDTF)", () => {
             },
           ],
           inspection: {
-            fixture: "PB15 PixelBrick",
-            manufacturer: "Astera LED Technology",
             modes: [
-              { name: "1: RGB", channel_count: 3, footprint: 3 },
-              { name: "8: RGBS", channel_count: 4, footprint: 4 },
+              { name: "1: RGB", footprint: 3 },
+              { name: "8: RGBS", footprint: 4 },
             ],
           },
         }),
-      }),
+      ),
     );
     await card(page, "pixelbrick").click();
     // Having no default is the normal state: nothing is said about it.
@@ -204,15 +216,11 @@ test.describe("Fixture type details (GDTF)", () => {
   test("an archive that cannot be read is said inline, with no file to edit", async ({
     page,
   }) => {
-    await page.route("**/api/lighting/fixture-types/pixelbrick/gdtf*", (r) =>
-      r.fulfill({
-        status: 400,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error:
-            'fixture type "pixelbrick" references a GDTF archive that cannot be read: library/pb15.gdtf',
-        }),
-      }),
+    const rpc = await mockRpc(page);
+    rpc.error(
+      LightingService.method.getFixtureTypeGdtfDetails,
+      Code.InvalidArgument,
+      'fixture type "pixelbrick" references a GDTF archive that cannot be read: library/pb15.gdtf',
     );
     await card(page, "pixelbrick").click();
     await expect(page.getByTestId("ft-details-error")).toContainText(
@@ -227,13 +235,11 @@ test.describe("Fixture type details (GDTF)", () => {
   test("without a rig the viewer shows the thumbnail, and unstated facts are omitted", async ({
     page,
   }) => {
-    await page.route("**/api/lighting/fixture-types/pixelbrick/gdtf*", (r) =>
-      r.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          archive: "library/pb15.gdtf",
-          rig: null,
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.getFixtureTypeGdtfDetails,
+      fixtureTypeGdtfReply(
+        details({
           thumbnail: "abc/thumbnail.png",
           beam: {
             type: null,
@@ -243,15 +249,9 @@ test.describe("Fixture type details (GDTF)", () => {
             color_temperature: null,
             power: null,
           },
-          about: null,
-          venues: [],
-          inspection: {
-            fixture: "PB15 PixelBrick",
-            manufacturer: "Astera LED Technology",
-            modes: [{ name: "8: RGBS", channel_count: 4, footprint: 4 }],
-          },
+          inspection: { modes: [{ name: "8: RGBS", footprint: 4 }] },
         }),
-      }),
+      ),
     );
     await card(page, "pixelbrick").click();
     await expect(page.getByTestId("ft-viewer")).toHaveAttribute(

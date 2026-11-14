@@ -32,62 +32,46 @@ use std::collections::BTreeMap;
 pub(super) const UNRECORDED: &str = "unrecorded";
 use std::path::{Path as FsPath, PathBuf};
 
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::http::StatusCode;
 use serde_json::json;
 
-use super::super::server::WebUiState;
 use super::lighting_api::{
-    canonical_project_root, content_version, if_match_version, locate_fixture_type_file,
-    project_root, resolve_lighting_dir, validate_lighting_name, validate_lighting_name_to_write,
-    LightingDir, VENUE_WRITES,
+    canonical_project_root, content_version, locate_fixture_type_file, project_root,
+    resolve_lighting_dir, validate_lighting_name, validate_lighting_name_to_write, LightingDir,
+    VENUE_WRITES,
 };
+use super::lighting_writes::Answer;
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
 use crate::lighting::types::{Fixture, MovementLimits, StrobeCurve, Venue};
 
-/// The directories a settings request works in.
-#[derive(serde::Deserialize, Default)]
-pub(super) struct SettingsQuery {
-    dir: Option<String>,
-    venues_dir: Option<String>,
-}
-
 /// A refusal; a 409 carries `conflict` so a client reloads and asks again,
 /// as it does for a venue save.
-fn error(status: StatusCode, message: String) -> Response {
+fn error(status: StatusCode, message: String) -> Answer {
     let conflict = status == StatusCode::CONFLICT;
-    (
+    Answer {
         status,
-        Json(json!({"error": message, "conflict": conflict})),
-    )
-        .into_response()
+        body: json!({"error": message, "conflict": conflict}),
+    }
 }
 
-/// GET /api/lighting/fixture-types/:name/settings — a GDTF fixture's
+/// A GDTF fixture's
 /// settings, for the form: `{name, movement, strobe_curve, strobe, version}`. A fixture that is
 /// its archive alone (no record) answers its derived name, no limits and the
 /// version [`UNRECORDED`]. A native type
 /// is a 404 here (it is edited as before).
-pub(super) async fn get_settings(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-    Query(query): Query<SettingsQuery>,
-) -> impl IntoResponse {
-    validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(
-        &state.config_path,
-        query.dir.as_deref(),
-        LightingDir::FixtureTypes,
-    )?;
-    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+pub(crate) async fn settings(
+    config_path: &FsPath,
+    name: &str,
+    dir: Option<&str>,
+) -> Result<FixtureSettingsData, Answer> {
+    validate_lighting_name(name)?;
+    let name = name.to_string();
+    let dir = resolve_lighting_dir(config_path, dir, LightingDir::FixtureTypes)?;
+    let root = canonical_project_root(&project_root(config_path)?)?;
     let Some(path) = locate_fixture_type_file(&dir, &name).await? else {
         let (dir, wanted, project) = (dir.clone(), name.clone(), root.clone());
-        let archive = super::helpers::spawn_blocking_io("read the GDTF library", move || {
+        let archive = super::helpers::blocking_answer("read the GDTF library", move || {
             Ok::<_, String>(
                 lighting::library::unrecorded_types(&project, Some(&dir))
                     .get(&wanted)
@@ -102,19 +86,16 @@ pub(super) async fn get_settings(
             ));
         };
         let strobe = strobe_info(root, archive).await;
-        return Ok::<_, Response>(
-            Json(FixtureSettingsData {
-                name,
-                movement: MovementLimits::default(),
-                strobe_curve: None,
-                strobe,
-                version: UNRECORDED.to_string(),
-            })
-            .into_response(),
-        );
+        return Ok(FixtureSettingsData {
+            name,
+            movement: MovementLimits::default(),
+            strobe_curve: None,
+            strobe,
+            version: UNRECORDED.to_string(),
+        });
     };
     let read = path.clone();
-    let content = super::helpers::spawn_blocking_io("read fixture type", move || {
+    let content = super::helpers::blocking_answer("read fixture type", move || {
         crate::util::read_to_string(&read)
     })
     .await?;
@@ -131,16 +112,13 @@ pub(super) async fn get_settings(
         Some(archive) => strobe_info(root, archive).await,
         None => None,
     };
-    Ok::<_, Response>(
-        Json(FixtureSettingsData {
-            name: settings.name,
-            movement: settings.movement,
-            strobe_curve: settings.strobe_curve,
-            strobe,
-            version: content_version(content.as_bytes()),
-        })
-        .into_response(),
-    )
+    Ok(FixtureSettingsData {
+        name: settings.name,
+        movement: settings.movement,
+        strobe_curve: settings.strobe_curve,
+        strobe,
+        version: content_version(content.as_bytes()),
+    })
 }
 
 /// What the strobe-curve control needs from a fixture's GDTF: `null` when
@@ -264,6 +242,21 @@ struct Plan {
 
 /// A planning refusal: the status and the message.
 pub(super) type Refusal = (StatusCode, String);
+
+/// Why a settings plan was not made.
+enum PlanError {
+    /// A refusal.
+    Refused(Refusal),
+    /// The record is not at the version the caller sent: the message, and
+    /// the version it is at.
+    Stale { message: String, version: String },
+}
+
+impl From<Refusal> for PlanError {
+    fn from(refusal: Refusal) -> Self {
+        PlanError::Refused(refusal)
+    }
+}
 
 /// A refusal of the one rule for type files, as a settings refusal.
 fn refused(refused: lighting::writes::Refused) -> Refusal {
@@ -431,7 +424,7 @@ fn plan(
     name: &str,
     request: &SettingsRequest,
     expected_type_version: Option<&str>,
-) -> Result<Plan, Refusal> {
+) -> Result<Plan, PlanError> {
     let bad = |m: String| (StatusCode::BAD_REQUEST, m);
     let types = lighting::project_files::fixture_types(root, Some(types_dir));
     let library = &types.library;
@@ -503,13 +496,13 @@ fn plan(
         record.retire.as_deref().unwrap_or(record.write.path()),
     );
     if expected_type_version.is_some_and(|v| v != type_version) {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
+        return Err(PlanError::Stale {
+            message: format!(
                 "fixture type \"{name}\" changed since you loaded it ({type_file}); it has been \
                  reloaded, so make your change again"
             ),
-        ));
+            version: type_version,
+        });
     }
     let current = current_settings(&content, name)
         .ok_or_else(|| bad(format!("fixture type \"{name}\" is not a GDTF type")))?;
@@ -630,45 +623,38 @@ pub(crate) async fn reload_types_and_venues(
     super::lighting_api::venue_error_of(player, config_path, &current, venues_dir).await
 }
 
-/// POST /api/lighting/fixture-types/:name/settings — plans (`write: false`)
-/// or saves (`write: true`) a GDTF fixture's settings: `{name, movement:
-/// {max_pan_speed, max_tilt_speed}}`. The record is written by the one rule
-/// for type files: patched where it lives when its file is its alone (409
-/// otherwise), a rename moving a file at its old name's own place to the
-/// new name's; for a fixture with none, the importer's record is claimed at
-/// `<stem>.fixture` and made new. A rename rewrites every venue line that
-/// names the type, in every venue file ([`plan_venue_retype`]), or — when
-/// any file cannot be rewritten, or a venue using it is not its file's
-/// alone — nothing at all. An
-/// `If-Match` header carries the record's version ([`UNRECORDED`] for none)
-/// and `venue_versions` the venue files' from the plan; either having
-/// changed is a 409. A save holds the venue write lock, writes the venue
-/// files then the record, and reloads the running engine's types and venues
-/// once. The answer says what changed (or would): `{version, rename,
-/// venue_versions, venue_error}`.
-pub(super) async fn post_settings(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-    Query(query): Query<SettingsQuery>,
-    headers: axum::http::HeaderMap,
-    Json(request): Json<SettingsRequest>,
-) -> impl IntoResponse {
-    validate_lighting_name(&name)?;
-    let types_dir = resolve_lighting_dir(
-        &state.config_path,
-        query.dir.as_deref(),
-        LightingDir::FixtureTypes,
-    )?;
-    let venues_dir = resolve_lighting_dir(
-        &state.config_path,
-        query.venues_dir.as_deref(),
-        LightingDir::Venues,
-    )?;
-    let root = canonical_project_root(&project_root(&state.config_path)?)?;
-    let expected = if_match_version(&headers);
+/// Plans (`write: false`) or saves (`write: true`) a GDTF fixture's
+/// settings: `{name, movement: {max_pan_speed, max_tilt_speed}}`. The record
+/// is written by the one rule for type files: patched where it lives when
+/// its file is its alone (409 otherwise), a rename moving a file at its old
+/// name's own place to the new name's; for a fixture with none, the
+/// importer's record is claimed at `<stem>.fixture` and made new. A rename
+/// rewrites every venue line that names the type, in every venue file
+/// ([`plan_venue_retype`]), or — when any file cannot be rewritten, or a
+/// venue using it is not its file's alone — nothing at all. The record's
+/// version (`expected_version`; [`UNRECORDED`] for none) and `venue_versions`
+/// the venue files' from the plan; either having changed is a 409 (the
+/// record's carries the version it is at, as `version`). A save holds the
+/// venue write lock, writes the venue files then the record, and reloads the
+/// running engine's types and venues once. The answer says what changed (or
+/// would): `{version, rename, venue_versions, venue_error}`.
+pub(crate) async fn save_settings(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &FsPath,
+    name: &str,
+    dirs: (Option<&str>, Option<&str>),
+    expected_version: Option<String>,
+    request: SettingsRequest,
+) -> Result<SettingsSaved, Answer> {
+    validate_lighting_name(name)?;
+    let name = name.to_string();
+    let types_dir = resolve_lighting_dir(config_path, dirs.0, LightingDir::FixtureTypes)?;
+    let venues_dir = resolve_lighting_dir(config_path, dirs.1, LightingDir::Venues)?;
+    let root = canonical_project_root(&project_root(config_path)?)?;
+    let expected = expected_version;
     let write = request.write;
     let (vdir, current) = (venues_dir.clone(), name.clone());
-    let outcome = super::helpers::spawn_blocking_io("save fixture settings", move || {
+    let outcome = super::helpers::blocking_answer("save fixture settings", move || {
         // The same lock as a venue save: a rename's venue writes and a drag
         // on the stage plot never interleave.
         let _guard = write.then(|| VENUE_WRITES.blocking_lock());
@@ -695,17 +681,24 @@ pub(super) async fn post_settings(
                 &plan.patched,
                 &plan.venues,
             ) {
-                return Ok(Err(refusal));
+                return Ok(Err(refusal.into()));
             }
         }
         Ok(Ok((plan, request.name.trim().to_string())))
     })
     .await?;
-    let (plan, new_name) = outcome.map_err(|(status, message)| error(status, message))?;
+    let (plan, new_name) = outcome.map_err(|e| match e {
+        PlanError::Refused((status, message)) => error(status, message),
+        PlanError::Stale { message, version } => {
+            let mut answer = error(StatusCode::CONFLICT, message);
+            answer.body["version"] = json!(version);
+            answer
+        }
+    })?;
 
     let renamed = new_name != name;
     let venue_error = if write {
-        reload_types_and_venues(&state.player, &state.config_path, &new_name, &venues_dir).await
+        reload_types_and_venues(player, config_path, &new_name, &venues_dir).await
     } else {
         None
     };
@@ -723,787 +716,10 @@ pub(super) async fn post_settings(
             venue_versions.insert(r.file.clone(), content_version(r.content.as_bytes()));
         }
     }
-    Ok::<_, Response>(
-        Json(SettingsSaved {
-            version,
-            rename,
-            venue_versions,
-            venue_error,
-        })
-        .into_response(),
-    )
-}
-
-#[cfg(test)]
-mod test {
-    use super::super::router;
-    use super::super::test_helpers::*;
-    use super::*;
-    use axum::body::Body;
-    use tower::ServiceExt;
-
-    const TYPE_FILE: &str = "# Imported from synth.gdtf.\n# Keep this.\nfixture_type \"Brick\"\n  \
-                             from gdtf(\"library/synth.gdtf\")\n{\n}\n";
-
-    /// A project: the synthetic archive, `Brick` in `types/brick.fixture`,
-    /// a comment-heavy `.venue` and a `.light` venue using it, and a venue
-    /// that does not.
-    fn project(root: &FsPath) {
-        let library = root.join("library");
-        std::fs::create_dir_all(&library).unwrap();
-        std::fs::write(
-            library.join("synth.gdtf"),
-            crate::testutil::lighting::synthetic_gdtf(),
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join("types")).unwrap();
-        std::fs::write(root.join("types/brick.fixture"), TYPE_FILE).unwrap();
-        std::fs::create_dir_all(root.join("venues")).unwrap();
-        std::fs::write(
-            root.join("venues/house.venue"),
-            "# The house rig.\n# Measured 2026-09.\nvenue \"house\" {\n  # front truss\n  \
-             fixture \"B1\" Brick mode \"8: RGBS\" @ 1:1 tags [\"wash\"]  # left\n  \
-             fixture \"B2\" Brick mode \"Mover 16bit\" @ 1:40\n  \
-             fixture \"P\" Other @ 1:100\n  focus \"center\" (0, 1, 1)\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("venues/club.light"),
-            "venue \"club\" {\n  fixture \"C1\" Brick mode \"8: RGBS\" @ 2:1\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("venues/other.light"),
-            "venue \"other\" {\n  fixture \"X\" Other @ 1:1\n}\n",
-        )
-        .unwrap();
-    }
-
-    async fn post(
-        state: WebUiState,
-        name: &str,
-        body: serde_json::Value,
-        if_match: Option<&str>,
-    ) -> (StatusCode, serde_json::Value) {
-        let mut request = http::Request::builder()
-            .method("POST")
-            .uri(format!(
-                "/lighting/fixture-types/{}/settings?dir=types&venues_dir=venues",
-                encoded(name)
-            ))
-            .header("content-type", "application/json");
-        if let Some(v) = if_match {
-            request = request.header("if-match", v);
-        }
-        let response = router()
-            .with_state(state)
-            .oneshot(request.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let text = response_body(response).await;
-        (status, serde_json::from_str(&text).unwrap_or_default())
-    }
-
-    /// A fixture name as a path segment.
-    fn encoded(name: &str) -> String {
-        name.replace(' ', "%20")
-            .replace('(', "%28")
-            .replace(')', "%29")
-    }
-
-    fn read(root: &FsPath, rel: &str) -> String {
-        std::fs::read_to_string(root.join(rel)).unwrap()
-    }
-
-    #[tokio::test]
-    async fn the_form_reads_the_settings_and_a_native_type_has_none() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        std::fs::write(
-            dir.path().join("types/par.light"),
-            "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
-        )
-        .unwrap();
-        let get = |name: &str| {
-            router().with_state(state.clone()).oneshot(
-                http::Request::builder()
-                    .uri(format!("/lighting/fixture-types/{name}/settings?dir=types"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-        };
-        let response = get("Brick").await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["name"], "Brick");
-        assert!(body["movement"]["max_pan_speed"].is_null(), "{body}");
-        assert_eq!(body["version"], content_version(TYPE_FILE.as_bytes()));
-        assert_eq!(get("Par").await.unwrap().status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn a_rename_rewrites_every_venue_line_and_keeps_every_comment() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        let before_house = read(root, "venues/house.venue");
-        let before_other = read(root, "venues/other.light");
-        let body = json!({"name": "PixelBrick", "write": false});
-
-        // The plan writes nothing and says what it would touch.
-        let (status, plan) = post(state.clone(), "Brick", body.clone(), None).await;
-        assert_eq!(status, StatusCode::OK, "{plan}");
-        assert_eq!(plan["rename"]["lines"], 3, "{plan}");
-        assert_eq!(
-            plan["rename"]["venues"],
-            json!([
-                {"venue": "club", "file": "club.light", "lines": 1},
-                {"venue": "house", "file": "house.venue", "lines": 2},
-            ])
-        );
-        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
-
-        let mut save = body.clone();
-        save["write"] = json!(true);
-        save["venue_versions"] = plan["venue_versions"].clone();
-        let (status, saved) = post(
-            state,
-            "Brick",
-            save,
-            Some(&content_version(TYPE_FILE.as_bytes())),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        assert!(saved["venue_error"].is_null(), "{saved}");
-        // The record was at its own name's place, so it moves to the new
-        // name's, its comments kept.
-        assert_eq!(
-            read(root, "types/pixelbrick.fixture"),
-            TYPE_FILE.replace("\"Brick\"", "\"PixelBrick\"")
-        );
-        assert!(!root.join("types/brick.fixture").exists());
-        let house = read(root, "venues/house.venue");
-        assert_eq!(
-            house,
-            before_house
-                .replace("\"B1\" Brick mode", "\"B1\" PixelBrick mode")
-                .replace("\"B2\" Brick mode", "\"B2\" PixelBrick mode"),
-            "only the type changes, comments and layout stay"
-        );
-        assert!(read(root, "venues/club.light")
-            .contains("fixture \"C1\" PixelBrick mode \"8: RGBS\" @ 2:1"));
-        assert_eq!(read(root, "venues/other.light"), before_other);
-    }
-
-    #[tokio::test]
-    async fn a_venue_file_that_does_not_parse_blocks_a_rename_and_nothing_is_written() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        std::fs::write(root.join("venues/broken.venue"), "venue \"b\" {{{").unwrap();
-        let house = read(root, "venues/house.venue");
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "PixelBrick", "write": true}),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert!(
-            body["error"].as_str().unwrap().contains("broken.venue"),
-            "{body}"
-        );
-        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
-        assert_eq!(read(root, "venues/house.venue"), house);
-    }
-
-    #[tokio::test]
-    async fn stale_versions_are_refused_before_anything_is_written() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        let body = json!({"name": "PixelBrick", "write": true});
-        let (status, _) = post(state.clone(), "Brick", body.clone(), Some("not-it")).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        let mut stale = body.clone();
-        stale["venue_versions"] = json!({"house.venue": "old"});
-        let (status, refused) = post(state, "Brick", stale, None).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(refused["error"].as_str().unwrap().contains("house.venue"));
-        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
-    }
-
-    #[tokio::test]
-    async fn a_rename_onto_another_type_is_refused() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        std::fs::write(
-            dir.path().join("types/other.light"),
-            "fixture_type \"Other\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
-        )
-        .unwrap();
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "Other", "write": false}),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(
-            body["error"],
-            "fixture type \"Other\" is already declared in other.light; choose another name"
-        );
-    }
-
-    #[tokio::test]
-    async fn movement_limits_are_patched_into_the_record() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let (status, saved) = post(
-            state,
-            "Brick",
-            json!({"name": "Brick", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            Some(&content_version(TYPE_FILE.as_bytes())),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        assert!(saved["rename"].is_null(), "{saved}");
-        assert_eq!(
-            read(dir.path(), "types/brick.fixture"),
-            "# Imported from synth.gdtf.\n# Keep this.\nfixture_type \"Brick\"\n  \
-             from gdtf(\"library/synth.gdtf\")\n{\n  \
-             movement { max_pan_speed: 240deg/s }\n}\n"
-        );
-    }
-
-    /// A project whose fixture is its archive alone: `lighting/library/` in
-    /// the config's directory, no record, and a venue using its derived
-    /// name. The archive is copied twice under two file names so one name
-    /// is shared — "Synth Brick" and "Synth Brick (twin)".
-    fn library_project(root: &FsPath) {
-        let library = root.join("lighting/library");
-        std::fs::create_dir_all(&library).unwrap();
-        let archive = crate::testutil::lighting::synthetic_gdtf();
-        std::fs::write(library.join("synth.gdtf"), &archive).unwrap();
-        std::fs::write(library.join("twin.gdtf"), &archive).unwrap();
-        std::fs::create_dir_all(root.join("types")).unwrap();
-        std::fs::create_dir_all(root.join("venues")).unwrap();
-        std::fs::write(
-            root.join("venues/house.venue"),
-            "venue \"house\" {\n  fixture \"B1\" \"Synth Brick\" mode \"8: RGBS\" @ 1:1\n}\n",
-        )
-        .unwrap();
-    }
-
-    async fn get_settings(state: WebUiState, name: &str) -> (StatusCode, serde_json::Value) {
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .uri(format!(
-                        "/lighting/fixture-types/{}/settings?dir=types",
-                        encoded(name)
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (
-            status,
-            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
-        )
-    }
-
-    #[tokio::test]
-    async fn an_unrecorded_fixture_answers_its_derived_name_and_a_save_writes_its_record() {
-        let (state, dir) = test_state();
-        let root = dir.path();
-        library_project(root);
-        let (status, body) = get_settings(state.clone(), "Synth Brick").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(
-            body,
-            json!({
-                "name": "Synth Brick",
-                "movement": {"max_pan_speed": null, "max_tilt_speed": null},
-                "strobe_curve": null,
-                "strobe": {"steps": 0, "automatic": "declared"},
-                "version": "unrecorded",
-            })
-        );
-
-        // A plan writes nothing, and nothing to change writes nothing.
-        let (status, plan) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{plan}");
-        assert_eq!(plan["version"], "unrecorded");
-        assert_eq!(std::fs::read_dir(root.join("types")).unwrap().count(), 0);
-
-        // A change writes the record the importer would have, then patches it.
-        let (status, saved) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true,
-                   "movement": {"max_pan_speed": 120, "max_tilt_speed": null}}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        let record = read(root, "types/synth_brick.fixture");
-        assert!(record.starts_with("# Imported from synth.gdtf"), "{record}");
-        assert!(
-            record.contains(
-                "fixture_type \"Synth Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"
-            ),
-            "{record}"
-        );
-        assert!(record.contains("max_pan_speed: 120deg/s"), "{record}");
-        assert_eq!(saved["version"], content_version(record.as_bytes()));
-
-        // "No record yet" is stale once there is one.
-        let (status, _) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        let (_, body) = get_settings(state, "Synth Brick").await;
-        assert_ne!(body["version"], "unrecorded");
-        assert_eq!(body["movement"]["max_pan_speed"], 120.0);
-    }
-
-    #[tokio::test]
-    async fn the_strobe_curve_is_saved_in_the_record_and_read_back() {
-        let (state, dir) = test_state();
-        let root = dir.path();
-        library_project(root);
-        // Automatic is the default: saving it writes no record.
-        let (status, _) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true, "strobe_curve": null}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(std::fs::read_dir(root.join("types")).unwrap().count(), 0);
-
-        let (status, saved) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true, "strobe_curve": "linear"}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        let record = read(root, "types/synth_brick.fixture");
-        assert!(record.contains("  strobe_curve: linear\n"), "{record}");
-        let (_, body) = get_settings(state.clone(), "Synth Brick").await;
-        assert_eq!(body["strobe_curve"], "linear");
-        let version = body["version"].as_str().unwrap().to_string();
-
-        // A stale version is refused and writes nothing.
-        let (status, _) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true, "strobe_curve": "period"}),
-            Some("stale"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(read(root, "types/synth_brick.fixture"), record);
-
-        // Back to automatic: the statement goes; movement limits are kept
-        // apart.
-        let (status, _) = post(
-            state.clone(),
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true, "strobe_curve": null,
-                   "movement": {"max_pan_speed": 90, "max_tilt_speed": null}}),
-            Some(&version),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let record = read(root, "types/synth_brick.fixture");
-        assert!(!record.contains("strobe_curve"), "{record}");
-        assert!(record.contains("max_pan_speed: 90deg/s"), "{record}");
-        let (_, body) = get_settings(state.clone(), "Synth Brick").await;
-        assert_eq!(body["strobe_curve"], serde_json::Value::Null);
-        assert_eq!(body["strobe"]["automatic"], "declared");
-        // An unknown curve is refused.
-        let (status, _) = post(
-            state,
-            "Synth Brick",
-            json!({"name": "Synth Brick", "write": true, "strobe_curve": "log"}),
-            None,
-        )
-        .await;
-        assert!(status.is_client_error(), "{status}");
-    }
-
-    #[tokio::test]
-    async fn renaming_an_unrecorded_fixture_pins_the_one_that_shares_its_name() {
-        let (state, dir) = test_state();
-        let root = dir.path();
-        library_project(root);
-        let (status, _) = get_settings(state.clone(), "Synth Brick (twin)").await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, saved) = post(
-            state,
-            "Synth Brick",
-            json!({"name": "House Brick", "write": true}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        assert_eq!(saved["rename"]["lines"], 1, "{saved}");
-        assert!(read(root, "venues/house.venue")
-            .contains("fixture \"B1\" \"House Brick\" mode \"8: RGBS\" @ 1:1"));
-        let record = read(root, "types/house_brick.fixture");
-        assert!(
-            record.contains(
-                "fixture_type \"House Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"
-            ),
-            "{record}"
-        );
-        // Without its pin, the twin would take the freed name on the next load.
-        let pin = read(root, "types/synth_brick_twin.fixture");
-        assert!(
-            pin.contains(
-                "fixture_type \"Synth Brick (twin)\"\n  from gdtf(\"lighting/library/twin.gdtf\")"
-            ),
-            "{pin}"
-        );
-        let library = crate::lighting::library::unrecorded_types(root, Some(&root.join("types")));
-        assert!(library.types.is_empty(), "{:?}", library.types);
-    }
-
-    #[tokio::test]
-    async fn a_rename_onto_a_library_fixture_s_name_is_refused() {
-        let (state, dir) = test_state();
-        library_project(dir.path());
-        let (status, body) = post(
-            state,
-            "Synth Brick",
-            json!({"name": "Synth Brick (twin)", "write": false}),
-            Some("unrecorded"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    }
-
-    const OTHER_TYPE: &str =
-        "fixture_type \"Old\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";
-
-    /// The files in `types`, by name.
-    fn type_files(root: &FsPath) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(root.join("types"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    #[tokio::test]
-    async fn a_pin_whose_file_is_taken_in_any_case_is_refused_not_suffixed() {
-        for taken in ["synth_brick.fixture", "Synth_Brick.fixture"] {
-            let (state, dir) = test_state();
-            let root = dir.path();
-            library_project(root);
-            std::fs::write(root.join("types").join(taken), OTHER_TYPE).unwrap();
-
-            let (status, body) = post(
-                state,
-                "Synth Brick",
-                json!({"name": "Synth Brick", "write": true,
-                       "movement": {"max_pan_speed": 120, "max_tilt_speed": null}}),
-                Some("unrecorded"),
-            )
-            .await;
-
-            assert_eq!(status, StatusCode::CONFLICT, "{body}");
-            assert_eq!(
-                body["error"],
-                format!("{taken} is taken by \"Old\"; choose another name")
-            );
-            assert_eq!(type_files(root), [taken], "no synth_brick_2.fixture");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_settings_of_a_type_whose_file_is_not_its_alone_are_read_only() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let shared = format!("{TYPE_FILE}{OTHER_TYPE}");
-        std::fs::write(dir.path().join("types/brick.fixture"), &shared).unwrap();
-
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "Brick", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            None,
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(
-            body["error"],
-            "Defined in brick.fixture alongside fixture type \"Old\"; edit that file by hand."
-        );
-        assert_eq!(read(dir.path(), "types/brick.fixture"), shared);
-    }
-
-    #[tokio::test]
-    async fn a_rename_is_refused_when_a_venue_using_it_is_not_its_file_s_alone() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        let shared = "venue \"arena\" {\n  fixture \"A1\" Brick mode \"8: RGBS\" @ 3:1\n}\n\
-                      venue \"annex\" {\n}\n";
-        std::fs::write(root.join("venues/all.venue"), shared).unwrap();
-        let house = read(root, "venues/house.venue");
-
-        let (status, body) = post(
-            state.clone(),
-            "Brick",
-            json!({"name": "PixelBrick", "write": true}),
-            None,
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(
-            body["error"],
-            "fixture type \"Brick\" cannot be renamed, so nothing was written; venue \"arena\" \
-             in all.venue uses it: Defined in all.venue alongside venue \"annex\"; edit that file \
-             by hand."
-        );
-        assert_eq!(read(root, "venues/all.venue"), shared);
-        assert_eq!(read(root, "venues/house.venue"), house);
-        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
-        assert_eq!(type_files(root), ["brick.fixture"]);
-
-        // A settings change that renames nothing touches no venue, so the
-        // shared file does not stand in its way.
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "Brick", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(read(root, "venues/all.venue"), shared);
-    }
-
-    /// The harness's record: "Astera-PixelBrick" in `astera_pixelbrick.fixture`,
-    /// which is not its own name's file (`astera-pixelbrick.fixture`).
-    const ASTERA: &str = "# Imported from synth.gdtf.\nfixture_type \"Astera-PixelBrick\"\n  \
-                          from gdtf(\"library/synth.gdtf\")\n{\n}\n";
-
-    #[tokio::test]
-    async fn the_harness_record_is_edited_and_renamed_where_it_lives() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        std::fs::remove_file(root.join("types/brick.fixture")).unwrap();
-        std::fs::write(root.join("types/astera_pixelbrick.fixture"), ASTERA).unwrap();
-        std::fs::write(
-            root.join("venues/house.venue"),
-            "venue \"house\" {\n  fixture \"B1\" \"Astera-PixelBrick\" mode \"8: RGBS\" @ 1:1\n}\n",
-        )
-        .unwrap();
-
-        let (status, saved) = post(
-            state.clone(),
-            "Astera-PixelBrick",
-            json!({"name": "Astera-PixelBrick", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            Some(&content_version(ASTERA.as_bytes())),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        let edited = read(root, "types/astera_pixelbrick.fixture");
-        assert!(edited.contains("max_pan_speed: 240deg/s"), "{edited}");
-
-        let (status, saved) = post(
-            state,
-            "Astera-PixelBrick",
-            json!({"name": "PB15", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            Some(&content_version(edited.as_bytes())),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{saved}");
-        assert_eq!(type_files(root), ["astera_pixelbrick.fixture"]);
-        assert!(read(root, "types/astera_pixelbrick.fixture").contains("fixture_type \"PB15\""));
-        assert!(read(root, "venues/house.venue").contains("fixture \"B1\" PB15 mode"));
-    }
-
-    /// Every file under `root` (relative) and its text.
-    fn tree(root: &FsPath) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = crate::lighting::project_files::files_under(
-            root,
-            &["light", "fixture", "venue", "gdtf"],
-        )
-        .iter()
-        .map(|p| {
-            (
-                crate::lighting::project_files::display_in(root, p),
-                std::fs::read_to_string(p).unwrap_or_default(),
-            )
-        })
-        .collect();
-        out.sort();
-        out
-    }
-
-    /// Makes `dir` read-only; `false` when that does not stop a write (the
-    /// tests run as root), and the test has nothing to show.
-    fn lock(dir: &FsPath) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let probe = dir.join(".probe");
-        if std::fs::write(&probe, "").is_ok() {
-            std::fs::remove_file(&probe).unwrap();
-            unlock(dir);
-            return false;
-        }
-        true
-    }
-
-    fn unlock(dir: &FsPath) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_venue_write_failing_puts_back_the_type_and_the_venues_written() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        // Written after club.light and house.venue, in path order.
-        std::fs::create_dir_all(root.join("venues/locked")).unwrap();
-        std::fs::write(
-            root.join("venues/locked/tour.venue"),
-            "venue \"tour\" {\n  fixture \"T1\" Brick mode \"8: RGBS\" @ 4:1\n}\n",
-        )
-        .unwrap();
-        let before = tree(root);
-        if !lock(&root.join("venues/locked")) {
-            return;
-        }
-
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "PixelBrick", "write": true}),
-            None,
-        )
-        .await;
-        unlock(&root.join("venues/locked"));
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        let error = body["error"].as_str().unwrap();
-        assert!(error.contains("locked/tour.venue"), "{error}");
-        assert!(error.ends_with("; nothing was saved"), "{error}");
-        assert_eq!(tree(root), before, "every file as it was");
-    }
-
-    #[tokio::test]
-    async fn a_type_write_failing_writes_no_venue() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        let before = tree(root);
-        if !lock(&root.join("types")) {
-            return;
-        }
-
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "PixelBrick", "write": true}),
-            None,
-        )
-        .await;
-        unlock(&root.join("types"));
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        let error = body["error"].as_str().unwrap();
-        assert!(error.contains("pixelbrick.fixture"), "{error}");
-        assert!(error.ends_with("; nothing was saved"), "{error}");
-        assert_eq!(tree(root), before, "every file as it was");
-    }
-
-    #[tokio::test]
-    async fn an_old_record_that_cannot_be_removed_puts_everything_back() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        let before = tree(root);
-        let old = root.join("types/brick.fixture");
-        crate::lighting::writes::test_hook::refuse_removal_of(&old);
-        if let Ok(canonical) = old.canonicalize() {
-            crate::lighting::writes::test_hook::refuse_removal_of(&canonical);
-        }
-
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "PixelBrick", "write": true}),
-            None,
-        )
-        .await;
-
-        // A rename leaves no stray "Brick" behind: the new record and every
-        // venue rewritten are put back, and the answer says so.
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        assert_eq!(
-            body["error"],
-            "cannot remove brick.fixture: refused by the test; nothing was saved"
-        );
-        assert_eq!(tree(root), before, "every file as it was");
-    }
-
-    #[tokio::test]
-    async fn a_light_record_moves_to_its_fixture_file_when_saved() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        let root = dir.path();
-        std::fs::rename(
-            root.join("types/brick.fixture"),
-            root.join("types/brick.light"),
-        )
-        .unwrap();
-
-        let (status, body) = post(
-            state,
-            "Brick",
-            json!({"name": "Brick", "write": true,
-                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            None,
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(type_files(root), ["brick.fixture"]);
-        assert!(read(root, "types/brick.fixture").contains("max_pan_speed: 240deg/s"));
-    }
+    Ok(SettingsSaved {
+        version,
+        rename,
+        venue_versions,
+        venue_error,
+    })
 }

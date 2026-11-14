@@ -26,8 +26,10 @@ import {
   FitCapability,
   FitDepth,
   FitHeight,
+  FixtureStrobeCurve,
   FixtureTestDimmer,
   FixtureTestUnavailable,
+  FixtureTypeFile,
   LightingSeverity,
   LightingWant,
   ReadinessCheckKey,
@@ -38,6 +40,17 @@ import {
   type FixtureTestControlSupport,
   type FixtureTestControlsSchema,
   type FixtureTestOptions,
+  type FixtureTypeGdtfDetails,
+  type FixtureTypeInfo,
+  type FixtureTypeRename,
+  type FixtureTypeSettings,
+  type FixtureTypeSettingsSaved,
+  type ListFixtureTypesResponse,
+  type SaveFixtureTypeRequestSchema,
+  type SaveFixtureTypeSettingsRequestSchema,
+  type SaveFixtureTypeResponse,
+  type DeleteFixtureTypeResponse,
+  type LightingVenueError,
   type LightingFit,
   type LightingPreview,
   type LightingReadiness,
@@ -65,13 +78,25 @@ import type {
   FitGroup,
   FitReport,
   Fix,
+  FixtureSettingsData,
+  FixtureType,
+  FixtureTypeDeleted,
+  FixtureTypeEntry,
+  FixtureTypeGdtf,
+  FixtureTypeList,
+  FixtureTypeSaved,
+  GdtfMode,
   Height,
   LightingGroup,
   Preview,
   PreviewEffect,
   PreviewEvaluation,
   Readiness,
+  Rename,
+  SettingsRequest,
+  SettingsSaved,
   Severity,
+  StrobeCurve,
   Summary,
   TestAnswer,
   TestMode,
@@ -80,6 +105,7 @@ import type {
   TestUnavailable,
   TestWarning,
   Vec3,
+  VenueError,
   Want,
   Warning,
 } from "../../gen/rules/mtrack_rules";
@@ -688,6 +714,308 @@ export function startFixtureTestRequest(
     ),
     dir: dir || undefined,
     venuesDir: venuesDir || undefined,
+  };
+}
+
+// ---- Fixture types ----
+
+const STROBE_CURVES: Record<FixtureStrobeCurve, StrobeCurve | null> = {
+  [FixtureStrobeCurve.UNSPECIFIED]: null,
+  [FixtureStrobeCurve.PERIOD]: "period",
+  [FixtureStrobeCurve.LINEAR]: "linear",
+  [FixtureStrobeCurve.DECLARED]: "declared",
+};
+
+const STROBE_CURVE_VALUES: Record<StrobeCurve, FixtureStrobeCurve> = {
+  period: FixtureStrobeCurve.PERIOD,
+  linear: FixtureStrobeCurve.LINEAR,
+  declared: FixtureStrobeCurve.DECLARED,
+};
+
+function curveOf(c: FixtureStrobeCurve): StrobeCurve | null {
+  if (!(c in STROBE_CURVES)) throw new BadAnswerError("a strobe curve");
+  return STROBE_CURVES[c];
+}
+
+function venueError(e: LightingVenueError | undefined): VenueError | null {
+  return e ? { venue: e.venue, fixture: e.fixture, reason: e.reason } : null;
+}
+
+function rename(r: FixtureTypeRename | undefined): Rename | null {
+  return r
+    ? {
+        from: r.from,
+        to: r.to,
+        venues: r.venues.map((v) => ({
+          venue: v.venue,
+          file: v.file,
+          lines: v.lines,
+        })),
+        lines: r.lines,
+      }
+    : null;
+}
+
+/** A fixture type as the pages hold it. A listing's entry has a
+ *  `footprint` (and, for a GDTF type, `gdtf`: null when its archive did
+ *  not read); a single type's has its file's text as `dsl`. */
+export function mapFixtureTypeEntry(
+  i: FixtureTypeInfo,
+  listing: boolean,
+): FixtureTypeEntry {
+  const t = i.fixtureType;
+  const fixtureType: FixtureType = {
+    name: t?.name ?? "",
+    channels: { ...(t?.channels ?? {}) },
+    max_strobe_frequency: t?.maxStrobeFrequency ?? null,
+    min_strobe_frequency: t?.minStrobeFrequency ?? null,
+    strobe_dmx_offset: t?.strobeDmxOffset ?? null,
+  };
+  const entry: FixtureTypeEntry = {
+    referential: i.referential,
+    rich: i.rich,
+    fixture_type: fixtureType,
+    file: i.file ?? null,
+    extension: i.extension ?? null,
+    owner: i.owner
+      ? {
+          file: i.owner.file,
+          editable: i.owner.editable,
+          reason: i.owner.reason ?? null,
+        }
+      : null,
+    form_editable: i.formEditable,
+  };
+  if (listing) {
+    entry.footprint = i.footprint ?? null;
+    if (i.referential) {
+      entry.gdtf = i.gdtf
+        ? {
+            fixture: i.gdtf.fixture,
+            manufacturer: i.gdtf.manufacturer,
+            modes: i.gdtf.modes,
+            beam: i.gdtf.beam
+              ? {
+                  type: i.gdtf.beam.beamType ?? null,
+                  angle: i.gdtf.beam.angle ?? null,
+                }
+              : null,
+            thumbnail: i.gdtf.thumbnail ?? null,
+            used_by: i.gdtf.usedBy,
+            in_use: i.gdtf.inUse.map((m) => ({
+              mode: m.mode,
+              count: m.count,
+            })),
+          }
+        : null;
+    }
+  } else {
+    entry.dsl = i.dsl ?? null;
+  }
+  return entry;
+}
+
+/** The fixture types of a directory, by name, and the files that did not
+ *  read. */
+export function mapFixtureTypeList(
+  r: ListFixtureTypesResponse,
+): FixtureTypeList {
+  return {
+    fixture_types: Object.fromEntries(
+      Object.entries(r.fixtureTypes).map(([name, info]) => [
+        name,
+        mapFixtureTypeEntry(info, true),
+      ]),
+    ),
+    errors: r.errors.map((e) => ({ file: e.file, error: e.error })),
+  };
+}
+
+function gdtfMode(m: FixtureTypeGdtfDetails["modes"][number]): GdtfMode {
+  const mode: GdtfMode = { name: m.name, footprint: m.footprint };
+  const o = m.outcome;
+  switch (o.case) {
+    case "refused":
+      mode.refused = o.value;
+      break;
+    case "facts":
+      mode.capabilities = o.value.capabilities.map((c) =>
+        named(CAPABILITIES, c, "a capability"),
+      );
+      mode.wants = o.value.wants.map(want);
+      mode.cells = o.value.cells;
+      if (o.value.strobeRange) {
+        mode.strobe_range = {
+          min_hz: o.value.strobeRange.minHz ?? null,
+          max_hz: o.value.strobeRange.maxHz,
+        };
+      }
+      mode.channels = o.value.channels.map((c) => [c.offset, c.name]);
+      break;
+    default:
+      throw new BadAnswerError("a mode");
+  }
+  return mode;
+}
+
+/** What a GDTF fixture's archive holds, for its page. */
+export function mapFixtureTypeGdtf(d: FixtureTypeGdtfDetails): FixtureTypeGdtf {
+  return {
+    archive: d.archive,
+    rig: d.rig ?? null,
+    thumbnail: d.thumbnail ?? null,
+    beam: d.beam
+      ? {
+          type: d.beam.beamType ?? null,
+          beam_angle: d.beam.beamAngle ?? null,
+          field_angle: d.beam.fieldAngle ?? null,
+          luminous_flux: d.beam.luminousFlux ?? null,
+          color_temperature: d.beam.colorTemperature ?? null,
+          power: d.beam.power ?? null,
+        }
+      : null,
+    about: d.about ?? null,
+    venues: d.venues.map((v) => ({
+      name: v.name,
+      fixtures: v.fixtures.map((f) => ({
+        name: f.name,
+        mode: f.mode ?? null,
+      })),
+    })),
+    inspection: { modes: d.modes.map(gdtfMode) },
+  };
+}
+
+/** A fixture type saved (`status` is always `saved`), and what a rename
+ *  did to the venues. */
+export function mapFixtureTypeSaved(
+  r: SaveFixtureTypeResponse,
+): FixtureTypeSaved {
+  return {
+    status: "saved",
+    name: r.name,
+    rename: rename(r.rename),
+    venue_error: venueError(r.venueError),
+  };
+}
+
+/** A fixture type deleted (`status` is always `deleted`), and what became
+ *  of its archive. */
+export function mapFixtureTypeDeleted(
+  r: DeleteFixtureTypeResponse,
+): FixtureTypeDeleted {
+  return {
+    status: "deleted",
+    name: r.name,
+    archive_removed: r.archiveRemoved ?? null,
+    archive_kept: r.archiveKept,
+  };
+}
+
+/** A GDTF fixture's own settings, with the revision they are at (the form
+ *  calls it `version`). */
+export function mapFixtureSettings(
+  s: FixtureTypeSettings,
+): FixtureSettingsData {
+  return {
+    name: s.name,
+    movement: {
+      max_pan_speed: s.movement?.maxPanSpeed ?? null,
+      max_tilt_speed: s.movement?.maxTiltSpeed ?? null,
+    },
+    strobe_curve: curveOf(s.strobeCurve),
+    strobe: s.strobe
+      ? {
+          steps: s.strobe.steps,
+          automatic: curveOf(s.strobe.automatic) ?? "declared",
+        }
+      : null,
+    version: s.revision,
+  };
+}
+
+/** What a settings save did (or, planned, would do). */
+export function mapSettingsSaved(s: FixtureTypeSettingsSaved): SettingsSaved {
+  return {
+    version: s.revision,
+    rename: rename(s.rename),
+    venue_versions: { ...s.venueRevisions },
+    venue_error: venueError(s.venueError),
+  };
+}
+
+/** What a fixture type save writes: the file's whole text, or the
+ *  channel-map form. */
+export type FixtureTypeBody =
+  | { text: string }
+  | {
+      channels: Record<string, number>;
+      max_strobe_frequency?: number | null;
+      min_strobe_frequency?: number | null;
+      strobe_dmx_offset?: number | null;
+    };
+
+/** The call for a fixture type save: `ext` the form asked for (`fixture`
+ *  moves a `.light` to a `.fixture`), `from` the old name of a rename. */
+export function saveFixtureTypeRequest(
+  name: string,
+  body: FixtureTypeBody,
+  opts: {
+    ext?: "light" | "fixture";
+    dir?: string;
+    from?: string | null;
+    venuesDir?: string;
+  } = {},
+): MessageInitShape<typeof SaveFixtureTypeRequestSchema> {
+  return {
+    name,
+    from: opts.from || undefined,
+    dir: opts.dir || undefined,
+    venuesDir: opts.venuesDir || undefined,
+    fileForm:
+      opts.ext === "light"
+        ? FixtureTypeFile.LIGHT
+        : opts.ext === "fixture"
+          ? FixtureTypeFile.FIXTURE
+          : FixtureTypeFile.UNSPECIFIED,
+    body:
+      "text" in body
+        ? { case: "dsl", value: body.text }
+        : {
+            case: "channelMap",
+            value: {
+              channels: body.channels,
+              maxStrobeFrequency: body.max_strobe_frequency ?? undefined,
+              minStrobeFrequency: body.min_strobe_frequency ?? undefined,
+              strobeDmxOffset: body.strobe_dmx_offset ?? undefined,
+            },
+          },
+  };
+}
+
+/** The call for a plan or a save of a GDTF fixture's settings, with the
+ *  revision the form read them at (none is not checked). */
+export function saveFixtureSettingsRequest(
+  name: string,
+  body: SettingsRequest,
+  dirs: { dir?: string; venuesDir?: string },
+  revision?: string,
+): MessageInitShape<typeof SaveFixtureTypeSettingsRequestSchema> {
+  return {
+    name,
+    dir: dirs.dir || undefined,
+    venuesDir: dirs.venuesDir || undefined,
+    expectedRevision: revision || undefined,
+    newName: body.name,
+    movement: {
+      maxPanSpeed: body.movement?.max_pan_speed ?? undefined,
+      maxTiltSpeed: body.movement?.max_tilt_speed ?? undefined,
+    },
+    strobeCurve: body.strobe_curve
+      ? STROBE_CURVE_VALUES[body.strobe_curve]
+      : FixtureStrobeCurve.UNSPECIFIED,
+    write: body.write,
+    venueRevisions: body.venue_versions ?? {},
   };
 }
 

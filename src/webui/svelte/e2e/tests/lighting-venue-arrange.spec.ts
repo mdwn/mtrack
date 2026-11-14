@@ -14,6 +14,9 @@
 
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The Venues plan's selection, arrange and aim tools (design §10). Every test
@@ -85,11 +88,11 @@ const FIXTURE_TYPES = {
   brick: channels({ red: 1, green: 2, blue: 3 }),
   mover: channels({ pan: 1, tilt: 3, dimmer: 5 }),
   // A GDTF-referential type lists no channels of its own.
-  gdtfmover: { ...channels({}), referential: true },
+  gdtfmover: { ...channels({}), referential: true, gdtf: null },
 };
 
 function channels(ch: Record<string, number>) {
-  return {
+  return typeEntry("t", {
     fixture_type: {
       name: "t",
       channels: ch,
@@ -99,9 +102,7 @@ function channels(ch: Record<string, number>) {
     },
     file: "t.fixture",
     extension: "fixture",
-    referential: false,
-    rich: false,
-  };
+  });
 }
 
 /** Serves the venue file, remembering each save so a second operation reads
@@ -140,16 +141,11 @@ async function routeVenue(page: Page, name: string, initial: VenueBody) {
       });
     },
   );
-  await page.route("**/api/lighting/fixture-types*", async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    if (/fixture-types\/[^?]/.test(route.request().url()))
-      return route.fallback();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ fixture_types: FIXTURE_TYPES, errors: [] }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({ fixture_types: FIXTURE_TYPES, errors: [] }),
+  );
   return { puts, current: () => current };
 }
 

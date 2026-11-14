@@ -13,7 +13,15 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
+import {
+  fixtureTypeGdtfReply,
+  fixtureTypeListReply,
+  typeEntry as entryOf,
+} from "../support/lighting-rpc";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 // The venue form: a save shows on the page at once, and each GDTF row
 // chooses its own mode. Every test serves its own venue directory from a
@@ -31,28 +39,20 @@ interface Fixture {
   mode?: string | null;
 }
 
-const MODES = [
-  { name: "8: RGBS", channel_count: 4, footprint: 4 },
-  { name: "9: RGBWS", channel_count: 5, footprint: 5 },
-  { name: "99: Broken", channel_count: 1, footprint: 1, refused: "no" },
+const MODES: GdtfMode[] = [
+  { name: "8: RGBS", footprint: 4 },
+  { name: "9: RGBWS", footprint: 5 },
+  { name: "99: Broken", footprint: 1, refused: "no" },
 ];
 
 function typeEntry(referential: boolean, footprint: number | null) {
-  return {
-    fixture_type: {
-      name: "t",
-      channels: {},
-      max_strobe_frequency: null,
-      min_strobe_frequency: null,
-      strobe_dmx_offset: null,
-    },
+  return entryOf("t", {
     file: referential ? "brick.fixture" : "par.light",
     extension: referential ? "fixture" : "light",
     referential,
-    rich: false,
     footprint,
-    gdtf: null,
-  };
+    gdtf: referential ? null : undefined,
+  });
 }
 
 /** Serves a venue directory holding `initial`, keeping every save. */
@@ -103,35 +103,28 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
       json({ venue: venueJson(name), dsl: "", version: `v${version}` }),
     );
   });
-  await page.route("**/api/lighting/fixture-types*", (route) => {
-    if (/fixture-types\/[^?]/.test(route.request().url()))
-      return route.fallback();
-    return route.fulfill(
-      json({
-        fixture_types: {
-          brick: typeEntry(true, null),
-          par: typeEntry(false, 3),
-        },
-        errors: [],
-      }),
-    );
-  });
-  await page.route("**/api/lighting/fixture-types/brick/gdtf*", (route) =>
-    route.fulfill(
-      json({
-        archive: "library/pb15.gdtf",
-        rig: null,
-        thumbnail: null,
-        beam: null,
-        about: null,
-        venues: [],
-        inspection: {
-          fixture: "PB15",
-          manufacturer: "Astera",
-          modes: MODES,
-        },
-      }),
-    ),
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listFixtureTypes,
+    fixtureTypeListReply({
+      fixture_types: {
+        brick: typeEntry(true, null),
+        par: typeEntry(false, 3),
+      },
+      errors: [],
+    }),
+  );
+  rpc.unary(
+    LightingService.method.getFixtureTypeGdtfDetails,
+    fixtureTypeGdtfReply({
+      archive: "library/pb15.gdtf",
+      rig: null,
+      thumbnail: null,
+      beam: null,
+      about: null,
+      venues: [],
+      inspection: { modes: MODES },
+    }),
   );
   await page.goto("/#/lighting/venues");
   return { puts, venues };

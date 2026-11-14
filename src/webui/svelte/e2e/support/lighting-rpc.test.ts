@@ -17,24 +17,46 @@
 import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import {
+  DeleteFixtureTypeResponseSchema,
   FixtureTestAnswerSchema,
   FixtureTestOptionsSchema,
+  FixtureTypeGdtfDetailsSchema,
+  FixtureTypeInfoSchema,
+  FixtureTypeSettingsSavedSchema,
+  FixtureTypeSettingsSchema,
   GetLightShowResponseSchema,
   LightingFitSchema,
   LightingPreviewSchema,
   LightingReadinessSchema,
+  ListFixtureTypesResponseSchema,
   ListLightingGroupsResponseSchema,
+  SaveFixtureTypeRequestSchema,
+  SaveFixtureTypeResponseSchema,
+  SaveFixtureTypeSettingsRequestSchema,
   ValidateLightShowResponseSchema,
 } from "../../src/gen/player/v1/player_pb";
 import {
   mapFit,
+  mapFixtureSettings,
+  mapFixtureTypeDeleted,
+  mapFixtureTypeEntry,
+  mapFixtureTypeGdtf,
+  mapFixtureTypeList,
+  mapFixtureTypeSaved,
   mapGroups,
   mapPreview,
   mapReadiness,
+  mapSettingsSaved,
   mapTestAnswer,
   mapTestOptions,
+  saveFixtureSettingsRequest,
+  saveFixtureTypeRequest,
 } from "../../src/lib/grpc/lighting";
 import type {
+  FixtureSettingsData,
+  FixtureTypeGdtf,
+  FixtureTypeList,
+  SettingsSaved,
   FitReport,
   Preview,
   Readiness,
@@ -44,7 +66,17 @@ import type {
 import { FIT, READINESS } from "../mock-server/test-data";
 import {
   fitReply,
+  fixtureSettingsReply,
+  fixtureTypeDeletedReply,
+  fixtureTypeGdtfReply,
+  fixtureTypeInfoReply,
+  fixtureTypeListReply,
+  fixtureTypeSavedReply,
   groupsReply,
+  savedSettingsRequest,
+  savedTypeRequest,
+  settingsSavedReply,
+  typeEntry,
   lightShowReply,
   previewReply,
   readinessReply,
@@ -479,5 +511,292 @@ describe("answers made from the page's own shapes", () => {
       mapTestAnswer(create(FixtureTestAnswerSchema, testAnswerReply(gdtf)))
         .mode,
     ).toBe("8: RGBS");
+  });
+
+  it("a fixture type listing reads back as it was", () => {
+    const list: FixtureTypeList = {
+      fixture_types: {
+        par: typeEntry("par", {
+          footprint: 4,
+          form_editable: true,
+          fixture_type: {
+            name: "par",
+            channels: { red: 1, green: 2, blue: 3, dimmer: 4 },
+            max_strobe_frequency: 25,
+            min_strobe_frequency: 0.5,
+            strobe_dmx_offset: 10,
+          },
+        }),
+        brick: typeEntry("brick", {
+          extension: "fixture",
+          referential: true,
+          footprint: null,
+          gdtf: {
+            fixture: "PB15",
+            manufacturer: "Astera",
+            modes: 2,
+            beam: { type: "Wash", angle: 13 },
+            thumbnail: "abc/thumb.png",
+            used_by: 3,
+            in_use: [{ mode: "8: RGBS", count: 3 }],
+          },
+        }),
+        lost: typeEntry("lost", {
+          extension: "fixture",
+          referential: true,
+          footprint: null,
+          gdtf: null,
+        }),
+        loose: typeEntry("loose", {
+          extension: null,
+          file: null,
+          referential: true,
+          footprint: null,
+          gdtf: null,
+        }),
+        shared: typeEntry("shared", {
+          footprint: 1,
+          owner: { file: "all.light", editable: false, reason: "Shared." },
+        }),
+      },
+      errors: [{ file: "broken.light", error: "line 4" }],
+    };
+    const read = mapFixtureTypeList(
+      create(ListFixtureTypesResponseSchema, fixtureTypeListReply(list)),
+    );
+    expect(read).toEqual(list);
+  });
+
+  it("a single fixture type reads back with its text, or with none", () => {
+    for (const dsl of ['fixture_type "par" {\n}\n', null]) {
+      const entry = typeEntry("par", { dsl });
+      expect(
+        mapFixtureTypeEntry(
+          create(FixtureTypeInfoSchema, fixtureTypeInfoReply(entry)),
+          false,
+        ),
+      ).toEqual(entry);
+    }
+  });
+
+  it("a GDTF fixture's details read back, a refused mode too", () => {
+    const details: FixtureTypeGdtf = {
+      archive: "library/pb15.gdtf",
+      rig: "abc/rig.json",
+      thumbnail: null,
+      beam: {
+        type: "Wash",
+        beam_angle: 13,
+        field_angle: null,
+        luminous_flux: 475,
+        color_temperature: null,
+        power: 12,
+      },
+      about: "A brick.",
+      venues: [
+        {
+          name: "club",
+          fixtures: [
+            { name: "Solo", mode: "1: RGB" },
+            { name: "Odd", mode: null },
+          ],
+        },
+      ],
+      inspection: {
+        modes: [
+          {
+            name: "8: RGBS",
+            footprint: 4,
+            capabilities: ["color", "strobe"],
+            wants: ["color", "dimmer", "strobe"],
+            cells: 0,
+            strobe_range: { min_hz: 0.4, max_hz: 25 },
+            channels: [
+              [1, "red"],
+              [4, "strobe"],
+            ],
+          },
+          {
+            name: "Plain",
+            footprint: 1,
+            capabilities: [],
+            wants: [],
+            cells: 3,
+            strobe_range: { min_hz: null, max_hz: 10 },
+            channels: [],
+          },
+          { name: "Dup", footprint: 2, refused: "another mode has this name" },
+        ],
+      },
+    };
+    expect(
+      mapFixtureTypeGdtf(
+        create(FixtureTypeGdtfDetailsSchema, fixtureTypeGdtfReply(details)),
+      ),
+    ).toEqual(details);
+  });
+
+  it("a fixture's settings and a settings save read back", () => {
+    for (const settings of [
+      {
+        name: "Brick",
+        movement: { max_pan_speed: 240, max_tilt_speed: null },
+        strobe_curve: "linear",
+        strobe: { steps: 3, automatic: "declared" },
+        version: "abc",
+      },
+      {
+        name: "Loose",
+        movement: { max_pan_speed: null, max_tilt_speed: null },
+        strobe_curve: null,
+        strobe: null,
+        version: "unrecorded",
+      },
+    ] satisfies FixtureSettingsData[]) {
+      expect(
+        mapFixtureSettings(
+          create(FixtureTypeSettingsSchema, fixtureSettingsReply(settings)),
+        ),
+      ).toEqual(settings);
+    }
+    const saved: SettingsSaved = {
+      version: "v2",
+      rename: {
+        from: "Brick",
+        to: "PB",
+        venues: [{ venue: "club", file: "club.venue", lines: 2 }],
+        lines: 2,
+      },
+      venue_versions: { "club.venue": "v-c" },
+      venue_error: { venue: "club", fixture: "C1", reason: "no type" },
+    };
+    expect(
+      mapSettingsSaved(
+        create(FixtureTypeSettingsSavedSchema, settingsSavedReply(saved)),
+      ),
+    ).toEqual(saved);
+    const plain: SettingsSaved = {
+      version: "v1",
+      rename: null,
+      venue_versions: {},
+      venue_error: null,
+    };
+    expect(
+      mapSettingsSaved(
+        create(FixtureTypeSettingsSavedSchema, settingsSavedReply(plain)),
+      ),
+    ).toEqual(plain);
+  });
+
+  it("a type saved or deleted reads back", () => {
+    expect(
+      mapFixtureTypeSaved(
+        create(
+          SaveFixtureTypeResponseSchema,
+          fixtureTypeSavedReply({ name: "p" }),
+        ),
+      ),
+    ).toEqual({ status: "saved", name: "p", rename: null, venue_error: null });
+    const rename = {
+      from: "a",
+      to: "b",
+      venues: [{ venue: "v", file: "v.venue", lines: 1 }],
+      lines: 1,
+    };
+    expect(
+      mapFixtureTypeSaved(
+        create(
+          SaveFixtureTypeResponseSchema,
+          fixtureTypeSavedReply({ name: "b", rename }),
+        ),
+      ).rename,
+    ).toEqual(rename);
+    expect(
+      mapFixtureTypeDeleted(
+        create(
+          DeleteFixtureTypeResponseSchema,
+          fixtureTypeDeletedReply({
+            name: "b",
+            archive_removed: "lighting/library/b.gdtf",
+          }),
+        ),
+      ),
+    ).toEqual({
+      status: "deleted",
+      name: "b",
+      archive_removed: "lighting/library/b.gdtf",
+      archive_kept: false,
+    });
+  });
+
+  it("the requests a page makes read back as the old routes carried them", () => {
+    const text = savedTypeRequest(
+      create(
+        SaveFixtureTypeRequestSchema,
+        saveFixtureTypeRequest(
+          "mover",
+          { text: "fixture_type {}" },
+          { ext: "fixture", dir: "t", from: "old", venuesDir: "v" },
+        ),
+      ),
+    );
+    expect(text).toEqual({
+      name: "mover",
+      from: "old",
+      dir: "t",
+      venuesDir: "v",
+      ext: "fixture",
+      text: "fixture_type {}",
+      form: null,
+    });
+    const form = savedTypeRequest(
+      create(
+        SaveFixtureTypeRequestSchema,
+        saveFixtureTypeRequest("par", {
+          channels: { dimmer: 1 },
+          max_strobe_frequency: 25,
+        }),
+      ),
+    );
+    expect(form).toMatchObject({
+      name: "par",
+      from: null,
+      ext: null,
+      text: null,
+      form: {
+        channels: { dimmer: 1 },
+        max_strobe_frequency: 25,
+        min_strobe_frequency: null,
+        strobe_dmx_offset: null,
+      },
+    });
+    const settings = savedSettingsRequest(
+      create(
+        SaveFixtureTypeSettingsRequestSchema,
+        saveFixtureSettingsRequest(
+          "Brick",
+          {
+            name: "PB",
+            movement: { max_pan_speed: 9, max_tilt_speed: null },
+            strobe_curve: "period",
+            write: true,
+            venue_versions: { "a.venue": "x" },
+          },
+          { dir: "t", venuesDir: "v" },
+          "rev",
+        ),
+      ),
+    );
+    expect(settings).toEqual({
+      type: "Brick",
+      name: "PB",
+      movement: { max_pan_speed: 9, max_tilt_speed: null },
+      strobe_curve: "period",
+      write: true,
+      venue_versions: { "a.venue": "x" },
+      revision: "rev",
+      dir: "t",
+      venuesDir: "v",
+    });
   });
 });

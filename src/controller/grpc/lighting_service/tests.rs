@@ -18,6 +18,10 @@
 mod facts;
 mod fixture;
 mod json;
+mod settings;
+mod type_paths;
+mod type_writes;
+mod types;
 
 use std::path::PathBuf;
 use std::sync::Arc;

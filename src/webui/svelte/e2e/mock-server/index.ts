@@ -14,18 +14,14 @@
 
 import type { saveVenue } from "../../src/lib/api/config";
 import type {
-  FixtureTypeSaved,
   AimPoints,
-  FixtureTypeDeleted,
   MvrKept,
   SampleUploaded,
   MvrImportAnswer,
   FixtureSettingsData,
-  FixtureTypeEntry,
   FixtureTypeList,
   FixtureTypeGdtf,
   GdtfImport,
-  GdtfInspection,
   SettingsSaved,
   Venue,
   VenueDetail,
@@ -65,6 +61,8 @@ import {
   LOG_LINES,
   MVR_INSPECTION,
   MVR_EXPORT_SUMMARY,
+  FIXTURE_TYPES,
+  GDTF_INSPECTION,
 } from "./test-data.js";
 import {
   create,
@@ -168,10 +166,17 @@ import {
 } from "../support/library-rpc.js";
 import {
   fitReply,
+  fixtureSettingsReply,
+  fixtureTypeDeletedReply,
+  fixtureTypeGdtfReply,
+  fixtureTypeInfoReply,
+  fixtureTypeListReply,
+  fixtureTypeSavedReply,
   groupsReply,
   lightShowReply,
   previewReply,
   readinessReply,
+  settingsSavedReply,
   testAnswerReply,
   testOptionsReply,
   validationReply,
@@ -668,234 +673,6 @@ grpcUnary(
 
 // --- Lighting ---
 
-// The three forms a fixture type comes in: a v1 `.light` channel map, a
-// hand-written rich `.fixture`, and one distilled from a GDTF archive —
-// which has no channels of its own until the lighting system expands it.
-const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
-  par: {
-    fixture_type: {
-      name: "par",
-      channels: { red: 1, green: 2, blue: 3, dimmer: 4 },
-      max_strobe_frequency: null,
-      min_strobe_frequency: null,
-      strobe_dmx_offset: null,
-    },
-    file: "par.light",
-    owner: { file: "par.light", editable: true, reason: null },
-    form_editable: true,
-    extension: "light",
-    referential: false,
-    rich: false,
-    dsl: 'fixture_type "par" { red: 1, green: 2, blue: 3, dimmer: 4 }',
-  },
-  mover: {
-    fixture_type: {
-      name: "mover",
-      channels: { pan: 1, tilt: 3, dimmer: 5 },
-      max_strobe_frequency: null,
-      min_strobe_frequency: null,
-      strobe_dmx_offset: null,
-    },
-    file: "mover.fixture",
-    owner: { file: "mover.fixture", editable: true, reason: null },
-    form_editable: false,
-    extension: "fixture",
-    referential: false,
-    rich: true,
-    dsl: 'fixture_type "mover" {\n  channel "pan" @ 1 fine 2 range -270deg..270deg\n}\n',
-  },
-  pixelbrick: {
-    fixture_type: {
-      name: "pixelbrick",
-      channels: {},
-      max_strobe_frequency: null,
-      min_strobe_frequency: null,
-      strobe_dmx_offset: null,
-    },
-    file: "pixelbrick.fixture",
-    owner: { file: "pixelbrick.fixture", editable: true, reason: null },
-    form_editable: false,
-    extension: "fixture",
-    referential: true,
-    rich: false,
-    dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf") {\n}\n',
-    gdtf: {
-      fixture: "PB15 PixelBrick",
-      manufacturer: "Astera LED Technology",
-      modes: 2,
-      beam: { type: "Wash", angle: 13 },
-      thumbnail: null,
-      used_by: 3,
-      in_use: [
-        { mode: "8: RGBS", count: 2 },
-        { mode: "1: RGB", count: 1 },
-      ],
-    },
-  },
-};
-
-app.get("/api/lighting/fixture-types", (_req, res) => {
-  // The listing carries everything but the source text, which GET-one has.
-  const fixture_types = Object.fromEntries(
-    Object.entries(FIXTURE_TYPES).map(([name, entry]) => [
-      name,
-      { ...entry, dsl: undefined },
-    ]),
-  );
-  res.json({ fixture_types, errors: [] } satisfies FixtureTypeList);
-});
-
-app.get("/api/lighting/fixture-types/:name", (req, res) => {
-  const entry = FIXTURE_TYPES[req.params.name];
-  if (!entry) {
-    return res.status(404).json({ error: "Fixture type not found" });
-  }
-  res.json(entry);
-});
-
-app.put("/api/lighting/fixture-types/:name", (req, res) => {
-  // A rename (`?from=`) retypes the venue lines naming the old name.
-  const from = typeof req.query.from === "string" ? req.query.from : null;
-  res.json({
-    status: "saved",
-    name: req.params.name,
-    rename:
-      from && from !== req.params.name
-        ? {
-            from,
-            to: req.params.name,
-            lines: 3,
-            venues: [
-              { venue: "built-in", file: "built_in.venue", lines: 2 },
-              { venue: "club", file: "club.venue", lines: 1 },
-            ],
-          }
-        : null,
-    venue_error: null,
-  } satisfies FixtureTypeSaved);
-});
-
-app.delete("/api/lighting/fixture-types/:name", (req, res) => {
-  res.json({
-    status: "deleted",
-    name: req.params.name,
-    archive_removed: null,
-    archive_kept: false,
-  } satisfies FixtureTypeDeleted);
-});
-
-// The PB15's modes, as the inspect endpoint and the details view answer them.
-const GDTF_INSPECTION: GdtfInspection = {
-  modes: [
-    {
-      name: "1: RGB",
-      footprint: 3,
-      capabilities: ["color", "strobe"],
-      wants: ["color", "dimmer", "strobe"],
-      cells: 0,
-      channels: [
-        [1, "red"],
-        [2, "green"],
-        [3, "blue"],
-      ],
-    },
-    {
-      name: "8: RGBS",
-      footprint: 4,
-      capabilities: ["color", "strobe"],
-      wants: ["color", "dimmer", "strobe"],
-      cells: 0,
-      strobe_range: { min_hz: 0.4, max_hz: 25 },
-      channels: [
-        [1, "red"],
-        [2, "green"],
-        [3, "blue"],
-        [4, "strobe"],
-      ],
-    },
-  ],
-};
-
-// A GDTF type's own settings, for the fixture page's form. Stateless: a save
-// answers what it did and changes nothing here, so tests never see another
-// test's save. Tests that need overlaps route their own answer.
-app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
-  const entry = FIXTURE_TYPES[req.params.name];
-  if (!entry || !entry.referential) {
-    return res.status(404).json({ error: "not a GDTF type" });
-  }
-  res.json({
-    name: req.params.name,
-    movement: { max_pan_speed: null, max_tilt_speed: null },
-    strobe_curve: null,
-    // The PB15's strobe function has only its endpoints.
-    strobe: { steps: 0, automatic: "declared" },
-    version: "mock-v1",
-  } satisfies FixtureSettingsData);
-});
-
-app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
-  const from = req.params.name;
-  const body = req.body ?? {};
-  const renamed = body.name && body.name !== from;
-  res.json({
-    version: body.write ? "mock-v2" : "mock-v1",
-    rename: renamed
-      ? {
-          from,
-          to: body.name,
-          lines: 3,
-          venues: [
-            { venue: "built-in", file: "built_in.venue", lines: 2 },
-            { venue: "club", file: "club.venue", lines: 1 },
-          ],
-        }
-      : null,
-    venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
-    venue_error: null,
-  } satisfies SettingsSaved);
-});
-
-// A referential type's archive, for its details view: the mock's one rig
-// model stands in for the PB15's. Any other type is not a GDTF type.
-app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
-  const entry = FIXTURE_TYPES[req.params.name];
-  if (!entry) {
-    return res.status(404).json({ error: "Fixture type not found" });
-  }
-  if (!entry.referential) {
-    return res.status(404).json({
-      error: `fixture type "${req.params.name}" is not a GDTF type`,
-    });
-  }
-  res.json({
-    archive: "library/pb15.gdtf",
-    rig: "test-archive/rig-test-v1.json",
-    thumbnail: null,
-    beam: {
-      type: "Wash",
-      beam_angle: 13,
-      field_angle: 25,
-      luminous_flux: 475,
-      color_temperature: 5500,
-      power: 12,
-    },
-    about:
-      "Battery-powered uplight and spotlight; bricks connect into clusters.",
-    venues: [
-      {
-        name: "built-in",
-        fixtures: [
-          { name: "Brick1", mode: "8: RGBS" },
-          { name: "Brick2", mode: "8: RGBS" },
-        ],
-      },
-      { name: "club", fixtures: [{ name: "Solo", mode: "1: RGB" }] },
-    ],
-    inspection: GDTF_INSPECTION,
-  } satisfies FixtureTypeGdtf);
-});
-
 // Testing a fixture from its page. Stateless: the options are derived from
 // the type (the PB15's two modes, or a hand-written type's channels), a send
 // answers the frame the controls would give, and a release is accepted.
@@ -984,6 +761,52 @@ lightingUnary(LightingService.method.evaluateSongLighting, (req) =>
   }),
 );
 
+// The fixture types. The listing carries everything but the source text,
+// which GetFixtureType has. A save and a delete change nothing here, so
+// tests never see another test's write; a rename (`from`) retypes venue lines
+// as the real one does, and says so.
+lightingUnary(LightingService.method.listFixtureTypes, () =>
+  fixtureTypeListReply({
+    fixture_types: Object.fromEntries(
+      Object.entries(FIXTURE_TYPES).map(([name, entry]) => [
+        name,
+        { ...entry, dsl: undefined },
+      ]),
+    ),
+    errors: [],
+  } satisfies FixtureTypeList),
+);
+
+lightingUnary(LightingService.method.getFixtureType, (req) => {
+  const entry = FIXTURE_TYPES[req.name];
+  if (!entry) {
+    throw new GrpcFailure(Code.NotFound, "Fixture type not found");
+  }
+  return fixtureTypeInfoReply(entry);
+});
+
+lightingUnary(LightingService.method.saveFixtureType, (req) =>
+  fixtureTypeSavedReply({
+    name: req.name,
+    rename:
+      req.from && req.from !== req.name
+        ? {
+            from: req.from,
+            to: req.name,
+            lines: 3,
+            venues: [
+              { venue: "built-in", file: "built_in.venue", lines: 2 },
+              { venue: "club", file: "club.venue", lines: 1 },
+            ],
+          }
+        : null,
+  }),
+);
+
+lightingUnary(LightingService.method.deleteFixtureType, (req) =>
+  fixtureTypeDeletedReply({ name: req.name }),
+);
+
 lightingUnary(LightingService.method.getFixtureTestOptions, (req) => {
   const name = req.fixtureType;
   const entry = FIXTURE_TYPES[name];
@@ -1056,6 +879,85 @@ lightingUnary(LightingService.method.startFixtureTest, (req) => {
 lightingUnary(LightingService.method.stopFixtureTest, () => ({
   active: false,
 }));
+
+// A GDTF type's own settings, for the fixture page's form. Stateless: a save
+// answers what it did and changes nothing here, so tests never see another
+// test's save. Tests that need overlaps answer their own.
+lightingUnary(LightingService.method.getFixtureTypeSettings, (req) => {
+  const entry = FIXTURE_TYPES[req.name];
+  if (!entry || !entry.referential) {
+    throw new GrpcFailure(Code.NotFound, "not a GDTF type");
+  }
+  return fixtureSettingsReply({
+    name: req.name,
+    movement: { max_pan_speed: null, max_tilt_speed: null },
+    strobe_curve: null,
+    // The PB15's strobe function has only its endpoints.
+    strobe: { steps: 0, automatic: "declared" },
+    version: "mock-v1",
+  } satisfies FixtureSettingsData);
+});
+
+lightingUnary(LightingService.method.saveFixtureTypeSettings, (req) => {
+  const renamed = req.newName && req.newName !== req.name;
+  return settingsSavedReply({
+    version: req.write ? "mock-v2" : "mock-v1",
+    rename: renamed
+      ? {
+          from: req.name,
+          to: req.newName,
+          lines: 3,
+          venues: [
+            { venue: "built-in", file: "built_in.venue", lines: 2 },
+            { venue: "club", file: "club.venue", lines: 1 },
+          ],
+        }
+      : null,
+    venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
+    venue_error: null,
+  } satisfies SettingsSaved);
+});
+
+// A referential type's archive, for its details view: the mock's one rig
+// model stands in for the PB15's. Any other type is not a GDTF type.
+lightingUnary(LightingService.method.getFixtureTypeGdtfDetails, (req) => {
+  const entry = FIXTURE_TYPES[req.name];
+  if (!entry) {
+    throw new GrpcFailure(Code.NotFound, "Fixture type not found");
+  }
+  if (!entry.referential) {
+    throw new GrpcFailure(
+      Code.NotFound,
+      `fixture type "${req.name}" is not a GDTF type`,
+    );
+  }
+  return fixtureTypeGdtfReply({
+    archive: "library/pb15.gdtf",
+    rig: "test-archive/rig-test-v1.json",
+    thumbnail: null,
+    beam: {
+      type: "Wash",
+      beam_angle: 13,
+      field_angle: 25,
+      luminous_flux: 475,
+      color_temperature: 5500,
+      power: 12,
+    },
+    about:
+      "Battery-powered uplight and spotlight; bricks connect into clusters.",
+    venues: [
+      {
+        name: "built-in",
+        fixtures: [
+          { name: "Brick1", mode: "8: RGBS" },
+          { name: "Brick2", mode: "8: RGBS" },
+        ],
+      },
+      { name: "club", fixtures: [{ name: "Solo", mode: "1: RGB" }] },
+    ],
+    inspection: GDTF_INSPECTION,
+  } satisfies FixtureTypeGdtf);
+});
 
 // One-step import: no mode, no name. The mock answers as if the archive
 // became the mock's "pixelbrick", so the page it opens exists.

@@ -25,21 +25,28 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use tonic::{metadata::MetadataValue, Request, Response, Status};
 
+use super::config_service::CURRENT_VERSION_KEY;
 use super::lighting_convert as convert;
 use crate::player::Player;
 use crate::proto::player::v1::{
-    self as proto, lighting_service_server::LightingService, DeleteLightShowRequest,
-    DeleteLightShowResponse, EvaluateSongLightingRequest, FixtureTestAnswer, FixtureTestOptions,
-    GetFixtureTestOptionsRequest, GetLightShowRequest, GetLightShowResponse, GetLightingFitRequest,
-    GetLightingReadinessRequest, LightingFit, LightingPreview, LightingReadiness,
-    ListLightingGroupsRequest, ListLightingGroupsResponse, SaveLightShowRequest,
-    SaveLightShowResponse, StartFixtureTestRequest, StopFixtureTestRequest,
+    self as proto, lighting_service_server::LightingService, DeleteFixtureTypeRequest,
+    DeleteFixtureTypeResponse, DeleteLightShowRequest, DeleteLightShowResponse,
+    EvaluateSongLightingRequest, FixtureTestAnswer, FixtureTestOptions, FixtureTypeGdtfDetails,
+    FixtureTypeInfo, FixtureTypeSettings, FixtureTypeSettingsSaved, GetFixtureTestOptionsRequest,
+    GetFixtureTypeGdtfDetailsRequest, GetFixtureTypeRequest, GetFixtureTypeSettingsRequest,
+    GetLightShowRequest, GetLightShowResponse, GetLightingFitRequest, GetLightingReadinessRequest,
+    LightingFit, LightingPreview, LightingReadiness, ListFixtureTypesRequest,
+    ListFixtureTypesResponse, ListLightingGroupsRequest, ListLightingGroupsResponse,
+    SaveFixtureTypeRequest, SaveFixtureTypeResponse, SaveFixtureTypeSettingsRequest,
+    SaveLightShowRequest, SaveLightShowResponse, StartFixtureTestRequest, StopFixtureTestRequest,
     StopFixtureTestResponse, ValidateLightShowRequest, ValidateLightShowResponse,
 };
+use crate::webui::api::fixture_settings;
 use crate::webui::api::fixture_test::{self, ControlInput, TestDirs, TestInput};
-use crate::webui::api::lighting_api;
+use crate::webui::api::lighting_api::{self, ChannelMap, TypeBody, TypeSaveAsk};
 use crate::webui::api::lighting_writes::Answer;
 use crate::webui::api::songs_api;
+use crate::webui::wire::fixture_types::SettingsRequest;
 
 /// The metadata key of a refused fixture test that says why, in a word:
 /// `playing`, `no_dmx`, `no_universes`, `universe`, `address`, `controls`,
@@ -97,6 +104,35 @@ pub(super) fn answer_status(answer: Answer) -> Status {
         status.metadata_mut().insert(REFUSAL_REASON_KEY, reason);
     }
     status
+}
+
+/// A refused fixture settings call as a status. The settings' conflicts are
+/// all `ABORTED`, as the web API's were all `conflict`: the files are not as
+/// the form had them, so it reloads. A stale record carries the revision it
+/// is at in [`CURRENT_VERSION_KEY`].
+fn settings_status(answer: Answer) -> Status {
+    if answer.status != StatusCode::CONFLICT {
+        return answer_status(answer);
+    }
+    let mut status = Status::aborted(answer.message());
+    if let Some(version) = answer.body["version"]
+        .as_str()
+        .and_then(|v| v.parse::<MetadataValue<_>>().ok())
+    {
+        status.metadata_mut().insert(CURRENT_VERSION_KEY, version);
+    }
+    status
+}
+
+/// The form a save asks for, as the plain functions read it: a number that
+/// names none is passed on as it is, to be refused by name.
+fn file_form(value: i32) -> Option<String> {
+    match proto::FixtureTypeFile::try_from(value) {
+        Ok(proto::FixtureTypeFile::Unspecified) => None,
+        Ok(proto::FixtureTypeFile::Light) => Some("light".to_string()),
+        Ok(proto::FixtureTypeFile::Fixture) => Some("fixture".to_string()),
+        Err(_) => Some(value.to_string()),
+    }
 }
 
 /// A refusal of a fixture test request that never reached the plain
@@ -283,6 +319,144 @@ impl LightingService for LightingServer {
         .await
         .map_err(answer_status)?;
         Ok(Response::new(convert::test_options(&options)))
+    }
+
+    async fn list_fixture_types(
+        &self,
+        request: Request<ListFixtureTypesRequest>,
+    ) -> Result<Response<ListFixtureTypesResponse>, Status> {
+        let req = request.into_inner();
+        let list = lighting_api::list_fixture_types(
+            &self.config_path()?,
+            req.dir.as_deref(),
+            req.venues_dir.as_deref(),
+        )
+        .await
+        .map_err(answer_status)?;
+        Ok(Response::new(convert::fixture_type_list(&list)))
+    }
+
+    async fn get_fixture_type(
+        &self,
+        request: Request<GetFixtureTypeRequest>,
+    ) -> Result<Response<FixtureTypeInfo>, Status> {
+        let req = request.into_inner();
+        let entry =
+            lighting_api::read_fixture_type(&self.config_path()?, &req.name, req.dir.as_deref())
+                .await
+                .map_err(answer_status)?;
+        Ok(Response::new(convert::fixture_type_info(&entry)))
+    }
+
+    async fn save_fixture_type(
+        &self,
+        request: Request<SaveFixtureTypeRequest>,
+    ) -> Result<Response<SaveFixtureTypeResponse>, Status> {
+        use proto::save_fixture_type_request::Body;
+        let req = request.into_inner();
+        let body = match req.body {
+            Some(Body::ChannelMap(form)) => TypeBody::ChannelMap(ChannelMap {
+                channels: form.channels.into_iter().collect(),
+                max_strobe_frequency: form.max_strobe_frequency,
+                min_strobe_frequency: form.min_strobe_frequency,
+                strobe_dmx_offset: form.strobe_dmx_offset,
+            }),
+            Some(Body::Dsl(text)) => TypeBody::Text(text),
+            None => TypeBody::Text(String::new()),
+        };
+        let ext = file_form(req.file_form);
+        let saved = lighting_api::put_fixture_type(
+            &self.player,
+            &self.config_path()?,
+            TypeSaveAsk {
+                name: &req.name,
+                from: req.from.as_deref(),
+                dir: req.dir.as_deref(),
+                venues_dir: req.venues_dir.as_deref(),
+                ext: ext.as_deref(),
+                body,
+            },
+        )
+        .await
+        .map_err(answer_status)?;
+        Ok(Response::new(convert::fixture_type_saved(&saved)))
+    }
+
+    async fn delete_fixture_type(
+        &self,
+        request: Request<DeleteFixtureTypeRequest>,
+    ) -> Result<Response<DeleteFixtureTypeResponse>, Status> {
+        let req = request.into_inner();
+        let deleted =
+            lighting_api::delete_fixture_type(&self.config_path()?, &req.name, req.dir.as_deref())
+                .await
+                .map_err(answer_status)?;
+        Ok(Response::new(convert::fixture_type_deleted(&deleted)))
+    }
+
+    async fn get_fixture_type_gdtf_details(
+        &self,
+        request: Request<GetFixtureTypeGdtfDetailsRequest>,
+    ) -> Result<Response<FixtureTypeGdtfDetails>, Status> {
+        let req = request.into_inner();
+        let details = lighting_api::fixture_type_gdtf(
+            &self.config_path()?,
+            &req.name,
+            req.dir.as_deref(),
+            req.venues_dir.as_deref(),
+        )
+        .await
+        .map_err(answer_status)?;
+        Ok(Response::new(convert::fixture_type_gdtf(&details)))
+    }
+
+    async fn get_fixture_type_settings(
+        &self,
+        request: Request<GetFixtureTypeSettingsRequest>,
+    ) -> Result<Response<FixtureTypeSettings>, Status> {
+        let req = request.into_inner();
+        let settings =
+            fixture_settings::settings(&self.config_path()?, &req.name, req.dir.as_deref())
+                .await
+                .map_err(settings_status)?;
+        Ok(Response::new(convert::fixture_settings(&settings)))
+    }
+
+    async fn save_fixture_type_settings(
+        &self,
+        request: Request<SaveFixtureTypeSettingsRequest>,
+    ) -> Result<Response<FixtureTypeSettingsSaved>, Status> {
+        let req = request.into_inner();
+        let movement = req.movement.unwrap_or_default();
+        // A curve is one the proto names or none (the automatic one); a
+        // number that names none is not read as automatic.
+        if proto::FixtureStrobeCurve::try_from(req.strobe_curve).is_err() {
+            return Err(Status::invalid_argument(format!(
+                "Unknown strobe curve: {}",
+                req.strobe_curve
+            )));
+        }
+        let settings = SettingsRequest {
+            name: req.new_name,
+            movement: crate::lighting::types::MovementLimits {
+                max_pan_speed: movement.max_pan_speed,
+                max_tilt_speed: movement.max_tilt_speed,
+            },
+            strobe_curve: convert::strobe_curve_of(req.strobe_curve),
+            write: req.write,
+            venue_versions: req.venue_revisions.into_iter().collect(),
+        };
+        let saved = fixture_settings::save_settings(
+            &self.player,
+            &self.config_path()?,
+            &req.name,
+            (req.dir.as_deref(), req.venues_dir.as_deref()),
+            req.expected_revision.filter(|v| !v.is_empty()),
+            settings,
+        )
+        .await
+        .map_err(settings_status)?;
+        Ok(Response::new(convert::settings_saved(&saved)))
     }
 }
 

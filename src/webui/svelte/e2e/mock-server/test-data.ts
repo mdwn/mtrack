@@ -17,6 +17,8 @@ import type {
   AudioProbe,
   ChannelCalibration,
   FitReport,
+  FixtureTypeEntry,
+  GdtfInspection,
   LightingGroup,
   MidiDeviceInfo,
   MvrExportSummary,
@@ -998,3 +1000,103 @@ export const SONG_FILES: SongFile[] = [
   { name: "snare.wav", type: "audio" },
   { name: "bass.wav", type: "audio" },
 ];
+
+// The three forms a fixture type comes in: a v1 `.light` channel map, a
+// hand-written rich `.fixture`, and one distilled from a GDTF archive —
+// which has no channels of its own until the lighting system expands it.
+export const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
+  par: {
+    fixture_type: {
+      name: "par",
+      channels: { red: 1, green: 2, blue: 3, dimmer: 4 },
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: "par.light",
+    owner: { file: "par.light", editable: true, reason: null },
+    form_editable: true,
+    extension: "light",
+    referential: false,
+    rich: false,
+    dsl: 'fixture_type "par" { red: 1, green: 2, blue: 3, dimmer: 4 }',
+  },
+  mover: {
+    fixture_type: {
+      name: "mover",
+      channels: { pan: 1, tilt: 3, dimmer: 5 },
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: "mover.fixture",
+    owner: { file: "mover.fixture", editable: true, reason: null },
+    form_editable: false,
+    extension: "fixture",
+    referential: false,
+    rich: true,
+    dsl: 'fixture_type "mover" {\n  channel "pan" @ 1 fine 2 range -270deg..270deg\n}\n',
+  },
+  pixelbrick: {
+    fixture_type: {
+      name: "pixelbrick",
+      channels: {},
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: "pixelbrick.fixture",
+    owner: { file: "pixelbrick.fixture", editable: true, reason: null },
+    form_editable: false,
+    extension: "fixture",
+    referential: true,
+    rich: false,
+    dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf") {\n}\n',
+    gdtf: {
+      fixture: "PB15 PixelBrick",
+      manufacturer: "Astera LED Technology",
+      modes: 2,
+      beam: { type: "Wash", angle: 13 },
+      thumbnail: null,
+      used_by: 3,
+      in_use: [
+        { mode: "8: RGBS", count: 2 },
+        { mode: "1: RGB", count: 1 },
+      ],
+    },
+  },
+};
+
+// (The fixture types' calls are LightingService's: below, with the others.)
+
+// The PB15's modes, as the inspect endpoint and the details view answer them.
+export const GDTF_INSPECTION: GdtfInspection = {
+  modes: [
+    {
+      name: "1: RGB",
+      footprint: 3,
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
+      cells: 0,
+      channels: [
+        [1, "red"],
+        [2, "green"],
+        [3, "blue"],
+      ],
+    },
+    {
+      name: "8: RGBS",
+      footprint: 4,
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
+      cells: 0,
+      strobe_range: { min_hz: 0.4, max_hz: 25 },
+      channels: [
+        [1, "red"],
+        [2, "green"],
+        [3, "blue"],
+        [4, "strobe"],
+      ],
+    },
+  ],
+};

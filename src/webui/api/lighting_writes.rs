@@ -901,12 +901,6 @@ mod tests {
         )
     }
 
-    fn rich(name: &str) -> String {
-        format!(
-            "fixture_type \"{name}\" {{\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n}}\n"
-        )
-    }
-
     fn venue_json(mode: Option<&str>) -> Vec<u8> {
         let mut fixture =
             json!({"name": "A", "fixture_type": "Par", "universe": 1, "start_channel": 1});
@@ -916,23 +910,11 @@ mod tests {
         serde_json::to_vec(&json!({ "fixtures": [fixture] })).unwrap()
     }
 
-    fn ft_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({"channels": {"dimmer": 1}})).unwrap()
-    }
-
     const V: &str = "v_writes";
-    const T: &str = "t_writes";
 
     fn venue_uri(name: &str, extra: &str) -> String {
         format!(
             "/lighting/venues/{}?dir={V}{extra}",
-            name.replace(' ', "%20")
-        )
-    }
-
-    fn type_uri(name: &str, extra: &str) -> String {
-        format!(
-            "/lighting/fixture-types/{}?dir={T}{extra}",
             name.replace(' ', "%20")
         )
     }
@@ -979,58 +961,6 @@ mod tests {
         assert_eq!(snapshot(&d), before);
     }
 
-    #[tokio::test]
-    async fn a_new_type_is_claimed_at_its_canonical_fixture_file_in_either_form() {
-        let (app, _dir, d) = project(T, &[]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash Par", ""),
-            "application/json",
-            ft_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        // `ext=light` names the form an existing `.light` keeps; a new type
-        // is a `.fixture` all the same.
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Spot", "&ext=light"),
-            "text/plain",
-            par("Spot"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let names: Vec<String> = snapshot(&d).into_iter().map(|(f, _)| f).collect();
-        assert_eq!(names, ["spot.fixture", "wash_par.fixture"]);
-    }
-
-    #[tokio::test]
-    async fn a_new_type_may_not_take_an_unrecorded_library_name() {
-        let (app, dir, d) = project(T, &[]);
-        let library = dir.path().join("lighting/library");
-        std::fs::create_dir_all(&library).unwrap();
-        std::fs::write(
-            library.join("synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
-        )
-        .unwrap();
-        let unrecorded = crate::lighting::library::unrecorded_types(dir.path(), Some(&d));
-        let name = unrecorded.types[0].name.clone();
-        let (status, body) =
-            call(&app, "PUT", &type_uri(&name, ""), "text/plain", par(&name)).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert!(
-            body["error"].as_str().unwrap().contains("synth.gdtf"),
-            "{body}"
-        );
-        assert!(snapshot(&d).is_empty());
-    }
-
     // --- Saves of an editable name.
 
     #[tokio::test]
@@ -1050,22 +980,6 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, "tour/2024 rig.light");
         assert!(files[0].1.contains("# keep"), "{}", files[0].1);
-    }
-
-    #[tokio::test]
-    async fn an_editable_type_is_rewritten_where_it_lives() {
-        let (app, _dir, d) = project(T, &[("old/par-v1.light", &par("Par"))]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Par", ""),
-            "application/json",
-            ft_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let names: Vec<String> = snapshot(&d).into_iter().map(|(f, _)| f).collect();
-        assert_eq!(names, ["old/par-v1.light"]);
     }
 
     #[tokio::test]
@@ -1133,144 +1047,6 @@ mod tests {
             "{body}"
         );
         assert_eq!(snapshot(&d), before);
-    }
-
-    #[tokio::test]
-    async fn a_light_type_needing_the_new_format_moves_to_its_stem_fixture() {
-        let (app, _dir, d) = project(T, &[("mover.light", &par("Mover"))]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Mover", "&ext=light"),
-            "text/plain",
-            rich("Mover"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let files = snapshot(&d);
-        assert_eq!(files, [("mover.fixture".to_string(), rich("Mover"))]);
-
-        // Asked for, a plain type moves too.
-        let (app, _dir, d) = project(T, &[("wash.light", &par("Wash"))]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", "&ext=fixture"),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let names: Vec<String> = snapshot(&d).into_iter().map(|(f, _)| f).collect();
-        assert_eq!(names, ["wash.fixture"]);
-    }
-
-    #[tokio::test]
-    async fn a_light_type_upgrade_whose_target_exists_is_refused() {
-        let (app, _dir, d) = project(
-            T,
-            &[
-                ("mover.light", &par("Mover")),
-                ("mover.fixture", &par("Other")),
-            ],
-        );
-        let before = snapshot(&d);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Mover", ""),
-            "text/plain",
-            rich("Mover"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(snapshot(&d), before);
-    }
-
-    #[tokio::test]
-    async fn a_fixture_file_is_not_written_back_as_light() {
-        let (app, _dir, d) = project(T, &[("wash.fixture", &par("Wash"))]);
-        let before = snapshot(&d);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", "&ext=light"),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(snapshot(&d), before);
-    }
-
-    #[tokio::test]
-    async fn the_channel_map_form_saves_only_a_type_it_can_say_all_of() {
-        let plain = par("Wash");
-        let with = |line: &str| plain.replace("\n}\n", &format!("\n  {line}\n}}\n"));
-        for (what, text) in [
-            ("a comment", format!("# measured on the rig\n{plain}")),
-            ("a strobe curve", with("strobe_curve: linear")),
-            ("special cases", with("special_cases: [\"Wash\"]")),
-            (
-                "movement limits",
-                with("movement { max_pan_speed: 90deg/s }"),
-            ),
-            ("rich channels", rich("Wash")),
-        ] {
-            let (app, _dir, d) = project(T, &[("wash.fixture", &text)]);
-            let before = snapshot(&d);
-            let (_, list) = call(
-                &app,
-                "GET",
-                &format!("/lighting/fixture-types?dir={T}"),
-                "text/plain",
-                Body::empty(),
-            )
-            .await;
-            assert_eq!(
-                list["fixture_types"]["Wash"]["form_editable"], false,
-                "{what}"
-            );
-            let (status, body) = call(
-                &app,
-                "PUT",
-                &type_uri("Wash", ""),
-                "application/json",
-                ft_json(),
-            )
-            .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {body}");
-            assert!(
-                body["error"].as_str().unwrap().contains("as text"),
-                "{body}"
-            );
-            assert_eq!(snapshot(&d), before, "{what}");
-        }
-        // A plain type, in either extension, is the form's to open and save.
-        for file in ["wash.fixture", "wash.light"] {
-            let (app, _dir, _) = project(T, &[(file, &plain)]);
-            let (_, list) = call(
-                &app,
-                "GET",
-                &format!("/lighting/fixture-types?dir={T}"),
-                "text/plain",
-                Body::empty(),
-            )
-            .await;
-            assert_eq!(
-                list["fixture_types"]["Wash"]["form_editable"], true,
-                "{file}"
-            );
-            let (status, _) = call(
-                &app,
-                "PUT",
-                &type_uri("Wash", ""),
-                "application/json",
-                ft_json(),
-            )
-            .await;
-            assert_eq!(status, StatusCode::OK, "{file}");
-        }
     }
 
     // --- Saves of a read-only name.
@@ -1356,33 +1132,6 @@ mod tests {
         assert_eq!(snapshot(&d), before);
     }
 
-    #[tokio::test]
-    async fn a_type_sharing_its_file_is_read_only() {
-        let shared = format!("{}{}", par("Par"), par("Wash"));
-        let (app, _dir, d) = project(T, &[("all.light", &shared)]);
-        let before = snapshot(&d);
-        let (status, reply) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", ""),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(reply["others"], json!(["Par"]));
-        let (status, _) = call(
-            &app,
-            "DELETE",
-            &type_uri("Wash", ""),
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(snapshot(&d), before);
-    }
-
     // --- DSL bodies.
 
     #[tokio::test]
@@ -1407,17 +1156,6 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
         }
-        let (app_t, _dir_t, dt) = project(T, &[]);
-        let (status, _) = call(
-            &app_t,
-            "PUT",
-            &type_uri("Par", ""),
-            "text/plain",
-            format!("{}{}", par("Par"), par("Wash")),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(snapshot(&dt).is_empty());
         assert_eq!(snapshot(&d), before);
     }
 
@@ -1453,27 +1191,6 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(d.join("broken.venue").exists());
-
-        let (app, _dir, d) = project(T, &[("x/par.light", &par("Par"))]);
-        let (status, _) = call(
-            &app,
-            "DELETE",
-            &type_uri("Par", ""),
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(snapshot(&d).is_empty());
-        let (status, _) = call(
-            &app,
-            "DELETE",
-            &type_uri("Par", ""),
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     // --- Renames.
@@ -1500,19 +1217,6 @@ mod tests {
             files[0].1
         );
         assert!(files[0].1.contains("# keep"));
-
-        // A type, renamed through its text.
-        let (app, _dir, d) = project(T, &[("par.light", &par("Par"))]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", "&from=Par"),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(snapshot(&d), [("wash.fixture".to_string(), par("Wash"))]);
     }
 
     #[tokio::test]
@@ -1643,28 +1347,6 @@ mod tests {
         );
         // A file that does not parse is listed by its error, with no name.
         assert_eq!(list["errors"][0]["file"], "bad.venue");
-
-        let (app, _dir, _) = project(
-            T,
-            &[
-                ("par.light", &par("Par")),
-                ("all.fixture", &format!("{}{}", par("A"), par("B"))),
-            ],
-        );
-        let (_, list) = call(
-            &app,
-            "GET",
-            &format!("/lighting/fixture-types?dir={T}"),
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(list["fixture_types"]["Par"]["owner"]["editable"], true);
-        assert_eq!(list["fixture_types"]["A"]["owner"]["editable"], false);
-        assert_eq!(
-            list["fixture_types"]["A"]["owner"]["reason"],
-            "Defined in all.fixture alongside fixture type \"B\"; edit that file by hand."
-        );
     }
 
     #[tokio::test]
@@ -1720,23 +1402,6 @@ mod tests {
         let (_, list) = call(&app, "GET", "/lighting/venues", "text/plain", Body::empty()).await;
         assert_eq!(list["owners"]["built-in"]["editable"], true);
         assert_eq!(list["owners"]["test"]["editable"], true);
-        let (_, list) = call(
-            &app,
-            "GET",
-            "/lighting/fixture-types",
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(
-            list["fixture_types"]["Astera-PixelBrick"]["owner"]["editable"],
-            true
-        );
-        // A record is text, never the channel map's.
-        assert_eq!(
-            list["fixture_types"]["Astera-PixelBrick"]["form_editable"],
-            false
-        );
 
         for name in ["built-in", "test"] {
             let (status, _) = call(
@@ -1749,22 +1414,8 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
         }
-        // Not at its canonical path (`astera-pixelbrick.fixture`): saved
-        // where it lives.
-        let (status, _) = call(
-            &app,
-            "PUT",
-            "/lighting/fixture-types/Astera-PixelBrick",
-            "text/plain",
-            record.replace("{\n}", "{\n  movement { max_pan_speed: 90deg/s }\n}"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(
-            std::fs::read_to_string(types.join("astera_pixelbrick.fixture"))
-                .unwrap()
-                .contains("max_pan_speed")
-        );
+        // The type's own half of this (saved where it lives, not at its
+        // canonical path) is held through LightingService.
         let mut names: Vec<String> = snapshot(&dir.path().join("lighting"))
             .into_iter()
             .map(|(f, _)| f)
@@ -1780,84 +1431,5 @@ mod tests {
                 "venues/test.venue"
             ]
         );
-    }
-
-    // --- A type's rename in the editor is the fixture settings' rename.
-
-    #[tokio::test]
-    async fn an_editor_rename_of_a_type_retypes_every_venue_using_it() {
-        let (app, dir, d) = project(T, &[("par.fixture", &par("Par"))]);
-        let venues = dir.path().join(V);
-        std::fs::create_dir_all(venues.join("tour")).unwrap();
-        std::fs::write(venues.join("club.venue"), venue("club")).unwrap();
-        std::fs::write(venues.join("tour/2024.venue"), venue("arena")).unwrap();
-
-        let (status, body) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", &format!("&from=Par&venues_dir={V}")),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(snapshot(&d), [("wash.fixture".to_string(), par("Wash"))]);
-        let retyped = venue("club").replace("Par @", "Wash @");
-        assert_eq!(
-            std::fs::read_to_string(venues.join("club.venue")).unwrap(),
-            retyped
-        );
-        assert!(std::fs::read_to_string(venues.join("tour/2024.venue"))
-            .unwrap()
-            .contains("\"A\" Wash @ 1:1"));
-        assert_eq!(body["rename"]["lines"], 2, "{body}");
-        assert_eq!(
-            body["rename"]["venues"],
-            json!([
-                {"venue": "club", "file": "club.venue", "lines": 1},
-                {"venue": "arena", "file": "tour/2024.venue", "lines": 1},
-            ])
-        );
-    }
-
-    #[tokio::test]
-    async fn an_editor_rename_is_refused_when_a_venue_using_it_is_read_only() {
-        let (app, dir, d) = project(T, &[("par.fixture", &par("Par"))]);
-        let venues = dir.path().join(V);
-        std::fs::create_dir_all(&venues).unwrap();
-        std::fs::write(venues.join("club.venue"), venue("club")).unwrap();
-        std::fs::write(
-            venues.join("all.venue"),
-            format!("{}{}", venue("arena"), venue("annex")),
-        )
-        .unwrap();
-        let (types_before, venues_before) = (snapshot(&d), snapshot(&venues));
-
-        let (status, body) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", &format!("&from=Par&venues_dir={V}")),
-            "text/plain",
-            par("Wash"),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        let error = body["error"].as_str().unwrap();
-        assert!(
-            error.starts_with("fixture type \"Par\" cannot be renamed, so nothing was written;"),
-            "{error}"
-        );
-        assert!(
-            error.contains("venue \"annex\" in all.venue uses it"),
-            "{error}"
-        );
-        assert!(
-            error.contains("venue \"arena\" in all.venue uses it"),
-            "{error}"
-        );
-        assert_eq!(snapshot(&d), types_before);
-        assert_eq!(snapshot(&venues), venues_before);
     }
 }

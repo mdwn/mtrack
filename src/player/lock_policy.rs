@@ -159,6 +159,13 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "ListLightingGroups"),
     (Grpc, "StopFixtureTest"),
     (Grpc, "GetFixtureTestOptions"),
+    // The fixture types' reads. Saving and deleting a type, and saving (or
+    // planning) a fixture's settings, stay locked out, as the PUT, DELETE
+    // and POST routes were.
+    (Grpc, "ListFixtureTypes"),
+    (Grpc, "GetFixtureType"),
+    (Grpc, "GetFixtureTypeGdtfDetails"),
+    (Grpc, "GetFixtureTypeSettings"),
     // Web: the pure read that happens to be a POST (the MVR inspector, which
     // writes nothing).
     (Web, "POST /lighting/mvr/inspect"),
@@ -258,10 +265,21 @@ mod tests {
             "ListLightingGroups",
             "StopFixtureTest",
             "GetFixtureTestOptions",
+            "ListFixtureTypes",
+            "GetFixtureType",
+            "GetFixtureTypeGdtfDetails",
+            "GetFixtureTypeSettings",
         ] {
             assert!(open_while_locked(Grpc, open), "{open}");
         }
-        for locked in ["SaveLightShow", "DeleteLightShow", "StartFixtureTest"] {
+        for locked in [
+            "SaveLightShow",
+            "DeleteLightShow",
+            "StartFixtureTest",
+            "SaveFixtureType",
+            "DeleteFixtureType",
+            "SaveFixtureTypeSettings",
+        ] {
             assert!(!open_while_locked(Grpc, locked), "{locked}");
         }
         // Bluetooth: the status is a read; pairing and forgetting are not.

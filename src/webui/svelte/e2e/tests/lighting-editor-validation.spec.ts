@@ -13,7 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 // What a user typed is never thrown away without a word. Saves are caught
 // here with page.route, so the shared mock is untouched.
@@ -21,16 +23,7 @@ import { card } from "../support/locators";
 test("a fixture type's blank or repeated channel blocks the save", async ({
   page,
 }) => {
-  const puts: unknown[] = [];
-  await page.route(/\/api\/lighting\/fixture-types\/par(\?.*)?$/, (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    puts.push(route.request().postDataJSON());
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ status: "saved" }),
-    });
-  });
+  const rpc = await mockRpc(page);
   await page.goto("/#/lighting/fixtures");
   await card(page, "par").click();
   const rows = page.getByTestId("ft-channel-row");
@@ -51,7 +44,7 @@ test("a fixture type's blank or repeated channel blocks the save", async ({
   ]);
   await expect(rows.nth(0).getByLabel("Channel name")).toBeFocused();
   await page.waitForTimeout(300);
-  expect(puts).toHaveLength(0);
+  expect(rpc.calls(LightingService.method.saveFixtureType)).toHaveLength(0);
 });
 
 test("a tag with no allowed character stays in the box, marked", async ({

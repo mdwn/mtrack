@@ -2617,6 +2617,66 @@ service LightingService {
     // its modes, the running profile's universes, and whether a test can run
     // now. Open while locked.
     rpc GetFixtureTestOptions(GetFixtureTestOptionsRequest) returns (FixtureTestOptions);
+
+    // ListFixtureTypes lists the project's fixture types (every type file in
+    // the fixture types directory and below, and every GDTF in the library no
+    // record points at), the files that did not read, and for a GDTF type
+    // what its archive says and which venues use it. `dir` and `venues_dir`
+    // are project-relative and default to the running profile's; a directory
+    // that is not there lists nothing; one that leads outside the project
+    // (`..`, an absolute path, a link out) is INVALID_ARGUMENT or
+    // PERMISSION_DENIED. Open while locked.
+    rpc ListFixtureTypes(ListFixtureTypesRequest) returns (ListFixtureTypesResponse);
+
+    // GetFixtureType reads one fixture type with its file's text. A GDTF in
+    // the library with no record is a fixture with no file. NOT_FOUND when
+    // no file or archive declares the name; INVALID_ARGUMENT for a name that
+    // is not a plain name; the directory refusals of ListFixtureTypes. Open
+    // while locked.
+    rpc GetFixtureType(GetFixtureTypeRequest) returns (FixtureTypeInfo);
+
+    // SaveFixtureType creates, updates or renames a fixture type, from the
+    // whole file's text (which must declare this one type and nothing else)
+    // or from the channel-map form. A new name is claimed at
+    // `<dir>/<stem>.fixture`; an existing one is written only where its file
+    // is that type's alone (FAILED_PRECONDITION naming the file and why
+    // otherwise). `from` renames, and retypes every venue line naming the old
+    // name in `venues_dir` (refused, nothing written, when any venue file
+    // cannot be). INVALID_ARGUMENT, with the parser's message, for text that
+    // does not parse. There is no expected_revision: the file is replaced as
+    // it stands, as it always was. Refused while locked.
+    rpc SaveFixtureType(SaveFixtureTypeRequest) returns (SaveFixtureTypeResponse);
+
+    // DeleteFixtureType deletes a fixture type's file: only one that is the
+    // type's alone (FAILED_PRECONDITION otherwise). A GDTF fixture's archive
+    // goes with its record unless another type uses it; a GDTF in the
+    // library with no record is its archive, deleted. NOT_FOUND when neither
+    // has the name. Refused while locked.
+    rpc DeleteFixtureType(DeleteFixtureTypeRequest) returns (DeleteFixtureTypeResponse);
+
+    // GetFixtureTypeGdtfDetails reads what a GDTF fixture's archive holds, for
+    // the fixture's page: every mode with what a show can do in it, the venue
+    // fixtures using the type in their own modes, and the paths (in the
+    // asset store, served by HTTP) of the rig model and thumbnail the 3D view
+    // draws. Not the archive itself. NOT_FOUND for no such type or a native
+    // one; INVALID_ARGUMENT when the archive is missing or does not parse.
+    // Open while locked.
+    rpc GetFixtureTypeGdtfDetails(GetFixtureTypeGdtfDetailsRequest) returns (FixtureTypeGdtfDetails);
+
+    // GetFixtureTypeSettings reads a GDTF fixture's own settings (its name
+    // and movement limits, its strobe curve) and the revision they are at.
+    // A fixture with no record answers its derived name, no limits and the
+    // revision "unrecorded". NOT_FOUND for a native type. Open while locked.
+    rpc GetFixtureTypeSettings(GetFixtureTypeSettingsRequest) returns (FixtureTypeSettings);
+
+    // SaveFixtureTypeSettings plans (`write` false: nothing is written) or
+    // saves a GDTF fixture's settings, and what a rename does to the venues
+    // that name the type. ABORTED, with the revision the record is at in the
+    // `x-current-version` metadata, when `expected_revision` is not it;
+    // ABORTED too (without the metadata) when a venue file changed since the
+    // plan (`venue_revisions`) or the files are not as the form had them
+    // (a read-only file, a name taken). Refused while locked, plans too.
+    rpc SaveFixtureTypeSettings(SaveFixtureTypeSettingsRequest) returns (FixtureTypeSettingsSaved);
 }
 
 // ---- Light show files ----
@@ -3379,4 +3439,332 @@ message StopFixtureTestRequest {}
 message StopFixtureTestResponse {
     // Always false: no test is live.
     bool active = 1;
+}
+
+// ---- Fixture types ----
+
+message ListFixtureTypesRequest {
+    // The fixture types directory, project-relative; the profile's when unset.
+    optional string dir = 1;
+    // The venues directory the listing looks for users of a GDTF type in.
+    optional string venues_dir = 2;
+}
+
+message ListFixtureTypesResponse {
+    // By type name.
+    map<string, FixtureTypeInfo> fixture_types = 1;
+    // The files that did not read.
+    repeated LightingFileProblem errors = 2;
+}
+
+message LightingFileProblem {
+    // Relative to the directory listed.
+    string file = 1;
+    string error = 2;
+}
+
+message GetFixtureTypeRequest {
+    string name = 1;
+    optional string dir = 2;
+}
+
+// FixtureTypeInfo is a fixture type with the file it came from. The listing
+// carries `footprint` and, for a GDTF type, `gdtf`; a single type's answer
+// carries `dsl`.
+message FixtureTypeInfo {
+    // Whether it is a GDTF's, with no channels of its own.
+    bool referential = 1;
+    // The addresses a fixture of a hand-written type occupies (the listing
+    // only; unset for a GDTF type, whose footprint is its mode's).
+    optional uint32 footprint = 2;
+    bool rich = 3;
+    FixtureTypeChannels fixture_type = 4;
+    // The type's file, relative to the directory; unset for a GDTF in the
+    // library with no record.
+    optional string file = 5;
+    optional string extension = 6;
+    // The type's file and whether it may be written; unset for a GDTF in the
+    // library with no record (its archive is deleted, not edited).
+    optional FixtureFileOwner owner = 7;
+    // Whether the channel-map form can say everything the type's file says.
+    bool form_editable = 8;
+    // A GDTF type's archive in brief (the listing only); unset when the
+    // archive is missing or does not parse.
+    optional GdtfCard gdtf = 9;
+    // The type's file as written (a single type's answer only); unset with
+    // no file.
+    optional string dsl = 10;
+}
+
+// FixtureTypeChannels is what a type declares of itself: its channels and
+// strobe figures. A GDTF type has no channels here; its mode's come from
+// the archive.
+message FixtureTypeChannels {
+    string name = 1;
+    // Channel name to address offset.
+    map<string, uint32> channels = 2;
+    optional double max_strobe_frequency = 3;
+    optional double min_strobe_frequency = 4;
+    optional uint32 strobe_dmx_offset = 5;
+}
+
+// FixtureFileOwner is the file a type is declared in, and whether it may be
+// written: only a file that parses and holds that one type and nothing else.
+message FixtureFileOwner {
+    string file = 1;
+    bool editable = 2;
+    // Why it is not editable: the file and what else it holds, or where else
+    // the name is declared. Unset when editable.
+    optional string reason = 3;
+}
+
+// GdtfCard is what a GDTF type's card says about its archive.
+message GdtfCard {
+    string fixture = 1;
+    string manufacturer = 2;
+    uint32 modes = 3;
+    optional GdtfBeamBrief beam = 4;
+    // In the asset store, once a rig has been made for the type.
+    optional string thumbnail = 5;
+    // Venue fixtures of this type.
+    uint32 used_by = 6;
+    // The modes venue fixtures use, most-used first.
+    repeated GdtfModeUse in_use = 7;
+}
+
+message GdtfBeamBrief {
+    optional string beam_type = 1;
+    optional double angle = 2;
+}
+
+message GdtfModeUse {
+    string mode = 1;
+    uint32 count = 2;
+}
+
+message SaveFixtureTypeRequest {
+    string name = 1;
+    // A rename's old name.
+    optional string from = 2;
+    optional string dir = 3;
+    // The venues directory a rename retypes.
+    optional string venues_dir = 4;
+    // The form the file is saved in; unset keeps a type's.
+    FixtureTypeFile file_form = 5;
+    // The body; neither is the empty text, which does not parse.
+    oneof body {
+        // The whole file's text.
+        string dsl = 6;
+        // The channel-map form, which saves only a type it can say all of.
+        FixtureTypeChannelMap channel_map = 7;
+    }
+}
+
+enum FixtureTypeFile {
+    FIXTURE_TYPE_FILE_UNSPECIFIED = 0;
+    // Keeps a `.light`; refused for a `.fixture`.
+    FIXTURE_TYPE_FILE_LIGHT = 1;
+    // Moves a `.light` to a `.fixture`; a new type is always one.
+    FIXTURE_TYPE_FILE_FIXTURE = 2;
+}
+
+message FixtureTypeChannelMap {
+    // Channel name to address offset.
+    map<string, uint32> channels = 1;
+    optional double max_strobe_frequency = 2;
+    optional double min_strobe_frequency = 3;
+    optional uint32 strobe_dmx_offset = 4;
+}
+
+message SaveFixtureTypeResponse {
+    string name = 1;
+    // A rename's effect on the venues.
+    optional FixtureTypeRename rename = 2;
+    // Whether the current venue still loads, after a rename.
+    optional LightingVenueError venue_error = 3;
+}
+
+// FixtureTypeRename is a fixture type renamed, and the venue lines that
+// follow it.
+message FixtureTypeRename {
+    string from = 1;
+    string to = 2;
+    repeated FixtureTypeRenamedLines venues = 3;
+    uint32 lines = 4;
+}
+
+message FixtureTypeRenamedLines {
+    string venue = 1;
+    string file = 2;
+    uint32 lines = 3;
+}
+
+message DeleteFixtureTypeRequest {
+    string name = 1;
+    optional string dir = 2;
+}
+
+message DeleteFixtureTypeResponse {
+    string name = 1;
+    // The archive removed with the record, project-relative.
+    optional string archive_removed = 2;
+    // Another fixture uses the archive, so it stays.
+    bool archive_kept = 3;
+}
+
+message GetFixtureTypeGdtfDetailsRequest {
+    string name = 1;
+    optional string dir = 2;
+    optional string venues_dir = 3;
+}
+
+// FixtureTypeGdtfDetails is what a GDTF type's archive holds, for its page.
+// Paths are in the asset store.
+message FixtureTypeGdtfDetails {
+    // The archive, project-relative.
+    string archive = 1;
+    // The rig model for the 3D view; unset when none could be made.
+    optional string rig = 2;
+    optional string thumbnail = 3;
+    // The drawn mode's first beam.
+    optional GdtfBeam beam = 4;
+    // The archive's own description of the fixture: a stranger's text.
+    optional string about = 5;
+    // The venues with fixtures of this type, each in patch order with the
+    // mode it is driven in.
+    repeated GdtfTypeVenue venues = 6;
+    // Every mode, as the mode picker shows it.
+    repeated GdtfModeInfo modes = 7;
+}
+
+// GdtfBeam is a beam as the archive states it; each figure is unset when the
+// archive does not state it.
+message GdtfBeam {
+    optional string beam_type = 1;
+    optional double beam_angle = 2;
+    optional double field_angle = 3;
+    optional double luminous_flux = 4;
+    optional double color_temperature = 5;
+    // Watts.
+    optional double power = 6;
+}
+
+message GdtfTypeVenue {
+    string name = 1;
+    repeated GdtfTypeVenueFixture fixtures = 2;
+}
+
+// GdtfTypeVenueFixture is a venue fixture and the mode it is driven in, as
+// the archive spells it; unset when that names no mode of the archive.
+message GdtfTypeVenueFixture {
+    string name = 1;
+    optional string mode = 2;
+}
+
+// GdtfModeInfo is one DMX mode of a GDTF archive.
+message GdtfModeInfo {
+    string name = 1;
+    // DMX addresses the mode occupies.
+    uint32 footprint = 2;
+    oneof outcome {
+        // What a show can do in the mode.
+        GdtfModeFacts facts = 3;
+        // Why the mode cannot be imported.
+        string refused = 4;
+    }
+}
+
+message GdtfModeFacts {
+    repeated FitCapability capabilities = 1;
+    // What a show can ask of a fixture that the mode can do.
+    repeated LightingWant wants = 2;
+    // Cells of a pixel mode (0 for a one-colour fixture).
+    uint32 cells = 3;
+    // The strobe channel's rate, when it carries one.
+    optional GdtfStrobeRange strobe_range = 4;
+    // The channel map, by address offset.
+    repeated GdtfChannel channels = 5;
+}
+
+message GdtfStrobeRange {
+    optional double min_hz = 1;
+    double max_hz = 2;
+}
+
+message GdtfChannel {
+    uint32 offset = 1;
+    string name = 2;
+}
+
+message GetFixtureTypeSettingsRequest {
+    string name = 1;
+    optional string dir = 2;
+}
+
+enum FixtureStrobeCurve {
+    // On a request or an answer: the automatic curve.
+    FIXTURE_STROBE_CURVE_UNSPECIFIED = 0;
+    // Linear in the flash period across the DMX range.
+    FIXTURE_STROBE_CURVE_PERIOD = 1;
+    // Linear in hertz across the DMX range.
+    FIXTURE_STROBE_CURVE_LINEAR = 2;
+    // The function's own step table.
+    FIXTURE_STROBE_CURVE_DECLARED = 3;
+}
+
+message FixtureMovementLimits {
+    // Degrees per second.
+    optional double max_pan_speed = 1;
+    optional double max_tilt_speed = 2;
+}
+
+// FixtureTypeSettings is what is the user's about a GDTF fixture.
+message FixtureTypeSettings {
+    string name = 1;
+    FixtureMovementLimits movement = 2;
+    // The curve the record states; unspecified is automatic.
+    FixtureStrobeCurve strobe_curve = 3;
+    // Unset when no mode has a strobe rate in hertz.
+    optional FixtureStrobeTable strobe = 4;
+    // The settings' revision, sent back as expected_revision.
+    string revision = 5;
+}
+
+// FixtureStrobeTable is the GDTF's strobe function: the size of its own table
+// (0: endpoints only) and the curve used when none is stated.
+message FixtureStrobeTable {
+    uint32 steps = 1;
+    FixtureStrobeCurve automatic = 2;
+}
+
+message SaveFixtureTypeSettingsRequest {
+    // The type the settings are of.
+    string name = 1;
+    optional string dir = 2;
+    // The venues directory a rename retypes the lines of.
+    optional string venues_dir = 3;
+    // The revision the settings were read at; a record at another is refused
+    // (ABORTED). "unrecorded" for a fixture with no record. Unset or empty
+    // is not checked.
+    optional string expected_revision = 4;
+    // The name the type holds after the save; the name itself for no rename.
+    string new_name = 5;
+    FixtureMovementLimits movement = 6;
+    // Unspecified is automatic.
+    FixtureStrobeCurve strobe_curve = 7;
+    // False answers what the save would do and writes nothing.
+    bool write = 8;
+    // The venue files' revisions the plan was made against, by file name; a
+    // save is refused when any has changed since.
+    map<string, string> venue_revisions = 9;
+}
+
+// FixtureTypeSettingsSaved is what a settings save does (or, planned, would).
+message FixtureTypeSettingsSaved {
+    string revision = 1;
+    // A rename: every venue line that names the type, by venue.
+    optional FixtureTypeRename rename = 2;
+    // The venue files read, by name, with their revisions.
+    map<string, string> venue_revisions = 3;
+    optional LightingVenueError venue_error = 4;
 }

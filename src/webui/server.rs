@@ -752,7 +752,8 @@ mod test {
     /// other services, behind the same lock: a write is refused while the
     /// player is locked, a read reaches its handler, and the REST routes it
     /// replaced (the light show files, their validation and evaluation, the
-    /// readiness, fit and groups, and the fixture test) are gone.
+    /// readiness, fit and groups, the fixture test, and the fixture types and
+    /// their settings) are gone.
     #[tokio::test]
     async fn lighting_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -812,6 +813,47 @@ mod test {
             .contains("locked"),
             "a fixture test while locked"
         );
+        // The fixture types: the writes are refused, the reads are not.
+        for (method, message) in [
+            (
+                "SaveFixtureType",
+                pb::SaveFixtureTypeRequest::default().encode_to_vec(),
+            ),
+            (
+                "DeleteFixtureType",
+                pb::DeleteFixtureTypeRequest::default().encode_to_vec(),
+            ),
+            (
+                "SaveFixtureTypeSettings",
+                pb::SaveFixtureTypeSettingsRequest::default().encode_to_vec(),
+            ),
+        ] {
+            assert!(
+                call(method, message).await.contains("locked"),
+                "{method} while locked"
+            );
+        }
+        let missing = call(
+            "GetFixtureType",
+            pb::GetFixtureTypeRequest {
+                name: "Nowhere".to_string(),
+                dir: None,
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        // This server's player has no config store: the call reached its
+        // handler, which says so, where a locked one never gets there.
+        assert!(
+            missing.contains("config%20store%20not%20available") && !missing.contains("locked"),
+            "{missing}"
+        );
+        let listed = call(
+            "ListFixtureTypes",
+            pb::ListFixtureTypesRequest::default().encode_to_vec(),
+        )
+        .await;
+        assert!(!listed.contains("locked"), "{listed}");
         // FAILED_PRECONDITION (9) is for the lock and for a refusal alike:
         // the message tells them apart.
         let read = call(
@@ -872,6 +914,13 @@ mod test {
             ("POST", "/api/lighting/fixture-test"),
             ("DELETE", "/api/lighting/fixture-test"),
             ("GET", "/api/lighting/fixture-test/options"),
+            ("GET", "/api/lighting/fixture-types"),
+            ("GET", "/api/lighting/fixture-types/Par"),
+            ("PUT", "/api/lighting/fixture-types/Par"),
+            ("DELETE", "/api/lighting/fixture-types/Par"),
+            ("GET", "/api/lighting/fixture-types/Par/gdtf"),
+            ("GET", "/api/lighting/fixture-types/Par/settings"),
+            ("POST", "/api/lighting/fixture-types/Par/settings"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

@@ -26,14 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`LightingService`, a third gRPC service for the lighting pages**: `GetLightShow`,
   `SaveLightShow`, `DeleteLightShow`, `ValidateLightShow`, `GetLightingReadiness`,
   `GetLightingFit`, `EvaluateSongLighting`, `ListLightingGroups`, `StartFixtureTest`,
-  `StopFixtureTest` and `GetFixtureTestOptions` (`player.v1.LightingService`, in `player.proto`;
-  fixture types and venues follow in later releases). It is served on the gRPC port and by the web
-  UI's gRPC-Web, behind the same lock as the other services (saving and deleting a light show and
-  starting a fixture test are refused while locked; the reads, the validation, the evaluation and
-  the release of a test are open), listed in reflection and reported by the health service. It is
-  not reachable over Bluetooth. The answers are typed messages, not JSON strings: the Lighting
-  overview's readiness checks and the Fit shows page's report are messages a client can read
-  field by field. Validation answers normally with the list of problems. See
+  `StopFixtureTest` and `GetFixtureTestOptions`, and the fixture types: `ListFixtureTypes`,
+  `GetFixtureType`, `SaveFixtureType`, `DeleteFixtureType`, `GetFixtureTypeGdtfDetails` (a GDTF
+  fixture's modes, the venue fixtures using it and the paths of its rig model and thumbnail; not
+  the archive), `GetFixtureTypeSettings` and `SaveFixtureTypeSettings` (`player.v1.LightingService`,
+  in `player.proto`; venues follow in a later release). It is served on the gRPC port and by the web
+  UI's gRPC-Web, behind the same lock as the other services (saving and deleting a light show or a
+  fixture type, saving or planning a fixture's settings, and starting a fixture test are refused
+  while locked; the reads, the validation, the evaluation and the release of a test are open),
+  listed in reflection and reported by the health service. It is not reachable over Bluetooth. The
+  answers are typed messages, not JSON strings: the Lighting overview's readiness checks and the Fit
+  shows page's report are messages a client can read field by field. Validation answers normally
+  with the list of problems. A fixture type is saved from the file's text or from the channel-map
+  form; a settings save that finds the record changed since it was read (`expected_revision`) is
+  `ABORTED` with the revision it is at in the `x-current-version` metadata. See
   [gRPC](docs/src/interfaces/grpc.md).
 - **`bind_address` for the gRPC controller**: the address it listens on, every interface
   (`0.0.0.0`) by default as before. `bind_address: 127.0.0.1` keeps gRPC to the player's own
@@ -201,8 +207,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reason`), `StopFixtureTest` and `GetFixtureTestOptions`, over gRPC or gRPC-Web; for example
   `grpcurl -plaintext -d '{"name":"my_song/lighting/show.light"}' host:43234
   player.v1.LightingService/GetLightShow`. A locked player is `FAILED_PRECONDITION` where it was
-  HTTP 423. The routes for fixture types, venues, MVR files, GDTF import and the lighting assets
-  are unchanged. See [gRPC](docs/src/interfaces/grpc.md).
+  HTTP 423. The routes for venues, MVR files, GDTF import and the lighting assets are unchanged.
+  See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for fixture types and their settings**: `GET`, `PUT` and
+  `DELETE /api/lighting/fixture-types/<name>`, `GET /api/lighting/fixture-types`,
+  `GET /api/lighting/fixture-types/<name>/gdtf` and `GET` and
+  `POST /api/lighting/fixture-types/<name>/settings` are gone; the web UI calls `LightingService`
+  for them. A script that used them should call `ListFixtureTypes`, `GetFixtureType`,
+  `SaveFixtureType` (the file's text as `dsl`, or the channel-map form as `channel_map`;
+  `file_form` is the old `?ext=`, `from` and `venues_dir` the old query of a rename),
+  `DeleteFixtureType`, `GetFixtureTypeGdtfDetails` (was `/gdtf`), `GetFixtureTypeSettings` and
+  `SaveFixtureTypeSettings` (the old `If-Match` is `expected_revision`, the old `venue_versions`
+  `venue_revisions`; a changed record or venue file is `ABORTED`, where the route answered 409 with
+  `conflict`). `dir` and `venues_dir` are request fields with the old meaning and the same checks.
+  A refusal is a status with the same message the route's `error` carried (a file that is not
+  its type's alone is `FAILED_PRECONDITION`, a text that does not parse `INVALID_ARGUMENT`); the
+  extra fields of the old 409 body (`read_only`, `files`, `others`) are in the message only. A
+  channel-map save no longer accepts offsets that are not whole numbers or are negative, which the
+  typed message cannot say. For example `grpcurl -plaintext -d '{"name":"Par"}' host:43234
+  player.v1.LightingService/GetFixtureType`.
 - **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
   `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and
