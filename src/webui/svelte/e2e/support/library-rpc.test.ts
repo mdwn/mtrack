@@ -70,6 +70,7 @@ describe("answers made from the page's own shapes", () => {
       ],
       ambient: { show: "a.light", delay: "3s" },
       entry_ambient: [false, null, { show: "b.light", fade_in: "6s" }],
+      entry_palette: [{ primary: "#2040ff" }, {}, {}],
       available_songs: ["A", "B", "C", "D"],
       song_tracks: { A: ["kick", "snare"], D: [] },
     };

@@ -1334,7 +1334,14 @@ mod tests {
         std::fs::write(&next, GREEN_THEN_RED_FADE)?;
         let old = engine.retire_watcher();
         let reload = contend(&engine, move |engine| {
-            crate::dmx::watcher::reload_timeline(engine, &[last], None, old).unwrap_or(true)
+            crate::dmx::watcher::reload_timeline(
+                engine,
+                &[last],
+                None,
+                &std::collections::HashMap::new(),
+                old,
+            )
+            .unwrap_or(true)
         });
         let song_config = config::Song::new(
             "Next",
@@ -1395,6 +1402,7 @@ mod tests {
             generation,
             vec![dsl_path.clone()],
             None,
+            Default::default(),
             tx,
         )?);
 
@@ -1433,6 +1441,7 @@ mod tests {
             &engine,
             &[dsl_path],
             None,
+            &std::collections::HashMap::new(),
             generation
         )?);
         assert!(engine.current_song_timeline.lock().is_none());

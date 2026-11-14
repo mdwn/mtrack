@@ -22,7 +22,7 @@
 //! frame; the engine only ever sees the literal colours that leaves in the
 //! effects.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
 use pest::iterators::Pair;
@@ -178,4 +178,55 @@ pub fn declared_slots<'a>(shows: impl IntoIterator<Item = &'a LightShow>) -> Pal
         }
     }
     slots
+}
+
+/// The colours a song or playlist entry overrides, as written in its YAML
+/// (slot to colour string), read with the DSL's colour parser, so
+/// `"#2040ff"`, `rgb(…)` and the names all work. A colour that does not
+/// read is an error naming its slot.
+pub fn parse_overrides(
+    written: &BTreeMap<String, String>,
+) -> Result<HashMap<String, Color>, String> {
+    written
+        .iter()
+        .map(|(slot, value)| {
+            parse_color_string(value.trim())
+                .map(|color| (slot.clone(), color))
+                .ok_or_else(|| {
+                    format!(
+                        "palette slot '{slot}': invalid color '{value}' (expected #RRGGBB, \
+                         rgb(r, g, b) or a color name)"
+                    )
+                })
+        })
+        .collect()
+}
+
+/// `later` laid over `earlier`, slot by slot: the colour a slot is given
+/// last wins.
+pub fn layer_overrides(
+    earlier: &HashMap<String, Color>,
+    later: Option<&HashMap<String, Color>>,
+) -> HashMap<String, Color> {
+    let mut layered = earlier.clone();
+    if let Some(later) = later {
+        layered.extend(later.iter().map(|(slot, color)| (slot.clone(), *color)));
+    }
+    layered
+}
+
+/// The slots `overrides` names that none of `shows` declares, sorted.
+pub fn unknown_slots<'a, 'b>(
+    shows: impl IntoIterator<Item = &'a LightShow>,
+    overrides: impl IntoIterator<Item = &'b String>,
+) -> Vec<String> {
+    let declared = declared_slots(shows);
+    let mut unknown: Vec<String> = overrides
+        .into_iter()
+        .filter(|slot| !declared.contains_key(*slot))
+        .cloned()
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    unknown
 }

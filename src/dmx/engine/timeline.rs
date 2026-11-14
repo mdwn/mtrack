@@ -857,6 +857,15 @@ impl Engine {
         })
     }
 
+    /// Reads the playing song's timeline, for a test of what it settled to.
+    #[cfg(test)]
+    pub(crate) fn with_song_timeline<R>(
+        &self,
+        read: impl FnOnce(Option<&crate::lighting::timeline::LightingTimeline>) -> R,
+    ) -> R {
+        read(self.current_song_timeline.lock().as_ref())
+    }
+
     /// Gets all cues from the current timeline with their times and indices
     pub fn get_timeline_cues(&self) -> Vec<(Duration, usize)> {
         let timeline = self.current_song_timeline.lock();

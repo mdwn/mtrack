@@ -67,6 +67,7 @@ describe("a playlist read", () => {
           fadeIn: { length: "2beats" },
           autoPlay: { gap: "" },
           ambient: { on: false },
+          palette: { primary: "#2040ff", secondary: "cyan" },
         },
       },
       {
@@ -109,6 +110,12 @@ describe("a playlist read", () => {
       false,
       { show: "lighting/b.light", fade_in: "6s" },
       null,
+    ]);
+    // An entry's palette overrides, as written; none is empty.
+    expect(detail.entry_palette).toEqual([
+      { primary: "#2040ff", secondary: "cyan" },
+      {},
+      {},
     ]);
     expect(detail.ambient).toEqual({ show: "a.light", delay: "3s" });
     expect(detail.available_songs).toEqual(["A", "B", "C", "D"]);
@@ -160,6 +167,7 @@ describe("a playlist save", () => {
           { fade_out: null, fade_in: null },
         ],
         entry_ambient: [false, { show: "x.light", delay: "1s" }, null],
+        entry_palette: [{ primary: "#2040ff" }, {}, {}],
         ambient: false,
       },
       false,
@@ -185,6 +193,9 @@ describe("a playlist save", () => {
     });
     expect(req.settings[1].ambient?.fadeIn).toBeUndefined();
     expect(req.settings[2].ambient).toBeUndefined();
+    // The palette read is the palette sent back.
+    expect(req.settings[0].palette).toEqual({ primary: "#2040ff" });
+    expect(req.settings[1].palette).toEqual({});
     expect(req.setAmbient).toBe(true);
     expect(req.ambient?.on).toBe(false);
   });
@@ -202,6 +213,19 @@ describe("a playlist save", () => {
     expect(() =>
       savePlaylistRequest("s", ["A"], { auto_play: [null] }, false),
     ).toThrow(/together/);
+    // Without the palette a save would clear every entry's.
+    expect(() =>
+      savePlaylistRequest(
+        "s",
+        ["A"],
+        {
+          auto_play: [null],
+          fades: [{ fade_out: null, fade_in: null }],
+          entry_ambient: [null],
+        },
+        false,
+      ),
+    ).toThrow(/palette/);
   });
 });
 

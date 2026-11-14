@@ -350,6 +350,14 @@ show "Main" {
   secondary, accent)`. Every slot has a default, so a show always plays on its own.
 - The defaults are the colours of the show: they are what plays, and what the editor previews.
   The colours are settled once, before a song starts, so nothing changes while it plays.
+- A song and a playlist entry can recolour slots without editing the show. A slot's colour is
+  the **show's default**, then the **song's `palette:`** (in the
+  [song configuration](../configuration/song-config.md#palette-overrides)) over it, then the
+  **playlist entry's `palette:`** (see [Playlists](../getting-started/playlists.md#palette-overrides))
+  over that; the later one wins, slot by slot, and a slot nobody names keeps the show's colour.
+  An override applies as the song starts and holds for that play; editing a palette changes
+  the song from its next start. An override naming a slot that none of the song's shows declares
+  is a warning, not an error.
 - With several `.light` files in one song, each declares its own slots. A slot is named by its
   name alone, whichever file declares it.
 - An included file may carry a `palette` block of its own, for its sequences. Its slots are

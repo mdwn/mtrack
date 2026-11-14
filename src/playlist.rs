@@ -74,6 +74,8 @@ pub struct Playlist {
     /// Each entry's ambient light, as written: overriding the playlist's in
     /// the gap before it.
     entry_ambient: Vec<Option<config::ambient::PlaylistAmbient>>,
+    /// Each entry's palette overrides as written, for an editor.
+    palettes: Vec<std::collections::BTreeMap<String, String>>,
     /// The current position of the playlist.
     position: Arc<RwLock<Cursor>>,
     /// The song registry.
@@ -112,6 +114,16 @@ impl Playlist {
         }
 
         let transitions = validate_transitions(config, &registry)?;
+        for (song_name, entry) in song_names.iter().zip(&transitions) {
+            if let Ok(song) = registry.get(song_name) {
+                crate::songs::warn_unknown_palette_slots(
+                    song_name,
+                    Some(name),
+                    &entry.palette,
+                    song.dsl_lighting_shows(),
+                );
+            }
+        }
 
         Ok(Arc::new(Playlist {
             name: name.to_string(),
@@ -120,6 +132,7 @@ impl Playlist {
             fades: config.entry_fades(),
             ambient: config.ambient().cloned(),
             entry_ambient: config.entry_ambient(),
+            palettes: config.entry_palettes(),
             position: Arc::new(RwLock::new(Cursor::default())),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
@@ -400,6 +413,23 @@ impl Playlist {
     /// play.
     pub fn entry_auto_play(&self) -> Vec<Option<Duration>> {
         self.transitions.iter().map(|t| t.auto_play).collect()
+    }
+
+    /// Each entry's palette overrides as written, in order.
+    pub fn entry_palettes(&self) -> &[std::collections::BTreeMap<String, String>] {
+        &self.palettes
+    }
+
+    /// The palette overrides of `entry` (a song played from this playlist's
+    /// entry), their colours read; `None` for no entry or one with none.
+    pub fn palette_of(
+        &self,
+        entry: Option<usize>,
+    ) -> Option<&std::collections::HashMap<String, crate::lighting::effects::Color>> {
+        entry
+            .and_then(|i| self.transitions.get(i))
+            .map(|t| &t.palette)
+            .filter(|palette| !palette.is_empty())
     }
 
     /// Each entry's fades as written, in order.
@@ -798,6 +828,7 @@ mod test {
     fn empty_playlist() {
         let registry = test_registry();
         let playlist = super::Playlist {
+            palettes: Vec::new(),
             name: "empty".to_string(),
             songs: vec![],
             transitions: vec![],
@@ -1001,6 +1032,7 @@ mod test {
         // to exercise the Display path for a song not in the registry.
         let registry = test_registry();
         let playlist = super::Playlist {
+            palettes: Vec::new(),
             name: "broken".to_string(),
             songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
             transitions: vec![Default::default(); 2],

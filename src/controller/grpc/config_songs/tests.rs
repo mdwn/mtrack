@@ -564,6 +564,45 @@ async fn song_names_cannot_leave_the_songs_root() {
     }
 }
 
+/// A song's `palette:` goes through the editor's save and read as it was
+/// written; a colour that does not read is refused, and the file kept.
+#[tokio::test]
+async fn a_songs_palette_round_trips_through_the_save() {
+    let p = project();
+    let dir = p.make_song("Painted").await;
+    let before = std::fs::read_to_string(dir.join("song.yaml")).unwrap();
+    let with =
+        |colour: &str| format!("{before}palette:\n  primary: \"{colour}\"\n  Back-Light: cyan\n");
+
+    let status = refused(
+        p.save("Painted", &with("notacolor")).await,
+        Code::InvalidArgument,
+    );
+    assert!(status.message().contains("primary"), "{}", status.message());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("song.yaml")).unwrap(),
+        before,
+        "a refused save leaves the file"
+    );
+
+    p.save("Painted", &with("#2040ff")).await.unwrap();
+    let written = std::fs::read_to_string(dir.join("song.yaml")).unwrap();
+    assert!(written.contains("#2040ff") && written.contains("Back-Light"));
+
+    // Read back by the editor, and by the player's reload.
+    let yaml = p.yaml("Painted").await;
+    assert!(
+        yaml.contains("#2040ff") && yaml.contains("Back-Light"),
+        "{yaml}"
+    );
+    p.state.player.reload_songs().await.unwrap();
+    let song = p.state.player.songs().get("Painted").unwrap();
+    assert_eq!(
+        song.palette()["primary"],
+        crate::lighting::effects::Color::new(0x20, 0x40, 0xff)
+    );
+}
+
 /// #689: a save that renames a song onto a name another song holds is
 /// refused (naming it), the file left as it is; one that keeps the name, or
 /// renames onto a free one, is saved.

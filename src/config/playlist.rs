@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use config::Config;
@@ -67,6 +68,11 @@ pub struct ConfiguredEntry {
     /// it: `false` for none, or settings overriding the playlist's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<super::ambient::PlaylistAmbient>,
+    /// Lighting palette overrides for this song in this playlist: a slot to
+    /// the colour it plays in, laid over the song's own overrides and the
+    /// show's defaults. A colour is anything the lighting DSL reads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub palette: BTreeMap<String, String>,
 }
 
 /// By hand rather than untagged: a song called `1999` reaches us as a
@@ -127,6 +133,8 @@ pub struct EntryTransitions {
     /// The gap before the song starts by itself when the playlist reaches
     /// it; `None` when it waits for play.
     pub auto_play: Option<std::time::Duration>,
+    /// The palette slots the entry recolours, their colours read.
+    pub palette: HashMap<String, crate::lighting::effects::Color>,
 }
 
 /// A fade's settings, parsed: see [`FadeConfig`].
@@ -251,6 +259,8 @@ impl Playlist {
                         .transpose()
                         .map_err(|e| format!("song {}: {e}", entry.song))?
                         .flatten(),
+                    palette: crate::lighting::parser::parse_overrides(&entry.palette)
+                        .map_err(|e| format!("song {}: {e}", entry.song))?,
                 })
             })
             .collect()
@@ -336,6 +346,25 @@ impl Playlist {
         })
     }
 
+    /// Each entry's palette overrides as written, in order.
+    pub fn entry_palettes(&self) -> Vec<BTreeMap<String, String>> {
+        self.songs
+            .iter()
+            .map(|entry| match entry {
+                PlaylistEntry::Song(_) => BTreeMap::new(),
+                PlaylistEntry::Configured(entry) => entry.palette.clone(),
+            })
+            .collect()
+    }
+
+    /// This playlist with each entry's `palette` set from `palettes`, in
+    /// entry order, as [`Playlist::with_auto_play`] sets auto play.
+    pub fn with_entry_palettes(self, palettes: &[BTreeMap<String, String>]) -> Playlist {
+        self.edit_entries(palettes, |configured, palette| {
+            configured.palette = palette.clone();
+        })
+    }
+
     /// Applies `edit` to each entry with its value from `values`, in order,
     /// writing an entry left with no settings as its name alone.
     fn edit_entries<T>(
@@ -352,6 +381,7 @@ impl Playlist {
                     fade_in: None,
                     auto_play: None,
                     ambient: None,
+                    palette: BTreeMap::new(),
                 },
                 PlaylistEntry::Configured(configured) => *configured,
             };
@@ -360,6 +390,7 @@ impl Playlist {
                 && configured.fade_in.is_none()
                 && configured.auto_play.is_none()
                 && configured.ambient.is_none()
+                && configured.palette.is_empty()
             {
                 PlaylistEntry::Song(configured.song)
             } else {
@@ -662,5 +693,59 @@ songs:
         let yaml = crate::util::to_yaml_string(&q).unwrap();
         assert!(yaml.contains("- C"), "{yaml}");
         assert_eq!(parse(&yaml).unwrap(), q);
+    }
+
+    #[test]
+    fn an_entrys_palette_is_read_and_checked() {
+        use crate::lighting::effects::Color;
+        let p = parse(
+            r##"
+songs:
+  - A
+  - song: B
+    palette:
+      primary: "#2040ff"
+      secondary: cyan
+"##,
+        )
+        .unwrap();
+        let transitions = p.entry_transitions().unwrap();
+        assert!(transitions[0].palette.is_empty());
+        assert_eq!(
+            transitions[1].palette["primary"],
+            Color::new(0x20, 0x40, 0xff)
+        );
+        assert_eq!(transitions[1].palette["secondary"], Color::new(0, 255, 255));
+
+        let bad = parse("songs:\n  - song: B\n    palette:\n      primary: nope\n").unwrap();
+        let err = bad.entry_transitions().unwrap_err();
+        assert!(err.contains("song B"), "{err}");
+        assert!(err.contains("'primary'"), "{err}");
+    }
+
+    #[test]
+    fn an_entrys_palette_is_kept_by_the_editors_and_is_settings_enough() {
+        let p = parse("songs:\n  - A\n  - B\n").unwrap();
+        let palettes = vec![
+            BTreeMap::new(),
+            BTreeMap::from([("primary".to_string(), "#2040ff".to_string())]),
+        ];
+        let q = p.with_entry_palettes(&palettes);
+        // A palette alone makes an entry a configured one, and none makes
+        // it a name again.
+        assert_eq!(q.entries()[0], PlaylistEntry::Song("A".to_string()));
+        assert!(matches!(q.entries()[1], PlaylistEntry::Configured(_)));
+        assert_eq!(q.entry_palettes(), palettes);
+        let yaml = crate::util::to_yaml_string(&q).unwrap();
+        assert_eq!(parse(&yaml).unwrap(), q, "{yaml}");
+
+        // The other editors leave it, and a reorder carries it with its song.
+        let r = q
+            .with_auto_play(&[None, Some(AutoPlayConfig::On(true))])
+            .with_songs(&["B".to_string(), "A".to_string()]);
+        assert_eq!(r.entry_palettes()[0], palettes[1]);
+        assert!(r.entry_palettes()[1].is_empty());
+        let cleared = r.with_entry_palettes(&[BTreeMap::new(), BTreeMap::new()]);
+        assert!(cleared.entry_palettes().iter().all(BTreeMap::is_empty));
     }
 }

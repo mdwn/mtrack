@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! A playlist's settings on the wire: each entry's fades, auto play and
-//! ambient light and the playlist's own ambient, as `GetPlaylist` reports
+//! A playlist's settings on the wire: each entry's fades, auto play,
+//! ambient light, palette overrides and the playlist's own ambient, as `GetPlaylist` reports
 //! them and `SavePlaylist` sets them, and the revision that tells a save
 //! the playlist is still the one its caller read.
 //!
@@ -21,6 +21,7 @@
 //! the web UI's own check (`playlist::validate_for_write`), so nothing here
 //! parses one.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use prost::Message;
@@ -50,6 +51,7 @@ impl Reported {
             playlist.entry_fades(),
             &playlist.entry_auto_play(),
             playlist.entry_ambient(),
+            playlist.entry_palettes(),
             playlist.ambient(),
         )
     }
@@ -68,6 +70,7 @@ impl Reported {
             &playlist.entry_fades(),
             &auto_play,
             &playlist.entry_ambient(),
+            &playlist.entry_palettes(),
             playlist.ambient(),
         ))
     }
@@ -77,6 +80,7 @@ impl Reported {
         fades: &[EntryFades],
         auto_play: &[Option<Duration>],
         entry_ambient: &[Option<PlaylistAmbient>],
+        palettes: &[BTreeMap<String, String>],
         ambient: Option<&PlaylistAmbient>,
     ) -> Reported {
         let entries: Vec<EntrySettings> = (0..songs.len())
@@ -100,6 +104,10 @@ impl Reported {
                     .get(i)
                     .and_then(Option::as_ref)
                     .map(ambient_message),
+                palette: palettes
+                    .get(i)
+                    .map(|p| p.clone().into_iter().collect())
+                    .unwrap_or_default(),
             })
             .collect();
         let ambient = ambient.map(ambient_message);
@@ -124,7 +132,20 @@ fn revision(
     for (song, settings) in songs.iter().zip(entries) {
         hash.update((song.len() as u64).to_le_bytes());
         hash.update(song.as_bytes());
-        hash.update(settings.encode_length_delimited_to_vec());
+        // The palette is a map, which encodes in no fixed order: hashed
+        // sorted, with the rest of the settings encoded without it.
+        let mut rest = settings.clone();
+        rest.palette.clear();
+        hash.update(rest.encode_length_delimited_to_vec());
+        let mut palette: Vec<_> = settings.palette.iter().collect();
+        palette.sort();
+        for (slot, colour) in palette {
+            hash.update((slot.len() as u64).to_le_bytes());
+            hash.update(slot.as_bytes());
+            hash.update((colour.len() as u64).to_le_bytes());
+            hash.update(colour.as_bytes());
+        }
+        hash.update([0xff]);
     }
     match ambient {
         None => hash.update([0]),
@@ -243,10 +264,16 @@ pub(super) fn apply(
             .iter()
             .map(|s| s.ambient.as_ref().map(ambient_config))
             .collect();
+        let palettes: Vec<BTreeMap<String, String>> = req
+            .settings
+            .iter()
+            .map(|s| s.palette.clone().into_iter().collect())
+            .collect();
         playlist = playlist
             .with_fades(&fades)
             .with_auto_play(&auto_play)
-            .with_entry_ambient(&ambient);
+            .with_entry_ambient(&ambient)
+            .with_entry_palettes(&palettes);
     }
     if req.set_ambient {
         playlist = playlist.with_ambient(req.ambient.as_ref().map(ambient_config));
