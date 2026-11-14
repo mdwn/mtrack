@@ -32,6 +32,7 @@ use pest::Parser;
 use super::super::tempo::TempoMap;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
+use super::palette::Palette;
 use super::show::{parse_sequence_structure, ParsedCue, SequenceDefinition};
 use super::types::{Sequence, SequenceCall};
 use super::utils::unquote;
@@ -68,6 +69,9 @@ pub(crate) struct SequenceLibrary {
     expanding: RefCell<Vec<String>>,
     /// How many files' definitions have been added.
     files_added: usize,
+    /// The slots `palette.<slot>` may name in any of the sequences, with
+    /// their defaults: the file's own and those of the files it includes.
+    palette: Rc<Palette>,
 }
 
 impl SequenceLibrary {
@@ -79,7 +83,20 @@ impl SequenceLibrary {
             instances: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
+            palette: Rc::default(),
         }
+    }
+
+    /// Adds the slots one file's `palette` block declares to those the
+    /// sequences may refer to; a slot already there takes the new colour,
+    /// so the file itself, added after the files it includes, wins.
+    pub(crate) fn add_palette(&mut self, palette: Palette) {
+        Rc::make_mut(&mut self.palette).extend(palette);
+    }
+
+    /// The slots the sequences, and the shows alongside them, may refer to.
+    pub(crate) fn palette(&self) -> Rc<Palette> {
+        self.palette.clone()
     }
 
     /// A library for a file whose shows run under `global_tempo`.

@@ -846,6 +846,81 @@ show "T" {
         );
     }
 
+    /// A slot renders the bytes its colour does: the engine sees literals
+    /// only, whether the slot is at its default or recoloured by an override.
+    #[test]
+    fn a_palette_slot_renders_the_same_bytes_as_its_literal_color() {
+        let fixtures = vec![rgb_fixture("wash", 1), rgb_fixture("back", 4)];
+        let shown = |source: &str| {
+            eval(source, &fixtures, &[1.0, 2.5])
+                .iter()
+                .map(|e| {
+                    ["wash", "back"]
+                        .iter()
+                        .flat_map(|f| ["red", "green", "blue"].map(|c| channel(e, f, c)))
+                        .collect::<Vec<u8>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let with_slots = shown(
+            r##"
+palette {
+    primary: "#C01020"
+    secondary: "cyan"
+}
+show "T" {
+    @00:00.000
+    wash: static color: palette.primary, duration: 5s
+    @00:02.000
+    back: cycle color: palette.primary, color: palette.secondary, duration: 5s
+}
+"##,
+        );
+        let literal = shown(
+            r##"
+show "T" {
+    @00:00.000
+    wash: static color: "#C01020", duration: 5s
+    @00:02.000
+    back: cycle color: "#C01020", color: "cyan", duration: 5s
+}
+"##,
+        );
+        assert_eq!(with_slots, literal);
+        assert_eq!(with_slots[0][0], 0xC0, "the wash is lit");
+
+        // An override recolours it, the same bytes as writing that colour.
+        let source = r##"
+palette { primary: "#C01020" }
+show "T" {
+    @00:00.000
+    wash: static color: palette.primary, duration: 5s
+}
+"##;
+        let overridden = evaluate_show(
+            crate::lighting::parser::resolve_shows(
+                shows(source),
+                &HashMap::from([(
+                    "primary".to_string(),
+                    crate::lighting::effects::Color::new(0x20, 0x40, 0xFF),
+                )]),
+            ),
+            &fixtures,
+            &HashMap::new(),
+            None,
+            &[Duration::from_secs(1)],
+            |e| e,
+        );
+        assert_eq!(
+            [
+                channel(&overridden[0], "wash", "red"),
+                channel(&overridden[0], "wash", "green"),
+                channel(&overridden[0], "wash", "blue"),
+            ],
+            [0x20, 0x40, 0xFF]
+        );
+    }
+
     #[test]
     fn no_fixtures_yields_no_state_but_still_reports_effects() {
         let results = eval(BLUE_5S, &[], &[1.0]);

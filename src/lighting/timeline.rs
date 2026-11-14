@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::effects::Color;
 use crate::lighting::engine::Replay;
 use crate::lighting::{
     parser::{Cue, Effect, LayerCommand, LightShow},
@@ -312,8 +313,19 @@ pub fn shows_tempo_map<'a>(
 }
 
 impl LightingTimeline {
-    /// Creates a new lighting timeline from DSL light shows
+    /// Creates a new lighting timeline from DSL light shows, their palettes
+    /// at the defaults the shows declare.
     pub fn new(shows: Vec<LightShow>) -> Self {
+        Self::with_palette(shows, &HashMap::new())
+    }
+
+    /// Creates a new lighting timeline from DSL light shows, their palette
+    /// slots settled before the first frame: each slot is `overrides`'
+    /// colour when it names the slot, else the declaring show's default. An
+    /// override for a slot no show declares is ignored. The timeline's
+    /// effects hold only literal colours from here on.
+    pub fn with_palette(shows: Vec<LightShow>, overrides: &HashMap<String, Color>) -> Self {
+        let shows = crate::lighting::parser::resolve_shows(shows, overrides);
         let tempo_map = shows_tempo_map(&shows, None).cloned();
         let all_cues = shows.into_iter().flat_map(|show| show.cues).collect();
         let mut timeline = Self::new_with_cues(all_cues);
@@ -658,6 +670,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -936,6 +949,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -984,6 +998,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1054,6 +1069,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1105,6 +1121,7 @@ mod tests {
         let effect1 = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1124,6 +1141,7 @@ mod tests {
         let effect2 = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1286,6 +1304,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1337,6 +1356,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1403,6 +1423,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1475,6 +1496,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1593,6 +1615,7 @@ mod tests {
         let bg_effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1612,6 +1635,7 @@ mod tests {
         let fg_effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1701,6 +1725,7 @@ mod tests {
         let effect = Effect {
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1774,6 +1799,7 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequences: vec![seq.to_string()],
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -1856,6 +1882,7 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequences: vec![seq.to_string()],
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,

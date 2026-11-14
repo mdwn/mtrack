@@ -11,12 +11,32 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Main file rule - can contain any combination of fixture types, venues, light shows, sequences, and tempo
-file = { SOI ~ (include | fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+// Main file rule - can contain any combination of fixture types, venues, light shows, sequences, tempo, and a palette
+file = { SOI ~ (include | fixture_type | venue | light_show | sequence | tempo | palette)* ~ EOI }
 
 // `include "common.light"`: the sequences another file defines, its path
 // relative to this file's folder.
 include = { "include" ~ string }
+
+// A palette: named colour slots, each with the default colour the show plays
+// in. A slot is separated from the next by a comma or a line break. At most
+// one block per file (the parser enforces it).
+//
+//   palette {
+//     primary: "#C01020"
+//     accent: rgb(255, 240, 200)
+//   }
+palette = { "palette" ~ "{" ~ palette_slot* ~ "}" }
+
+palette_slot = { identifier ~ ":" ~ color_parameter ~ ","? }
+
+// `palette.accent`: a colour that is whichever the slot is when the song plays.
+// Atomic, so nothing is skipped around the dot.
+palette_ref = @{ "palette" ~ "." ~ identifier }
+
+// A whole value that is a palette reference: what the web UI's document
+// layer asks of text typed into a colour form. The player never invokes it.
+palette_ref_only = @{ SOI ~ palette_ref ~ EOI }
 
 // Light show rules
 // Allow optional show names so a single unnamed show per file is valid.
@@ -138,6 +158,7 @@ parameter_name = { identifier | string }
 
 parameter_value = { 
     param_ref |
+    palette_ref |
     degrees_parameter |
     percentage |
     time_parameter |
