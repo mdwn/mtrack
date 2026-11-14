@@ -196,6 +196,15 @@ class PlayerClient {
     player.GetPlaylistResponse.fromBuffer,
   );
 
+  /// The playlist [name] as [getPlaylist] has it, with what the player has
+  /// loaded as well: each song's lighting palette (`songPalettes`).
+  Future<player.GetPlaylistResponse> getPlaylistWithLibrary(String name) =>
+      call(
+        'GetPlaylist',
+        player.GetPlaylistRequest(name: name, withLibrary: true),
+        player.GetPlaylistResponse.fromBuffer,
+      );
+
   /// Sets the songs of the playlist [name] to [songs], in order. With
   /// [expected], the save is refused when the playlist on the player is no
   /// longer those songs, and with [expectedRevision] as well (the revision
