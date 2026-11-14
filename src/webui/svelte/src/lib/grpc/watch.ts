@@ -210,7 +210,8 @@ function subsystem(s: SubsystemStatusMessage | undefined): SubsystemStatus {
   };
 }
 
-function audioOutput(h: AudioOutputHealthMessage): AudioOutputHealth {
+/** An audio output's health, as the status page holds it. */
+export function audioOutput(h: AudioOutputHealthMessage): AudioOutputHealth {
   return {
     status: h.status as OutputStatus,
     callback_alive: h.callbackAlive,

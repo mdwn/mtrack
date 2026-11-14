@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
-  `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile` and
-  `DeleteProfileFile` (`player.v1.ConfigService`, in `player.proto`; the rest of the config
+  `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile`,
+  `DeleteProfileFile`, `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`,
+  `StartCalibration`, `CaptureCalibration`, `StopCalibration`, `CancelCalibration` and
+  `RestartControllers` (`player.v1.ConfigService`, in `player.proto`; the rest of the config
   editor's calls follow it in later releases). It is served on the gRPC port and by the web UI's
-  gRPC-Web, behind the same lock as `PlayerService` (the four writes are refused while locked, the
-  two reads are open), listed in reflection and reported by the health service. It is not
+  gRPC-Web, behind the same lock as `PlayerService` (the writes, the audio probe and the
+  calibration calls are refused while locked; the reads, the device lists and the controller
+  restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
@@ -236,6 +239,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when mtrack started, so a `profiles_dir` saved from the config editor is used at once. A save or
   delete answers `ProfileFileSaved`: the file's new version and the reload facts
   `UpdateConfigResponse` carries. See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for the device lists, the audio probe, the trigger calibration
+  and the controller restart**: `GET /api/devices/audio`, `POST /api/devices/audio/probe`,
+  `GET /api/devices/midi`, `POST /api/calibrate/start`, `POST /api/calibrate/capture`,
+  `POST /api/calibrate/stop`, `DELETE /api/calibrate` and `POST /api/controllers/restart` are
+  gone; the web UI calls `ConfigService` for them. A script that used them should call
+  `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`, `StartCalibration`,
+  `CaptureCalibration`, `StopCalibration`, `CancelCalibration` and `RestartControllers`, over gRPC
+  or gRPC-Web; for example `grpcurl -plaintext host:43234 player.v1.ConfigService/ListAudioDevices`.
+  The answers are messages, not JSON: a probe's `outcome` is the enum `ProbeOutcome`
+  (`PROBE_OUTCOME_STREAMING`, `..._IN_USE` and so on) and the held device's health is the
+  `AudioOutputHealth` the `Watch` stream carries; `stream_buffer_size` is a message of either a
+  `StreamBufferKind` (`DEFAULT`, `MIN`) or a number of `frames`. A calibration's `duration` is
+  absent for the 3 seconds the route defaulted to, and a `channel` of 0 or one the device does not
+  have is `INVALID_ARGUMENT`. The refusals are statuses: a probe with no device is
+  `INVALID_ARGUMENT`; a probe, or a controller restart, during playback is `FAILED_PRECONDITION`
+  (the routes answered 409); a calibration for a device that is not there is `NOT_FOUND`, one for
+  a format the device cannot stream or a channel it does not have `INVALID_ARGUMENT`, and one the
+  device would not open for `UNAVAILABLE` (the routes answered 400 for all three); a capture or a
+  stop with no session, or a stop before a capture, is `FAILED_PRECONDITION` (400), and its
+  message names the RPC to call first where it named the route. The probe and the calibration
+  calls are refused while the player is locked, as the routes were; the device lists and the
+  controller restart work while locked, as the routes did. The calibration walks through at most
+  one session at a time for the whole player, whichever port the calls arrive on. The Bluetooth
+  pairing routes are unchanged. See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.2] - 2026-11-13
 

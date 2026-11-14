@@ -2775,8 +2775,25 @@ mod test {
         for rpc in ["SaveProfileFile", "DeleteProfileFile"] {
             assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
         }
-        // The reads are open.
-        for rpc in ["ListProfileFiles", "GetProfileFile"] {
+        // The audio probe opens a device, and the calibration calls record
+        // from one.
+        for rpc in [
+            "ProbeAudioDevice",
+            "StartCalibration",
+            "CaptureCalibration",
+            "StopCalibration",
+            "CancelCalibration",
+        ] {
+            assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
+        }
+        // The reads are open, and so is the controller restart.
+        for rpc in [
+            "ListProfileFiles",
+            "GetProfileFile",
+            "ListAudioDevices",
+            "ListMidiDevices",
+            "RestartControllers",
+        ] {
             assert!(open.contains(&rpc), "{rpc}");
         }
         for (service, rpc) in locked {

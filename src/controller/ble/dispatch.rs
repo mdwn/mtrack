@@ -746,6 +746,20 @@ mod tests {
             .map(|method| method.name())
             .collect();
         assert!(methods.contains(&"SaveProfileFile"), "{methods:?}");
+        // The device, calibration and restart calls are the service's too,
+        // and none of them is the phone's.
+        for method in [
+            "ListAudioDevices",
+            "ProbeAudioDevice",
+            "ListMidiDevices",
+            "StartCalibration",
+            "CaptureCalibration",
+            "StopCalibration",
+            "CancelCalibration",
+            "RestartControllers",
+        ] {
+            assert!(methods.contains(&method), "{method} is not in {methods:?}");
+        }
         let (player, dispatcher, _device) = setup().await;
         for locked in [false, true] {
             player.set_locked(locked);

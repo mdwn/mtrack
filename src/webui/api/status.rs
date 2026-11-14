@@ -12,35 +12,26 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use axum::{extract::State, response::IntoResponse, Json};
-use serde_json::json;
+use super::devices::DeviceError;
+use std::sync::Arc;
 
-use super::super::server::WebUiState;
+use crate::player::{ControllerStatus, Player};
 
-/// POST /api/controllers/restart — restarts all controllers from current config.
+/// Restarts all controllers from the current config and answers their
+/// status.
 ///
-/// Rejected during playback to avoid disrupting active control surfaces.
-pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl IntoResponse {
-    if state.player.is_playing().await {
-        return (
-            axum::http::StatusCode::CONFLICT,
-            Json(json!({"error": "Cannot restart controllers during playback"})),
-        )
-            .into_response();
+/// Refused during playback, to avoid disrupting active control surfaces.
+pub(crate) async fn restart_controllers(
+    player: &Arc<Player>,
+) -> Result<Vec<ControllerStatus>, DeviceError> {
+    if player.is_playing().await {
+        return Err(DeviceError::WrongState(
+            "Cannot restart controllers during playback".to_string(),
+        ));
     }
-    match state.player.reload_controllers().await {
-        Ok(()) => {
-            let statuses = state.player.controller_statuses();
-            (
-                axum::http::StatusCode::OK,
-                Json(json!({"status": "restarted", "controllers": statuses})),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("{}", e)})),
-        )
-            .into_response(),
-    }
+    player
+        .reload_controllers()
+        .await
+        .map_err(|e| DeviceError::Internal(e.to_string()))?;
+    Ok(player.controller_statuses())
 }

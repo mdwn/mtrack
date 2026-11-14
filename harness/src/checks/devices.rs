@@ -16,7 +16,7 @@
 //! mtrack enumerates audio devices through two separate paths, and a user only
 //! ever sees the first one:
 //!
-//! * [`mtrack::audio::list_device_info`] backs `GET /api/devices/audio`, which
+//! * [`mtrack::audio::list_device_info`] backs `ListAudioDevices`, which
 //!   is what the web UI's device picker offers.
 //! * [`mtrack::audio::list_devices`] backs the `mtrack devices` command and,
 //!   more importantly, is the list `Device::get` searches when the player
@@ -31,6 +31,23 @@ use crate::client::Client;
 use crate::outcome::{CheckError, CheckOutcome};
 use crate::server::Server;
 use crate::{check, skip};
+use mtrack::proto::player::v1::{ProbeAudioDeviceRequest, ProbeAudioDeviceResponse, ProbeOutcome};
+
+/// A probe of `device` with no format settings, over the web port's gRPC-Web.
+async fn probe(
+    client: &Client,
+    device: &str,
+) -> Result<ProbeAudioDeviceResponse, crate::grpc_web::CallError> {
+    client
+        .config_call(
+            "ProbeAudioDevice",
+            &ProbeAudioDeviceRequest {
+                device: device.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+}
 
 /// Every device offered to users can actually be opened by the player.
 pub async fn advertised_devices_are_openable() -> CheckOutcome {
@@ -73,7 +90,7 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
 
     check!(
         unresolvable.is_empty(),
-        "GET /api/devices/audio offers {} device(s) that the player cannot resolve, so selecting \
+        "ListAudioDevices offers {} device(s) that the player cannot resolve, so selecting \
          one in the web UI fails with \"no device found\":\n  {}\n\nadvertised: {:?}",
         unresolvable.len(),
         unresolvable
@@ -240,29 +257,33 @@ pub async fn probing_the_device_in_use_reports_it_rather_than_failing() -> Check
     let client = Client::connect_http_only(&server).await?;
     let asked = device.name.clone();
 
-    let (status, body) = client
-        .post_json("devices/audio/probe", serde_json::json!({"device": asked}))
-        .await?;
+    let probed = probe(&client, &asked).await;
     check!(
-        status.is_success(),
-        "POST /api/devices/audio/probe returned {status}: {body}"
+        probed.is_ok(),
+        "ProbeAudioDevice failed: {}",
+        probed
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
     );
+    let body = probed.map_err(|e| CheckError::Harness(e.to_string()))?;
 
-    let outcome = body["outcome"].as_str().unwrap_or("<missing>");
+    let outcome = body.outcome().as_str_name();
     check!(
-        outcome == "in_use",
-        "testing the device the player is holding reported '{outcome}', not 'in_use'.\n\n\
+        body.outcome() == ProbeOutcome::InUse,
+        "testing the device the player is holding reported '{outcome}', not 'PROBE_OUTCOME_IN_USE'.\n\n\
          The device is open and streaming; a probe that reopens it is refused, and the \
          operator is told their working interface is broken."
     );
     check!(
-        body["ok"] == serde_json::json!(true),
-        "the device in use was reported as not ok: {body}"
+        body.ok,
+        "the device in use was reported as not ok: {body:?}"
     );
 
     crate::outcome::record(format!(
         "{asked}: reported in_use after {} callbacks, not reopened",
-        body["callbacks"]
+        body.callbacks.map_or("no".to_string(), |n| n.to_string())
     ));
     Ok(())
 }
@@ -363,18 +384,22 @@ pub async fn testing_another_device_is_not_confused_for_the_one_in_use() -> Chec
     // held must make this fail, or it is asserting nothing about the matching.
     let asked = crate::sabotage::pick(other.clone(), device.name.clone());
 
-    let (status, body) = client
-        .post_json("devices/audio/probe", serde_json::json!({"device": asked}))
-        .await?;
+    let probed = probe(&client, &asked).await;
     check!(
-        status.is_success(),
-        "POST /api/devices/audio/probe returned {status}: {body}"
+        probed.is_ok(),
+        "ProbeAudioDevice failed: {}",
+        probed
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
     );
+    let body = probed.map_err(|e| CheckError::Harness(e.to_string()))?;
 
-    let outcome = body["outcome"].as_str().unwrap_or("<missing>");
+    let outcome = body.outcome().as_str_name();
     check!(
-        outcome != "in_use",
-        "testing '{asked}' reported 'in_use', but the player is holding '{}'.\n\n\
+        body.outcome() != ProbeOutcome::InUse,
+        "testing '{asked}' reported 'PROBE_OUTCOME_IN_USE', but the player is holding '{}'.\n\n\
          A device that was never opened is being reported as open and streaming — a green \
          result for an interface nobody has touched, which is the one wrong answer that \
          looks right.",
@@ -439,32 +464,34 @@ pub async fn testing_during_playback_refuses_others_and_answers_for_the_one_in_u
     // Under sabotage, ask about the held device instead. It must be answered
     // rather than refused, so a check that only ever saw refusals would fail.
     let asked = crate::sabotage::pick(other.clone(), device.name.clone());
-    let (status, body) = client
-        .post_json("devices/audio/probe", serde_json::json!({"device": asked}))
-        .await?;
+    let refused = probe(&client, &asked).await;
     check!(
-        status == reqwest::StatusCode::CONFLICT,
-        "testing '{asked}' during playback returned {status} rather than 409: {body}.\n\n\
+        matches!(
+            &refused,
+            Err(crate::grpc_web::CallError::Status { code, .. })
+                if *code == crate::grpc_web::FAILED_PRECONDITION
+        ),
+        "testing '{asked}' during playback was not refused with FAILED_PRECONDITION: {refused:?}.\n\n\
          Opening a second interface mid-song risks an xrun on the one that is playing."
     );
 
     // The device being played through is answered from health, opening nothing.
-    let (status, body) = client
-        .post_json(
-            "devices/audio/probe",
-            serde_json::json!({"device": device.name}),
-        )
-        .await?;
+    let held = probe(&client, &device.name).await;
     check!(
-        status.is_success() && body["outcome"] == "in_use",
-        "testing the device being played through returned {status} / {}, not 200 / in_use.\n\n\
+        held.as_ref()
+            .is_ok_and(|p| p.outcome() == ProbeOutcome::InUse),
+        "testing the device being played through returned {} , not PROBE_OUTCOME_IN_USE.\n\n\
          The playback guard is being applied before the in-use branch, so the one question \
          worth asking during a set — is my output still alive? — is refused.",
-        body["outcome"]
+        match &held {
+            Ok(p) => p.outcome().as_str_name().to_string(),
+            Err(e) => e.to_string(),
+        }
     );
+    let held = held.map_err(|e| CheckError::Harness(e.to_string()))?;
     check!(
-        body["ok"] == serde_json::json!(true),
-        "the device being played through reported not ok: {body}"
+        held.ok,
+        "the device being played through reported not ok: {held:?}"
     );
 
     client
@@ -472,7 +499,7 @@ pub async fn testing_during_playback_refuses_others_and_answers_for_the_one_in_u
         .stop(mtrack::proto::player::v1::StopRequest {})
         .await?;
     crate::outcome::record(format!(
-        "during playback: '{asked}' refused with 409, '{}' answered in_use",
+        "during playback: '{asked}' refused with FAILED_PRECONDITION, '{}' answered in_use",
         device.name
     ));
     Ok(())
@@ -544,18 +571,16 @@ pub async fn overlapping_device_tests_do_not_fail_each_other() -> CheckOutcome {
     let concurrent = 3;
     let mut requests = Vec::new();
     for _ in 0..concurrent {
-        requests.push(client.post_json(
-            "devices/audio/probe",
-            serde_json::json!({"device": probe_target}),
-        ));
+        requests.push(probe(&client, &probe_target));
     }
     let responses = futures_util::future::join_all(requests).await;
 
     let mut failures = Vec::new();
     for response in responses {
-        let (status, body) = response?;
-        if !status.is_success() || body["ok"] != serde_json::json!(true) {
-            failures.push(format!("{status}: {body}"));
+        match response {
+            Ok(body) if body.ok => {}
+            Ok(body) => failures.push(format!("{body:?}")),
+            Err(e) => failures.push(e.to_string()),
         }
     }
     drop(held);

@@ -19,6 +19,7 @@
     AudioOutputHealth,
     SubsystemStatus,
   } from "../gen/rules/mtrack_rules";
+  import { restartControllers as restart } from "../lib/api/config";
   import { statusStore } from "../lib/ws/status";
   import { connect, watchConnected, watchError } from "../lib/ws/stores";
   import { untrack } from "svelte";
@@ -150,11 +151,7 @@
     restarting = true;
     error = null;
     try {
-      const res = await fetch("/api/controllers/restart", { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        error = body?.error ?? `Restart failed (${res.status})`;
-      }
+      await restart();
       // The controllers' new status arrives by itself, within about a
       // second, on the `Watch` stream.
     } catch (e: unknown) {

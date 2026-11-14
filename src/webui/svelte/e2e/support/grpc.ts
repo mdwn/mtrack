@@ -21,7 +21,9 @@ import {
 } from "../../src/gen/player/v1/player_pb";
 import { ConnectError, Code } from "@connectrpc/connect";
 import {
+  AUDIO_DEVICES,
   CONFIG_STORE,
+  MIDI_DEVICES,
   PROFILE_FILE_DETAIL,
   PROFILE_FILES,
   PLAYLIST_DETAILS,
@@ -31,6 +33,8 @@ import {
 import {
   getConfigReply,
   getProfileFileReply,
+  listAudioDevicesReply,
+  listMidiDevicesReply,
   listProfileFilesReply,
 } from "./config-rpc";
 import {
@@ -43,7 +47,7 @@ import { mockRpc, type GrpcReply } from "./rpc";
 export type { GrpcReply };
 
 /** The calls a page makes to read the song library, the playlists, the
- *  config and the profile files. A spec that stubs the transport controls still needs the pages to
+ *  config, the profile files and the device lists. A spec that stubs the transport controls still needs the pages to
  *  have their songs, playlists and config, so these are answered as the mock
  *  server answers them, and are not the calls `onCall` counts. */
 const LIBRARY_READS = new Set<string>([
@@ -53,6 +57,8 @@ const LIBRARY_READS = new Set<string>([
   PlayerService.method.getConfig.name,
   ConfigService.method.listProfileFiles.name,
   ConfigService.method.getProfileFile.name,
+  ConfigService.method.listAudioDevices.name,
+  ConfigService.method.listMidiDevices.name,
 ]);
 
 /** Answers every PlayerService and ConfigService call but the streams (`WatchStage`) with
@@ -79,6 +85,14 @@ export async function stubPlayerService(
   rpc.unary(
     ConfigService.method.getProfileFile,
     getProfileFileReply(PROFILE_FILE_DETAIL),
+  );
+  rpc.unary(
+    ConfigService.method.listAudioDevices,
+    listAudioDevicesReply(AUDIO_DEVICES),
+  );
+  rpc.unary(
+    ConfigService.method.listMidiDevices,
+    listMidiDevicesReply(MIDI_DEVICES),
   );
   rpc.unary(PlayerService.method.getPlaylist, (req) => {
     const detail = PLAYLIST_DETAILS[req.name];

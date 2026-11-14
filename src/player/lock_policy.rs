@@ -122,18 +122,22 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "Watch"),
     (Grpc, "GetNetworkInfo"),
     // ConfigService's reads. Its writes (UpdateSamples, UpdateMetronome,
-    // SaveProfileFile, DeleteProfileFile) stay locked out.
+    // SaveProfileFile, DeleteProfileFile, and the audio probe and the
+    // calibration calls, which open an audio device) stay locked out.
     (Grpc, "ListProfileFiles"),
     (Grpc, "GetProfileFile"),
+    (Grpc, "ListAudioDevices"),
+    (Grpc, "ListMidiDevices"),
+    // The controller restart: open while locked, as it always was (it
+    // changes nothing but restarting what the config already says).
+    (Grpc, "RestartControllers"),
     // The lock itself: the phone's only way to unlock, and the web UI's
     // toggle. SavePlaylist and DeletePlaylist are playlist writes and stay
     // locked out.
     (Grpc, "SetLock"),
-    // Web: validation, the controller restart, and the pure reads that
-    // happen to be POSTs (a preview evaluation and the upload inspectors,
-    // which write nothing).
+    // Web: validation, and the pure reads that happen to be POSTs (a
+    // preview evaluation and the upload inspectors, which write nothing).
     (Web, "POST /lighting/validate"),
-    (Web, "POST /controllers/restart"),
     (Web, "POST /lighting/evaluate"),
     (Web, "POST /lighting/mvr/inspect"),
     // Releasing a fixture test only ever makes the lights go back to the show.
@@ -193,5 +197,19 @@ mod tests {
         assert!(!open_while_locked(Grpc, "DeleteProfileFile"));
         assert!(!open_while_locked(Grpc, "UpdateSamples"));
         assert!(!open_while_locked(Grpc, "UpdateMetronome"));
+        // The device lists and the controller restart are open; the probe
+        // and the calibration calls open an audio device and are not.
+        for open in ["ListAudioDevices", "ListMidiDevices", "RestartControllers"] {
+            assert!(open_while_locked(Grpc, open), "{open}");
+        }
+        for locked in [
+            "ProbeAudioDevice",
+            "StartCalibration",
+            "CaptureCalibration",
+            "StopCalibration",
+            "CancelCalibration",
+        ] {
+            assert!(!open_while_locked(Grpc, locked), "{locked}");
+        }
     }
 }

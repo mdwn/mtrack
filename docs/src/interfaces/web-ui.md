@@ -796,8 +796,9 @@ configuration changes from the web UI.
 
 The web UI exposes a comprehensive REST API for all management operations. Playback control
 uses gRPC-Web (PlayerService), and so do the playlists, the song list, the lock toggle and the
-config store with its profiles (see [gRPC](grpc.md)), and the samples, the metronome defaults and
-the profile files, which are `ConfigService` calls; and so does everything the page watches: the `Watch` stream
+config store with its profiles (see [gRPC](grpc.md)), and the samples, the metronome defaults, the
+profile files, the device lists, the audio device test, the trigger calibration and the controller
+restart, which are `ConfigService` calls; and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no
@@ -812,7 +813,7 @@ the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 All mutating REST endpoints are blocked when the player is in lock mode, returning
 HTTP 423 (Locked); the gRPC calls that write refuse with `FAILED_PRECONDITION`. These always
 work: read endpoints, playback control, the lock toggle (`SetLock`), playlist activation
-(`SwitchToPlaylist`), the lighting validation endpoint, controller restart, and
+(`SwitchToPlaylist`), the lighting validation endpoint, the controller restart (`RestartControllers`), and
 the lighting endpoints that only compute or inspect and write nothing (preview evaluation and
 MVR inspection). Releasing a fixture test also works, since it only returns the lights to the
 show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they

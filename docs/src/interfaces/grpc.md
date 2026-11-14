@@ -113,7 +113,8 @@ not.
 `player.v1.ConfigService` is served on the same port as `PlayerService` and by the web UI's
 gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
 service, and is not reachable over Bluetooth. The web UI's config editor calls it for the samples,
-the metronome defaults and the hardware profile files of the `profiles_dir`.
+the metronome defaults, the hardware profile files of the `profiles_dir`, the audio and MIDI
+device lists, the audio device test, the trigger calibration, and the restart of the controllers.
 
 | RPC | Description |
 |---|---|
@@ -123,6 +124,14 @@ the metronome defaults and the hardware profile files of the `profiles_dir`.
 | `GetProfileFile` | Reads a profile file by full file name (`stage.yml`) or stem (`stage`: its `.yaml`, else its `.yml`): the profile (`profile_json`), the file as written (`yaml`) and its `version`. `NOT_FOUND` for no such file. Open while locked. |
 | `SaveProfileFile` | Creates or updates a profile file. Sections `profile_json` leaves out keep their values in the file, `null` removes one, and keys the profile does not model are kept. `expected_version` is the `version` the file was read at (absent saves whatever is there); `create` makes the save only a create. The change goes into the running config and is applied; the answer, `ProfileFileSaved`, is the file's new `version` and the reload facts `UpdateConfigResponse` carries. |
 | `DeleteProfileFile` | Deletes a profile file, drops it from the running config and applies the change. Answers `ProfileFileSaved` (no `version`). |
+| `ListAudioDevices` | Lists the audio devices the player can see, each with its channel count (`channels_known` is false when that is the backend's clamp, not the hardware's), host, sample rates and formats. Open while locked. |
+| `ProbeAudioDevice` | Opens a device (with the format settings of the request, as saving that profile would), confirms its output callback runs, and closes it again: silent, so safe with the PA up. Answers a `ProbeOutcome` (`STREAMING`, `OPENED_BUT_SILENT`, `COULD_NOT_OPEN` with a `reason`, `OPENED_CANNOT_REPORT`, or `IN_USE` for a device the player holds, which is answered from its health and not opened). A probe takes about two seconds, and probes run one at a time. `INVALID_ARGUMENT` for no device; `FAILED_PRECONDITION` during playback (the device being played through is still answered). Refused while locked. |
+| `ListMidiDevices` | Lists the MIDI devices, or none when the MIDI subsystem is not available. Open while locked. |
+| `StartCalibration` | Records a channel's noise for `duration` seconds (3 when absent, kept between 0.5 and 30), so the call takes that long, and answers its noise floor. `NOT_FOUND` for no such device; `INVALID_ARGUMENT` for a channel under 1 or above the device's, or a format it cannot stream; `UNAVAILABLE` when it would not open. Replaces any session open. Refused while locked. |
+| `CaptureCalibration` | Starts recording the session's channel for hits (up to 60 seconds). `FAILED_PRECONDITION` without a session. Refused while locked. |
+| `StopCalibration` | Ends the session and answers the channel's calibrated parameters. `FAILED_PRECONDITION` without a session or before a capture (the session is closed either way). Refused while locked. |
+| `CancelCalibration` | Closes any session; nothing to cancel is not an error. Refused while locked. |
+| `RestartControllers` | Restarts every controller from the current config and answers their status. `FAILED_PRECONDITION` during playback. Open while locked. |
 
 The refusals are statuses: a version the file has since left, or a `create` onto a file that is
 there (including one a stem reaches, `stage.yaml` with only `stage.yaml.yaml`), is `ABORTED` (the
@@ -137,8 +146,8 @@ send `expected_checksum` like the other config writes (a stale one is `FAILED_PR
 
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
 `UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile`, `RemoveProfile`
-and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile` and
-`DeleteProfileFile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
+`DeleteProfileFile`, `ProbeAudioDevice` and the calibration calls) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are

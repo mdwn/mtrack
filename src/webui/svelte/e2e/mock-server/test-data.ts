@@ -15,10 +15,12 @@
 import type {
   AudioDeviceInfo,
   AudioProbe,
+  ChannelCalibration,
   FitReport,
   MidiDeviceInfo,
   MvrExportSummary,
   MvrInspection,
+  NoiseFloor,
   PlaylistDetail,
   PlaylistInfo,
   ProfileFileInfo,
@@ -306,6 +308,27 @@ export const AUDIO_PROBE_RESULTS: Record<string, AudioProbe> = {
     health: null,
   },
 };
+
+// What a calibration measures and derives, for the trigger wizard.
+export const NOISE_FLOOR = {
+  peak: 0.01,
+  rms: 0.005,
+  low_freq_energy: 0.002,
+  channel: 0,
+  sample_rate: 48000,
+  device_channels: 2,
+} satisfies NoiseFloor;
+
+export const CALIBRATION = {
+  channel: 0,
+  threshold: 0.1,
+  gain: 1.0,
+  scan_time_ms: 50,
+  retrigger_time_ms: 200,
+  num_hits_detected: 5,
+  noise_floor_peak: 0.01,
+  max_hit_amplitude: 0.8,
+} satisfies ChannelCalibration;
 
 export const MIDI_DEVICES: MidiDeviceInfo[] = [
   { name: "MIDI Through Port-0", has_input: true, has_output: true },

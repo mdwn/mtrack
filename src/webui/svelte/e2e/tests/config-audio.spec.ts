@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Profile Editor - Audio Section", () => {
   test.beforeEach(async ({ page }) => {
@@ -76,6 +78,22 @@ test.describe("Profile Editor - Audio Section", () => {
     const result = page.locator("#audio-test-result");
     await expect(result).toHaveAttribute("data-outcome", "streaming");
     await expect(result).toContainText("streaming");
+  });
+
+  // The probe is about the settings on screen, not the saved ones: a device
+  // that opens at one format and refuses another is the whole reason it
+  // exists.
+  test("the test sends the settings on screen", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    await page.locator("#audio-sample-rate").selectOption("48000");
+    await page.locator("#audio-test").click();
+    await expect(page.locator("#audio-test-result")).toBeVisible();
+    const [request, ...others] = rpc.calls(
+      ConfigService.method.probeAudioDevice,
+    );
+    expect(others).toHaveLength(0);
+    expect(request.device).toBe("default");
+    expect(request.sampleRate).toBe(48000);
   });
 
   // The failure that motivated the probe: the name resolves and the format

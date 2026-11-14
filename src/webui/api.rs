@@ -140,23 +140,12 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/lighting/fit", get(lighting_api::get_fit))
         .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
-        .route("/controllers/restart", post(status::restart_controllers))
         .route("/bluetooth", get(bluetooth::get_bluetooth))
         .route("/bluetooth/pairing", post(bluetooth::post_pairing))
         .route(
             "/bluetooth/devices/{address}",
             delete(bluetooth::delete_device),
         )
-        .route("/devices/audio", get(devices::get_audio_devices))
-        .route(
-            "/devices/audio/probe",
-            post(devices::post_probe_audio_device),
-        )
-        .route("/devices/midi", get(devices::get_midi_devices))
-        .route("/calibrate/start", post(devices::post_calibrate_start))
-        .route("/calibrate/capture", post(devices::post_calibrate_capture))
-        .route("/calibrate/stop", post(devices::post_calibrate_stop))
-        .route("/calibrate", delete(devices::delete_calibrate))
         .route(
             "/lighting/fixture-types",
             get(lighting_api::get_fixture_types),
@@ -628,15 +617,11 @@ mod test {
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // The validator and the restart answer rather than 423. (The lock
-        // toggle and the playlist switch are gRPC calls, held to the same
-        // table by the gRPC lock guard's tests.)
+        // The validator answers rather than 423. (The lock toggle, the
+        // playlist switch and the controller restart are gRPC calls, held to
+        // the same table by the gRPC lock guard's tests.)
         assert_ne!(
             send(&app, "POST", "/api/lighting/validate", "").await,
-            StatusCode::LOCKED
-        );
-        assert_ne!(
-            send(&app, "POST", "/api/controllers/restart", "").await,
             StatusCode::LOCKED
         );
         // The inspectors and the preview write nothing.

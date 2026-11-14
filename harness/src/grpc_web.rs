@@ -75,6 +75,88 @@ fn status_of(headers: &reqwest::header::HeaderMap, body: &[u8]) -> (Option<i32>,
     (None, String::new())
 }
 
+/// Why a gRPC-Web call did not answer.
+#[derive(Debug)]
+pub enum CallError {
+    /// The request did not get a gRPC answer: HTTP, or a body that is not
+    /// one.
+    Transport(String),
+    /// The player refused with a gRPC status (`9` is `FAILED_PRECONDITION`).
+    Status {
+        method: String,
+        code: i32,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::Transport(message) => f.write_str(message),
+            CallError::Status {
+                method,
+                code,
+                message,
+            } => write!(f, "{method}: gRPC status {code}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for CallError {}
+
+/// The gRPC code of `FAILED_PRECONDITION`.
+pub const FAILED_PRECONDITION: i32 = 9;
+
+/// Calls the unary method `method` of `service` (`PlayerService`,
+/// `ConfigService`) at `base_url` with `request`, and answers its response;
+/// the status as an error when the call failed.
+pub async fn call<Req: Message, Resp: Message + Default>(
+    http: &reqwest::Client,
+    base_url: &str,
+    service: &str,
+    method: &str,
+    request: &Req,
+) -> Result<Resp, CallError> {
+    let response = http
+        .post(format!("{base_url}/player.v1.{service}/{method}"))
+        .header("content-type", "application/grpc-web+proto")
+        .header("x-grpc-web", "1")
+        .body(frame(&request.encode_to_vec()))
+        .send()
+        .await
+        .map_err(|e| CallError::Transport(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(CallError::Transport(format!(
+            "{method}: HTTP {}",
+            response.status()
+        )));
+    }
+    let headers = response.headers().clone();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| CallError::Transport(e.to_string()))?;
+    match status_of(&headers, &body) {
+        (Some(0), _) => {}
+        (Some(code), message) => {
+            return Err(CallError::Status {
+                method: method.to_string(),
+                code,
+                message,
+            });
+        }
+        (None, _) => {
+            return Err(CallError::Transport(format!(
+                "{method}: the answer carries no gRPC status"
+            )))
+        }
+    }
+    let message = first_message(&body)
+        .ok_or_else(|| CallError::Transport(format!("{method}: no response message")))?;
+    Resp::decode(message)
+        .map_err(|e| CallError::Transport(format!("{method}: the response did not parse: {e}")))
+}
+
 /// Calls the unary method `method` of the player service (`SetLock`) at
 /// `base_url` with `request`, and answers its response; the status as an
 /// error when the call failed.
@@ -84,28 +166,9 @@ pub async fn unary<Req: Message, Resp: Message + Default>(
     method: &str,
     request: &Req,
 ) -> Result<Resp, String> {
-    let response = http
-        .post(format!("{base_url}/player.v1.PlayerService/{method}"))
-        .header("content-type", "application/grpc-web+proto")
-        .header("x-grpc-web", "1")
-        .body(frame(&request.encode_to_vec()))
-        .send()
+    call(http, base_url, "PlayerService", method, request)
         .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("{method}: HTTP {}", response.status()));
-    }
-    let headers = response.headers().clone();
-    let body = response.bytes().await.map_err(|e| e.to_string())?;
-    match status_of(&headers, &body) {
-        (Some(0), _) => {}
-        (Some(code), message) => {
-            return Err(format!("{method}: gRPC status {code}: {message}"));
-        }
-        (None, _) => return Err(format!("{method}: the answer carries no gRPC status")),
-    }
-    let message = first_message(&body).ok_or_else(|| format!("{method}: no response message"))?;
-    Resp::decode(message).map_err(|e| format!("{method}: the response did not parse: {e}"))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

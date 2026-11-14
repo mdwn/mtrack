@@ -387,13 +387,16 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
-    let endpoint = "controllers/restart";
-    let (status, body) = client
-        .send_text(reqwest::Method::POST, endpoint, String::new())
-        .await?;
+    let restarted: Result<mtrack::proto::player::v1::RestartControllersResponse, _> = client
+        .config_call(
+            "RestartControllers",
+            &mtrack::proto::player::v1::RestartControllersRequest {},
+        )
+        .await;
     check!(
-        status.is_success(),
-        "restarting controllers failed: HTTP {status}\n{body}"
+        restarted.is_ok(),
+        "restarting controllers failed: {}",
+        restarted.err().map(|e| e.to_string()).unwrap_or_default()
     );
 
     // The gRPC controller must come back, or the player has lost its control

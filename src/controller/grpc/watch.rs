@@ -456,7 +456,7 @@ fn subsystem_to_proto(subsystem: &crate::player::SubsystemStatus) -> proto::Subs
     }
 }
 
-fn audio_output_to_proto(health: &OutputHealth) -> proto::AudioOutputHealth {
+pub(super) fn audio_output_to_proto(health: &OutputHealth) -> proto::AudioOutputHealth {
     proto::AudioOutputHealth {
         status: health.status.as_str().to_string(),
         callback_alive: health.callback_alive,
@@ -500,7 +500,7 @@ fn hardware_to_proto(hardware: &HardwareStatusSnapshot) -> proto::HardwareSnapsh
     }
 }
 
-fn controller_to_proto(controller: &ControllerSnapshot) -> proto::ControllerStatus {
+pub(super) fn controller_to_proto(controller: &ControllerSnapshot) -> proto::ControllerStatus {
     proto::ControllerStatus {
         kind: controller.kind.clone(),
         status: controller.status.clone(),

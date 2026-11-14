@@ -126,6 +126,17 @@ impl Client {
             .expect("this client was built without gRPC; use the HTTP API instead")
     }
 
+    /// Calls a method of the editor service over the web port's gRPC-Web,
+    /// which answers for a player whose gRPC port is not open as well (a
+    /// client built with [`Client::connect_http_only`] has no other way).
+    pub async fn config_call<Req: prost::Message, Resp: prost::Message + Default>(
+        &self,
+        method: &str,
+        request: &Req,
+    ) -> Result<Resp, crate::grpc_web::CallError> {
+        crate::grpc_web::call(&self.http, &self.base_url, "ConfigService", method, request).await
+    }
+
     /// Fetches the player status over gRPC.
     pub async fn status(&mut self) -> Result<StatusResponse, Box<dyn std::error::Error>> {
         Ok(self.grpc().status(StatusRequest {}).await?.into_inner())

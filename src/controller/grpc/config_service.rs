@@ -26,11 +26,20 @@ use tracing::warn;
 use crate::config;
 use crate::player::{ConfigChange, Player};
 use crate::proto::player::v1::{
-    config_service_server::ConfigService, DeleteProfileFileRequest, GetProfileFileRequest,
-    GetProfileFileResponse, ListProfileFilesRequest, ListProfileFilesResponse, ProfileFileSaved,
-    SaveProfileFileRequest, UpdateConfigResponse, UpdateMetronomeRequest, UpdateSamplesRequest,
+    self as proto, config_service_server::ConfigService, CalibrationNoiseFloor, CalibrationResult,
+    CancelCalibrationRequest, CancelCalibrationResponse, CaptureCalibrationRequest,
+    CaptureCalibrationResponse, DeleteProfileFileRequest, GetProfileFileRequest,
+    GetProfileFileResponse, ListAudioDevicesRequest, ListAudioDevicesResponse,
+    ListMidiDevicesRequest, ListMidiDevicesResponse, ListProfileFilesRequest,
+    ListProfileFilesResponse, ProbeAudioDeviceRequest, ProbeAudioDeviceResponse, ProfileFileSaved,
+    RestartControllersRequest, RestartControllersResponse, SaveProfileFileRequest,
+    StartCalibrationRequest, StopCalibrationRequest, UpdateConfigResponse, UpdateMetronomeRequest,
+    UpdateSamplesRequest,
 };
+use crate::webui::api::devices::{self, CalibrateStart, DeviceError};
 use crate::webui::api::profiles::{self, ProfileFileError, ProfileSave};
+use crate::webui::api::status;
+use crate::webui::wire::devices::{ProbeAudioRequest, ProbeKind};
 
 /// The metadata key of an `ABORTED` save of a profile file that says the
 /// version the file is at.
@@ -202,6 +211,224 @@ impl ConfigService for ConfigServer {
             None,
             reload,
         )))
+    }
+
+    async fn list_audio_devices(
+        &self,
+        _: Request<ListAudioDevicesRequest>,
+    ) -> Result<Response<ListAudioDevicesResponse>, Status> {
+        let devices = devices::list_audio_devices().await.map_err(device_status)?;
+        Ok(Response::new(ListAudioDevicesResponse {
+            devices: devices
+                .into_iter()
+                .map(|d| proto::AudioDeviceInfo {
+                    name: d.name,
+                    max_channels: u32::from(d.max_channels),
+                    host_name: d.host_name,
+                    supported_sample_rates: d.supported_sample_rates,
+                    supported_formats: d
+                        .supported_formats
+                        .into_iter()
+                        .map(|f| proto::SupportedFormat {
+                            sample_format: f.sample_format,
+                            bits_per_sample: f.bits_per_sample,
+                        })
+                        .collect(),
+                    virtual_node: d.virtual_node,
+                    channels_known: d.channels_known,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn probe_audio_device(
+        &self,
+        request: Request<ProbeAudioDeviceRequest>,
+    ) -> Result<Response<ProbeAudioDeviceResponse>, Status> {
+        let req = request.into_inner();
+        let bits_per_sample = req
+            .bits_per_sample
+            .map(|bits| {
+                u16::try_from(bits)
+                    .map_err(|_| Status::invalid_argument("bits_per_sample is out of range"))
+            })
+            .transpose()?;
+        let buffer_size = req
+            .buffer_size
+            .map(|size| {
+                usize::try_from(size)
+                    .map_err(|_| Status::invalid_argument("buffer_size is out of range"))
+            })
+            .transpose()?;
+        let stream_buffer_size = req.stream_buffer_size.map(stream_buffer_size).transpose()?;
+        let probe = devices::probe_audio_device(
+            &self.player,
+            ProbeAudioRequest {
+                device: req.device,
+                sample_rate: req.sample_rate,
+                sample_format: req.sample_format,
+                bits_per_sample,
+                buffer_size,
+                stream_buffer_size,
+            },
+        )
+        .await
+        .map_err(device_status)?;
+        Ok(Response::new(ProbeAudioDeviceResponse {
+            outcome: match probe.outcome {
+                ProbeKind::Streaming => proto::ProbeOutcome::Streaming,
+                ProbeKind::OpenedButSilent => proto::ProbeOutcome::OpenedButSilent,
+                ProbeKind::CouldNotOpen => proto::ProbeOutcome::CouldNotOpen,
+                ProbeKind::OpenedCannotReport => proto::ProbeOutcome::OpenedCannotReport,
+                ProbeKind::InUse => proto::ProbeOutcome::InUse,
+            }
+            .into(),
+            ok: probe.ok,
+            reason: probe.reason.flatten(),
+            callbacks: probe.callbacks,
+            health: probe
+                .health
+                .flatten()
+                .as_ref()
+                .map(super::watch::audio_output_to_proto),
+        }))
+    }
+
+    async fn list_midi_devices(
+        &self,
+        _: Request<ListMidiDevicesRequest>,
+    ) -> Result<Response<ListMidiDevicesResponse>, Status> {
+        let devices = devices::list_midi_devices().await.map_err(device_status)?;
+        Ok(Response::new(ListMidiDevicesResponse {
+            devices: devices
+                .into_iter()
+                .map(|d| proto::MidiDeviceInfo {
+                    name: d.name,
+                    has_input: d.has_input,
+                    has_output: d.has_output,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn start_calibration(
+        &self,
+        request: Request<StartCalibrationRequest>,
+    ) -> Result<Response<CalibrationNoiseFloor>, Status> {
+        let req = request.into_inner();
+        let channel = u16::try_from(req.channel)
+            .map_err(|_| Status::invalid_argument("channel is out of range"))?;
+        let bits_per_sample = req
+            .bits_per_sample
+            .map(|bits| {
+                u16::try_from(bits)
+                    .map_err(|_| Status::invalid_argument("bits_per_sample is out of range"))
+            })
+            .transpose()?;
+        let floor = devices::calibrate_start(CalibrateStart {
+            device: req.device,
+            channel,
+            duration: req.duration.unwrap_or(devices::DEFAULT_NOISE_DURATION),
+            sample_rate: req.sample_rate,
+            sample_format: req.sample_format,
+            bits_per_sample,
+        })
+        .await
+        .map_err(device_status)?;
+        Ok(Response::new(CalibrationNoiseFloor {
+            peak: floor.peak,
+            rms: floor.rms,
+            low_freq_energy: floor.low_freq_energy,
+            channel: u32::from(floor.channel),
+            sample_rate: floor.sample_rate,
+            device_channels: u32::from(floor.device_channels),
+        }))
+    }
+
+    async fn capture_calibration(
+        &self,
+        _: Request<CaptureCalibrationRequest>,
+    ) -> Result<Response<CaptureCalibrationResponse>, Status> {
+        devices::calibrate_capture().map_err(device_status)?;
+        Ok(Response::new(CaptureCalibrationResponse {}))
+    }
+
+    async fn stop_calibration(
+        &self,
+        _: Request<StopCalibrationRequest>,
+    ) -> Result<Response<CalibrationResult>, Status> {
+        let c = devices::calibrate_stop().map_err(device_status)?;
+        Ok(Response::new(CalibrationResult {
+            channel: u32::from(c.channel),
+            threshold: c.threshold,
+            gain: c.gain,
+            scan_time_ms: c.scan_time_ms,
+            retrigger_time_ms: c.retrigger_time_ms,
+            highpass_freq: c.highpass_freq,
+            dynamic_threshold_decay_ms: c.dynamic_threshold_decay_ms,
+            num_hits_detected: c.num_hits_detected as u64,
+            noise_floor_peak: c.noise_floor_peak,
+            max_hit_amplitude: c.max_hit_amplitude,
+        }))
+    }
+
+    async fn cancel_calibration(
+        &self,
+        _: Request<CancelCalibrationRequest>,
+    ) -> Result<Response<CancelCalibrationResponse>, Status> {
+        devices::calibrate_cancel();
+        Ok(Response::new(CancelCalibrationResponse {}))
+    }
+
+    async fn restart_controllers(
+        &self,
+        _: Request<RestartControllersRequest>,
+    ) -> Result<Response<RestartControllersResponse>, Status> {
+        let controllers = status::restart_controllers(&self.player)
+            .await
+            .map_err(device_status)?;
+        Ok(Response::new(RestartControllersResponse {
+            controllers: controllers
+                .iter()
+                .map(super::watch::controller_to_proto)
+                .collect(),
+        }))
+    }
+}
+
+/// A refusal of a device, calibration or restart call as a status: a request
+/// that is not valid is `INVALID_ARGUMENT`, a device that is not there
+/// `NOT_FOUND`, a call the player's state does not fit (playing, or no
+/// calibration session) `FAILED_PRECONDITION`, a device that would not open
+/// `UNAVAILABLE`. The message is the one the REST route gave.
+fn device_status(e: DeviceError) -> Status {
+    let message = e.to_string();
+    match e {
+        DeviceError::Invalid(_) => Status::invalid_argument(message),
+        DeviceError::NotFound(_) => Status::not_found(message),
+        DeviceError::WrongState(_) => Status::failed_precondition(message),
+        DeviceError::Unavailable(_) => Status::unavailable(message),
+        DeviceError::Internal(_) => Status::internal(message),
+    }
+}
+
+/// A stream buffer size as the config holds it. A message that names
+/// neither a kind nor a number is not valid.
+#[allow(clippy::result_large_err)]
+fn stream_buffer_size(size: proto::StreamBufferSize) -> Result<config::StreamBufferSize, Status> {
+    use proto::stream_buffer_size::Size;
+    match size.size {
+        Some(Size::Kind(kind)) => match proto::StreamBufferKind::try_from(kind) {
+            Ok(proto::StreamBufferKind::Default) => Ok(config::StreamBufferSize::Default),
+            Ok(proto::StreamBufferKind::Min) => Ok(config::StreamBufferSize::Min),
+            _ => Err(Status::invalid_argument("unknown stream_buffer_size kind")),
+        },
+        Some(Size::Frames(frames)) => usize::try_from(frames)
+            .map(config::StreamBufferSize::Fixed)
+            .map_err(|_| Status::invalid_argument("stream_buffer_size is out of range")),
+        None => Err(Status::invalid_argument(
+            "stream_buffer_size names neither a kind nor a number of frames",
+        )),
     }
 }
 
@@ -1326,5 +1553,408 @@ mod tests {
             "{}",
             failed.message
         );
+    }
+
+    // ---- Devices, the audio probe, calibration and the controller restart ----
+
+    use crate::proto::player::v1 as pb;
+
+    fn probe_request(device: &str) -> pb::ProbeAudioDeviceRequest {
+        pb::ProbeAudioDeviceRequest {
+            device: device.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// `GET /api/devices/audio` answered a list, never a failure for a
+    /// machine with no devices.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_audio_devices_are_listed() -> Fallible {
+        let served = served().await?;
+        served
+            .server
+            .list_audio_devices(Request::new(pb::ListAudioDevicesRequest {}))
+            .await?;
+        Ok(())
+    }
+
+    /// `GET /api/devices/midi` answered a list, and an empty one when the
+    /// MIDI subsystem is unavailable (no ALSA on CI), not an error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_midi_devices_are_listed_or_none_when_midi_is_unavailable() -> Fallible {
+        let served = served().await?;
+        served
+            .server
+            .list_midi_devices(Request::new(pb::ListMidiDevicesRequest {}))
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_without_a_device_is_rejected() -> Fallible {
+        let served = served().await?;
+        let refused = served
+            .server
+            .probe_audio_device(Request::new(probe_request("   ")))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), Code::InvalidArgument);
+        assert_eq!(refused.message(), "device is required");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_of_a_missing_device_reports_why_it_could_not_open() -> Fallible {
+        let served = served().await?;
+        let probe = served
+            .server
+            .probe_audio_device(Request::new(probe_request(
+                "definitely-not-a-real-device-for-probing",
+            )))
+            .await?
+            .into_inner();
+        assert_eq!(probe.outcome(), pb::ProbeOutcome::CouldNotOpen);
+        assert!(!probe.ok);
+        // The reason is the whole point: "it failed" sends nobody anywhere.
+        let reason = probe.reason.unwrap_or_default();
+        assert!(
+            reason.contains("definitely-not-a-real-device-for-probing"),
+            "reason should name the device, got {reason:?}"
+        );
+        Ok(())
+    }
+
+    /// Probing the device the player already holds must not open it a second
+    /// time. It would be refused, and reporting "could not be opened" for the
+    /// device currently playing is the worst answer this call could give.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_of_the_held_device_reports_it_in_use_rather_than_opening_it() -> Fallible {
+        let served = served_with_audio(None).await?;
+        let probe = served
+            .server
+            .probe_audio_device(Request::new(probe_request("mock-device")))
+            .await?
+            .into_inner();
+        assert_eq!(probe.outcome(), pb::ProbeOutcome::InUse);
+        assert!(probe.ok);
+        Ok(())
+    }
+
+    /// The guard is about *this* device, not about holding any device at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_of_another_device_is_not_confused_by_the_held_one() -> Fallible {
+        let served = served_with_audio(None).await?;
+        let probe = served
+            .server
+            .probe_audio_device(Request::new(probe_request("some-other-device")))
+            .await?
+            .into_inner();
+        assert_ne!(probe.outcome(), pb::ProbeOutcome::InUse);
+        Ok(())
+    }
+
+    /// Format settings must reach the probe: a device that opens at one format
+    /// and refuses another is the failure this call exists for, so probing at
+    /// defaults would answer a question nobody asked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_accepts_the_format_settings_beside_the_device() -> Fallible {
+        let served = served().await?;
+        for stream_buffer_size in [
+            pb::stream_buffer_size::Size::Kind(pb::StreamBufferKind::Min.into()),
+            pb::stream_buffer_size::Size::Kind(pb::StreamBufferKind::Default.into()),
+            pb::stream_buffer_size::Size::Frames(1024),
+        ] {
+            let probe = served
+                .server
+                .probe_audio_device(Request::new(pb::ProbeAudioDeviceRequest {
+                    device: "mock-probe-target".to_string(),
+                    sample_rate: Some(48000),
+                    sample_format: Some("int".to_string()),
+                    bits_per_sample: Some(24),
+                    buffer_size: Some(2048),
+                    stream_buffer_size: Some(pb::StreamBufferSize {
+                        size: Some(stream_buffer_size),
+                    }),
+                }))
+                .await?
+                .into_inner();
+            // A mock opens but cannot report liveness.
+            assert_eq!(probe.outcome(), pb::ProbeOutcome::OpenedCannotReport);
+            assert!(probe.ok);
+        }
+        Ok(())
+    }
+
+    /// A stream buffer size that names nothing, or a setting out of range, is
+    /// refused rather than probed at something else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_refuses_settings_that_are_not_valid() -> Fallible {
+        let served = served().await?;
+        for request in [
+            pb::ProbeAudioDeviceRequest {
+                stream_buffer_size: Some(pb::StreamBufferSize { size: None }),
+                ..probe_request("mock-probe-target")
+            },
+            pb::ProbeAudioDeviceRequest {
+                stream_buffer_size: Some(pb::StreamBufferSize {
+                    size: Some(pb::stream_buffer_size::Size::Kind(0)),
+                }),
+                ..probe_request("mock-probe-target")
+            },
+            pb::ProbeAudioDeviceRequest {
+                bits_per_sample: Some(70_000),
+                ..probe_request("mock-probe-target")
+            },
+        ] {
+            let refused = served
+                .server
+                .probe_audio_device(Request::new(request))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), Code::InvalidArgument, "{refused:?}");
+        }
+        Ok(())
+    }
+
+    /// A served project whose player is playing an hour-long song through a
+    /// mock device, `mock-device`.
+    async fn served_playing() -> Fallible<Served> {
+        use crate::player::PlayerDevices;
+        use crate::songs::{Song, Songs};
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            Arc::new(Song::new_for_test_lasting(
+                "Song A",
+                &["kick", "snare"],
+                std::time::Duration::from_secs(3600),
+            )),
+        );
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            crate::playlist::from_songs(Arc::new(Songs::new(map)))?,
+        );
+        let device = Arc::new(crate::audio::mock::Device::get("mock-device"));
+        let player = Arc::new(Player::new_with_devices(
+            PlayerDevices {
+                audio: Some(device.clone()),
+                mappings: Some(Arc::new(std::collections::HashMap::new())),
+                ..crate::testutil::player::no_devices()
+            },
+            playlists,
+            "all_songs".to_string(),
+            None,
+        )?);
+        let served = served_on(player, "songs: assets/songs\nprofiles_dir: profiles\n").await?;
+        served.player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        Ok(served)
+    }
+
+    /// Opening a second interface mid-song risks an xrun on the one that is
+    /// playing, so another device is not probed during playback; the held one
+    /// is still answered, from its health.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_of_another_device_is_refused_during_playback() -> Fallible {
+        let served = served_playing().await?;
+        let refused = served
+            .server
+            .probe_audio_device(Request::new(probe_request("some-other-device")))
+            .await;
+        let held = served
+            .server
+            .probe_audio_device(Request::new(probe_request("mock-device")))
+            .await;
+        // Stopped before the assertions: an hour-long song keeps the
+        // runtime from shutting down.
+        served.player.stop().await;
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        assert_eq!(
+            refused.message(),
+            "Cannot test another audio device during playback"
+        );
+        assert_eq!(held?.into_inner().outcome(), pb::ProbeOutcome::InUse);
+        Ok(())
+    }
+
+    fn start_request(device: &str, channel: u32) -> pb::StartCalibrationRequest {
+        pb::StartCalibrationRequest {
+            device: device.to_string(),
+            channel,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calibration_of_a_device_that_is_not_there_is_refused() -> Fallible {
+        let served = served().await?;
+        let refused = served
+            .server
+            .start_calibration(Request::new(start_request("nonexistent", 1)))
+            .await
+            .unwrap_err();
+        // NOT_FOUND where the machine has no such input; a machine whose
+        // audio host cannot list any may answer otherwise.
+        assert!(
+            matches!(
+                refused.code(),
+                Code::NotFound | Code::InvalidArgument | Code::Unavailable
+            ),
+            "{refused:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calibration_needs_a_channel_from_one() -> Fallible {
+        let served = served().await?;
+        // Channel 0 is invalid, and so is the channel an unset field reads as.
+        for channel in [0, 70_000] {
+            let refused = served
+                .server
+                .start_calibration(Request::new(start_request("nonexistent", channel)))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), Code::InvalidArgument, "{channel}");
+        }
+        let refused = served
+            .server
+            .start_calibration(Request::new(start_request("nonexistent", 0)))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.message(), "channel must be >= 1");
+        Ok(())
+    }
+
+    /// The calibration session is the player's one, whichever service
+    /// instance a call lands on, so these walk a session that is not there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calibration_calls_without_a_session_are_refused_or_nothing_to_cancel() -> Fallible {
+        let served = served().await?;
+        let capture = served
+            .server
+            .capture_calibration(Request::new(pb::CaptureCalibrationRequest {}))
+            .await
+            .unwrap_err();
+        assert_eq!(capture.code(), Code::FailedPrecondition);
+        assert!(
+            capture.message().contains("No calibration session"),
+            "{capture:?}"
+        );
+        let stop = served
+            .server
+            .stop_calibration(Request::new(pb::StopCalibrationRequest {}))
+            .await
+            .unwrap_err();
+        assert_eq!(stop.code(), Code::FailedPrecondition);
+        assert!(
+            stop.message().contains("No calibration session"),
+            "{stop:?}"
+        );
+        // Nothing to cancel is not an error.
+        served
+            .server
+            .cancel_calibration(Request::new(pb::CancelCalibrationRequest {}))
+            .await?;
+        Ok(())
+    }
+
+    /// The restart answers the controllers it started, and leaves them
+    /// running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restarting_the_controllers_answers_their_status() -> Fallible {
+        let served = served_with_audio(None).await?;
+        let grpc = config::Controller::Grpc(config::GrpcController::new(0));
+        let path = served.dir.path().join("mtrack.yaml");
+        let store = Arc::new(config::ConfigStore::new(
+            config::Player::new(
+                vec![grpc.clone()],
+                None,
+                None,
+                None,
+                std::collections::HashMap::new(),
+                "songs",
+            ),
+            path,
+        ));
+        served.player.set_config_store(store);
+        served.player.start_controllers(vec![grpc]);
+        let restarted = served
+            .server
+            .restart_controllers(Request::new(pb::RestartControllersRequest {}))
+            .await?
+            .into_inner();
+        served.player.await_hardware_ready().await;
+        assert_eq!(restarted.controllers.len(), 1, "{restarted:?}");
+        assert_eq!(restarted.controllers[0].kind, "grpc");
+        served.player.shutdown_controllers();
+        Ok(())
+    }
+
+    /// Restarting the controllers would disrupt the control surfaces in use,
+    /// so it is refused during playback.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restarting_the_controllers_is_refused_during_playback() -> Fallible {
+        let served = served_playing().await?;
+        let refused = served
+            .server
+            .restart_controllers(Request::new(pb::RestartControllersRequest {}))
+            .await;
+        // Stopped before the assertions: an hour-long song keeps the
+        // runtime from shutting down.
+        served.player.stop().await;
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        assert_eq!(
+            refused.message(),
+            "Cannot restart controllers during playback"
+        );
+        Ok(())
+    }
+
+    /// While locked the device lists and the restart are served, and the
+    /// probe and the calibration are refused (the table in lock_policy; this
+    /// is the service behind it, as the web UI reaches it).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_locked_player_serves_the_lists_and_the_restart_but_not_the_probe() -> Fallible {
+        use tower::ServiceExt;
+        let served = served().await?;
+        served.player.set_locked(true);
+        let code_of = |method: &'static str| {
+            let player = served.player.clone();
+            async move {
+                let request = http::Request::post(format!("/player.v1.ConfigService/{method}"))
+                    .header("content-type", "application/grpc")
+                    .body(tonic::body::Body::empty())
+                    .unwrap();
+                let response = crate::controller::grpc::config_service(player)
+                    .oneshot(request)
+                    .await
+                    .unwrap();
+                tonic::Status::from_header_map(response.headers())
+                    .map(|s| (s.code(), s.message().to_string()))
+            }
+        };
+        let locked = crate::player::LockedError.to_string();
+        for method in [
+            "ProbeAudioDevice",
+            "StartCalibration",
+            "CaptureCalibration",
+            "StopCalibration",
+            "CancelCalibration",
+        ] {
+            let (code, message) = code_of(method).await.expect(method);
+            assert_eq!(code, Code::FailedPrecondition, "{method}");
+            assert_eq!(message, locked, "{method}");
+        }
+        for method in ["ListAudioDevices", "ListMidiDevices", "RestartControllers"] {
+            // Past the guard: whatever it answers, it is not the lock.
+            if let Some((_, message)) = code_of(method).await {
+                assert_ne!(message, locked, "{method}");
+            }
+        }
+        Ok(())
     }
 }
