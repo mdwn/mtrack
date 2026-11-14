@@ -31,6 +31,7 @@ Future<void> showEntrySettings(
   EditRow row,
 ) {
   edit.loadLightShows();
+  edit.loadSongPalettes();
   return _showSheet(
     context,
     (_) => EntrySettingsSheet(
@@ -323,6 +324,9 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
   late player.AmbientSetting? _ambient = widget.initial.hasAmbient()
       ? widget.initial.ambient
       : null;
+  late Map<String, String> _colours = widget.initial.hasPalette()
+      ? Map.of(widget.initial.palette.slots)
+      : {};
   late final TextEditingController _fadeOutText = TextEditingController(
     text: _fadeOut?.length ?? '',
   );
@@ -369,11 +373,17 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
     super.dispose();
   }
 
-  player.EntrySettings _settings() => player.EntrySettings(
-    fadeOut: _fadeOut,
-    fadeIn: _fadeIn,
-    autoPlay: _autoPlay ? player.AutoPlay(gap: _gap.text.trim()) : null,
-    ambient: _ambient,
+  // The palette goes as it was read unless the colours were changed: a
+  // sheet that never learned the song's palette must not drop it.
+  player.EntrySettings _settings() => withPaletteSlots(
+    player.EntrySettings(
+      fadeOut: _fadeOut,
+      fadeIn: _fadeIn,
+      autoPlay: _autoPlay ? player.AutoPlay(gap: _gap.text.trim()) : null,
+      ambient: _ambient,
+      palette: widget.initial.hasPalette() ? widget.initial.palette : null,
+    ),
+    _colours,
   );
 
   @override
@@ -462,6 +472,25 @@ class _EntrySettingsSheetState extends State<EntrySettingsSheet> {
             _fadeOutBad = false;
             _fadeOut = withFadeLength(_initialOut, text);
           }),
+        ),
+        ListenableBuilder(
+          listenable: widget.edit,
+          builder: (context, _) {
+            final song = widget.edit.songPalettes?[widget.song];
+            // Without the song's palette, and with nothing set on the
+            // entry, there is nothing to show.
+            if (song == null && _colours.isEmpty) {
+              return const SizedBox.shrink();
+            }
+            if (widget.edit.songPalettes == null) {
+              return const SizedBox.shrink();
+            }
+            return EntryColours(
+              song: song,
+              slots: _colours,
+              onChanged: (slots) => setState(() => _colours = slots),
+            );
+          },
         ),
         if (details != null)
           Padding(
@@ -764,6 +793,297 @@ class _ShowPicker extends StatelessWidget {
               ),
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// A colour as `#rrggbb` text, for painting.
+Color paletteColour(String hex) {
+  final digits = normalizeColour(hex)?.substring(1) ?? '000000';
+  return Color(0xFF000000 | int.parse(digits, radix: 16));
+}
+
+/// A song's palette slots in an entry: each slot with the colour it has
+/// without this entry's override (the song's, else the show's), and the
+/// entry's own to pick or reset. A slot the song does not declare is
+/// warned of and can be removed.
+class EntryColours extends StatelessWidget {
+  /// The section for a song with palette [song] (null: it has none),
+  /// showing the entry's override [slots]; [onChanged] gets the new ones.
+  const EntryColours({
+    required this.song,
+    required this.slots,
+    required this.onChanged,
+    super.key,
+  });
+
+  /// The song's palette, if it has one.
+  final player.SongPalette? song;
+
+  /// The entry's overrides, slot to `#rrggbb`.
+  final Map<String, String> slots;
+
+  /// Called with the entry's overrides after a change.
+  final ValueChanged<Map<String, String>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final unknown = unknownSlots(song, slots);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SheetEyebrow('COLOURS'),
+        Text(
+          "Recolour this song's palette in this playlist only. It is fixed "
+          'when the song starts.',
+          style: AppText.small.copyWith(color: colors.muted, height: 1.4),
+        ),
+        for (final slot in song?.slots ?? const <player.PaletteSlot>[])
+          _SlotRow(
+            name: slot.name,
+            base: baseColour(song!, slot.name)!,
+            baseFrom: songOverrides(song!, slot.name) ? 'song' : 'show',
+            chosen: slots[slot.name],
+            onPick: (hex) => onChanged({...slots, slot.name: hex}),
+            onReset: () => onChanged(Map.of(slots)..remove(slot.name)),
+          ),
+        for (final slot in unknown)
+          _UnknownSlotRow(
+            name: slot,
+            colour: slots[slot]!,
+            onRemove: () => onChanged(Map.of(slots)..remove(slot)),
+          ),
+      ],
+    );
+  }
+}
+
+class _Swatch extends StatelessWidget {
+  const _Swatch(this.hex, {this.size = 32});
+
+  /// Null draws an empty one.
+  final String? hex;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: hex == null ? null : paletteColour(hex!),
+        border: Border.all(color: colors.line, width: 2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+  }
+}
+
+class _SlotRow extends StatelessWidget {
+  const _SlotRow({
+    required this.name,
+    required this.base,
+    required this.baseFrom,
+    required this.chosen,
+    required this.onPick,
+    required this.onReset,
+  });
+
+  final String name;
+  final String base;
+  final String baseFrom;
+  final String? chosen;
+  final ValueChanged<String> onPick;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          _Swatch(base),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: AppText.bodyStrong.copyWith(color: colors.text),
+                ),
+                Text(
+                  chosen == null
+                      ? '$baseFrom $base'
+                      : 'was $baseFrom $base, now $chosen',
+                  style: AppText.small.copyWith(color: colors.muted),
+                ),
+              ],
+            ),
+          ),
+          if (chosen != null) ...[
+            _Swatch(chosen),
+            IconButton(
+              tooltip: 'Reset $name',
+              icon: const Icon(Icons.restart_alt),
+              onPressed: onReset,
+            ),
+          ],
+          IconButton(
+            tooltip: 'Pick colour for $name',
+            icon: const Icon(Icons.palette_outlined),
+            onPressed: () async {
+              final hex = await showColourPicker(context, name, chosen ?? base);
+              if (hex != null) {
+                onPick(hex);
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnknownSlotRow extends StatelessWidget {
+  const _UnknownSlotRow({
+    required this.name,
+    required this.colour,
+    required this.onRemove,
+  });
+
+  final String name;
+  final String colour;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: colors.amber),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: AppText.bodyStrong.copyWith(color: colors.text),
+                ),
+                Text(
+                  "Not in this song's palette, so it does nothing ($colour).",
+                  style: AppText.small.copyWith(color: colors.amber),
+                ),
+              ],
+            ),
+          ),
+          _Swatch(colour),
+          IconButton(
+            tooltip: 'Remove $name',
+            icon: const Icon(Icons.delete_outline),
+            onPressed: onRemove,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Asks for a colour for the slot [slot]: a grid of common ones and a hex
+/// field, starting at [current]. Answers `#rrggbb`, or null when cancelled.
+Future<String?> showColourPicker(
+  BuildContext context,
+  String slot,
+  String current,
+) => showDialog<String>(
+  context: context,
+  builder: (_) => _ColourPicker(slot: slot, current: current),
+);
+
+class _ColourPicker extends StatefulWidget {
+  const _ColourPicker({required this.slot, required this.current});
+
+  final String slot;
+  final String current;
+
+  @override
+  State<_ColourPicker> createState() => _ColourPickerState();
+}
+
+class _ColourPickerState extends State<_ColourPicker> {
+  late final TextEditingController _hex = TextEditingController(
+    text: widget.current,
+  );
+  bool _bad = false;
+
+  @override
+  void dispose() {
+    _hex.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final typed = normalizeColour(_hex.text);
+    return AlertDialog(
+      title: Text(widget.slot),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                for (final hex in paletteChoices)
+                  InkWell(
+                    key: ValueKey('choice-$hex'),
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => Navigator.of(context).pop(hex),
+                    child: Semantics(
+                      button: true,
+                      label: 'Use $hex',
+                      child: _Swatch(hex, size: 44),
+                    ),
+                  ),
+              ],
+            ),
+            SheetField(
+              controller: _hex,
+              label: 'Hex',
+              placeholder: '#rrggbb',
+              helper: null,
+              errorText: _bad ? 'Not a colour. Try #ff8800.' : null,
+              onChanged: (_) => setState(() => _bad = false),
+              suffix: typed == null ? null : _Swatch(typed, size: 20),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () {
+            final hex = normalizeColour(_hex.text);
+            if (hex == null) {
+              setState(() => _bad = true);
+              return;
+            }
+            Navigator.of(context).pop(hex);
+          },
+          child: const Text('Use'),
+        ),
       ],
     );
   }

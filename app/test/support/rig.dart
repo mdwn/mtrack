@@ -242,6 +242,10 @@ class Rig {
   /// or short means none.
   final Map<String, List<pp.EntrySettings>> entrySettings = {};
 
+  /// Each song's lighting palette by name, as `GetPlaylist` with the
+  /// library sends it; a song missing has none.
+  final Map<String, pp.SongPalette> songPalettes = {};
+
   /// Each playlist's own ambient light; missing is the profile's.
   final Map<String, pp.AmbientSetting> playlistAmbient = {};
 
@@ -527,7 +531,12 @@ class Rig {
       if (list == null) {
         return FakeReply.error(5, "Playlist '$name' not found");
       }
-      return FakeReply.ok(_playlistResponse(name, list));
+      final response = _playlistResponse(name, list);
+      if (pp.GetPlaylistRequest.fromBuffer(request.payload).withLibrary &&
+          !_noSettings) {
+        response.songPalettes.addAll(songPalettes);
+      }
+      return FakeReply.ok(response);
     };
     h['ListPlaylists'] = (_) => FakeReply.ok(
       pp.ListPlaylistsResponse(
