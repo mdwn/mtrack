@@ -88,6 +88,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
               }
             },
             onConnect: () => _connectToAddress(session),
+            onScan: session.canScanNetwork ? session.scanNetwork : null,
+            scanning: session.networkScan == NetworkScan.scanning,
           ),
         );
       case ConnectionPhase.connecting:
@@ -400,17 +402,18 @@ class _Results extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final wifi = session.wifiFound;
+    final wifi = session.wifiEntries;
     final found = session.found;
     final empty = wifi.isEmpty && found.isEmpty;
+    final scan = session.networkScan;
     final searching = session.searching;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final player in wifi)
+        for (final entry in wifi)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: _WifiRow(session: session, player: player),
+            child: _WifiRow(session: session, entry: entry),
           ),
         for (final player in found)
           Padding(
@@ -426,6 +429,43 @@ class _Results extends StatelessWidget {
             ),
           ),
         ],
+        if (scan == NetworkScan.scanning)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Scanning this network…',
+                    style: AppText.body.copyWith(color: colors.muted),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else if (scan == NetworkScan.none)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              'No players found on this network.',
+              style: AppText.body.copyWith(color: colors.muted),
+            ),
+          )
+        else if (scan == NetworkScan.notScannable)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              'This phone is not on a network it can scan. Join the '
+              "player's Wi-Fi, or enter an address.",
+              style: AppText.body.copyWith(color: colors.muted),
+            ),
+          ),
         if (searching)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -445,12 +485,15 @@ class _Results extends StatelessWidget {
             ),
           )
         else if (empty) ...[
-          Text(
-            'No players found. Make sure the player is on, and that your '
-            'phone is on its network or close by.',
-            style: AppText.body.copyWith(color: colors.muted),
-          ),
-          const SizedBox(height: 12),
+          // After a scan that found none, its own line says so.
+          if (scan != NetworkScan.none) ...[
+            Text(
+              'No players found. Make sure the player is on, and that your '
+              'phone is on its network or close by.',
+              style: AppText.body.copyWith(color: colors.muted),
+            ),
+            const SizedBox(height: 12),
+          ],
           ChunkyButton(
             height: 52,
             fontSize: 16,
@@ -477,10 +520,12 @@ class _Results extends StatelessWidget {
 /// A player found on the network: its name, "Wi-Fi" and its first address.
 /// A tap connects, with no pairing.
 class _WifiRow extends StatelessWidget {
-  const _WifiRow({required this.session, required this.player});
+  const _WifiRow({required this.session, required this.entry});
 
   final Session session;
-  final FoundPlayer player;
+  final WifiEntry entry;
+
+  FoundPlayer get player => entry.player;
 
   @override
   Widget build(BuildContext context) {
@@ -489,7 +534,9 @@ class _WifiRow extends StatelessWidget {
     final hosts = player.orderedHosts;
     final address = hosts.isEmpty ? null : hosts.first;
     return RowCard(
-      onTap: () => session.connectToFound(player),
+      onTap: () => entry.scanned
+          ? session.connectToScanned(player)
+          : session.connectToFound(player),
       semanticLabel:
           '${player.name}, Wi-Fi${address == null ? '' : ', $address'}',
       semanticHint: 'Connect to this player',
@@ -576,6 +623,8 @@ class _AddressEntry extends StatelessWidget {
     required this.onOpen,
     required this.onChanged,
     required this.onConnect,
+    required this.onScan,
+    required this.scanning,
   });
 
   final TextEditingController controller;
@@ -585,13 +634,35 @@ class _AddressEntry extends StatelessWidget {
   final VoidCallback onChanged;
   final VoidCallback onConnect;
 
+  /// Starts a scan of the network; null when this phone cannot scan.
+  final VoidCallback? onScan;
+
+  /// Whether a scan is running: the button says so and does nothing.
+  final bool scanning;
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     if (!entering) {
-      // A row of buttons: "Scan this network" goes beside this one.
       return Row(
         children: [
+          if (onScan != null) ...[
+            Expanded(
+              child: ChunkyButton(
+                height: 52,
+                fontSize: 16,
+                label: scanning ? 'Scanning…' : 'Scan this network',
+                semanticLabel: scanning
+                    ? 'Scanning this network'
+                    : 'Scan this network',
+                fill: colors.surface,
+                borderColor: colors.cyan,
+                foreground: colors.cyan,
+                onPressed: scanning ? null : onScan,
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
           Expanded(
             child: ChunkyButton(
               height: 52,

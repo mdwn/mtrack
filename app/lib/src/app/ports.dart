@@ -301,3 +301,47 @@ abstract class ScreenWake {
   /// Turns keeping the screen on on or off.
   Future<void> setEnabled(bool enabled);
 }
+
+/// An address of the phone and the name of the interface it is on.
+class LocalAddress {
+  /// [address], an IPv4 address in dotted form, on the interface [interface].
+  const LocalAddress(this.interface, this.address);
+
+  /// The interface's name (`wlan0`, `en0`, `rmnet_data1`).
+  final String interface;
+
+  /// The address, as text.
+  final String address;
+
+  @override
+  bool operator ==(Object other) =>
+      other is LocalAddress &&
+      other.interface == interface &&
+      other.address == address;
+
+  @override
+  int get hashCode => Object.hash(interface, address);
+
+  @override
+  String toString() => '$interface $address';
+}
+
+/// Tries a TCP connection to a host and port. The real one is in
+/// `lib/src/platform/`; tests use a fake.
+abstract class NetworkProbe {
+  /// The phone's IPv4 addresses with the names of their interfaces. Empty
+  /// when it has none (Wi-Fi off, say).
+  Future<List<LocalAddress>> localAddresses();
+
+  /// Whether a TCP connection to [host] on [port] is accepted within
+  /// [timeout]. The connection is closed at once, whatever it comes to.
+  /// Never throws: a refusal, a timeout and anything else is false. When
+  /// [cancelled] completes the attempt is abandoned, its socket closed, and
+  /// the answer is false.
+  Future<bool> canConnect(
+    String host,
+    int port, {
+    required Duration timeout,
+    required Future<void> cancelled,
+  });
+}

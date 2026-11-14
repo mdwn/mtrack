@@ -26,6 +26,7 @@ import 'asset_cache.dart';
 import 'failure.dart';
 import 'levels.dart';
 import 'lighting_assets.dart';
+import 'network_scan.dart';
 import 'player_link.dart';
 import 'playlist_edit.dart';
 import 'ports.dart';
@@ -139,6 +140,38 @@ const Duration browseSearchWindow = Duration(seconds: 6);
 /// addresses answers.
 const Duration refindWindow = Duration(seconds: 4);
 
+/// Where a scan of the phone's network stands.
+enum NetworkScan {
+  /// None has been asked for.
+  idle,
+
+  /// One is under way.
+  scanning,
+
+  /// One ended and found players.
+  found,
+
+  /// One ended and found none.
+  none,
+
+  /// The phone is not on a network it may scan: no Wi-Fi, or a public
+  /// address.
+  notScannable,
+}
+
+/// A player in the list of those on the network: found by its advert, or by
+/// a scan.
+class WifiEntry {
+  /// An entry for [player]; [scanned] when a scan found it.
+  const WifiEntry(this.player, {required this.scanned});
+
+  /// The player, with its name, address and port.
+  final FoundPlayer player;
+
+  /// True when found by scanning the network, false by the DNS-SD advert.
+  final bool scanned;
+}
+
 /// A reading of a monotonic clock, as time since some fixed start.
 typedef Monotonic = Duration Function();
 
@@ -154,13 +187,15 @@ class Session extends ChangeNotifier {
   /// the lighting assets it fetches in [assetCache] (none kept when null).
   /// With [wifi], a player is also reached over the network when it answers
   /// there; without, over Bluetooth alone. With [browser], the connect screen
-  /// also lists the players on the network.
+  /// also lists the players on the network. With [probe] (and Wi-Fi), the
+  /// person can also scan their network for players.
   Session({
     required this._link,
     required this._store,
     this._wake,
     this._wifi,
     this._browser,
+    this._probe,
     Monotonic? monotonic,
     this._backoff = reconnectBackoff,
     this._wifiTimeout = wifiConnectTimeout,
@@ -201,6 +236,7 @@ class Session extends ChangeNotifier {
   final List<Duration> _backoff;
   final WifiLink? _wifi;
   final PlayerBrowser? _browser;
+  final NetworkProbe? _probe;
   final Duration _wifiTimeout;
   final Duration _wifiInterval;
   final Duration _browseWindow;
@@ -275,6 +311,11 @@ class Session extends ChangeNotifier {
   bool _browseSettling = false;
   bool _browseFailed = false;
   Completer<FoundPlayer?>? _refinding;
+
+  NetworkScan _networkScan = NetworkScan.idle;
+  List<FoundPlayer> _scanFound = const [];
+  NetworkSweep? _sweep;
+  int _sweepEpoch = 0;
 
   bool _foreground = true;
   bool? _wakeAsked;
@@ -450,6 +491,24 @@ class Session extends ChangeNotifier {
   /// connect screen is up: a player that goes away leaves it.
   List<FoundPlayer> get wifiFound => _wifiFound;
 
+  /// The players on the network, for the list: those found by their advert
+  /// (by name), then those a scan found that the advert did not already
+  /// list at the same address and port.
+  List<WifiEntry> get wifiEntries => [
+    for (final p in _wifiFound) WifiEntry(p, scanned: false),
+    for (final p in _scanFound)
+      if (!_wifiFound.any(
+        (m) => m.port == p.port && m.hosts.contains(p.hosts.first),
+      ))
+        WifiEntry(p, scanned: true),
+  ];
+
+  /// Whether this session can scan the network: it has the means to.
+  bool get canScanNetwork => _probe != null && _wifi != null;
+
+  /// Where the scan of the network stands.
+  NetworkScan get networkScan => _networkScan;
+
   /// True when browsing the network failed, so the screen says it could not
   /// search. Bluetooth and an address still work.
   bool get browseFailed => _browseFailed;
@@ -563,6 +622,101 @@ class Session extends ChangeNotifier {
     final target = RememberedPlayer.byService(found);
     _target = target;
     return _connect(target);
+  }
+
+  /// Connects to [found], a player a scan of the network found, and
+  /// remembers it by its address, with its name. It has no service name.
+  Future<void> connectToScanned(FoundPlayer found) {
+    stopScan();
+    _connectError = null;
+    final target = RememberedPlayer.byAddress(
+      WifiAddress(found.hosts.first, found.port),
+      name: found.name,
+    );
+    _target = target;
+    return _connect(target);
+  }
+
+  /// Sweeps the phone's own Wi-Fi network for players, on the person's
+  /// request and never otherwise: the 254 addresses of its /24, only when
+  /// the phone's address there is private. What it finds joins
+  /// [wifiEntries]; [networkScan] says how it went. It ends by itself, and
+  /// when a player is chosen. Does nothing while one is running.
+  Future<void> scanNetwork() async {
+    final probe = _probe;
+    final wifi = _wifi;
+    if (probe == null ||
+        wifi == null ||
+        _disposed ||
+        _phase != ConnectionPhase.noPlayer ||
+        _networkScan == NetworkScan.scanning) {
+      return;
+    }
+    final epoch = ++_sweepEpoch;
+    _networkScan = NetworkScan.scanning;
+    _scanFound = const [];
+    _notify();
+    bool stale() => _disposed || _sweepEpoch != epoch;
+    List<LocalAddress> locals;
+    try {
+      locals = await probe.localAddresses();
+    } on Object {
+      locals = const [];
+    }
+    if (stale()) {
+      return;
+    }
+    final phone = scannableWifiAddress(locals);
+    if (phone == null) {
+      _networkScan = NetworkScan.notScannable;
+      _notify();
+      return;
+    }
+    int? remembered;
+    try {
+      remembered = (await _store.load())?.port;
+    } on Object {
+      remembered = null;
+    }
+    if (stale()) {
+      return;
+    }
+    final sweep = NetworkSweep(
+      probe: probe,
+      wifi: wifi,
+      hosts: sweepHosts(phone),
+      ports: sweepPorts(remembered),
+      onFound: (found) {
+        if (stale()) {
+          return;
+        }
+        _scanFound = [..._scanFound, found]
+          ..sort((a, b) {
+            final byName = a.name.compareTo(b.name);
+            return byName != 0
+                ? byName
+                : a.hosts.first.compareTo(b.hosts.first);
+          });
+        _notify();
+      },
+    );
+    _sweep = sweep;
+    await sweep.run();
+    if (stale()) {
+      return;
+    }
+    _sweep = null;
+    _networkScan = _scanFound.isEmpty ? NetworkScan.none : NetworkScan.found;
+    _notify();
+  }
+
+  // Ends a scan of the network and forgets what it found.
+  void _stopSweep() {
+    _sweepEpoch++;
+    _sweep?.cancel();
+    _sweep = null;
+    _scanFound = const [];
+    _networkScan = NetworkScan.idle;
   }
 
   /// Tries again to connect to the player, after a refusal to pair or a lost
@@ -1404,8 +1558,9 @@ class Session extends ChangeNotifier {
     }
   }
 
-  /// Ends a scan, and browsing the network with it.
+  /// Ends a scan, and browsing and sweeping the network with it.
   void stopScan() {
+    _stopSweep();
     _stopBrowse();
     _stopBluetoothScan();
   }
@@ -1721,6 +1876,7 @@ class Session extends ChangeNotifier {
     unawaited(_scan?.cancel());
     _scan = null;
     _stopBrowse();
+    _stopSweep();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }

@@ -53,6 +53,11 @@ class FakeWifi implements WifiLink {
   /// rig's: another device at the address, or a player renamed.
   pp.GetNetworkInfoResponse? networkInfo;
 
+  /// Per host, a refusal in place of [refusal], and what `GetNetworkInfo`
+  /// answers in place of [networkInfo].
+  final Map<String, PlayerException> refusals = {};
+  final Map<String, pp.GetNetworkInfoResponse> infos = {};
+
   /// The channel most recently opened that is still up.
   FakeWifiChannel? get live =>
       channels.where((c) => c.currentState == TransportState.ready).lastOrNull;
@@ -71,11 +76,14 @@ class FakeWifi implements WifiLink {
     if (latency > Duration.zero) {
       await Future<void>.delayed(latency);
     }
-    final refused = refusal;
+    final refused = refusals[host] ?? refusal;
     if (refused != null) {
       throw refused;
     }
-    final channel = FakeWifiChannel(rig, networkInfo: networkInfo);
+    final channel = FakeWifiChannel(
+      rig,
+      networkInfo: infos[host] ?? networkInfo,
+    );
     channels.add(channel);
     return channel;
   }

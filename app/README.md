@@ -76,6 +76,45 @@ that imports the plugin.
   for again. One typed by address has no name, and relies on the list finding it again.
 - The same player found over both radios is two rows; they are not merged.
 
+### Scanning the network
+
+For networks that drop multicast, **Scan this network** (beside "Enter an address") sweeps the
+phone's own subnet. It is the one thing in the app that scans, and it is held to these limits, each
+with a test (`test/app/network_scan_test.dart`, `test/ui/network_scan_test.dart`):
+
+- Only on the button: `Session.scanNetwork`, called by nothing else. Opening the screen, "Look
+  again", reconnecting and waiting never start it.
+- Only the phone's Wi-Fi: `NetworkProbe.localAddresses` (`lib/src/app/ports.dart`, implemented over
+  `NetworkInterface.list` in `lib/src/platform/io_network_probe.dart`) gives IPv4 addresses with
+  their interface names, and `isWifiInterface` (`lib/src/app/network_scan.dart`) allows only
+  `wlan<N>` (Android) and `en0` (iOS). An allowlist: mobile data, VPNs, loopback, hotspot and
+  anything unknown are out.
+- Only private addresses: `isScannableAddress` accepts 10/8, 172.16/12, 192.168/16 and 169.254/16.
+  A public or carrier-grade NAT (100.64/10) address, no Wi-Fi interface, or an interface list that
+  cannot be read gives "This phone is not on a network it can scan. Join the player's Wi-Fi, or
+  enter an address." and no traffic.
+- A /24: `sweepHosts` is `a.b.c.1` to `a.b.c.254` less the phone's own address (253), whatever the
+  real netmask. Ports: 43234 and the remembered player's port if it differs (`sweepPorts`).
+- Pace: `NetworkSweep` runs 32 workers, each trying one `host:port` at a time with
+  `NetworkProbe.canConnect` (plain TCP connect, closed at once) and 400 ms to connect. 253 hosts on
+  one port is 8 rounds, 3.2 s; on two ports 6.4 s. The sweep stops trying addresses at 8 s whatever
+  is left, and the whole scan, confirmations included, ends at 12 s.
+- Confirming: a host that accepts the connection is connected to as a player with
+  `WifiLink.connect` (1.5 s) and asked `GetNetworkInfo` (1.5 s), four at a time and at most sixteen
+  in all. Only a host that does both is listed, named by its host name (its address if the name is
+  empty); the channel is closed either way. Anything that fails, a non-player, a player from before
+  Wi-Fi, one that will not say its name, is dropped without a word.
+- One list: scan results are Wi-Fi rows after the advert's (`Session.wifiEntries`). A scan result at
+  an address and port the advert lists too is not shown twice; the advert row wins, and the scan row
+  is back if the advert row goes. A scan row connects with `connectToScanned` and is remembered by
+  its address and its name (`RememberedPlayer.byAddress`), with no service name.
+- Stopping: the sweep is cancelled and its sockets closed when any player is chosen or typed, when
+  the phase leaves `noPlayer` (a remembered player connecting), and on dispose. The button is
+  disabled and reads "Scanning…" while it runs. A scan ends by itself, with "No players found on this
+  network." when it found none; no dialog is ever shown.
+- No new permission or plugin: `dart:io` sockets are not subject to `network_security_config.xml`
+  (which covers the platform's HTTP stack), as a typed IP address already shows.
+
 ## Songs
 
 The **Songs** side of the Library tab's switch is the song library: every song on the player,
@@ -309,6 +348,16 @@ on a device:
   line; which one depends on what the plugin reports, and the code treats only an error from it as a
   failure). Re-finding a remembered player by its name
   after its address changed has not run on a network either.
+- Scanning the network (`lib/src/platform/io_network_probe.dart` and the session logic around it, tested
+  against a fake): that `NetworkInterface.list` on the phone returns the Wi-Fi interface under the name
+  the allowlist expects (`wlan0` on Android, `en0` on iOS), including on Android versions that restrict
+  reading interfaces, and with a VPN up (the Pixel runs Tailscale: that the VPN's address is never
+  taken and the sweep's sockets still reach the LAN); that 32 connects at a time and 400 ms are
+  enough to find a player on a real access point without upsetting it, and the sweep ends in
+  the time the numbers say; a guest network with client isolation (every address silent, "No players
+  found on this network."); Wi-Fi off and mobile data only (the not-scannable line); a network that is
+  a /16, where only the phone's /24 is seen; and, on iOS, that the sweep needs no prompt beyond
+  the local network one already shown.
 - Keeping the screen on while connected (`wakelock_plus`), and releasing it in the background.
 - Haptics on Play and Stop, and the feel of the 600 ms hold under a real finger.
 - The bundled variable fonts' weights on a real device (the tests load the files but cannot show
