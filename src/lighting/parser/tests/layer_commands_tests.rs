@@ -56,22 +56,22 @@ fn test_layer_command_parsing() {
     assert_eq!(show.cues[1].layer_commands.len(), 1);
     let clear_cmd = &show.cues[1].layer_commands[0];
     assert_eq!(clear_cmd.command_type, LayerCommandType::Clear);
-    assert_eq!(clear_cmd.layer, Some(EffectLayer::Foreground));
+    assert_eq!(clear_cmd.layer, Some(EffectLayer::FOREGROUND));
 
     // Third cue: freeze command
     let freeze_cmd = &show.cues[2].layer_commands[0];
     assert_eq!(freeze_cmd.command_type, LayerCommandType::Freeze);
-    assert_eq!(freeze_cmd.layer, Some(EffectLayer::Background));
+    assert_eq!(freeze_cmd.layer, Some(EffectLayer::BACKGROUND));
 
     // Fourth cue: unfreeze command
     let unfreeze_cmd = &show.cues[3].layer_commands[0];
     assert_eq!(unfreeze_cmd.command_type, LayerCommandType::Unfreeze);
-    assert_eq!(unfreeze_cmd.layer, Some(EffectLayer::Background));
+    assert_eq!(unfreeze_cmd.layer, Some(EffectLayer::BACKGROUND));
 
     // Fifth cue: master command
     let master_cmd = &show.cues[4].layer_commands[0];
     assert_eq!(master_cmd.command_type, LayerCommandType::Master);
-    assert_eq!(master_cmd.layer, Some(EffectLayer::Midground));
+    assert_eq!(master_cmd.layer, Some(EffectLayer::MIDGROUND));
     assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.01);
     assert!((master_cmd.speed.unwrap() - 2.0).abs() < 0.01);
 }

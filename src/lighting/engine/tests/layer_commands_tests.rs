@@ -56,14 +56,14 @@ fn test_clear_layer() {
         None,
         None,
     );
-    fg_effect.layer = EffectLayer::Foreground;
+    fg_effect.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(bg_effect).unwrap();
     engine.start_effect(fg_effect).unwrap();
     assert_eq!(engine.active_effects_count(), 2);
 
     // Clear foreground layer
-    engine.clear_layer(EffectLayer::Foreground);
+    engine.clear_layer(EffectLayer::FOREGROUND);
     assert_eq!(engine.active_effects_count(), 1);
     assert!(engine.has_effect("bg_effect"));
     assert!(!engine.has_effect("fg_effect"));
@@ -112,8 +112,8 @@ fn test_freeze_unfreeze_layer() {
     assert!(!commands_before_freeze.is_empty());
 
     // Freeze the background layer
-    engine.freeze_layer(EffectLayer::Background);
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
+    engine.freeze_layer(EffectLayer::BACKGROUND);
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
 
     // Update multiple times - the values should stay the same while frozen
     let commands_frozen1 = engine
@@ -154,8 +154,8 @@ fn test_freeze_unfreeze_layer() {
     );
 
     // Unfreeze the layer
-    engine.unfreeze_layer(EffectLayer::Background);
-    assert!(!engine.is_layer_frozen(EffectLayer::Background));
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
+    assert!(!engine.is_layer_frozen(EffectLayer::BACKGROUND));
 
     // After unfreezing, the effect should resume and values should change
     let commands_after1 = engine
@@ -231,7 +231,7 @@ fn test_unfreeze_layer_maintains_animation_continuity() {
     let _commands_before_freeze = engine.update(Duration::from_millis(10), None).unwrap();
 
     // Freeze the layer
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
 
     // Let significant time pass while frozen (1 second = full cycle if not frozen)
     engine.update(Duration::from_millis(500), None).unwrap();
@@ -248,7 +248,7 @@ fn test_unfreeze_layer_maintains_animation_continuity() {
     let vals_frozen: Vec<u8> = frozen_sorted.iter().map(|(_, v)| *v).collect();
 
     // Now unfreeze the layer
-    engine.unfreeze_layer(EffectLayer::Background);
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
 
     // Immediately after unfreezing, the effect should continue from where it was frozen,
     // NOT jump forward by the 1 second that passed while frozen.
@@ -337,9 +337,9 @@ fn unfreezing_a_cued_effect_resumes_it_while_song_time_ran_on() {
     let before = frame(&mut engine, 10);
 
     // Half a cycle of song time passes frozen.
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
     frame(&mut engine, 500);
-    engine.unfreeze_layer(EffectLayer::Background);
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
 
     let after = frame(&mut engine, 10);
     let max_diff = before
@@ -385,8 +385,8 @@ fn test_layer_intensity_master() {
     assert_eq!(full_value, 255); // Full intensity
 
     // Set layer intensity master to 50%
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.5).abs() < 0.01);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.5);
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 0.5).abs() < 0.01);
 
     // Get commands at 50% master
     let commands_half = engine.update(Duration::from_millis(16), None).unwrap();
@@ -402,15 +402,15 @@ fn test_layer_speed_master() {
     engine.register_fixture(fixture);
 
     // Test that speed master affects effect timing
-    engine.set_layer_speed_master(EffectLayer::Background, 2.0);
-    assert!((engine.get_layer_speed_master(EffectLayer::Background) - 2.0).abs() < 0.01);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 2.0);
+    assert!((engine.get_layer_speed_master(EffectLayer::BACKGROUND) - 2.0).abs() < 0.01);
 
-    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
-    assert!((engine.get_layer_speed_master(EffectLayer::Background) - 0.5).abs() < 0.01);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 0.5);
+    assert!((engine.get_layer_speed_master(EffectLayer::BACKGROUND) - 0.5).abs() < 0.01);
 
     // Reset to default
-    engine.set_layer_speed_master(EffectLayer::Background, 1.0);
-    assert!((engine.get_layer_speed_master(EffectLayer::Background) - 1.0).abs() < 0.01);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 1.0);
+    assert!((engine.get_layer_speed_master(EffectLayer::BACKGROUND) - 1.0).abs() < 0.01);
 }
 
 #[test]
@@ -420,28 +420,28 @@ fn test_layer_commands_edge_cases() {
     engine.register_fixture(fixture);
 
     // Clear an empty layer - should not panic
-    engine.clear_layer(EffectLayer::Foreground);
+    engine.clear_layer(EffectLayer::FOREGROUND);
     assert_eq!(engine.active_effects_count(), 0);
 
     // Double freeze - should not panic
-    engine.freeze_layer(EffectLayer::Background);
-    engine.freeze_layer(EffectLayer::Background);
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
+    engine.freeze_layer(EffectLayer::BACKGROUND);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
 
     // Unfreeze non-frozen layer - should not panic
-    engine.unfreeze_layer(EffectLayer::Foreground);
+    engine.unfreeze_layer(EffectLayer::FOREGROUND);
 
     // Set intensity master multiple times
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.75);
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.75).abs() < 0.01);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.5);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.75);
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 0.75).abs() < 0.01);
 
     // Intensity clamping
-    engine.set_layer_intensity_master(EffectLayer::Background, 1.5); // Should clamp to 1.0
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 1.0).abs() < 0.01);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 1.5); // Should clamp to 1.0
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 1.0).abs() < 0.01);
 
-    engine.set_layer_intensity_master(EffectLayer::Background, -0.5); // Should clamp to 0.0
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.0).abs() < 0.01);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, -0.5); // Should clamp to 0.0
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 0.0).abs() < 0.01);
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn test_speed_master_affects_effect_progression() {
     let _initial_value = on_channel(cmd1, 1).value;
 
     // Now set speed master to 0 (effectively frozen via speed = 0)
-    engine.set_layer_speed_master(EffectLayer::Background, 0.0);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 0.0);
 
     // With speed = 0, elapsed time stays at same effective position
     // So values should stay similar
@@ -527,7 +527,7 @@ fn test_speed_master_resume_from_zero() {
     engine.update(Duration::from_millis(250), None).unwrap();
 
     // Freeze with speed=0
-    engine.set_layer_speed_master(EffectLayer::Background, 0.0);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 0.0);
 
     // Record frozen value
     let frozen_cmd = engine.update(Duration::from_millis(100), None).unwrap();
@@ -537,7 +537,7 @@ fn test_speed_master_resume_from_zero() {
     engine.update(Duration::from_millis(500), None).unwrap();
 
     // Resume with speed=1
-    engine.set_layer_speed_master(EffectLayer::Background, 1.0);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 1.0);
 
     // The effect should now progress from where it was frozen
     let resume_cmd1 = engine
@@ -591,7 +591,7 @@ fn test_multiple_layers_independent() {
         None,
         None,
     );
-    bg_effect.layer = EffectLayer::Background;
+    bg_effect.layer = EffectLayer::BACKGROUND;
 
     let mut mid_effect = EffectInstance::new(
         "mid".to_string(),
@@ -608,23 +608,23 @@ fn test_multiple_layers_independent() {
         None,
         None,
     );
-    mid_effect.layer = EffectLayer::Midground;
+    mid_effect.layer = EffectLayer::MIDGROUND;
 
     engine.start_effect(bg_effect).unwrap();
     engine.start_effect(mid_effect).unwrap();
 
     // Set different masters for each layer
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
-    engine.set_layer_intensity_master(EffectLayer::Midground, 1.0);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.5);
+    engine.set_layer_intensity_master(EffectLayer::MIDGROUND, 1.0);
 
     // Freeze only background
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
 
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
-    assert!(!engine.is_layer_frozen(EffectLayer::Midground));
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
+    assert!(!engine.is_layer_frozen(EffectLayer::MIDGROUND));
 
     // Clear only midground
-    engine.clear_layer(EffectLayer::Midground);
+    engine.clear_layer(EffectLayer::MIDGROUND);
 
     assert_eq!(engine.active_effects_count(), 1);
     assert!(engine.has_effect("bg"));
@@ -657,7 +657,7 @@ fn cued_green_static() -> EffectEngine {
         None,
         None,
     );
-    effect.layer = EffectLayer::Midground;
+    effect.layer = EffectLayer::MIDGROUND;
     effect.cue_time = Some(Duration::ZERO);
     engine.start_effect(effect).unwrap();
     engine
@@ -681,11 +681,11 @@ fn a_frozen_cued_effect_holds_past_its_end_and_resumes_after_unfreeze() {
     let mut engine = cued_green_static();
     let mut song = Duration::ZERO;
     run_song(&mut engine, &mut song, Duration::from_secs(2));
-    engine.freeze_layer(EffectLayer::Midground);
+    engine.freeze_layer(EffectLayer::MIDGROUND);
     run_song(&mut engine, &mut song, Duration::from_millis(6_500));
     assert!(engine.has_effect("green"), "frozen effect expired at 4 s");
     run_song(&mut engine, &mut song, Duration::from_secs(7));
-    engine.unfreeze_layer(EffectLayer::Midground);
+    engine.unfreeze_layer(EffectLayer::MIDGROUND);
     run_song(&mut engine, &mut song, Duration::from_millis(8_800));
     assert!(
         engine.has_effect("green"),
@@ -700,7 +700,7 @@ fn a_slowed_cued_effect_runs_its_slowed_length() {
     // #586: at half speed a 4 s cued effect renders for 8 s, but it was cut
     // off at its full-speed end, 4 s in.
     let mut engine = cued_green_static();
-    engine.set_layer_speed_master(EffectLayer::Midground, 0.5);
+    engine.set_layer_speed_master(EffectLayer::MIDGROUND, 0.5);
     let mut song = Duration::ZERO;
     run_song(&mut engine, &mut song, Duration::from_millis(7_800));
     assert!(engine.has_effect("green"), "slowed effect cut off at 4 s");
@@ -738,9 +738,9 @@ fn a_once_frozen_cued_effect_keeps_to_song_time() {
     let mut engine = cued_green_static();
     let mut song = Duration::ZERO;
     run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(2));
-    engine.freeze_layer(EffectLayer::Midground);
+    engine.freeze_layer(EffectLayer::MIDGROUND);
     run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(7));
-    engine.unfreeze_layer(EffectLayer::Midground);
+    engine.unfreeze_layer(EffectLayer::MIDGROUND);
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(8_960));
     assert!(engine.has_effect("green"), "ended early");
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(9_040));
@@ -795,10 +795,10 @@ fn a_cued_effect_frozen_for_a_while_resumes_where_it_stopped() {
     let mut song = Duration::ZERO;
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(250));
     let before = frame(&mut engine, song);
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(750));
     assert_eq!(frame(&mut engine, song), before, "moved while frozen");
-    engine.unfreeze_layer(EffectLayer::Background);
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
     let after = frame(&mut engine, song + Duration::from_millis(10));
     let max_diff = before
         .iter()
@@ -819,9 +819,9 @@ fn a_cued_effect_stopped_by_the_speed_master_keeps_to_song_time() {
     let mut engine = cued_green_static();
     let mut song = Duration::ZERO;
     run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(2));
-    engine.set_layer_speed_master(EffectLayer::Midground, 0.0);
+    engine.set_layer_speed_master(EffectLayer::MIDGROUND, 0.0);
     run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(7));
-    engine.set_layer_speed_master(EffectLayer::Midground, 1.0);
+    engine.set_layer_speed_master(EffectLayer::MIDGROUND, 1.0);
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(8_960));
     assert!(engine.has_effect("green"), "ended early");
     run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(9_040));

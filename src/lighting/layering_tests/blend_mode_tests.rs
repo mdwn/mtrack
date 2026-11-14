@@ -22,14 +22,14 @@ use std::time::Duration;
 #[test]
 fn test_channel_state_blending() {
     // Test the ChannelState blending logic directly
-    let base_state = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
-    let overlay_state = ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Multiply);
+    let base_state = ChannelState::new(0.8, EffectLayer::BACKGROUND, BlendMode::Replace);
+    let overlay_state = ChannelState::new(0.5, EffectLayer::FOREGROUND, BlendMode::Multiply);
 
     let blended = base_state.blend_with(overlay_state);
 
     // Multiply: 0.8 * 0.5 = 0.4
     assert!((blended.value - 0.4).abs() < 0.01);
-    assert_eq!(blended.layer, EffectLayer::Foreground); // Higher layer wins
+    assert_eq!(blended.layer, EffectLayer::FOREGROUND); // Higher layer wins
     assert_eq!(blended.blend_mode, BlendMode::Multiply); // Higher layer's blend mode
 }
 #[test]
@@ -37,21 +37,21 @@ fn test_fixture_state_blending() {
     let mut fixture1 = FixtureState::new();
     fixture1.set_channel(
         "red".to_string(),
-        ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
     );
     fixture1.set_channel(
         "green".to_string(),
-        ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
     );
 
     let mut fixture2 = FixtureState::new();
     fixture2.set_channel(
         "green".to_string(),
-        ChannelState::new(0.8, EffectLayer::Foreground, BlendMode::Multiply),
+        ChannelState::new(0.8, EffectLayer::FOREGROUND, BlendMode::Multiply),
     );
     fixture2.set_channel(
         "blue".to_string(),
-        ChannelState::new(0.3, EffectLayer::Foreground, BlendMode::Replace),
+        ChannelState::new(0.3, EffectLayer::FOREGROUND, BlendMode::Replace),
     );
 
     fixture1.blend_with(&fixture2);
@@ -147,7 +147,7 @@ fn test_blend_mode_loss_debug() {
             duration: Duration::from_secs(10),
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -160,7 +160,7 @@ fn test_blend_mode_loss_debug() {
             curve: DimmerCurve::Linear,
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -335,7 +335,7 @@ fn test_blend_mode_compatibility_matrix() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -350,7 +350,7 @@ fn test_blend_mode_compatibility_matrix() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background, // Same layer
+        EffectLayer::BACKGROUND, // Same layer
         BlendMode::Multiply,
     );
 
@@ -372,7 +372,7 @@ fn test_blend_mode_compatibility_matrix() {
             curve: DimmerCurve::Linear,
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Add,
     );
 
@@ -385,7 +385,7 @@ fn test_blend_mode_compatibility_matrix() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background, // Same layer
+        EffectLayer::BACKGROUND, // Same layer
         BlendMode::Overlay,
     );
 

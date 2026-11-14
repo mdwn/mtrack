@@ -212,6 +212,9 @@ pub struct EffectEngine {
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
     layer_state: LayerState,
+    /// The layers' names, bottom to top. The default set in L1; the seam
+    /// a configured set is threaded through.
+    layers: LayerSet,
     /// Last computed merged fixture states (for preview/debugging)
     last_merged_states: HashMap<String, FixtureState>,
     /// While another engine's frame is crossed into this one's (a loop
@@ -280,6 +283,7 @@ impl EffectEngine {
             engine_elapsed: Duration::ZERO,
             tempo_map: None,
             layer_state: LayerState::default(),
+            layers: LayerSet::default(),
             last_merged_states: HashMap::new(),
             shown: None,
             last_song_time: None,
@@ -843,7 +847,7 @@ impl EffectEngine {
         states: &HashMap<String, FixtureState>,
     ) -> HashMap<String, FixtureState> {
         let plain =
-            |value: f64| ChannelState::new(value, EffectLayer::Background, BlendMode::Replace);
+            |value: f64| ChannelState::new(value, EffectLayer::BACKGROUND, BlendMode::Replace);
         let cell_state = |values: Vec<(String, f64)>| {
             let mut state = FixtureState::new();
             for (channel, value) in values {
@@ -1071,7 +1075,7 @@ impl EffectEngine {
                     PhysicalParameter::Pan,
                     Intent {
                         degrees: pose.pan,
-                        layer: EffectLayer::Background,
+                        layer: EffectLayer::BACKGROUND,
                     },
                 );
             }
@@ -1080,7 +1084,7 @@ impl EffectEngine {
                     PhysicalParameter::Tilt,
                     Intent {
                         degrees: pose.tilt,
-                        layer: EffectLayer::Background,
+                        layer: EffectLayer::BACKGROUND,
                     },
                 );
             }
@@ -1202,7 +1206,7 @@ impl EffectEngine {
                                     channel_name.clone(),
                                     ChannelState::new(
                                         normalized_value,
-                                        EffectLayer::Background,
+                                        EffectLayer::BACKGROUND,
                                         BlendMode::Replace,
                                     ),
                                 );
@@ -1253,7 +1257,7 @@ impl EffectEngine {
                             channel_name.clone(),
                             ChannelState::new(
                                 normalized_value,
-                                EffectLayer::Background,
+                                EffectLayer::BACKGROUND,
                                 BlendMode::Replace,
                             ),
                         );
@@ -1537,7 +1541,7 @@ impl EffectEngine {
             }
             states.entry(name.clone()).or_default().channels.insert(
                 "strobe".to_string(),
-                ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
+                ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
             );
         }
         self.strobe_driven = driven;
@@ -2149,10 +2153,14 @@ impl EffectEngine {
         for layer in layers {
             let effects = &effects_by_layer[layer];
             // Print layer name
-            let layer_name = match layer {
-                EffectLayer::Background => "Background",
-                EffectLayer::Midground => "Midground",
-                EffectLayer::Foreground => "Foreground",
+            // Capitalised for the dump; the name comes from the layer set.
+            let layer_name = {
+                let name = self.layers.display_name(*layer);
+                let mut chars = name.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+                    .unwrap_or_default()
             };
             writeln!(output, "  {}:", layer_name).unwrap();
             for effect in effects {

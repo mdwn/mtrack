@@ -19,6 +19,7 @@
 //! set keeps its place and comments, one removed leaves its comments where
 //! it was (see [`super::writer`]'s `dropped`).
 
+use crate::lighting::effects::LayerSet;
 use std::collections::HashMap;
 
 use pest::Parser;
@@ -35,7 +36,7 @@ use super::effect_parse::{
 use super::grammar::{LightingParser, Rule};
 use super::show::parse_sequence_loop_param;
 use super::types::{SequenceLoop, EFFECT_KEYWORDS, LAYER_COMMAND_KEYWORDS, SEQUENCE_LOOPS};
-use super::utils::{unquoted, BLEND_KEYWORDS, LAYER_KEYWORDS};
+use super::utils::{unquoted, BLEND_KEYWORDS};
 use super::writer::{dropped, length_text, number};
 
 /// An edit of an effect line's parameters, as a form makes it.
@@ -75,7 +76,7 @@ pub enum EffectEdit {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Vocabulary {
     pub effects: Vec<EffectWords>,
-    pub layers: Vec<&'static str>,
+    pub layers: Vec<String>,
     pub blend_modes: Vec<&'static str>,
     pub curves: Vec<&'static str>,
     pub easings: Vec<&'static str>,
@@ -107,7 +108,7 @@ pub fn vocabulary() -> Vocabulary {
                 params: kind.params().to_vec(),
             })
             .collect(),
-        layers: words(&LAYER_KEYWORDS),
+        layers: LayerSet::standard().names().to_vec(),
         blend_modes: words(&BLEND_KEYWORDS),
         curves: words(&DIMMER_CURVES),
         easings: words(&EASINGS),

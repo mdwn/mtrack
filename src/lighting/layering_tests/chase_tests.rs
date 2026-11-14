@@ -57,7 +57,7 @@ fn test_chase_pattern_linear_left_to_right() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -127,7 +127,7 @@ fn test_chase_pattern_linear_right_to_left() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -192,7 +192,7 @@ fn test_chase_pattern_snake() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -275,7 +275,7 @@ fn test_chase_pattern_random() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -346,7 +346,7 @@ fn test_chase_direction_vertical() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -396,7 +396,7 @@ fn test_chase_direction_circular() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -445,7 +445,7 @@ fn test_chase_speed_variations() {
             "fixture_2".to_string(),
             "fixture_3".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -497,7 +497,7 @@ fn test_chase_single_fixture() {
             duration: Duration::from_secs(10),
         },
         vec!["single_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -549,7 +549,7 @@ fn rgb_only_chase() -> EffectInstance {
             "rgb_fixture_2".to_string(),
             "rgb_fixture_3".to_string(),
         ],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Replace,
     )
 }
@@ -612,7 +612,7 @@ fn test_chase_rgb_only_fixtures_modulate_the_layer_beneath() {
             "rgb_fixture_2".to_string(),
             "rgb_fixture_3".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -687,7 +687,7 @@ fn test_chase_effect_crossfade() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Replace,
         Some(Duration::from_secs(1)), // fade_in: 1s
         Some(Duration::from_secs(1)), // fade_out: 1s
@@ -770,7 +770,7 @@ fn test_random_chase_pattern_visibility() {
         Some(Duration::from_secs(4)), // hold_time: 4 seconds
         None,
     );
-    random_chase.layer = EffectLayer::Midground;
+    random_chase.layer = EffectLayer::MIDGROUND;
     random_chase.blend_mode = BlendMode::Replace;
 
     // A chase modulates the colour beneath it rather than supplying its own (#345),
@@ -786,7 +786,7 @@ fn test_random_chase_pattern_visibility() {
             duration: Duration::from_secs(10),
         },
         (1..=8).map(|i| format!("Brick{}", i)).collect(),
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 

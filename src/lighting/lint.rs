@@ -22,6 +22,7 @@
 //! These are warnings, never errors. A show that parses is still valid; these
 //! only say what looks suspicious.
 
+use crate::lighting::effects::LayerSet;
 pub use crate::lighting::findings::{Severity, Want, Warning};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
@@ -657,7 +658,7 @@ fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<War
                 format!(
                     "two `replace` effects overlap on `{group}` in the {} layer between \
                      {:.3}s and {:.3}s — the later one wins and the earlier appears to do nothing",
-                    layer.keyword(),
+                    LayerSet::standard().display_name(layer),
                     second_start.as_secs_f64(),
                     first_end.as_secs_f64(),
                 ),

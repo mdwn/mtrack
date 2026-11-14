@@ -51,7 +51,7 @@ fn test_effects_coexist_across_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -64,7 +64,7 @@ fn test_effects_coexist_across_layers() {
             curve: DimmerCurve::Linear,
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -84,7 +84,7 @@ fn test_effects_coexist_across_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -104,7 +104,7 @@ fn test_effects_coexist_across_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -156,7 +156,7 @@ fn test_effects_coexist_on_different_fixtures() {
             duration: Duration::from_secs(10),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -171,7 +171,7 @@ fn test_effects_coexist_on_different_fixtures() {
             duration: Duration::from_secs(10),
         },
         vec!["fixture2".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -214,7 +214,7 @@ fn test_all_effect_types_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -241,7 +241,7 @@ fn test_all_effect_types_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -260,7 +260,7 @@ fn test_all_effect_types_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -274,7 +274,7 @@ fn test_all_effect_types_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -287,7 +287,7 @@ fn test_all_effect_types_coexist() {
             curve: DimmerCurve::Linear,
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Multiply,
     );
 
@@ -300,7 +300,7 @@ fn test_all_effect_types_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Multiply,
     );
 
@@ -350,7 +350,7 @@ fn test_disabled_effects_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
     disabled_effect.enabled = false;
@@ -366,7 +366,7 @@ fn test_disabled_effects_coexist() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -420,7 +420,7 @@ fn test_effects_coexist_in_different_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -435,7 +435,7 @@ fn test_effects_coexist_in_different_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["fixture2".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Replace,
     );
 
@@ -459,7 +459,7 @@ fn test_effects_coexist_in_different_layers() {
             duration: Duration::from_secs(10),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 

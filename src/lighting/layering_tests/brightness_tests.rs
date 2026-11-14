@@ -22,7 +22,9 @@ use crate::lighting::engine::EffectEngine;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use EffectLayer::{Background as A, Foreground as C, Midground as B};
+const A: EffectLayer = EffectLayer::BACKGROUND;
+const B: EffectLayer = EffectLayer::MIDGROUND;
+const C: EffectLayer = EffectLayer::FOREGROUND;
 
 const RED: [(&str, f64); 3] = [("red", 1.0), ("green", 0.0), ("blue", 0.0)];
 const BLUE: [(&str, f64); 3] = [("red", 0.0), ("green", 0.0), ("blue", 1.0)];

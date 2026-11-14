@@ -254,7 +254,7 @@ fn resolve_controls(info: &FixtureInfo, controls: &TestControls) -> HashMap<u16,
                 parameters,
                 duration: hold,
             },
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
     }
     if let Some(rate) = controls.strobe.filter(|_| support.strobe.is_some()) {
@@ -264,7 +264,7 @@ fn resolve_controls(info: &FixtureInfo, controls: &TestControls) -> HashMap<u16,
                 frequency: TempoAwareFrequency::Fixed(rate.unwrap_or(0.0).max(0.0)),
                 duration: hold,
             },
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
         );
     }
     let pan = controls.pan.filter(|_| support.pan.is_some());
@@ -278,7 +278,7 @@ fn resolve_controls(info: &FixtureInfo, controls: &TestControls) -> HashMap<u16,
                 easing: Easing::Linear,
                 duration: Duration::ZERO,
             },
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
     }
 

@@ -1011,7 +1011,7 @@ fn an_install_beside_what_runs_keeps_it_as_it_was() {
         None,
         None,
     );
-    live.layer = crate::lighting::effects::EffectLayer::Foreground;
+    live.layer = crate::lighting::effects::EffectLayer::FOREGROUND;
     engine.start_effect(live).unwrap();
     for _ in 0..5 {
         let _ = engine.update(Duration::from_millis(23), None);
