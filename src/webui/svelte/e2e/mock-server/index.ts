@@ -1613,7 +1613,7 @@ app.post("/test/watch-opening", (req, res) => {
 
 const server = createServer(app);
 
-const PORT = 3111;
+const PORT = Number(process.env.MOCK_PORT ?? 3111);
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Mock server listening on http://127.0.0.1:${PORT}`);
 });

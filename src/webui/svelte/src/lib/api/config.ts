@@ -117,6 +117,7 @@ import {
   savePlaylistRequest,
   type PlaylistSettings,
 } from "../grpc/library";
+import { setPlayerLayers } from "../lighting/layers";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 
 export { ConflictError } from "./errors";
@@ -796,8 +797,21 @@ export async function deleteFixtureType(
 /// These are the logical groups from `dmx.lighting.groups`; venues no longer
 /// define groups of their own.
 export async function fetchLightingGroups(): Promise<LightingGroup[]> {
+  return (await fetchLighting()).groups;
+}
+
+/// The lighting config the editor works against: the groups a cue can
+/// target, and the player's layers, bottom to top. The layers are kept for
+/// the forms and the timeline (`lib/lighting/layers`).
+export async function fetchLighting(): Promise<LightingGroups> {
   try {
-    return mapGroups(await lightingClient.listLightingGroups({}));
+    const reply = await lightingClient.listLightingGroups({});
+    const data: LightingGroups = {
+      groups: mapGroups(reply),
+      layers: [...reply.layers],
+    };
+    setPlayerLayers(data.layers);
+    return data;
   } catch (e) {
     throw callError(e, "Failed to fetch lighting groups");
   }

@@ -221,8 +221,9 @@ export function validationReply(
 export function groupsReply(
   groups: LightingGroup[],
   resolved?: boolean,
+  layers: string[] = ["background", "midground", "foreground"],
 ): MessageInitShape<typeof ListLightingGroupsResponseSchema> {
-  return { groups, resolved };
+  return { groups, resolved, layers };
 }
 
 // ---- Readiness ----

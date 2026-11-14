@@ -20,6 +20,8 @@
   import TagInput from "../config/TagInput.svelte";
   import { fetchVenues } from "../../lib/api/config";
   import { latestLoad } from "../../lib/util/latest";
+  import { layersProblem, MAX_LAYERS } from "../../lib/lighting/layers";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     /** One profile's `dmx.lighting`. */
@@ -97,6 +99,62 @@
       delete lighting.current_venue;
     }
     onchange();
+  }
+
+  // --- Layers ---
+
+  /** The profile's layers, bottom to top: what it says, else the parser's
+   *  default three. */
+  let layerList = $derived<string[]>(
+    Array.isArray(lighting.layers)
+      ? lighting.layers
+      : rules.vocabulary().layers,
+  );
+  /** The layers as the list shows them, the top layer first, each with its
+   *  place in [[layerList]]. */
+  let layerRows = $derived(
+    layerList.map((name, index) => ({ name, index })).reverse(),
+  );
+  let layerError = $derived(layersProblem(layerList));
+
+  /** Sets the layers (bottom to top). The default three are the same as
+   *  none, so the key is dropped for them. */
+  function setLayers(next: string[]) {
+    const defaults = rules.vocabulary().layers;
+    if (
+      next.length === defaults.length &&
+      next.every((name, i) => name === defaults[i])
+    ) {
+      delete lighting.layers;
+    } else {
+      lighting.layers = next;
+    }
+    onchange();
+  }
+
+  function addLayer() {
+    let n = layerList.length + 1;
+    let name = `layer_${n}`;
+    while (layerList.includes(name)) name = `layer_${++n}`;
+    setLayers([...layerList, name]);
+  }
+
+  function removeLayer(index: number) {
+    setLayers(layerList.filter((_, i) => i !== index));
+  }
+
+  function renameLayer(index: number, name: string) {
+    if (name === layerList[index]) return;
+    setLayers(layerList.map((l, i) => (i === index ? name : l)));
+  }
+
+  /** Moves a layer one place toward the top (`by` 1) or the bottom (-1). */
+  function moveLayer(index: number, by: 1 | -1) {
+    const to = index + by;
+    if (to < 0 || to >= layerList.length) return;
+    const next = [...layerList];
+    [next[index], next[to]] = [next[to], next[index]];
+    setLayers(next);
   }
 
   /** Sets one of the ambient light's settings, dropping the block when it
@@ -367,6 +425,74 @@
       <span class="field-hint">{$t("lighting.venueHintField")}</span>
     </div>
 
+    <!-- Layers -->
+    <div class="subsection" data-testid="lighting-layers">
+      <div class="subsection-header">
+        <h4 class="subsection-title">
+          {$t("lighting.layers")}<Tooltip
+            text={$t("tooltips.lighting.layers")}
+          />
+        </h4>
+        <button
+          class="btn btn-sm"
+          onclick={addLayer}
+          disabled={layerList.length >= MAX_LAYERS}
+          data-testid="layer-add">{$t("common.add")}</button
+        >
+      </div>
+      <span class="field-hint">{$t("lighting.layersHint")}</span>
+      {#each layerRows as row, position (row.index)}
+        <div class="layer-row" data-testid="layer-row">
+          <span class="layer-place"
+            >{position === 0
+              ? $t("lighting.layerTop")
+              : row.index === 0
+                ? $t("lighting.layerBottom")
+                : ""}</span
+          >
+          <input
+            class="input layer-name"
+            aria-label={$t("lighting.layerName")}
+            value={row.name}
+            aria-invalid={layerError !== null}
+            onchange={(e) =>
+              renameLayer(
+                row.index,
+                (e.target as HTMLInputElement).value.trim(),
+              )}
+          />
+          <button
+            class="btn btn-sm"
+            title={$t("lighting.layerMoveUp")}
+            aria-label={$t("lighting.layerMoveUp")}
+            disabled={row.index === layerList.length - 1}
+            onclick={() => moveLayer(row.index, 1)}>&#9650;</button
+          >
+          <button
+            class="btn btn-sm"
+            title={$t("lighting.layerMoveDown")}
+            aria-label={$t("lighting.layerMoveDown")}
+            disabled={row.index === 0}
+            onclick={() => moveLayer(row.index, -1)}>&#9660;</button
+          >
+          <button
+            class="btn btn-danger btn-sm"
+            title={$t("common.remove")}
+            aria-label={$t("common.remove")}
+            disabled={layerList.length <= 1}
+            onclick={() => removeLayer(row.index)}>X</button
+          >
+        </div>
+      {/each}
+      {#if layerError}
+        <p class="rename-error" data-testid="layers-error">
+          {$t(`lighting.layersProblem.${layerError}`, {
+            values: { max: MAX_LAYERS },
+          })}
+        </p>
+      {/if}
+    </div>
+
     <!-- Ambient light -->
     <div class="subsection" data-testid="lighting-ambient">
       <h4 class="subsection-title">{$t("lighting.ambient")}</h4>
@@ -580,6 +706,23 @@
     margin: 2px 0 0;
     font-size: 12px;
     color: var(--red);
+  }
+  .layer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .layer-place {
+    width: 56px;
+    flex-shrink: 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+  .layer-name {
+    flex: 1;
+    min-width: 0;
   }
   .sub-panel {
     display: flex;
