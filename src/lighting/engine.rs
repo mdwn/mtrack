@@ -212,8 +212,7 @@ pub struct EffectEngine {
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
     layer_state: LayerState,
-    /// The layers' names, bottom to top. The default set in L1; the seam
-    /// a configured set is threaded through.
+    /// The layers' names, bottom to top: the player's configured set.
     layers: LayerSet,
     /// Last computed merged fixture states (for preview/debugging)
     last_merged_states: HashMap<String, FixtureState>,
@@ -275,6 +274,20 @@ impl Default for EffectEngine {
 }
 
 impl EffectEngine {
+    /// An engine whose layers are `layers`, bottom to top: the shows it
+    /// plays are parsed against the same set.
+    pub fn with_layers(layers: LayerSet) -> Self {
+        Self {
+            layers,
+            ..Self::new()
+        }
+    }
+
+    /// The layers' names, bottom to top.
+    pub fn layers(&self) -> &LayerSet {
+        &self.layers
+    }
+
     pub fn new() -> Self {
         Self {
             active_effects: HashMap::new(),

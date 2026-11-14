@@ -34,9 +34,10 @@ use super::types::{
     Sequence, SequenceCall, SequenceLoop, SEQUENCE_LOOPS,
 };
 use super::utils::{
-    items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
-    parse_time_string, unquote,
+    items, parse_duration_string, parse_layer_in, parse_measure_time, parse_percentage_to_f64,
+    parse_time_string, unknown_layer, unquote,
 };
+use crate::lighting::effects::LayerSet;
 use crate::tempo::{snap_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
 use pest::Parser;
@@ -226,7 +227,7 @@ pub(super) fn flatten(cues: Vec<ParsedCue>) -> Vec<Cue> {
     cues.into_iter().flat_map(|parsed| parsed.cues).collect()
 }
 
-/// Parses light shows from DSL content.
+/// Parses light shows from DSL content, against the default layers.
 pub fn parse_light_shows(content: &str) -> Result<LightShows, Box<dyn Error>> {
     parse_light_shows_with_tempo(content, None)
 }
@@ -242,9 +243,19 @@ pub fn parse_light_shows_with_tempo(
     content: &str,
     external: Option<&TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
+    parse_light_shows_in(LayerSet::standard(), content, external)
+}
+
+/// [`parse_light_shows_with_tempo`] against the player's `layers`: a show
+/// naming a layer the set lacks fails to parse.
+pub fn parse_light_shows_in(
+    layers: &LayerSet,
+    content: &str,
+    external: Option<&TempoMap>,
+) -> Result<LightShows, Box<dyn Error>> {
     // Content with no path has no folder for an include to resolve against:
     // the reader is never asked.
-    parse_light_file_with(content, None, None, external, &Sources::none())
+    parse_light_file_with(content, None, None, external, &Sources::none(), layers)
 }
 
 /// Parses a `.light` file's shows as `parse_light_shows_with_tempo` does,
@@ -261,8 +272,9 @@ pub fn parse_light_file_with(
     root: Option<&Path>,
     external: Option<&TempoMap>,
     reader: &dyn IncludeReader,
+    layers: &LayerSet,
 ) -> Result<LightShows, Box<dyn Error>> {
-    let parsed = parse_file_with(content, path, root, external, reader)?;
+    let parsed = parse_file_with(content, path, root, external, reader, layers)?;
     let palette = parsed.palette;
     Ok(parsed
         .shows
@@ -376,6 +388,7 @@ pub(super) fn parse_file_with<'i>(
     root: Option<&Path>,
     external: Option<&TempoMap>,
     reader: &dyn IncludeReader,
+    layers: &LayerSet,
 ) -> Result<ParsedFile<'i>, Box<dyn Error>> {
     let root = match root {
         Some(root) => Some(
@@ -392,7 +405,7 @@ pub(super) fn parse_file_with<'i>(
         palette,
     } = file_items(content, external)?;
 
-    let mut library = SequenceLibrary::new(&global_tempo);
+    let mut library = SequenceLibrary::new(&global_tempo, layers);
     let mut seen: HashSet<PathBuf> = path
         .and_then(|p| reader.resolve(p).ok())
         .into_iter()
@@ -1175,6 +1188,7 @@ fn parse_cue(
         cue_time: abs_time,
         offset_secs: applied_offset_secs,
         palette: library.palette(),
+        layers: library.layers(),
     };
     for effect_pair in effect_pairs {
         base.effects
@@ -1182,7 +1196,7 @@ fn parse_cue(
     }
     for layer_command_pair in layer_command_pairs {
         base.layer_commands
-            .push(parse_layer_command(layer_command_pair)?);
+            .push(parse_layer_command(layer_command_pair, library.layers())?);
     }
 
     // The written cue comes first, so what it holds is scheduled at its own
@@ -1247,11 +1261,15 @@ fn parse_cue(
     })
 }
 
-fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>> {
+fn parse_layer_command(
+    pair: Pair<Rule>,
+    layers: &LayerSet,
+) -> Result<LayerCommand, Box<dyn Error>> {
     let mut command_type = LayerCommandType::Clear;
     let mut layer: Option<EffectLayer> = None;
     let mut intensity = None;
     let mut speed = None;
+    let (mut line, mut value_col) = pair.line_col();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -1271,6 +1289,7 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
                                 }
                                 Rule::layer_command_param_value => {
                                     param_value = param_inner.as_str().trim().to_string();
+                                    (line, value_col) = param_inner.line_col();
                                 }
                                 _ => {}
                             }
@@ -1278,10 +1297,15 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
 
                         match LayerCommandParam::from_keyword(&param_name)? {
                             LayerCommandParam::Layer => {
-                                layer =
-                                    Some(parse_layer(&param_value).ok_or_else(|| {
-                                        format!("Invalid layer: {}", param_value)
-                                    })?);
+                                layer = Some(parse_layer_in(layers, &param_value).ok_or_else(
+                                    || {
+                                        format!(
+                                            "line {}: {}",
+                                            line,
+                                            unknown_layer(layers, &param_value, value_col)
+                                        )
+                                    },
+                                )?);
                             }
                             LayerCommandParam::Intensity => {
                                 intensity =

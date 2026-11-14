@@ -389,8 +389,9 @@ pub struct LayerSet {
 const DEFAULT_LAYER_NAMES: [&str; 3] = ["background", "midground", "foreground"];
 
 impl LayerSet {
-    /// A set of the given names, bottom to top. Names must be non-empty,
-    /// unique, and between one and [`MAX_LAYERS`] of them.
+    /// A set of the given names, bottom to top. Names must be identifiers
+    /// (a letter or `_`, then letters, digits, `_` or `-`, as the DSL
+    /// writes them), unique, and between one and [`MAX_LAYERS`] of them.
     pub fn new(names: Vec<String>) -> Result<Self, String> {
         if names.is_empty() {
             return Err("at least one layer is required".to_string());
@@ -405,6 +406,13 @@ impl LayerSet {
         for (i, name) in names.iter().enumerate() {
             if name.is_empty() {
                 return Err("layer names cannot be empty".to_string());
+            }
+            if !is_identifier(name) {
+                return Err(format!(
+                    "layer name '{}' is not an identifier (a letter or '_', then letters, \
+                     digits, '_' or '-')",
+                    name
+                ));
             }
             if names[..i].contains(name) {
                 return Err(format!("duplicate layer name '{}'", name));
@@ -470,6 +478,16 @@ impl LayerSet {
             .position(|n| n == name)
             .map(|i| EffectLayer(i as u8))
     }
+}
+
+/// Whether `name` is an identifier as the DSL's grammar has it
+/// (`identifier`): a letter or `_`, then letters, digits, `_` or `-`.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 impl Default for LayerSet {

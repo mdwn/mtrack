@@ -134,6 +134,7 @@ impl ShowDiff {
 /// removal and addition. Effects that differ in group or type have genuinely
 /// been swapped out, and are reported as such.
 pub fn diff_shows(
+    layers: &LayerSet,
     before: Vec<LightShow>,
     after: Vec<LightShow>,
     before_tempo: Option<&TempoMap>,
@@ -164,7 +165,7 @@ pub fn diff_shows(
         // falls out as added or removed.
         let paired = olds.len().min(news.len());
         for (old, new) in olds.iter().zip(news.iter()).take(paired) {
-            let fields = field_changes(old, new);
+            let fields = field_changes(layers, old, new);
             if !fields.is_empty() {
                 diff.changed.push(ChangedEntry {
                     before: old.clone(),
@@ -179,8 +180,8 @@ pub fn diff_shows(
 
     // Layer commands: compared as a multiset of (time, command, layer), since
     // there is no per-command identity to pair on.
-    let old_cmds = layer_commands(&before, before_tempo);
-    let new_cmds = layer_commands(&after, after_tempo);
+    let old_cmds = layer_commands(layers, &before, before_tempo);
+    let new_cmds = layer_commands(layers, &after, after_tempo);
     diff.layer_commands_added = command_difference(&new_cmds, &old_cmds);
     diff.layer_commands_removed = command_difference(&old_cmds, &new_cmds);
 
@@ -199,7 +200,11 @@ pub fn diff_shows(
 }
 
 /// Every layer command in the shows, in time order.
-fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCommandEntry> {
+fn layer_commands(
+    layers: &LayerSet,
+    shows: &[LightShow],
+    tempo: Option<&TempoMap>,
+) -> Vec<LayerCommandEntry> {
     let mut out = Vec::new();
     let map = shows_tempo_map(shows, tempo);
     for show in shows {
@@ -211,7 +216,7 @@ fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCom
                     command: cmd.command_type.keyword().to_string(),
                     layer: cmd
                         .layer
-                        .map(|l| LayerSet::standard().display_name(l))
+                        .map(|l| layers.display_name(l))
                         .unwrap_or_else(|| "all".to_string()),
                     intensity: cmd.intensity,
                     speed: cmd.speed,
@@ -287,7 +292,7 @@ fn entries(
     out
 }
 
-fn field_changes(old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
+fn field_changes(layers: &LayerSet, old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
     let mut fields = Vec::new();
     if old.time != new.time {
         fields.push(FieldChange {
@@ -306,8 +311,8 @@ fn field_changes(old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
     if old.layer != new.layer {
         fields.push(FieldChange {
             field: "layer".to_string(),
-            from: LayerSet::standard().display_name(old.layer),
-            to: LayerSet::standard().display_name(new.layer),
+            from: layers.display_name(old.layer),
+            to: layers.display_name(new.layer),
         });
     }
     if old.blend_mode != new.blend_mode {
@@ -357,7 +362,7 @@ mod tests {
     use crate::testutil::lighting::sorted_shows as shows;
 
     fn diff(a: &str, b: &str) -> ShowDiff {
-        diff_shows(shows(a), shows(b), None, None)
+        diff_shows(LayerSet::standard(), shows(a), shows(b), None, None)
     }
 
     const BASE: &str = r#"
@@ -722,7 +727,7 @@ show "B" {
 }
 "#;
         let before: Vec<LightShow> = shows(first).into_iter().chain(shows(second)).collect();
-        let d = diff_shows(Vec::new(), before, None, None);
+        let d = diff_shows(LayerSet::standard(), Vec::new(), before, None, None);
         let b = d
             .added
             .iter()

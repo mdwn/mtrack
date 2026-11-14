@@ -890,6 +890,13 @@ impl Player {
         super::lighting::ProjectDirs::of(self.host_lighting())
     }
 
+    /// The lighting layers on this host: the host-matched profile's, else
+    /// the defaults (bottom to top: `background`, `midground`,
+    /// `foreground`). The one set the parser, the songs and the engine use.
+    pub fn layer_set(&self) -> crate::lighting::effects::LayerSet {
+        super::lighting::layer_set(self.host_lighting())
+    }
+
     /// The lighting directories the config at `config_path` gives this host
     /// ([`Self::lighting_dirs`]): the one reader the web UI's server side,
     /// MCP and the CLI ask. The defaults when there is no config file; an

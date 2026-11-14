@@ -18,6 +18,7 @@
 
 use std::time::Duration;
 
+use crate::lighting::effects::LayerSet;
 use crate::lighting::parser::layout::layout;
 use crate::lighting::parser::{parse_light_shows, Sources};
 use crate::lighting::timeline::LightingTimeline;
@@ -26,7 +27,16 @@ use crate::lighting::timeline::LightingTimeline;
 /// and every effect ends where the engine reckons its written end; a file
 /// the player refuses is refused with the same words.
 fn agrees_with_the_player(source: &str) {
-    let lay = |until| layout(source, None, None, &Sources::none(), until);
+    let lay = |until| {
+        layout(
+            LayerSet::standard(),
+            source,
+            None,
+            None,
+            &Sources::none(),
+            until,
+        )
+    };
     let shows = match parse_light_shows(source) {
         Ok(shows) => shows,
         Err(error) => {
