@@ -20,6 +20,7 @@ import 'package:mtrack_remote/src/app/session.dart';
 import 'fake_browser.dart';
 import 'fake_link.dart';
 import 'fake_player.dart';
+import 'fake_probe.dart';
 import 'fake_wifi.dart';
 import 'rig.dart';
 
@@ -33,17 +34,20 @@ class Harness {
     Rig? rig,
     bool withWifi = false,
     bool withBrowser = false,
+    bool withProbe = false,
     RememberedPlayer? player,
   }) : rig = rig ?? Rig() {
     store = MemoryStore(known ? (player ?? remembered) : null);
     wifi = withWifi ? FakeWifi(this.rig) : null;
     browser = withBrowser ? FakeBrowser() : null;
+    probe = withProbe ? FakeProbe() : null;
     session = Session(
       link: this.rig.link,
       store: store,
       wake: wake,
       wifi: wifi,
       browser: browser,
+      probe: probe,
       monotonic: () => async.elapsed,
     );
     this.rig.link.paired.add('p1');
@@ -61,6 +65,9 @@ class Harness {
   /// The browser for players on the network, when the harness was made with
   /// one.
   late final FakeBrowser? browser;
+
+  /// The network probe, when the harness was made with one.
+  late final FakeProbe? probe;
 
   FakeLink get link => rig.link;
   FakePlayer get player => rig.player;
