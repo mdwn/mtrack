@@ -650,6 +650,7 @@ fn profile_file_status(e: ProfileFileError) -> Status {
         }
         ProfileFileError::Exists(_) => Status::aborted(message),
         ProfileFileError::CaseClash(_) => Status::already_exists(message),
+        ProfileFileError::LayersInUse(_) => Status::failed_precondition(message),
         ProfileFileError::Internal(_) => Status::internal(message),
     }
 }
@@ -1297,6 +1298,105 @@ mod tests {
             Some("dev-changed"),
             "the reload would re-initialise from the pre-save profile"
         );
+        Ok(())
+    }
+
+    /// A profile file save that removes or renames a layer some show uses is
+    /// `FAILED_PRECONDITION` naming the shows, and leaves the file alone; one
+    /// that adds or reorders layers, or drops one nothing uses, is saved and
+    /// the player takes the layers up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_profile_save_that_drops_a_layer_a_show_uses_is_refused_with_the_shows() -> Fallible {
+        let songs = tempfile::tempdir()?;
+        let song = songs.path().join("one");
+        std::fs::create_dir_all(&song)?;
+        crate::testutil::write_wav(song.join("t.wav"), vec![vec![0_i32; 441]], 44100)?;
+        std::fs::write(
+            song.join("song.yaml"),
+            "name: One\ntracks:\n  - name: t\n    file: t.wav\nlighting:\n  - file: show.light\n",
+        )?;
+        std::fs::write(
+            song.join("show.light"),
+            "show \"main\" {\n    @00:00.000\n    all: static color: \"red\", duration: 1s, layer: accents\n}\n",
+        )?;
+        let player = assets_player().audio(None).ready().await?;
+        let served = served_on(
+            player,
+            &format!(
+                "songs: {}\nprofiles_dir: profiles\n",
+                songs.path().display()
+            ),
+        )
+        .await?;
+        let layers = |names: &[&str]| serde_json::json!({"dmx": {"universes": [], "lighting": {"layers": names}}});
+
+        // A new profile has nothing to lose; the songs reload on its layers.
+        served
+            .save_with(
+                "rig",
+                layers(&["background", "accents", "spare"]),
+                None,
+                true,
+            )
+            .await?;
+        assert!(served.player.songs().get("One").is_ok());
+        let before = served.read("rig.yaml");
+
+        for names in [
+            &["background", "spare"][..],
+            &["background", "glare", "spare"],
+        ] {
+            let refusal = served.save("rig", layers(names)).await.unwrap_err();
+            assert_eq!(refusal.code(), tonic::Code::FailedPrecondition, "{names:?}");
+            assert!(
+                refusal.message().contains("'accents'"),
+                "{}",
+                refusal.message()
+            );
+            assert!(
+                refusal
+                    .message()
+                    .contains("One (show.light, show \"main\")"),
+                "{}",
+                refusal.message()
+            );
+            assert_eq!(served.read("rig.yaml"), before, "the file is untouched");
+        }
+
+        // UpdateProfile, the inline edit, refuses the same way.
+        {
+            use crate::proto::player::v1::{
+                player_service_server::PlayerService, UpdateProfileRequest,
+            };
+            let players = crate::controller::grpc::PlayerServer::with_config_store(
+                served.player.clone(),
+                served.store.clone(),
+            );
+            let refusal = players
+                .update_profile(Request::new(UpdateProfileRequest {
+                    index: 0,
+                    profile_json: layers(&["background", "spare"]).to_string(),
+                    expected_checksum: served.checksum().await,
+                }))
+                .await
+                .unwrap_err();
+            assert_eq!(refusal.code(), tonic::Code::FailedPrecondition);
+            assert!(
+                refusal.message().contains("'accents'"),
+                "{}",
+                refusal.message()
+            );
+        }
+
+        for names in [
+            &["background", "accents"][..],
+            &["background", "accents", "extra"],
+            &["accents", "background"],
+        ] {
+            served.save("rig", layers(names)).await?;
+        }
+        assert_eq!(served.player.layers().names(), ["accents", "background"]);
+        assert!(served.player.songs().get("One").is_ok());
         Ok(())
     }
 

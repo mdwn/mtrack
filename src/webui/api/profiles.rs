@@ -49,6 +49,9 @@ pub(crate) enum ProfileFileError {
     Exists(String),
     /// A new name that differs from a file there only in case.
     CaseClash(String),
+    /// The save would remove or rename a lighting layer a loaded show uses;
+    /// the message lists the shows.
+    LayersInUse(String),
     /// mtrack's own fault, or the filesystem's.
     Internal(String),
 }
@@ -62,6 +65,7 @@ impl std::fmt::Display for ProfileFileError {
             | Self::Forbidden(message)
             | Self::Exists(message)
             | Self::CaseClash(message)
+            | Self::LayersInUse(message)
             | Self::Internal(message) => write!(f, "{message}"),
         }
     }
@@ -432,6 +436,14 @@ pub(crate) async fn save(
 
     if let Err(errors) = profile.validate() {
         return Err(ProfileFileError::Invalid(errors.join("; ")));
+    }
+
+    // A layer a show uses cannot be removed or renamed out from under it.
+    let losses = player.layer_losses(existing.as_ref(), &profile);
+    if !losses.is_empty() {
+        return Err(ProfileFileError::LayersInUse(
+            crate::player::layer_loss_message(&losses),
+        ));
     }
 
     let new_json = serde_json::to_value(&profile)

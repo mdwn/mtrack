@@ -30,6 +30,7 @@ import type {
   FixtureTypeList,
   GdtfImport,
   LightingGroup,
+  LightingGroups,
   LightingValidation,
   MetronomeSounds,
   MidiDeviceInfo,

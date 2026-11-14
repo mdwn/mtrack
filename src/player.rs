@@ -13,6 +13,7 @@
 //
 mod hardware;
 mod hardware_status;
+mod layers;
 pub mod lock_policy;
 mod navigation;
 mod play_declined;
@@ -25,6 +26,7 @@ pub use hardware_status::{
     AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
     SubsystemStatus, TestOutputStatus,
 };
+pub use layers::{layer_loss_message, LayerLoss};
 pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
 pub use status::{
     AmbientStatus, DmxRead, LightingStatus, PlayerStatus, AMBIENT_UNREAD, STATUS_DMX_READ_TIMEOUT,

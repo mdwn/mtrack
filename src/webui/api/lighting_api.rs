@@ -1501,7 +1501,7 @@ pub(crate) async fn lighting_groups(
         // case for editing a show. The groups are declared in the player config,
         // not by the engine, so the names are still knowable; only the fixtures
         // each resolves to are not.
-        return groups_from_config(config_path).await;
+        return groups_from_config(config_path, &player.layers()).await;
     };
 
     // The lighting system's mutex is shared with the effects loop thread, and
@@ -1527,6 +1527,7 @@ pub(crate) async fn lighting_groups(
     match groups {
         Ok(groups) => Ok(LightingGroups {
             groups,
+            layers: player.layers().names().to_vec(),
             resolved: None,
         }),
         Err(e) => Err(Answer::new(
@@ -1882,7 +1883,10 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
 /// player config when no engine is running to resolve them against.
-async fn groups_from_config(config_path: &std::path::Path) -> Result<LightingGroups, Answer> {
+async fn groups_from_config(
+    config_path: &std::path::Path,
+    layers: &crate::lighting::effects::LayerSet,
+) -> Result<LightingGroups, Answer> {
     // codeql[rust/path-injection] config_path is set at startup, not user input.
     let path = config_path.to_path_buf();
     // A parse failure is reported, not swallowed. `.ok()` here answered
@@ -1933,6 +1937,7 @@ async fn groups_from_config(config_path: &std::path::Path) -> Result<LightingGro
         .collect();
     Ok(LightingGroups {
         groups,
+        layers: layers.names().to_vec(),
         resolved: Some(false),
     })
 }

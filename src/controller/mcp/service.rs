@@ -1037,6 +1037,16 @@ impl McpServer {
             .profile_from_update(args.index as usize, args.body)
             .await
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let losses = self
+            .player
+            .layer_losses_at(args.index as usize, &profile)
+            .await;
+        if !losses.is_empty() {
+            return Err(McpError::invalid_params(
+                crate::player::layer_loss_message(&losses),
+                None,
+            ));
+        }
         let snapshot = store
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await

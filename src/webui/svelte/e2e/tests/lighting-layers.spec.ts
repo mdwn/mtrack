@@ -17,13 +17,14 @@
 // Groups page edits the list.
 
 import { test, expect, type Page } from "@playwright/test";
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
 import {
   LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { getConfigReply, savedReply } from "../support/config-rpc";
 import { groupsReply, lightShowReply } from "../support/lighting-rpc";
+import { profileWrite } from "../support/profile-writes";
 import { mockRpc } from "../support/rpc";
 
 const FIVE = ["floor", "back", "wash", "accents", "blinders"];
@@ -161,20 +162,15 @@ profiles:
   await expect(layers.getByTestId("layers-error")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect
-    .poll(() => rpc.calls(PlayerService.method.updateProfile).length)
-    .toBe(1);
-  const put: { dmx: { lighting: Record<string, unknown> } } = JSON.parse(
-    rpc.calls(PlayerService.method.updateProfile)[0].profileJson,
-  );
+  const { profile } = await profileWrite(rpc);
   // Written bottom to top.
-  expect(put.dmx.lighting.layers).toEqual([
+  expect(profile.dmx.lighting.layers).toEqual([
     "background",
     "midground",
     "accents",
     "foreground",
   ]);
-  expect(put.dmx.lighting.current_venue).toBe("v");
+  expect(profile.dmx.lighting.current_venue).toBe("v");
 });
 
 test("a save the server refuses for a layer a show uses says which shows", async ({
@@ -188,16 +184,18 @@ profiles:
       lighting:
         layers: [background, accents]
 `;
-  const message =
-    "the lighting layers cannot be saved: removing or renaming a layer a show uses would leave that show unable to load; 'accents' (used by One (show.light, show \"main\")). Change those shows first.";
   const rpc = await mockRpc(page);
   rpc.unary(
     PlayerService.method.getConfig,
     getConfigReply({ yaml, checksum: "one" }),
   );
-  rpc.unary(PlayerService.method.updateProfile, () => {
-    throw new ConnectError(message, Code.FailedPrecondition);
-  });
+  const message =
+    "the lighting layers cannot be saved: removing or renaming a layer a show uses would leave that show unable to load; 'accents' (used by One (show.light, show \"main\")). Change those shows first.";
+  rpc.error(
+    PlayerService.method.updateProfile,
+    Code.FailedPrecondition,
+    message,
+  );
   await page.goto("/#/lighting/groups");
   const layers = page.getByTestId("lighting-layers");
   await expect(layers).toBeVisible();

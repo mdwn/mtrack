@@ -745,6 +745,11 @@ pub struct LayoutRequest {
     #[serde(default)]
     #[tsify(optional)]
     pub song_tempo: Option<TempoSource>,
+    /// The player's lighting layers, bottom to top, which the file's
+    /// `layer:`s are checked against; the defaults when left out.
+    #[serde(default)]
+    #[tsify(optional)]
+    pub layers: Option<Vec<String>>,
     /// The included files, by the path [`Document`]'s `includes` resolved
     /// them to.
     #[serde(default)]
@@ -791,7 +796,18 @@ impl LayoutRequest {
             None => None,
         };
         let until = bounds::at_ms(self.until_ms).unwrap_or(Duration::ZERO);
+        let layers = match self.layers.clone().map(lighting::effects::LayerSet::new) {
+            Some(Ok(layers)) => layers,
+            Some(Err(error)) => {
+                return Layout {
+                    error: Some(format!("the player's layers are not a set: {error}")),
+                    ..Layout::default()
+                }
+            }
+            None => lighting::effects::LayerSet::default(),
+        };
         lighting::parser::layout::layout(
+            &layers,
             &self.source,
             self.path.as_deref().map(Path::new),
             external.as_ref(),
@@ -863,10 +879,15 @@ pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
     Some(effect.view())
 }
 
-/// The words an effect line's form offers (`edit::vocabulary`).
+/// The words an effect line's form offers (`edit::vocabulary`), its layers
+/// those the player has (`layers`, bottom to top); the defaults when left
+/// out or not a set.
 #[wasm_bindgen]
-pub fn vocabulary() -> lighting::parser::edit::Vocabulary {
-    lighting::parser::edit::vocabulary()
+pub fn vocabulary(layers: Option<Vec<String>>) -> lighting::parser::edit::Vocabulary {
+    let layers = layers
+        .and_then(|names| lighting::effects::LayerSet::new(names).ok())
+        .unwrap_or_default();
+    lighting::parser::edit::vocabulary(&layers)
 }
 
 /// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)` or a name,
