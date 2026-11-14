@@ -104,6 +104,16 @@ api() { # api <path> [curl args...]
     shift
     inside curl -sS -m 15 "$@" "http://127.0.0.1:8080/api$path" || true
 }
+# A call to the player's gRPC service over gRPC-Web, from inside the image:
+# status and the lock are there, not under /api. In the text form a call is
+# base64 both ways, which curl carries; grpcweb.py builds the request and
+# reads the answer. A stream never ends, so curl's timeout is how one stops.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rpc() { # rpc <method> <grpcweb.py request name> <seconds> -> prints the answer, base64
+    inside curl -sS -m "$3" -H 'content-type: application/grpc-web-text' \
+        -H 'accept: application/grpc-web-text' -d "$("$HERE/grpcweb.py" request "$2")" \
+        "http://127.0.0.1:8080/player.v1.PlayerService/$1" || true
+}
 
 echo "== a working copy =="
 # Booting writes: machine-id, journals, the player's first config. The image
@@ -243,7 +253,8 @@ fi
 
 echo
 echo "== the web UI =="
-status="$(api /status)"
+# The first hardware event of the Watch stream is what GET /api/status was.
+status="$(rpc Watch watch-hardware 5 | "$HERE/grpcweb.py" status 2>/dev/null || true)"
 field() { # field <json> <python expression over d>
     python3 -c 'import json,sys
 try:
@@ -253,9 +264,9 @@ except Exception:
     print("")' "$1" "$2"
 }
 if [ -n "$status" ]; then
-    ok "the API answers on 8080"
+    ok "the player answers gRPC-Web on 8080"
 else
-    fail "the API does not answer on 8080"
+    fail "the player does not answer gRPC-Web on 8080"
 fi
 ui_version="$(field "$status" 'd["build"]["version"]')"
 # Not `-f '${Version}'`: systemd-run expands ${...} in the command it is
@@ -288,7 +299,11 @@ echo
 echo "== writing the project =="
 # ProtectSystem=strict leaves the player one writable place. A unit that
 # names the wrong one starts, serves pages, and fails the first save.
-api /lock -X PUT -H 'content-type: application/json' -d '{"locked":false}' >/dev/null
+if rpc SetLock unlock 15 | "$HERE/grpcweb.py" ok 2>/dev/null; then
+    ok "it unlocks"
+else
+    fail "it does not unlock"
+fi
 saved="$(api /lighting/fixture-types/BootCheckPar -X PUT -H 'content-type: text/plain' \
     --data-binary 'fixture_type "BootCheckPar" {
   channels: 3

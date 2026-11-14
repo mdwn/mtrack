@@ -137,7 +137,13 @@ check "web UI serves HTML" bash -c "curl -sf http://127.0.0.1:8080/ | grep -q '<
 echo ""
 echo "--- Test: API access ---"
 
-check "songs API responds" curl -sf -o /dev/null http://127.0.0.1:8080/api/songs
+# The song list is a gRPC call; the web port answers it as gRPC-Web. In the
+# text form the request (an empty message) and the answer are base64, and the
+# answer ends with the call's status.
+check "the song list answers over gRPC-Web" bash -c "curl -sf -m 15 \
+    -H 'content-type: application/grpc-web-text' -H 'accept: application/grpc-web-text' \
+    -d 'AAAAAAA=' http://127.0.0.1:8080/player.v1.PlayerService/ListSongs \
+    | base64 -d | grep -a -q 'grpc-status:0'"
 
 echo ""
 echo "--- Test: Service stop ---"
