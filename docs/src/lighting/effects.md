@@ -271,8 +271,12 @@ spots: move pan: 45deg, tilt: -20deg, duration: 1s, easing: linear
 
 All effects support these optional parameters for advanced control:
 
-- `layer`: Effect layer - `background` (the default), `midground`, or `foreground`. Layers are
-  merged in that order, each on top of the last.
+- `layer`: The effect's layer, by name. A player has the layers its `dmx.lighting.layers` lists
+  (see [Layers](configuration.md#layers)), bottom to top; with none configured they are
+  `background` (the default), `midground` and `foreground`. An effect with no `layer:` runs on the
+  bottom layer. Layers are merged in order, each on top of the last. A name the player does not
+  have fails the show's load, and the error names the layer, where it is written and the layers
+  the player has.
 - `blend_mode`: How the effect's channel values combine with what is beneath them (lower layers,
   and effects started earlier on the same layer): `replace` (the default), `multiply`, `add`,
   `overlay`, `screen`. `replace` writes the effect's value over whatever was there, channel by
