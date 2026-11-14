@@ -913,6 +913,41 @@ mod test {
         Ok(())
     }
 
+    /// A gRPC controller that advertises itself starts, stops and starts
+    /// again on one player (a config reload does exactly this) with the
+    /// server up each time, whether or not this machine can multicast: the
+    /// advert's trouble never reaches the server, and its teardown does not
+    /// hang the stop.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grpc_serves_through_advert_start_stop_start() -> Result<(), Box<dyn Error>> {
+        let player = crate::testutil::player::assets_player().build()?;
+        player.await_hardware_ready().await;
+        for _ in 0..2 {
+            let controller = super::Controller::new(
+                vec![config::Controller::Grpc(
+                    config::GrpcController::advertising(0),
+                )],
+                player.clone(),
+            );
+            let bound = controller.bound_addr(0).get().await;
+            assert!(bound.ip().is_unspecified(), "{bound}");
+            tokio::net::TcpStream::connect(("127.0.0.1", bound.port())).await?;
+            let started = std::time::Instant::now();
+            controller.shutdown();
+            crate::testutil::eventually_async(
+                || async { player.grpc_port().is_none() },
+                "the port outlived the controller",
+            )
+            .await;
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "stopping took {:?}",
+                started.elapsed()
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_grpc_bind_address_that_is_no_address_is_refused() {
         let player = crate::testutil::player::memory_player(&["Song A"]).build();

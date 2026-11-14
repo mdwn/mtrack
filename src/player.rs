@@ -379,6 +379,10 @@ pub struct Player {
     /// what `GetNetworkInfo` tells a phone. Set by the controller once it
     /// has bound, and cleared when it stops.
     grpc_port: Arc<std::sync::atomic::AtomicU16>,
+    /// The port the web UI is reachable on from the network, or 0 while it
+    /// is not: what the gRPC controller's mDNS advert names in its `web`
+    /// record. Set by `mtrack start` for a web UI not bound to loopback.
+    web_port: Arc<std::sync::atomic::AtomicU16>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
     /// The transport's state machine, behind one lock: what a loop break
@@ -748,6 +752,7 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             grpc_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
+            web_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             transport: Arc::new(parking_lot::Mutex::new(TransportState::default())),
             loop_break: Arc::new(AtomicBool::new(false)),
@@ -1191,6 +1196,20 @@ impl Player {
             0 => None,
             port => Some(port),
         }
+    }
+
+    /// The port the web UI is reachable on from the network, if there is one.
+    pub fn web_port(&self) -> Option<u16> {
+        match self.web_port.load(Ordering::Relaxed) {
+            0 => None,
+            port => Some(port),
+        }
+    }
+
+    /// Records the port the web UI listens on for the network, or, with
+    /// `None`, that there is none.
+    pub fn set_web_port(&self, port: Option<u16>) {
+        self.web_port.store(port.unwrap_or(0), Ordering::Relaxed);
     }
 
     /// Records the port the gRPC controller bound, or, with `None`, that it

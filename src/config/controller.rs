@@ -360,7 +360,7 @@ impl BleController {
 
 /// The configuration for the multitrack player gRPC server.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct GrpcController {
     /// The port to listen on.
     #[serde(default)]
@@ -370,14 +370,51 @@ pub struct GrpcController {
     /// on it still reaches the player, and a phone over Wi-Fi does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bind_address: Option<String>,
+    /// Whether to advertise the player on the network by mDNS (DNS-SD,
+    /// `_mtrack._tcp`) so the phone app can list it. On by default. Only
+    /// the interfaces gRPC listens on carry it, and a controller bound to
+    /// loopback advertises nothing. `false` starts no mDNS at all.
+    #[serde(default = "default_advertise", skip_serializing_if = "is_true")]
+    advertise: bool,
+}
+
+fn default_advertise() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+impl Default for GrpcController {
+    fn default() -> Self {
+        GrpcController {
+            port: None,
+            bind_address: None,
+            advertise: default_advertise(),
+        }
+    }
 }
 
 impl GrpcController {
+    /// A controller on `port`. It does not advertise itself, unlike one
+    /// from a config: tests that start controllers should not put adverts on
+    /// the network of the machine running them.
     #[cfg(test)]
     pub fn new(port: u16) -> GrpcController {
         GrpcController {
             port: Some(port),
-            bind_address: None,
+            advertise: false,
+            ..GrpcController::default()
+        }
+    }
+
+    /// A controller on `port` that advertises itself, as a configured one does.
+    #[cfg(test)]
+    pub fn advertising(port: u16) -> GrpcController {
+        GrpcController {
+            port: Some(port),
+            ..GrpcController::default()
         }
     }
 
@@ -387,6 +424,7 @@ impl GrpcController {
         GrpcController {
             port: Some(port),
             bind_address: Some(bind_address.to_string()),
+            advertise: false,
         }
     }
 
@@ -400,6 +438,11 @@ impl GrpcController {
     /// Gets the port to listen on.
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(DEFAULT_GRPC_PORT)
+    }
+
+    /// Whether to advertise the player by mDNS.
+    pub fn advertise(&self) -> bool {
+        self.advertise
     }
 }
 
@@ -1086,6 +1129,34 @@ mod test {
             .build()?
             .try_deserialize()?;
         assert_eq!(grpc.bind_address(), "127.0.0.1");
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_advertise_defaults_on_and_is_written_only_when_off() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(grpc.advertise());
+        // Not written back when it was not set.
+        assert!(!crate::util::to_yaml_string(&grpc)?.contains("advertise"));
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("advertise: false", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(!grpc.advertise());
+        assert!(crate::util::to_yaml_string(&grpc)?.contains("advertise: false"));
+        // Kept through a round trip.
+        let again: GrpcController = Config::builder()
+            .add_source(File::from_str(
+                &crate::util::to_yaml_string(&grpc)?,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert!(!again.advertise());
+        assert!(GrpcController::default().advertise());
         Ok(())
     }
 

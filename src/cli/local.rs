@@ -253,6 +253,17 @@ pub async fn start(
     // server starts or a gRPC controller is configured.
     let _hub_tasks = player.watch_hub().start(player.clone());
 
+    // Told to the gRPC controller's mDNS advert before the web server starts
+    // (controllers may start any time now), and taken back if it does not.
+    // Not for a web UI on loopback, which nothing else could reach.
+    let web_on_network = web_config
+        .address
+        .parse::<std::net::IpAddr>()
+        .map_or(true, |ip| !ip.is_loopback());
+    if web_on_network {
+        player.set_web_port(Some(web_config.port));
+    }
+
     // Start the unified web server (dashboard + gRPC-Web + file routes)
     let _webui_handle = {
         let webui_state =
@@ -268,6 +279,10 @@ pub async fn start(
         )
         .await
     };
+
+    if _webui_handle.is_none() {
+        player.set_web_port(None);
+    }
 
     if tui_mode {
         crate::tui::run(player.clone(), state_rx).await?;

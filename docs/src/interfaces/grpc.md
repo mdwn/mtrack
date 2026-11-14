@@ -11,6 +11,17 @@ interface unless the controller sets `bind_address`: `127.0.0.1` keeps it to the
 machine, where the `mtrack` CLI still reaches it, the phone app does not connect over Wi-Fi, and
 `GetNetworkInfo` names no port.
 
+The player also advertises the controller on its network by mDNS / DNS-SD, as `_mtrack._tcp`, so
+a phone can list it without being told an address. The instance name is the machine's host name,
+the port is the one gRPC bound, and two TXT records say the mtrack version (`v`) and the web UI's
+port (`web`, when it is reachable beyond the player's own machine). The advert carries the
+addresses of the interfaces gRPC listens on (every non-loopback address for `0.0.0.0`, that one
+address for a specific `bind_address`) and nothing for a loopback `bind_address`. It uses the host
+label `<host name>-mtrack.local`, never the machine's own `<host name>.local`, so it does not
+disturb avahi or Bonjour's claim on that name. `advertise: false` on the controller turns it off,
+and then no mDNS socket is opened at all. If the advert cannot start (no multicast on the
+machine, a sandbox that forbids it), the player logs one warning and gRPC runs without it.
+
 Any number of clients can connect, including clients on other machines. That makes it a
 fallback for when a MIDI controller is not behaving: you can still start, stop and move
 through the playlist from a laptop or phone. The [phone app](bluetooth.md#over-wi-fi) uses this

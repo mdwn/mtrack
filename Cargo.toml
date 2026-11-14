@@ -162,6 +162,10 @@ quick-xml = "0.41.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 flate2 = "1.1"
 if-addrs = "0.15.0"
+# DNS-SD for the gRPC controller's `_mtrack._tcp` advert. No default features:
+# `async` is flume's futures support (read on a thread here) and `logging`
+# goes to the `log` crate, which nothing here listens to.
+mdns-sd = { version = "0.21.7", default-features = false }
 
 # ALSA's thread-local error handler, to quiet device enumeration (already in
 # the tree through cpal). libc looks up alsa-lib 1.2.15's log API at runtime,

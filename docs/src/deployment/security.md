@@ -69,6 +69,14 @@ on it. On a shared network, firewall the ports to the addresses that need them, 
 UI to the loopback (`mtrack start --web-address 127.0.0.1`) and reach it through an SSH tunnel.
 Do not forward any of these ports to the internet.
 
+**What the player announces.** Unless the gRPC controller sets `advertise: false`, the player
+advertises itself over mDNS (`_mtrack._tcp`) on the interfaces gRPC listens on, so the phone app
+can find it. Anyone on that network can see the player's host name, its mtrack version, the gRPC
+port and the web UI's port (when the web UI is not bound to loopback); nothing about songs, the
+lock or paired phones. A port scan finds the same ports, but the advert needs no scan. To turn it
+off, set `advertise: false` on the gRPC controller; binding gRPC to loopback
+(`bind_address: 127.0.0.1`) turns it off too, since a phone could not reach that port anyway.
+
 **Troubleshooting**: If `mtrack` cannot access your audio or MIDI devices after setup, verify
 group membership with `groups mtrack` and check device permissions with
 `ls -la /dev/snd/`. If you encounter permission errors related to a specific restriction,
