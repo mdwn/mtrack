@@ -19,18 +19,11 @@
 //! [`SongError`]. The track upload routes, which carry file bytes and so stay
 //! HTTP, are the only handlers here.
 
-use axum::{
-    body::Bytes,
-    extract::{Multipart, Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{http::StatusCode, response::IntoResponse};
 use serde_json::json;
 
 use super::super::config_io;
 use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
-use super::super::server::WebUiState;
 use super::super::state as ws_state;
 use super::lighting_writes::Answer;
 use crate::player::Player;
@@ -659,110 +652,96 @@ pub(crate) async fn save_song(
     Ok(config_path)
 }
 
-/// PUT /api/songs/:name/tracks/:filename — uploads a single track file.
-///
-/// The request body is the raw file content. Creates the song directory and
-/// song.yaml if they don't exist.
-pub(super) async fn upload_track_single(
-    State(state): State<WebUiState>,
-    Path((name, filename)): Path<(String, String)>,
-    body: Bytes,
-) -> impl IntoResponse {
-    let exists = song_has_file(&state.player, &state.songs_path(), &name, &filename);
-    validate_track_filename(&filename, exists)?;
-    let song_dir = resolve_or_create_song_dir(&state.player, &state.songs_path(), &name)?;
-
-    let file_path = song_dir.join_filename(&filename);
-    let replaced = file_path.exists();
-    let fp = file_path.clone();
-    let data = body.to_vec();
-    super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
-
-    let created =
-        ensure_song_config(&state.player, &state.songs_path(), song_dir.as_path()).await?;
-    reload_songs(&state.player).await?;
-
-    Ok::<_, axum::response::Response>((
-        StatusCode::OK,
-        Json(json!({
-            "status": if replaced { "replaced" } else { "uploaded" },
-            "replaced": replaced,
-            // The name the song has (see the import's).
-            "song": created.unwrap_or(name),
-            "file": filename,
-        })),
-    ))
+/// What a track upload announces, checked as the upload is claimed is: the
+/// file's name as [`validate_track_filename`] has it (a file not in the song
+/// yet takes a new name's rules), and the song's directory, which a song not
+/// there yet is given only when the bytes are used, so nothing is made here.
+pub(crate) fn check_track_upload(
+    player: &Player,
+    name: &str,
+    filename: &str,
+) -> Result<(), SongError> {
+    let songs_path = songs_dir(player);
+    let exists = song_has_file(player, &songs_path, name, filename);
+    validate_track_filename(filename, exists)?;
+    if resolve_song_dir(player, &songs_path, name).is_err() {
+        let root = VerifiedRoot::new(&songs_path)?;
+        SafePath::validate_dir_to_create(root.as_path(), name)?;
+        // A directory there already must stay inside the songs root
+        // (a symlink out of it is refused), as making it would find.
+        let target = root.as_path().join(name);
+        if target.exists() {
+            SafePath::resolve(&target, &root)?;
+        }
+    }
+    Ok(())
 }
 
-/// POST /api/songs/:name/tracks — uploads multiple track files via multipart form.
-///
-/// Creates the song directory and song.yaml if they don't exist.
-pub(super) async fn upload_tracks_multipart(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-    mut multipart: Multipart,
-) -> impl IntoResponse {
-    let song_dir = resolve_or_create_song_dir(&state.player, &state.songs_path(), &name)?;
+/// A track file added to a song.
+pub(crate) struct TrackAdded {
+    /// The file's name in the song.
+    pub(crate) file: String,
+    /// A file of that name was there, and was replaced.
+    pub(crate) replaced: bool,
+}
 
-    let mut uploaded: Vec<String> = Vec::new();
+/// Track files added to a song.
+pub(crate) struct TracksAdded {
+    /// The name the song has: a new one's may not be the one asked for, when
+    /// that is taken (see [`import_file_to_song`]).
+    pub(crate) song: String,
+    pub(crate) files: Vec<TrackAdded>,
+}
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Failed to read multipart field: {}", e)})),
-        )
-            .into_response()
-    })? {
-        let filename = match field.file_name() {
-            Some(name) => name.to_string(),
-            None => {
-                continue;
-            }
-        };
+/// Adds the staged `files` to song `name`, whose directory (and config) is
+/// made if the song is new, then reloads the songs. Each file is named as
+/// the upload announced it and held to [`validate_track_filename`] again,
+/// before anything is made or written. Files are written one after another:
+/// one that fails leaves the ones before it written. The staged files are
+/// deleted whether this succeeds or not.
+pub(crate) async fn add_track_files(
+    player: &Player,
+    name: &str,
+    files: Vec<crate::webui::transfers::Claimed>,
+) -> Result<TracksAdded, SongError> {
+    if files.is_empty() {
+        return Err(SongError::Invalid("No files uploaded".to_string()));
+    }
+    let songs_path = songs_dir(player);
+    for file in &files {
+        let exists = song_has_file(player, &songs_path, name, &file.file_name);
+        validate_track_filename(&file.file_name, exists)?;
+    }
+    let song_dir = resolve_or_create_song_dir(player, &songs_path, name)?;
 
-        let exists = song_dir.join_filename(&filename).exists();
-        validate_track_filename(&filename, exists)?;
-
-        let data = field.bytes().await.map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Failed to read file data: {}", e)})),
-            )
-                .into_response()
-        })?;
-
-        let file_path = song_dir.join_filename(&filename);
-        let fp = file_path.clone();
-        let data_vec = data.to_vec();
-        super::helpers::spawn_blocking_io("write track file", move || {
-            std::fs::write(&fp, &data_vec)
+    let targets: Vec<(crate::webui::transfers::Claimed, std::path::PathBuf)> = files
+        .into_iter()
+        .map(|file| {
+            let path = song_dir.join_filename(&file.file_name);
+            (file, path)
         })
-        .await?;
+        .collect();
+    let added = blocking_io("write track", move || {
+        let mut added = Vec::with_capacity(targets.len());
+        for (file, path) in &targets {
+            let replaced = path.exists();
+            file.write_to(path)?;
+            added.push(TrackAdded {
+                file: file.file_name.clone(),
+                replaced,
+            });
+        }
+        Ok::<_, std::io::Error>(added)
+    })
+    .await?;
 
-        uploaded.push(filename);
-    }
+    let created = ensure_song_config(player, &songs_path, song_dir.as_path()).await?;
+    reload_songs(player).await?;
 
-    if uploaded.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "No files uploaded"})),
-        )
-            .into_response());
-    }
-
-    let created =
-        ensure_song_config(&state.player, &state.songs_path(), song_dir.as_path()).await?;
-    reload_songs(&state.player).await?;
-
-    Ok((
-        StatusCode::OK,
-        Json(json!({
-            "status": "uploaded",
-            // The name the song has (see the import's).
-            "song": created.unwrap_or(name),
-            "files": uploaded,
-        })),
-    ))
+    Ok(TracksAdded {
+        song: created.unwrap_or_else(|| name.to_string()),
+        files: added,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -982,12 +961,6 @@ pub(super) fn validate_track_filename(filename: &str, exists: bool) -> Result<()
 
 #[cfg(test)]
 mod test {
-    use super::super::router;
-    use super::super::test_helpers::*;
-    use axum::body::Body;
-    use axum::http::StatusCode;
-    use tower::ServiceExt;
-
     /// A deleted song comes off each playlist's file as the loader reads
     /// it: a `.yml` alone is edited, and with both `.yaml` and `.yml` only
     /// the `.yaml`. `loud.YAML` is no playlist and `all_songs.yaml` no file
@@ -1015,480 +988,5 @@ mod test {
         assert_eq!(read("set.yml"), both);
         assert_eq!(read("loud.YAML"), both);
         assert_eq!(read("all_songs.yaml"), both);
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_creates_song() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let wav_bytes = create_test_wav();
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/NewSong/tracks/track1.wav")
-                    .body(Body::from(wav_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "uploaded");
-        assert_eq!(parsed["song"], "NewSong");
-        assert_eq!(parsed["file"], "track1.wav");
-
-        assert!(state.songs_path().join("NewSong/track1.wav").exists());
-        assert!(state.songs_path().join("NewSong/song.yaml").exists());
-    }
-
-    /// #674: an upload's new song is named by the bulk import's rule: its
-    /// folder's name, unless a song configured under the songs root has it
-    /// (here one written since the last reload), then the first free suffix.
-    #[tokio::test]
-    async fn an_uploads_new_song_is_not_named_as_a_song_already_configured() {
-        let (state, _dir) = test_state();
-        let other = state.songs_path().join("Other");
-        std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(other.join("song.yaml"), "name: Fresh\ntracks: []\n").unwrap();
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/Fresh/tracks/track1.wav")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        // The answer gives the name the song has, for the client to go on.
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(parsed["song"], "Fresh (2)");
-        let config =
-            crate::config::Song::deserialize(&state.songs_path().join("Fresh/song.yaml")).unwrap();
-        assert_eq!(config.name(), "Fresh (2)");
-    }
-
-    /// An extension in capitals is the same audio type: `Bass.WAV` is taken
-    /// and becomes a track, as the file listing calls it audio.
-    #[tokio::test]
-    async fn upload_track_single_uppercase_extension() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/NewSong/tracks/Bass.WAV")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let config = std::fs::read_to_string(state.songs_path().join("NewSong/song.yaml")).unwrap();
-        assert!(config.contains("Bass.WAV"), "{config}");
-    }
-
-    /// A MIDI upload's extension is read in any case: `Notes.MID` is taken.
-    #[tokio::test]
-    async fn upload_track_single_uppercase_midi_extension() {
-        let (state, _dir) = test_state();
-        let midi = std::fs::read(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
-        )
-        .unwrap();
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/MidiSong/tracks/Notes.MID")
-                    .body(Body::from(midi))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(state.songs_path().join("MidiSong/Notes.MID").exists());
-    }
-
-    /// A light show upload's extension is read in any case: `Show.LIGHT` is
-    /// taken.
-    #[tokio::test]
-    async fn upload_track_single_uppercase_light_extension() {
-        let (state, _dir) = test_state();
-        let show =
-            "show \"Loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}\n";
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/LightSong/tracks/Show.LIGHT")
-                    .body(Body::from(show))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(state.songs_path().join("LightSong/Show.LIGHT").exists());
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_path_traversal_rejected() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/..%2F..%2Fetc/tracks/passwd")
-                    .body(Body::from("bad"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_unsupported_extension() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/TestSong/tracks/file.txt")
-                    .body(Body::from("data"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains("Unsupported file type"));
-    }
-
-    #[tokio::test]
-    async fn upload_tracks_multipart_creates_song() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let wav_bytes = create_test_wav();
-        let boundary = "----testboundary123";
-        let mut body_bytes = Vec::new();
-        body_bytes.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"file1\"; filename=\"track1.wav\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-            )
-            .as_bytes(),
-        );
-        body_bytes.extend_from_slice(&wav_bytes);
-        body_bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/songs/MultiSong/tracks")
-                    .header(
-                        "content-type",
-                        format!("multipart/form-data; boundary={boundary}"),
-                    )
-                    .body(Body::from(body_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "uploaded");
-        assert_eq!(parsed["song"], "MultiSong");
-        assert_eq!(parsed["files"][0], "track1.wav");
-
-        assert!(state.songs_path().join("MultiSong/track1.wav").exists());
-        assert!(state.songs_path().join("MultiSong/song.yaml").exists());
-    }
-
-    #[tokio::test]
-    async fn upload_tracks_multipart_empty_rejects() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let boundary = "----testboundary456";
-        let body_bytes = format!("--{boundary}--\r\n");
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/songs/EmptySong/tracks")
-                    .header(
-                        "content-type",
-                        format!("multipart/form-data; boundary={boundary}"),
-                    )
-                    .body(Body::from(body_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains("No files uploaded"));
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_adds_to_existing_song() {
-        let (state, _dir) = test_state();
-
-        let song_dir = state.songs_path().join("ExistingSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-
-        let app = router().with_state(state.clone());
-        let wav_bytes = create_test_wav();
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/ExistingSong/tracks/track2.wav")
-                    .body(Body::from(wav_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(song_dir.join("track1.wav").exists());
-        assert!(song_dir.join("track2.wav").exists());
-        assert!(song_dir.join("song.yaml").exists());
-    }
-
-    /// Beside a `song.yaml` of another kind (`kind: playlist`), a create
-    /// is refused and a track upload writes no config: neither writes over
-    /// it (`songs::song_config_to_write`), as both did on main.
-    #[tokio::test]
-    async fn create_and_upload_keep_a_song_yaml_of_another_kind() {
-        let (state, _dir) = test_state();
-        let song_dir = state.songs_path().join("Pl");
-        std::fs::create_dir(&song_dir).unwrap();
-        let playlist = "kind: playlist\nsongs: []\n";
-        std::fs::write(song_dir.join("song.yaml"), playlist).unwrap();
-
-        // The create is refused (`ConfigService.CreateSong`'s test holds the
-        // status it is answered with).
-        let create = super::create_song_and_reload(
-            &state.player,
-            "Pl",
-            "name: Pl\ntracks: []\n".to_string(),
-        )
-        .await;
-        assert!(
-            matches!(create, Err(super::SongError::Exists(_))),
-            "{create:?}"
-        );
-
-        let upload = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/Pl/tracks/guitar.wav")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(upload.status(), StatusCode::OK);
-        assert!(song_dir.join("guitar.wav").exists());
-        assert_eq!(
-            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
-            playlist
-        );
-    }
-
-    /// A track uploaded to a song whose config is `song.yml` leaves that
-    /// config alone and writes no second `song.yaml` (`ensure_song_config`).
-    #[tokio::test]
-    async fn upload_track_to_a_song_yml_song_writes_no_song_yaml() {
-        let (state, _dir) = test_state();
-        let song_dir = state.songs_path().join("YmlSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        let config = "name: YmlSong\ntracks: []\n";
-        std::fs::write(song_dir.join("song.yml"), config).unwrap();
-        state.player.reload_songs().await.unwrap();
-
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/YmlSong/tracks/guitar.wav")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!song_dir.join("song.yaml").exists());
-        assert_eq!(
-            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
-            config
-        );
-    }
-
-    #[tokio::test]
-    async fn post_song_then_upload_preserves_config() {
-        let (state, _dir) = test_state();
-
-        let yaml = "name: My Custom Song\ntracks:\n  - name: Lead Guitar\n    file: guitar.wav\n";
-        super::create_song_and_reload(&state.player, "CustomSong", yaml.to_string())
-            .await
-            .unwrap();
-
-        let wav_bytes = create_test_wav();
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/CustomSong/tracks/guitar.wav")
-                    .body(Body::from(wav_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let content =
-            std::fs::read_to_string(state.songs_path().join("CustomSong/song.yaml")).unwrap();
-        assert!(content.contains("My Custom Song"));
-        assert!(content.contains("Lead Guitar"));
-    }
-
-    /// A track uploaded to a flat-layout song (`<root>/flat.yaml`) writes no
-    /// `song.yaml` into the songs root: the root holds that song's config.
-    #[tokio::test]
-    async fn upload_track_to_a_flat_song_writes_no_root_song_yaml() {
-        let (state, _dir) = test_state();
-        let root = state.songs_path();
-        std::fs::write(root.join("flat.yaml"), "name: Flat\ntracks: []\n").unwrap();
-        state.player.reload_songs().await.unwrap();
-
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/Flat/tracks/guitar.wav")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!root.join("song.yaml").exists());
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_midi_file() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let midi_bytes = std::fs::read(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
-        )
-        .unwrap();
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/MidiSong/tracks/notes.mid")
-                    .body(Body::from(midi_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "uploaded");
-        assert_eq!(parsed["file"], "notes.mid");
-        assert!(state.songs_path().join("MidiSong/notes.mid").exists());
-    }
-
-    #[tokio::test]
-    async fn upload_track_single_light_file() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let light_content = b"show \"Test\" {}\n";
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/LightSong/tracks/show.light")
-                    .body(Body::from(light_content.as_slice()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "uploaded");
-        assert_eq!(parsed["file"], "show.light");
-        assert!(state.songs_path().join("LightSong/show.light").exists());
-    }
-
-    #[tokio::test]
-    async fn track_upload_to_a_new_song_refuses_a_hidden_song_dir() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/songs/.hidden/tracks/t.wav")
-                    .body(Body::from(vec![0u8; 16]))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(
-            !state.songs_path().join(".hidden").exists(),
-            ".hidden song dir created"
-        );
     }
 }

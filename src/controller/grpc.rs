@@ -14,6 +14,7 @@
 mod asset;
 mod config_service;
 mod config_songs;
+mod config_uploads;
 mod lighting_convert;
 mod lighting_service;
 mod playlist_settings;

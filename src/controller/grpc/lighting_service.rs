@@ -26,21 +26,24 @@ use axum::http::StatusCode;
 use tonic::{metadata::MetadataValue, Request, Response, Status};
 
 use super::config_service::CURRENT_VERSION_KEY;
+use super::config_uploads::{claim_one, transfer_status};
 use super::lighting_convert as convert;
 use crate::player::Player;
 use crate::proto::player::v1::{
     self as proto, lighting_service_server::LightingService, AddVenueAimPointsRequest,
     AddVenueAimPointsResponse, DeleteFixtureTypeRequest, DeleteFixtureTypeResponse,
     DeleteLightShowRequest, DeleteLightShowResponse, DeleteVenueRequest, DeleteVenueResponse,
-    EvaluateSongLightingRequest, FixtureTestAnswer, FixtureTestOptions, FixtureTypeGdtfDetails,
-    FixtureTypeInfo, FixtureTypeSettings, FixtureTypeSettingsSaved, GetFixtureTestOptionsRequest,
+    EvaluateSongLightingRequest, ExportMvrRequest, ExportMvrResponse, FixtureTestAnswer,
+    FixtureTestOptions, FixtureTypeGdtfDetails, FixtureTypeInfo, FixtureTypeSettings,
+    FixtureTypeSettingsSaved, GdtfImport, GetFixtureTestOptionsRequest,
     GetFixtureTypeGdtfDetailsRequest, GetFixtureTypeRequest, GetFixtureTypeSettingsRequest,
     GetLightShowRequest, GetLightShowResponse, GetLightingFitRequest, GetLightingReadinessRequest,
     GetMvrExportSummaryRequest, GetVenuePatchRequest, GetVenueRequest, GetVenueSceneRequest,
+    ImportGdtfRequest, ImportMvrRequest, ImportMvrResponse, InspectMvrRequest,
     KeepMvrExportRequest, KeepMvrExportResponse, LightingFit, LightingPreview, LightingReadiness,
     ListFixtureTypesRequest, ListFixtureTypesResponse, ListLightingGroupsRequest,
     ListLightingGroupsResponse, ListVenuesRequest, ListVenuesResponse, MvrExportSummary,
-    SaveFixtureTypeRequest, SaveFixtureTypeResponse, SaveFixtureTypeSettingsRequest,
+    MvrInspection, SaveFixtureTypeRequest, SaveFixtureTypeResponse, SaveFixtureTypeSettingsRequest,
     SaveLightShowRequest, SaveLightShowResponse, SaveVenueRequest, SaveVenueResponse,
     StartFixtureTestRequest, StopFixtureTestRequest, StopFixtureTestResponse,
     ValidateLightShowRequest, ValidateLightShowResponse, VenueDetail, VenuePatch, VenueScene,
@@ -51,8 +54,9 @@ use crate::webui::api::lighting_api::{
     self, ChannelMap, TypeBody, TypeSaveAsk, VenueBody, VenueSaveAsk,
 };
 use crate::webui::api::lighting_writes::Answer;
-use crate::webui::api::mvr_api::{self, ExportAsk, Kept};
+use crate::webui::api::mvr_api::{self, ExportAsk, Kept, MvrAsk};
 use crate::webui::api::songs_api;
+use crate::webui::transfers::Purpose;
 use crate::webui::wire::fixture_types::SettingsRequest;
 
 /// The metadata key of a refused fixture test that says why, in a word:
@@ -636,6 +640,121 @@ impl LightingService for LightingServer {
             }),
         }))
     }
+
+    async fn import_gdtf(
+        &self,
+        request: Request<ImportGdtfRequest>,
+    ) -> Result<Response<GdtfImport>, Status> {
+        let req = request.into_inner();
+        let file = claim_one(&self.player, &req.upload_id, Purpose::GdtfImport)?;
+        let report = lighting_api::import_gdtf(&self.config_path()?, file, req.name.as_deref())
+            .await
+            .map_err(import_status)?;
+        Ok(Response::new(convert::gdtf_import(&report)))
+    }
+
+    async fn inspect_mvr(
+        &self,
+        request: Request<InspectMvrRequest>,
+    ) -> Result<Response<MvrInspection>, Status> {
+        let req = request.into_inner();
+        let ask = mvr_ask(req.options)?;
+        let file = claim_one(&self.player, &req.upload_id, Purpose::MvrInspect)?;
+        let inspection = mvr_api::inspect_mvr(&self.config_path()?, file, &ask)
+            .await
+            .map_err(import_status)?;
+        Ok(Response::new(convert::mvr_inspection(&inspection)))
+    }
+
+    async fn import_mvr(
+        &self,
+        request: Request<ImportMvrRequest>,
+    ) -> Result<Response<ImportMvrResponse>, Status> {
+        let req = request.into_inner();
+        let ask = mvr_ask(req.options)?;
+        let file = claim_one(&self.player, &req.upload_id, Purpose::MvrImport)?;
+        let answer = mvr_api::import_mvr(&self.player, &self.config_path()?, file, &ask, req.write)
+            .await
+            .map_err(import_status)?;
+        Ok(Response::new(convert::mvr_import_answer(&answer)))
+    }
+
+    async fn export_mvr(
+        &self,
+        request: Request<ExportMvrRequest>,
+    ) -> Result<Response<ExportMvrResponse>, Status> {
+        let req = request.into_inner();
+        let ask = ExportAsk {
+            venue: req.venue,
+            layers_from_tags: req.layers_from_tags,
+            file: req.file,
+            venues_dir: req.venues_dir,
+            fixture_types_dir: req.fixture_types_dir,
+        };
+        let (bytes, file_name) = mvr_api::build_export(&self.config_path()?, &ask)
+            .await
+            .map_err(answer_status)?;
+        let size = bytes.len() as u64;
+        let transfers = self.player.transfers().clone();
+        let name = file_name.clone();
+        let id = tokio::task::spawn_blocking(move || transfers.stage_download(name, &bytes))
+            .await
+            .map_err(|e| Status::internal(format!("staging the download failed: {e}")))?
+            .map_err(transfer_status)?;
+        Ok(Response::new(ExportMvrResponse {
+            path: format!("/downloads/{id}"),
+            file_name,
+            size,
+        }))
+    }
+}
+
+/// The metadata key of a refused GDTF or MVR import (or inspection) that
+/// says what refused it, in a word: `venue` (the venue name or its file),
+/// `record` (an embedded fixture's record), `name`, `library` (an archive
+/// of that file name, different, is in the library), `write` or
+/// `unreadable`.
+pub const IMPORT_KIND_KEY: &str = "x-import-kind";
+
+/// A refused import or inspection as a status, with the kind of refusal in
+/// [`IMPORT_KIND_KEY`].
+fn import_status(answer: Answer) -> Status {
+    let kind = answer.body["kind"]
+        .as_str()
+        .and_then(|kind| kind.parse::<MetadataValue<_>>().ok());
+    let mut status = answer_status(answer);
+    if let Some(kind) = kind {
+        status.metadata_mut().insert(IMPORT_KIND_KEY, kind);
+    }
+    status
+}
+
+/// What an MVR inspection or import is asked for, as the plain functions
+/// read it.
+#[allow(clippy::result_large_err)]
+fn mvr_ask(options: Option<proto::MvrOptions>) -> Result<MvrAsk, Status> {
+    let options = options.unwrap_or_default();
+    Ok(MvrAsk {
+        name: options.name,
+        origin_mm: options
+            .origin_mm
+            .map(|v| mvr_api::origin_mm(v.x, v.y, v.z))
+            .transpose()
+            .map_err(answer_status)?,
+        venues_dir: options.venues_dir,
+        fixture_types_dir: options.fixture_types_dir,
+        keep: options
+            .keep
+            .map(|keep| crate::lighting::mvr_types::MvrKeep {
+                fixtures: keep
+                    .fixtures
+                    .into_iter()
+                    .map(|(name, fields)| (name, fields.fields))
+                    .collect(),
+                focus_points: keep.focus_points,
+            })
+            .unwrap_or_default(),
+    })
 }
 
 #[cfg(test)]

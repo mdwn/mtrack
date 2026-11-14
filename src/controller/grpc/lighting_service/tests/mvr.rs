@@ -14,7 +14,7 @@
 
 //! The MVR export calls (`GetMvrExportSummary`, `KeepMvrExport`) and the
 //! aim points (`AddVenueAimPoints`), on a venue imported from a synthetic
-//! MVR (the import itself is still an HTTP route), and the venue save and
+//! MVR (imported through the plain import), and the venue save and
 //! read of such a venue: each held by a test that was the REST route's.
 
 use serde_json::{json, Value};

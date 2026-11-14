@@ -23,6 +23,7 @@ mod settings;
 mod type_paths;
 mod type_writes;
 mod types;
+mod uploads;
 mod venue_paths;
 mod venue_writes;
 mod venues;

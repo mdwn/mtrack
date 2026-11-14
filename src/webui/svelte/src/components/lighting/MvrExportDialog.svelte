@@ -186,14 +186,14 @@
         { file: fileName.trim(), layersFromTags },
         dirs,
       );
-      const url = URL.createObjectURL(result.blob);
+      // The server staged the archive: the browser downloads it from the
+      // path it answered (an attachment, so the page stays where it is).
       const a = document.createElement("a");
-      a.href = url;
+      a.href = result.path;
       a.download = result.fileName;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
       if (keep) await keepCopy();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);

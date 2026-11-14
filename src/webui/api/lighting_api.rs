@@ -22,7 +22,7 @@ use crate::webui::wire::preview::{
     LightFileInfo, LightingGroup, LightingGroups, LightingValidation,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -50,43 +50,14 @@ pub(super) fn project_root(config_path: &std::path::Path) -> Result<std::path::P
         .to_path_buf())
 }
 
-/// Pulls the first uploaded file out of a multipart body: (file name, bytes).
-async fn first_multipart_file(
-    multipart: &mut axum::extract::Multipart,
-) -> Result<(String, axum::body::Bytes), axum::response::Response> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Failed to read multipart field: {}", e)})),
-        )
-            .into_response()
-    })? {
-        let Some(filename) = field.file_name().map(|f| f.to_string()) else {
-            continue;
-        };
-        // The name becomes a library path component; keep only the final
-        // component of whatever the browser sent.
-        let filename = std::path::Path::new(&filename)
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if filename.is_empty() {
-            continue;
-        }
-        let bytes = field.bytes().await.map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Failed to read file data: {}", e)})),
-            )
-                .into_response()
-        })?;
-        return Ok((filename, bytes));
-    }
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error": "No file uploaded"})),
-    )
-        .into_response())
+/// The name an uploaded archive is kept under in the library: the final
+/// component of whatever the browser sent, since it becomes a path
+/// component. None when there is no such component.
+pub(crate) fn archive_file_name(raw: &str) -> Option<String> {
+    std::path::Path::new(raw)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
 }
 
 // The archive's fixture name as a fixture type name: the importer's rule,
@@ -164,45 +135,45 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
     GdtfInspection { modes }
 }
 
-/// Query parameters for the GDTF import endpoint.
-#[derive(serde::Deserialize)]
-pub(super) struct GdtfImportQuery {
-    /// A name for the fixture; given, a record pins it.
-    name: Option<String>,
+/// What a GDTF upload announces: the name it will be kept under in the
+/// library (see [`archive_file_name`]), or the refusal.
+pub(crate) fn check_gdtf_upload(file_name: &str) -> Result<String, Answer> {
+    archive_file_name(file_name).ok_or_else(|| Answer::bad("No file uploaded"))
 }
 
-/// POST /api/lighting/gdtf/import[?name=...] — imports an uploaded GDTF
-/// archive through the shared importer (the same one behind the CLI and
-/// MCP): a copy into lighting/library/, where it is a fixture (design §22),
-/// and a warmed rig for its page. One step: a venue fixture can use any of
-/// its modes straight away. Answers the import report
-/// (`already_imported` when the same archive was imported before and
+/// Imports the staged GDTF archive `file` through the shared importer (the
+/// same one behind the CLI and MCP): a copy into lighting/library/, where it
+/// is a fixture (design §22), and a warmed rig for its page. One step: a
+/// venue fixture can use any of its modes straight away. Answers the import
+/// report (`already_imported` when the same archive was imported before and
 /// nothing was written; `renamed_from` when the archive's fixture name was
-/// taken). A different archive of the same file name already in the library,
-/// or a record name or file that is taken, is a 409; anything else refused
-/// is a 400.
-pub(super) async fn import_gdtf(
-    State(state): State<WebUiState>,
-    Query(query): Query<GdtfImportQuery>,
-    mut multipart: axum::extract::Multipart,
-) -> impl IntoResponse {
-    let (filename, bytes) = first_multipart_file(&mut multipart).await?;
-    let project = project_root(&state.config_path)?;
+/// taken). `name` is a name for the fixture; given, a record pins it. A
+/// different archive of the same file name already in the library, or a
+/// record name or file that is taken, is a 409; anything else refused is a
+/// 400. The staged file is deleted whether this succeeds or not.
+pub(crate) async fn import_gdtf(
+    config_path: &std::path::Path,
+    file: crate::webui::transfers::Claimed,
+    name: Option<&str>,
+) -> Result<lighting::import::GdtfImport, Answer> {
+    let project = project_root(config_path)?;
     // Where the engine reads fixture types on this host, as the CLI and MCP
     // import into (#673): its name check and a pinned record go there.
-    let types_dir = lighting_dir(&state.config_path, None, LightingDir::FixtureTypes)?;
-    // The inner Result survives spawn_blocking_io so an import refusal (bad
+    let types_dir = lighting_dir(config_path, None, LightingDir::FixtureTypes)?;
+    let name = name.map(str::to_string);
+    // The inner Result survives the blocking call so an import refusal (bad
     // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
-    let report = super::helpers::spawn_blocking_io("import gdtf", move || {
+    let report = super::helpers::blocking_answer("import gdtf", move || {
+        let bytes = file.read().map_err(|e| e.to_string())?;
         // A pinned name writes a fixture type record, in turn with the
         // other fixture type and venue saves (#578).
         let _guard = VENUE_WRITES.blocking_lock();
         Ok::<_, String>(
             lighting::import::import_gdtf_bytes(
                 &bytes,
-                &filename,
-                query.name.as_deref(),
+                &file.file_name,
+                name.as_deref(),
                 &project,
                 &types_dir,
             )
@@ -210,8 +181,8 @@ pub(super) async fn import_gdtf(
         )
     })
     .await?
-    .map_err(|(status, body)| (status, Json(body)).into_response())?;
-    Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
+    .map_err(|(status, body)| Answer { status, body })?;
+    Ok(report)
 }
 
 /// Recursively finds light show files (`.light`, in any case:
@@ -2676,31 +2647,6 @@ mod test {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    /// A project whose songs root is the project itself (`songs: "."`, as
-    /// on the harness), so the endpoints reach the lighting directories;
-    /// `config` is its mtrack.yaml.
-    fn light_shows_at_the_root(config: &str) -> (axum::Router, tempfile::TempDir) {
-        let (state, dir) = test_state();
-        std::fs::write(dir.path().join("mtrack.yaml"), config).unwrap();
-        let mut sources = state.player.song_sources().unwrap_or_default();
-        sources.songs = dir.path().to_path_buf();
-        state.player.set_song_sources(sources);
-        for sub in [
-            "lighting/venues",
-            "lighting/fixture_types",
-            "lighting/x",
-            "shows",
-        ] {
-            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
-        }
-        std::fs::write(
-            dir.path().join("lighting/venues/club.light"),
-            "venue \"club\" {\n  fixture \"A\" Par @ 1:1\n}\n",
-        )
-        .unwrap();
-        (router().with_state(state), dir)
-    }
-
     #[test]
     fn a_path_is_within_a_dir_by_identity() {
         let dir = tempfile::tempdir().unwrap();
@@ -3060,219 +3006,11 @@ mod test {
         }
     }
 
-    fn multipart_body(filename: &str, bytes: &[u8]) -> (String, Vec<u8>) {
-        let boundary = "mtrack-test-boundary";
-        let mut body = Vec::new();
-        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        body.extend_from_slice(
-            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
-                .as_bytes(),
-        );
-        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
-        body.extend_from_slice(bytes);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        (format!("multipart/form-data; boundary={boundary}"), body)
-    }
-
     fn synthetic_gdtf_bytes() -> Vec<u8> {
         crate::lighting::gdtf::build_zip(&[(
             "description.xml",
             crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
         )])
-    }
-
-    #[tokio::test]
-    async fn import_gdtf_writes_and_reports_through_the_shared_importer() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        // A traversal-shaped filename must land as its final component only.
-        let (content_type, body) = multipart_body("../synth.gdtf", &synthetic_gdtf_bytes());
-
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/gdtf/import?name=Brick")
-                    .header("content-type", content_type)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(parsed["type_name"], "Brick");
-        assert!(dir.path().join("lighting/library/synth.gdtf").exists());
-        assert!(
-            !dir.path().parent().unwrap().join("synth.gdtf").exists(),
-            "traversal filename must not escape the library"
-        );
-        assert!(dir
-            .path()
-            .join("lighting/fixture_types/brick.fixture")
-            .exists());
-        assert!(dir.path().join("lighting/.cache").is_dir());
-
-        // A name another fixture has is a conflict naming its file, not a
-        // server fault; so is a name whose file another type has.
-        let other = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", "Other Brick")
-                .as_bytes(),
-        )]);
-        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert_eq!(
-            parsed["error"],
-            "fixture type \"Brick\" is already declared in brick.fixture; choose another name"
-        );
-        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=BRICK%201").await;
-        assert_eq!(status, StatusCode::OK, "{parsed}");
-        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=brick_1").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert_eq!(
-            parsed["error"],
-            "brick_1.fixture is taken by \"BRICK 1\"; choose another name"
-        );
-    }
-
-    /// #673: the import's name check and its pinned record go to the
-    /// fixture types directory this host's profile sets, as the CLI and MCP
-    /// put them, not the default one the player does not read; and the
-    /// other endpoints that default a directory read it there too.
-    #[tokio::test]
-    async fn an_import_goes_to_the_hosts_configured_fixture_types_dir() {
-        let config = "songs: \".\"\nprofiles:\n  - hostname: not-this-host-x9\n    dmx:\n      \
-                      universes: []\n      lighting:\n        directories:\n          \
-                      fixture_types: other/types\n  - dmx:\n      universes: []\n      \
-                      lighting:\n        directories:\n          fixture_types: rig/types\n";
-        let (app, dir) = light_shows_at_the_root(config);
-        std::fs::create_dir_all(dir.path().join("rig/types")).unwrap();
-        let (status, parsed) =
-            import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "?name=Brick").await;
-        assert_eq!(status, StatusCode::OK, "{parsed}");
-        assert!(dir.path().join("rig/types/brick.fixture").exists());
-        assert!(!dir
-            .path()
-            .join("lighting/fixture_types/brick.fixture")
-            .exists());
-        assert!(!dir.path().join("other/types/brick.fixture").exists());
-        // The list with no directory named is this host's directory's.
-        let list = list_fixture_types(&dir.path().join("mtrack.yaml"), None, None)
-            .await
-            .unwrap();
-        assert!(list.fixture_types.contains_key("Brick"), "{list:?}");
-        // Taken there: another archive under the name is a conflict.
-        let other = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", "Other Brick")
-                .as_bytes(),
-        )]);
-        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-    }
-
-    /// Uploads an archive to the import endpoint; the status and the answer.
-    async fn import_upload(
-        app: &axum::Router,
-        file: &str,
-        bytes: &[u8],
-        query: &str,
-    ) -> (StatusCode, serde_json::Value) {
-        let (content_type, body) = multipart_body(file, bytes);
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri(format!("/lighting/gdtf/import{query}"))
-                    .header("content-type", content_type)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (
-            status,
-            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
-        )
-    }
-
-    #[tokio::test]
-    async fn an_import_with_no_mode_is_one_step_and_says_what_the_user_has() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let (status, parsed) = import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "").await;
-
-        assert_eq!(status, StatusCode::OK, "{parsed}");
-        assert_eq!(parsed["type_name"], "Synth Brick");
-        assert_eq!(parsed["fixture"], "Synth Brick");
-        assert_eq!(parsed["manufacturer"], "mtrack synthetic");
-        assert_eq!(parsed["modes"], 2);
-        assert_eq!(parsed["archive"], "lighting/library/synth.gdtf");
-        assert_eq!(parsed["already_imported"], false);
-        assert!(parsed["renamed_from"].is_null());
-        assert_eq!(parsed["refused_modes"], serde_json::json!([]));
-        assert!(parsed.get("warnings").is_none(), "{parsed}");
-        assert!(parsed.get("replaced_archive").is_none(), "{parsed}");
-        assert!(
-            !dir.path().join("lighting/fixture_types").exists(),
-            "an import is a copy; no record"
-        );
-
-        // The same archive again: nothing written, and it says so.
-        let (status, parsed) = import_upload(&app, "copy.gdtf", &synthetic_gdtf_bytes(), "").await;
-        assert_eq!(status, StatusCode::OK, "{parsed}");
-        assert_eq!(parsed["already_imported"], true);
-        assert_eq!(parsed["type_name"], "Synth Brick");
-        assert!(!dir.path().join("lighting/library/copy.gdtf").exists());
-
-        // Another archive of the same fixture name gets its file stem.
-        let other = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("mtrack synthetic", "someone else")
-                .as_bytes(),
-        )]);
-        let (status, parsed) = import_upload(&app, "brick-v2.gdtf", &other, "").await;
-        assert_eq!(status, StatusCode::OK, "{parsed}");
-        assert_eq!(parsed["type_name"], "Synth Brick (brick-v2)");
-        assert_eq!(parsed["renamed_from"], "Synth Brick");
-        let pin = std::fs::read_to_string(
-            dir.path()
-                .join("lighting/fixture_types/synth_brick_brick-v2.fixture"),
-        )
-        .unwrap_or_else(|e| panic!("the newcomer's name is pinned: {e}"));
-        assert!(
-            pin.contains("from gdtf(\"lighting/library/brick-v2.gdtf\")"),
-            "{pin}"
-        );
-
-        // A different archive of a name the library already has: 409, in
-        // the user's terms, and nothing written.
-        let third = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", "Third Brick")
-                .as_bytes(),
-        )]);
-        let (status, parsed) = import_upload(&app, "synth.gdtf", &third, "").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        let error = parsed["error"].as_str().unwrap();
-        assert!(error.contains("Rename your file"), "{error}");
-        assert!(!error.contains(".fixture"), "{error}");
-
-        // The fixture page takes it with no record.
-        let details = fixture_type_gdtf(&dir.path().join("mtrack.yaml"), "Synth Brick", None, None)
-            .await
-            .unwrap();
-        assert!(details.rig.is_some(), "{details:?}");
     }
 
     #[tokio::test]

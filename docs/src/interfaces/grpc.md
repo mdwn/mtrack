@@ -121,7 +121,8 @@ the metronome defaults, the hardware profile files of the `profiles_dir`, the au
 device lists, the audio device test, the trigger calibration, the restart of the controllers, and
 the Bluetooth pairing;
 the song pages and the import pages call it for a song's config, its files, its waveform and tempo
-guess, and for browsing the project and importing songs from it.
+guess, and for browsing the project and importing songs from it; and the pages that take a file
+call it to announce the upload and to use it (see [Files](#files)).
 
 | RPC | Description |
 |---|---|
@@ -150,6 +151,9 @@ guess, and for browsing the project and importing songs from it.
 | `BrowseDirectory` | Lists a folder of the project (`path`, relative to the folder holding `mtrack.yaml`; empty for the folder itself), directories first, then files by name, hidden ones left out. `NOT_FOUND` for a path that is not a folder within the project, symlinks that leave it included. Open while locked. |
 | `CreateSongInDirectory` | Makes a song of a project folder: scans it for audio, MIDI and lighting files, splits stereo and multichannel files into a track per channel, writes the `song.yaml` and reloads the songs. `name` is optional (the folder's, past the names taken). `ALREADY_EXISTS` when the folder has a config or `name` is another song's (with `x-taken-name-bin`); `INVALID_ARGUMENT` for a path that is not a folder; `NOT_FOUND` for one outside the project. Refused while locked. |
 | `BulkImportSongs` | Makes a song of each song folder below a project folder that has no config, and reloads the songs once. Folders with a config are `skipped`; a folder that fails is in `failed`, not an error. Errors as `CreateSongInDirectory`. Refused while locked. |
+| `BeginUpload` | Announces a file about to be sent to the web server: its `purpose` (`TRACK` of a `song`, `SAMPLE`, `GDTF_IMPORT`, `MVR_INSPECT` or `MVR_IMPORT`), its `file_name` and its `size` in bytes (required). Answers an `upload_id` (128 random bits, hex) and the `path` to `PUT` the bytes to, `/uploads/<upload_id>`. The name is checked here by the rules the claiming call holds it to, which checks it again: a track's by a song's file name rules, a sample's by the sample rules, a GDTF's or an MVR's reduced to its final component (an MVR's must end in `.mvr`). A GDTF or an MVR may declare at most 272 MiB; a track or a sample has no cap beyond its declared size. `INVALID_ARGUMENT` for a purpose, name, song or size that is not valid; `RESOURCE_EXHAUSTED` when 32 uploads and staged downloads are pending. Every purpose but `MVR_INSPECT` (a pure read) is refused while locked, with the lock's `FAILED_PRECONDITION`. |
+| `AddTrackFiles` | Adds the uploaded files (`upload_ids`, begun as `TRACK` of this `song`) to a song, which is made, with its config, when it is new, then reloads the songs. A file of that name already in the song is replaced (`replaced`). Answers the name the song has (a new one's is not the one asked for when that is taken) and each file. An id that is not known or has expired is `NOT_FOUND`; one for another purpose or song, not sent whole, or not as long as announced is `FAILED_PRECONDITION`; a name or file type that is not valid is `INVALID_ARGUMENT`. Each upload is spent whatever the outcome. Refused while locked. |
+| `AddSampleFile` | Stores the uploaded file (`SAMPLE`) in the project's `samples/` directory, made if need be, and answers the `path` a sample definition names it by (`samples/<file>`). Errors as `AddTrackFiles`. Refused while locked. |
 | `GetBluetooth` | The Bluetooth controller as it is now, as a `BluetoothStatus`: `configured` (the running config has a `ble` controller), `running` (it is up), `error` (why it is not running, or what the adapter refused when listing phones), the `pairing` window (`open`, `seconds_left`, rounded up, 0 when closed) and the paired `devices` (`address`, `name` when the phone gave one, `connected`). A device the owner trusts in BlueZ (a BLE MIDI pedal, say) is not listed. Open while locked. |
 | `SetBluetoothPairing` | Opens the pairing window for `seconds` (120 when absent, kept between 10 and 600) or, with `open: false`, closes it, and answers the `BluetoothStatus` after. `FAILED_PRECONDITION` when Bluetooth is not running; `UNAVAILABLE` when the radio stack refuses. Refused while locked. |
 | `ForgetBluetoothDevice` | Forgets a paired phone by `address` (it must pair again) and answers the `BluetoothStatus` after. `INVALID_ARGUMENT` for an address that is none; `NOT_FOUND` for one that is not a phone paired with the player (the owner's own trusted devices included); `FAILED_PRECONDITION` when Bluetooth is not running; `UNAVAILABLE` when the radio stack refuses. Refused while locked. |
@@ -225,7 +229,52 @@ refused as above.
 | `GetMvrExportSummary` | What an MVR export of a venue would hold, without writing or sending the archive: counts, the GDTFs embedded and generated, warnings, every positioned fixed fixture with the focus point it links to, and the `file_name` a download would carry. `INVALID_ARGUMENT` with the reason when it cannot be made. Open while locked. |
 | `KeepMvrExport` | Writes the export to `lighting/export/` and answers where (`kept`). A file of that name already there is left alone and named (`existing`) unless `overwrite` is set. Refused while locked. |
 
-The export's archive itself, and the MVR import, are HTTP.
+| `ImportGdtf` | Imports the uploaded GDTF (`GDTF_IMPORT`) through the importer behind `mtrack import-gdtf`: a copy into `lighting/library/`, where it is a fixture, and a warmed rig for its page. `name` pins the fixture's name in a record. Answers what the user has: `type_name`, `already_imported`, `renamed_from`, the `refused_modes`. `FAILED_PRECONDITION` for a different archive of a file name already in the library, or a record name or file that is taken; `INVALID_ARGUMENT` for anything else refused (such as a file that is not a GDTF); the `x-import-kind` metadata says which kind of refusal (`name`, `library`, `record`, `write`, `unreadable`). Refused while locked. |
+| `InspectMvr` | Reads the uploaded MVR (`MVR_INSPECT`): what an import would do (`report`, the plan) and the file seen from above (`scene`: every fixture's and focus point's position in the file's millimeters, the scenery, and the stage floor's bounds when it has one). Writes nothing. `options` are the venue `name`, the `origin_mm`, the `venues_dir` and `fixture_types_dir`. `INVALID_ARGUMENT` for a file the importer refuses, with the parser's reason; `FAILED_PRECONDITION` with `x-import-kind` `venue` for a venue name the one rule for lighting files refuses (another name answers it) and `record` for an embedded fixture's record. Open while locked. |
+| `ImportMvr` | Imports the uploaded MVR (`MVR_IMPORT`): `write` false plans only (what an `InspectMvr`'s report says) and writes nothing; `write` true writes the archive and its embedded GDTFs to `lighting/library/`, a record per referenced type and a seeded or merged venue, and says whether the running engine re-read the venue (`reloaded`) and the venue's failure to load, if the import left one (`venue_error`). `options.keep` lists the hand edits a merge keeps. Never makes the venue current. Errors as `InspectMvr`. Refused while locked. |
+| `ExportMvr` | Builds a venue's MVR archive and stages it for download: answers `path`, `/downloads/<id>` on the web server, the `file_name` it carries and its `size`. `GET <path>` answers the archive as an attachment, any number of times, until ten minutes after this call. Nothing is written to the project (`KeepMvrExport` does that). Counts toward the 32 pending uploads and downloads. `INVALID_ARGUMENT`, with the reason, when it cannot be made. Open while locked. |
+
+### Files
+
+Calls are gRPC; bytes are HTTP. A file travels in three steps, and the middle one is on the
+**web server** (the web UI's port, 8080), not on the gRPC port, which does not serve it. A
+script that talks to the gRPC port alone is handed a path only the web port serves.
+
+1. `BeginUpload` announces the file and answers an `upload_id` and a `path`.
+2. `PUT <web address><path>` sends the bytes, as the whole body, exactly the `size` announced. It
+   answers 204; 404 for an id that is not known (or has expired), 409 for one that has its bytes
+   already, 413 for a body longer than announced (reading stops and the upload is dropped). The
+   id is the permission: the `PUT` is not behind the lock, because the id was issued under it. A
+   body shorter than announced is received, and the claiming call refuses it.
+3. The call that uses the file (`AddTrackFiles`, `AddSampleFile`, `ImportGdtf`, `InspectMvr`,
+   `ImportMvr`) names the upload and answers what the file became. An upload is good for one
+   purpose and one use; its staged file is deleted by the call whether it succeeds or not.
+
+```bash
+# 1. announce a track of the song "Opener"
+grpcurl -plaintext -d '{"purpose":"UPLOAD_PURPOSE_TRACK","file_name":"kick.wav","size":882044,"song":"Opener"}' \
+  host:43234 player.v1.ConfigService/BeginUpload
+# { "uploadId": "9f0c…", "path": "/uploads/9f0c…" }
+
+# 2. send the bytes to the web server
+curl -sf -T kick.wav http://host:8080/uploads/9f0c…
+
+# 3. add it to the song
+grpcurl -plaintext -d '{"song":"Opener","upload_ids":["9f0c…"]}' \
+  host:43234 player.v1.ConfigService/AddTrackFiles
+```
+
+An upload not yet sent is dropped ten minutes after `BeginUpload`, and one received but not used
+ten minutes after its last byte; one still arriving is not dropped. At most 32 uploads and
+staged downloads are pending at once. The staging files are in a private directory (mode `0700`)
+made when the player starts, named by the id alone, and removed when it shuts down.
+
+`ExportMvr` goes the other way: it answers a `path` (`/downloads/<id>`) on the web server, and
+`curl -OJ http://host:8080/downloads/<id>` saves the archive under the name it carries. A
+download is fetched as often as needed until it expires, ten minutes after `ExportMvr`.
+
+3D models and thumbnails stay plain `GET`s under `/api/lighting/assets/`, which the stage's scene
+data names.
 
 ## Lock mode
 
@@ -233,14 +282,16 @@ While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAud
 `UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile`, `RemoveProfile`
 and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
 `DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
-`DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `SetBluetoothPairing` and
+`DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `AddTrackFiles`,
+`AddSampleFile`, `SetBluetoothPairing` and
 `ForgetBluetoothDevice`, and `LightingService`'s `SaveLightShow`, `DeleteLightShow`,
 `StartFixtureTest`, `SaveFixtureType`, `DeleteFixtureType`, `SaveFixtureTypeSettings`, `SaveVenue`, `DeleteVenue`,
-`AddVenueAimPoints` and `KeepMvrExport`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`AddVenueAimPoints`, `KeepMvrExport`, `ImportGdtf` and `ImportMvr`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are
-refused too. Unlock from the web UI, or with `SetLock`, which is open while locked. When the web UI cannot start, the
+refused too. `BeginUpload` is refused for every purpose but `MVR_INSPECT`, a read, which `InspectMvr` and
+`ExportMvr` are too. Unlock from the web UI, or with `SetLock`, which is open while locked. When the web UI cannot start, the
 player runs unlocked, since the web UI is how the lock is normally released.
 
 ## Health checking

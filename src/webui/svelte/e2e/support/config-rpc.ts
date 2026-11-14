@@ -30,6 +30,9 @@ import {
   FileKind as FileKindMessage,
   ProbeOutcome,
   TempoGuessSource,
+  type AddSampleFileResponseSchema,
+  type AddTrackFilesResponseSchema,
+  type BeginUploadResponseSchema,
   type BluetoothStatusSchema,
   type BrowseDirectoryResponseSchema,
   type BulkImportSongsResponseSchema,
@@ -428,4 +431,36 @@ export function serveSongConfig(
     }
     return getSongConfigReply(yaml);
   });
+}
+
+// ---- Uploads ----
+
+/** An announced upload: its id, and the path on the web server its bytes go
+ *  to. */
+export function beginUploadReply(
+  uploadId: string,
+): MessageInitShape<typeof BeginUploadResponseSchema> {
+  return { uploadId, path: `/uploads/${uploadId}` };
+}
+
+/** Track files added to a song. */
+export function addTrackFilesReply(added: {
+  song: string;
+  files: { file: string; replaced?: boolean }[];
+}): MessageInitShape<typeof AddTrackFilesResponseSchema> {
+  return {
+    song: added.song,
+    files: added.files.map((f) => ({
+      file: f.file,
+      replaced: f.replaced ?? false,
+    })),
+  };
+}
+
+/** A sample file stored. */
+export function addSampleFileReply(added: {
+  file: string;
+  path: string;
+}): MessageInitShape<typeof AddSampleFileResponseSchema> {
+  return added;
 }

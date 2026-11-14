@@ -174,7 +174,8 @@ pub async fn start_or_unlock(
 /// - `/` — Web UI SPA (dashboard, config editor, etc.)
 /// - `/player.v1.PlayerService/*` — gRPC-Web endpoints for player control
 /// - `/grpc.health.v1.Health/*` — the standard gRPC health service, over gRPC-Web
-/// - `/api/*` — REST endpoints for config/song/playlist/lighting CRUD
+/// - `/api/*` — what is left of REST: the lighting asset store
+/// - `/uploads/{id}`, `/downloads/{id}` — file bytes (see `transfers`)
 /// - Static assets from the embedded Svelte dist directory
 pub async fn start(
     webui_state: WebUiState,
@@ -187,6 +188,9 @@ pub async fn start(
     let api_router = super::api::guarded_router(&webui_state);
     let app = Router::new()
         .nest("/api", api_router)
+        // File bytes: outside `/api` and its lock middleware (the id was
+        // issued under the lock policy).
+        .merge(super::transfer_routes::router())
         .route("/player.v1.PlayerService/{method}", any(grpc_web_handler))
         .route(
             "/player.v1.ConfigService/{method}",
@@ -976,6 +980,15 @@ mod test {
             ("POST", "/api/lighting/venues/Hall/aim-points"),
             ("GET", "/api/lighting/mvr/export/summary"),
             ("POST", "/api/lighting/mvr/export/keep"),
+            // The routes that carried file bytes: `BeginUpload`, `PUT
+            // /uploads/{id}` and the claiming call replace them.
+            ("PUT", "/api/songs/Song/tracks/kick.wav"),
+            ("POST", "/api/songs/Song/tracks"),
+            ("PUT", "/api/samples/upload/kick.wav"),
+            ("POST", "/api/lighting/gdtf/import"),
+            ("POST", "/api/lighting/mvr/inspect"),
+            ("POST", "/api/lighting/mvr/import"),
+            ("GET", "/api/lighting/mvr/export"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))
@@ -992,6 +1005,187 @@ mod test {
                 "{method} {path} still answers JSON ({content_type})"
             );
         }
+    }
+
+    /// File bytes: `BeginUpload` over gRPC-Web answers an id and a path, the
+    /// bytes go to `PUT <path>` (outside `/api`, past the lock, over the
+    /// default body limit), and the claiming call takes them; a staged
+    /// download is fetched by `GET`. The web server serves both; nothing of
+    /// the kind is under `/api`.
+    #[tokio::test]
+    async fn file_bytes_travel_by_put_and_get_outside_the_api_and_the_lock() {
+        use crate::proto::player::v1 as pb;
+        use prost::Message;
+        let (state, _dir) = test_webui_state();
+        let player = state.player.clone();
+        assert!(player.is_locked());
+        let handle = start(state, "127.0.0.1".to_string(), 0).await.unwrap();
+        let base_url = format!("http://{}", handle.local_addr());
+        let client = reqwest::Client::new();
+        let frame = |message: Vec<u8>| {
+            let mut frame = vec![0u8];
+            frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+            frame.extend_from_slice(&message);
+            frame
+        };
+        let call = |service: &'static str, method: &'static str, message: Vec<u8>| {
+            let client = client.clone();
+            let base_url = base_url.clone();
+            let body = frame(message);
+            async move {
+                let resp = client
+                    .post(format!("{base_url}/player.v1.{service}/{method}"))
+                    .header("content-type", "application/grpc-web+proto")
+                    .header("x-grpc-web", "1")
+                    .body(body)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), 200, "{method}");
+                let headers = format!("{:?}", resp.headers()).to_lowercase();
+                let bytes = resp.bytes().await.unwrap();
+                (headers, bytes)
+            }
+        };
+        let begin = |purpose: pb::UploadPurpose, size: u64| {
+            pb::BeginUploadRequest {
+                purpose: purpose.into(),
+                file_name: "Kellys.mvr".to_string(),
+                size: Some(size),
+                song: None,
+            }
+            .encode_to_vec()
+        };
+
+        // Locked: only the inspection may be announced.
+        let (headers, body) = call(
+            "ConfigService",
+            "BeginUpload",
+            begin(pb::UploadPurpose::MvrImport, 6),
+        )
+        .await;
+        assert!(
+            format!("{headers} {}", String::from_utf8_lossy(&body))
+                .to_lowercase()
+                .contains("locked"),
+            "an import announced while locked"
+        );
+        let (headers, body) = call(
+            "ConfigService",
+            "BeginUpload",
+            begin(pb::UploadPurpose::MvrInspect, 6),
+        )
+        .await;
+        assert!(!headers.contains("grpc-status: 9"), "{headers}");
+        let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
+        let begun = pb::BeginUploadResponse::decode(&body[5..5 + len]).unwrap();
+        assert_eq!(begun.path, format!("/uploads/{}", begun.upload_id));
+
+        // The bytes: not under the API, and not behind the lock.
+        let misplaced = client
+            .put(format!("{base_url}/api{}", begun.path))
+            .body("abcdef")
+            .send()
+            .await
+            .unwrap();
+        assert!(!misplaced.status().is_success());
+        let unknown = client
+            .put(format!(
+                "{base_url}/uploads/0123456789abcdef0123456789abcdef"
+            ))
+            .body("abcdef")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 404);
+        let too_long = client
+            .put(format!("{base_url}{}", begun.path))
+            .body("abcdefg")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(too_long.status(), 413);
+        // Spent: the announcement is gone with the refused bytes.
+        let again = client
+            .put(format!("{base_url}{}", begun.path))
+            .body("abcdef")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(again.status(), 404);
+
+        let (_, body) = call(
+            "ConfigService",
+            "BeginUpload",
+            begin(pb::UploadPurpose::MvrInspect, 6),
+        )
+        .await;
+        let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
+        let begun = pb::BeginUploadResponse::decode(&body[5..5 + len]).unwrap();
+        let put = client
+            .put(format!("{base_url}{}", begun.path))
+            .body("abcdef")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(put.status(), 204);
+        let second = client
+            .put(format!("{base_url}{}", begun.path))
+            .body("abcdef")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second.status(), 409);
+        // The claim reaches its handler (this server has no config store to
+        // inspect against) and spends the upload.
+        let (headers, body) = call(
+            "LightingService",
+            "InspectMvr",
+            pb::InspectMvrRequest {
+                upload_id: begun.upload_id.clone(),
+                options: None,
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        let said = format!("{headers} {}", String::from_utf8_lossy(&body)).to_lowercase();
+        assert!(said.contains("config%20store%20not%20available"), "{said}");
+        assert_eq!(
+            std::fs::read_dir(player.transfers().staging_dir().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+
+        // A download: any number of times, as an attachment.
+        let id = player
+            .transfers()
+            .stage_download("kellys.mvr".to_string(), b"archive")
+            .unwrap();
+        for _ in 0..2 {
+            let got = client
+                .get(format!("{base_url}/downloads/{id}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(got.status(), 200);
+            assert_eq!(got.headers()["content-type"], "application/octet-stream");
+            assert_eq!(
+                got.headers()["content-disposition"],
+                "attachment; filename=\"kellys.mvr\""
+            );
+            assert_eq!(got.bytes().await.unwrap(), "archive");
+        }
+        let api = client
+            .get(format!("{base_url}/api/downloads/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            api.headers().get("content-type").map(|v| v.as_bytes()),
+            Some(&b"application/octet-stream"[..])
+        );
+        drop(handle);
     }
 
     #[tokio::test]

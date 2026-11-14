@@ -753,8 +753,7 @@
           fileName = `dmx_${fileName}`;
         }
         const renamedFile = new File([file], fileName, { type: file.type });
-        const res = await uploadTrack(song.name, renamedFile);
-        if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+        await uploadTrack(song.name, renamedFile);
       }
       onreload();
     } catch (err: any) {

@@ -18,4 +18,6 @@ pub mod hub;
 pub mod safe_path;
 pub mod server;
 pub mod state;
+pub mod transfer_routes;
+pub mod transfers;
 pub mod wire;

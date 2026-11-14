@@ -32,8 +32,16 @@ import {
   songCallError,
 } from "../grpc/songs";
 export { SongNameTakenError } from "../grpc/songs";
+import {
+  mapTrackUploaded,
+  mapTracksUploaded,
+  type TrackUploaded,
+  type TracksUploaded,
+} from "../grpc/uploads";
+import { sendUpload } from "./upload";
 import { mapWaveform } from "../grpc/watch";
-import { uploadFile, uploadFiles } from "./rest";
+import { UploadPurpose } from "../../gen/player/v1/player_pb";
+export type { TrackUploaded, TracksUploaded } from "../grpc/uploads";
 
 /** Every song in the library, with what the song pages show, and those that
  *  failed to load. */
@@ -75,21 +83,54 @@ export async function updateSong(name: string, yaml: string): Promise<void> {
   }
 }
 
+/** Uploads one file into a song (the song and its config are made when it
+ *  is new): the file is announced, its bytes sent to the web server, and
+ *  the song takes it. Answers whether it replaced a file there, and the name
+ *  the song has: a new one's may not be the one asked for, when that is
+ *  taken. A refusal of the file's name or type comes before any bytes. */
 export async function uploadTrack(
   songName: string,
   file: File,
-): Promise<Response> {
-  return uploadFile(
-    `/songs/${encodeURIComponent(songName)}/tracks/${encodeURIComponent(file.name)}`,
+): Promise<TrackUploaded> {
+  const fail = (e: unknown) => songCallError(e, "Upload failed");
+  const id = await sendUpload(
+    { purpose: UploadPurpose.TRACK, song: songName },
     file,
+    fail,
   );
+  try {
+    return mapTrackUploaded(
+      await configClient.addTrackFiles({ song: songName, uploadIds: [id] }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
 }
 
+/** Uploads several files into a song at once. The song takes them together
+ *  or not at all. */
 export async function uploadTracks(
   songName: string,
   files: File[],
-): Promise<Response> {
-  return uploadFiles(`/songs/${encodeURIComponent(songName)}/tracks`, files);
+): Promise<TracksUploaded> {
+  const fail = (e: unknown) => songCallError(e, "Upload failed");
+  const ids: string[] = [];
+  for (const file of files) {
+    ids.push(
+      await sendUpload(
+        { purpose: UploadPurpose.TRACK, song: songName },
+        file,
+        fail,
+      ),
+    );
+  }
+  try {
+    return mapTracksUploaded(
+      await configClient.addTrackFiles({ song: songName, uploadIds: ids }),
+    );
+  } catch (e) {
+    throw fail(e);
+  }
 }
 
 /** Copies a file of the project into a song. Answers the name the song has:

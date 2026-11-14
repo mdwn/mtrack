@@ -23,28 +23,21 @@ pub(crate) mod lighting_writes;
 pub(crate) mod mvr_api;
 pub(crate) mod playlists;
 pub(crate) mod profiles;
+pub(crate) mod sample_files;
 pub(crate) mod songs_api;
 pub(crate) mod status;
 pub(crate) mod write_lock;
 
-use axum::{
-    body::Bytes,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post, put},
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde_json::json;
 
 use super::server::WebUiState;
 use crate::player::lock_policy::{self, Surface};
-use crate::songs as songs_crate;
 
 /// True when a request may proceed while the player is locked: every GET,
 /// and the routes [`lock_policy::OPEN_WHILE_LOCKED`] lists, by method and
 /// the route's own pattern (never the request path: a venue named `lock`
-/// matches `/songs/{name}/tracks/{filename}`, not the lock toggle).
+/// matches that route's pattern, not the lock toggle's).
 fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
     let pattern = pattern.unwrap_or_default();
     let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
@@ -83,139 +76,15 @@ pub(crate) fn guarded_router(state: &WebUiState) -> Router<WebUiState> {
     ))
 }
 
-/// Builds the API router for config read/write endpoints.
+/// Builds the API router for what is left of the REST API.
 ///
-/// Playback control is handled via gRPC-Web (PlayerService), not REST.
+/// Playback control and every call are gRPC-Web (`PlayerService`,
+/// `ConfigService`, `LightingService`). File bytes go over `PUT /uploads/{id}`
+/// and `GET /downloads/{id}` (see `transfers`), outside `/api`.
 pub fn router() -> Router<WebUiState> {
-    // Upload routes get unlimited body size for large audio/MIDI files.
-    let upload_routes = Router::new()
-        .route(
-            "/songs/{name}/tracks/{filename}",
-            put(songs_api::upload_track_single),
-        )
-        .route(
-            "/songs/{name}/tracks",
-            post(songs_api::upload_tracks_multipart),
-        )
-        .route("/samples/upload/{filename}", put(upload_sample_file))
-        .layer(axum::extract::DefaultBodyLimit::disable());
-
-    // GDTF and MVR uploads get a bounded raise instead of a disable: the archive
-    // layer refuses anything past 256MB anyway, so the transport should too.
-    let gdtf_routes = Router::new()
-        .route("/lighting/gdtf/import", post(lighting_api::import_gdtf))
-        .route("/lighting/mvr/inspect", post(mvr_api::inspect_mvr))
-        .route("/lighting/mvr/import", post(mvr_api::import_mvr))
-        .layer(axum::extract::DefaultBodyLimit::max(272 * 1024 * 1024));
-
-    // All other routes use the default body limit.
-    Router::new()
-        .route("/lighting/mvr/export", get(mvr_api::export_mvr))
-        .route(
-            "/lighting/assets/{*path}",
-            get(lighting_api::get_lighting_asset),
-        )
-        .merge(upload_routes)
-        .merge(gdtf_routes)
-}
-
-/// Validates that a filename has a supported audio extension (for sample uploads).
-fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Response>> {
-    use super::safe_path::SafePath;
-    if SafePath::validate_name(filename).is_err() {
-        return Err(Box::new(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid filename"})),
-            )
-                .into_response(),
-        ));
-    }
-
-    let path = std::path::Path::new(filename);
-    if songs_crate::FileKind::of(path) != songs_crate::FileKind::Audio {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        return Err(Box::new(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Unsupported audio file type: .{}", ext)})),
-            )
-                .into_response(),
-        ));
-    }
-
-    Ok(())
-}
-
-/// PUT /api/samples/upload/:filename — uploads a sample audio file.
-///
-/// The file is stored in a `samples/` directory next to the config file.
-/// Returns the relative path `samples/{filename}` for use in sample definitions.
-async fn upload_sample_file(
-    State(state): State<WebUiState>,
-    Path(filename): Path<String>,
-    body: Bytes,
-) -> impl IntoResponse {
-    validate_sample_filename(&filename).map_err(|e| *e)?;
-
-    // Canonicalize the project root first, then build the samples path from
-    // the canonical root so that all filesystem operations use a verified base.
-    // `project_dir_of`, not `parent()`: the latter answers Some("") for a bare
-    // filename, so the fallback never fires and the empty path fails to
-    // canonicalize -- a 500 for every sample upload whenever mtrack was started
-    // as `mtrack start mtrack.yaml`.
-    let project_root = crate::util::project_dir_of(&state.config_path);
-    let root_canonical = project_root.canonicalize().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to resolve project root: {}", e)})),
-        )
-            .into_response()
-    })?;
-    let samples_dir = root_canonical.join("samples");
-
-    if !samples_dir.exists() {
-        std::fs::create_dir_all(&samples_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to create samples directory: {}", e)})),
-            )
-                .into_response()
-        })?;
-    }
-
-    let file_path = samples_dir.join(&filename);
-    // A new sample's name must also pass the rules for new names; one
-    // already there is replaced under its own.
-    let refused =
-        !file_path.exists() && super::safe_path::SafePath::validate_new_name(&filename).is_err();
-    if refused || !file_path.starts_with(&root_canonical) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid filename"})),
-        )
-            .into_response());
-    }
-
-    std::fs::write(&file_path, &body).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write file: {}", e)})),
-        )
-            .into_response()
-    })?;
-
-    let relative_path = format!("samples/{}", filename);
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(crate::webui::wire::config::SampleUploaded {
-                status: "uploaded".to_string(),
-                file: filename,
-                path: relative_path,
-            }),
-        )
-            .into_response(),
+    Router::new().route(
+        "/lighting/assets/{*path}",
+        get(lighting_api::get_lighting_asset),
     )
 }
 
@@ -383,102 +252,23 @@ mod test {
     use super::test_helpers::*;
     use super::*;
     use axum::body::Body;
+    use axum::routing::put;
     use tower::ServiceExt;
 
-    #[tokio::test]
-    async fn upload_sample_file_creates_samples_dir() {
-        let (state, _dir) = test_state();
-        let wav_bytes = create_test_wav();
-        let app = router().with_state(state.clone());
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/samples/upload/kick.wav")
-                    .body(Body::from(wav_bytes))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "uploaded");
-        assert_eq!(parsed["file"], "kick.wav");
-        assert_eq!(parsed["path"], "samples/kick.wav");
-
-        // Verify file was created in samples/ directory next to config.
-        let samples_dir = state.config_path.parent().unwrap().join("samples");
-        assert!(samples_dir.join("kick.wav").exists());
-    }
-
-    /// A sample's extension is read in any case: `Kick.WAV` is audio.
-    #[tokio::test]
-    async fn upload_sample_file_uppercase_extension() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state.clone());
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/samples/upload/Kick.WAV")
-                    .body(Body::from(create_test_wav()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let samples_dir = state.config_path.parent().unwrap().join("samples");
-        assert!(samples_dir.join("Kick.WAV").exists());
-    }
-
-    #[tokio::test]
-    async fn upload_sample_file_path_traversal_rejected() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/samples/upload/..%2F..%2Fetc%2Fpasswd")
-                    .body(Body::from("bad"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn upload_sample_file_unsupported_extension() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/samples/upload/readme.txt")
-                    .body(Body::from("data"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains("Unsupported audio file type"));
-    }
-
+    /// The guard's own routes: a write, by a pattern a name can match the
+    /// suffix of, and the one read the API keeps.
     fn locked_app(state: &WebUiState) -> Router {
+        let routes = router()
+            .route("/songs/{name}/probe/{file}", put(|| async { "written" }))
+            .route("/lock", put(|| async { "written" }));
         Router::new()
-            .nest("/api", guarded_router(state))
+            .nest(
+                "/api",
+                routes.route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    lock_guard,
+                )),
+            )
             .with_state(state.clone())
     }
 
@@ -499,33 +289,37 @@ mod test {
 
     #[tokio::test]
     async fn locked_guard_matches_routes_not_path_suffixes() {
-        let (state, dir) = test_state();
-        state.player.set_locked(true);
-        let app = locked_app(&state);
-
-        // A song named `lock` once rode the `/lock` suffix exemption.
-        let status = send(&app, "PUT", "/api/songs/lock/tracks/kick.wav", "RIFF").await;
-        assert_eq!(status, StatusCode::LOCKED);
-        assert!(!dir.path().join("songs/lock").exists());
-        // Ordinary edits stay locked.
-        assert_eq!(
-            send(&app, "PUT", "/api/samples/upload/kick.wav", "RIFF").await,
-            StatusCode::LOCKED
-        );
-    }
-
-    #[tokio::test]
-    async fn locked_guard_lets_the_allowlisted_routes_through() {
         let (state, _dir) = test_state();
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // The MVR inspector writes nothing. (The lock toggle, the playlist
-        // switch, the controller restart and the lighting validation,
-        // evaluation and fixture test release are gRPC calls, held to the
-        // same table by the gRPC lock guard's tests.)
+        // A song named `lock` once rode the `/lock` suffix exemption.
+        let status = send(&app, "PUT", "/api/songs/lock/probe/kick.wav", "RIFF").await;
+        assert_eq!(status, StatusCode::LOCKED);
+        // Ordinary edits stay locked.
+        assert_eq!(
+            send(&app, "PUT", "/api/lock", "{}").await,
+            StatusCode::LOCKED
+        );
+        state.player.set_locked(false);
+        assert_eq!(
+            send(&app, "PUT", "/api/songs/lock/probe/kick.wav", "RIFF").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn locked_guard_lets_the_reads_through() {
+        let (state, _dir) = test_state();
+        state.player.set_locked(true);
+        let app = locked_app(&state);
+
+        // The web table lists no write: the MVR inspector, its one entry,
+        // is `ConfigService`'s `BeginUpload` and `LightingService`'s
+        // `InspectMvr` now, held to the same table by the gRPC lock guard's
+        // tests. A GET is a read.
         assert_ne!(
-            send(&app, "POST", "/api/lighting/mvr/inspect", "").await,
+            send(&app, "GET", "/api/lighting/assets/x.json", "").await,
             StatusCode::LOCKED
         );
     }

@@ -780,6 +780,10 @@ mod tests {
             "AddVenueAimPoints",
             "GetMvrExportSummary",
             "KeepMvrExport",
+            "ImportGdtf",
+            "InspectMvr",
+            "ImportMvr",
+            "ExportMvr",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }
@@ -828,6 +832,9 @@ mod tests {
             "GetBluetooth",
             "SetBluetoothPairing",
             "ForgetBluetoothDevice",
+            "BeginUpload",
+            "AddTrackFiles",
+            "AddSampleFile",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }
