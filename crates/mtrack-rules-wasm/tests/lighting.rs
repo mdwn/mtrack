@@ -70,6 +70,7 @@ fn lay(source: &str, song_tempo: Option<TempoSource>, until_ms: f64) -> Layout {
         source: source.to_string(),
         path: None,
         song_tempo,
+        layers: None,
         includes: Vec::new(),
         until_ms,
     }
@@ -500,6 +501,7 @@ fn a_file_is_read_as_written_and_laid_out_with_its_includes() {
         source: show.clone(),
         path: Some("band/song/show.light".into()),
         song_tempo: None,
+        layers: None,
         includes: vec![IncludeSource {
             path: include.path.clone(),
             source: source.map(str::to_string),
