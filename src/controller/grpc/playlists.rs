@@ -208,8 +208,8 @@ mod tests {
     use super::super::PlayerServer;
     use crate::proto::player::v1::{
         player_service_server::PlayerService, AmbientSetting, AutoPlay, DeletePlaylistRequest,
-        EntrySettings, Fade, GetPlaylistResponse, ListLightShowsRequest, PlaylistEntry,
-        SavePlaylistRequest, TrackNames,
+        EntrySettings, Fade, GetPlaylistResponse, ListLightShowsRequest, PaletteOverrides,
+        PlaylistEntry, SavePlaylistRequest, TrackNames,
     };
     use crate::testutil::player::{playlist_project, PlaylistProject};
 
@@ -546,9 +546,10 @@ ambient:
             .await;
         let read = get(&project, "set").await;
         let settings = settings_of(&read);
-        assert!(settings[0].palette.is_empty());
-        assert_eq!(settings[1].palette["primary"], "#2040ff");
-        assert_eq!(settings[1].palette["Back-Light"], "cyan");
+        assert_eq!(settings[0].palette, None, "none is omitted");
+        let slots = &settings[1].palette.as_ref().unwrap().slots;
+        assert_eq!(slots["primary"], "#2040ff");
+        assert_eq!(slots["Back-Light"], "cyan");
 
         // The revision does not depend on the map's order, and moves with it.
         assert_eq!(get(&project, "set").await.revision, read.revision);
@@ -578,7 +579,9 @@ ambient:
 
         // Changing one slot and dropping the other replaces the map.
         let mut changed = settings_of(&echoed);
-        changed[0].palette = [("primary".to_string(), "rgb(1, 2, 3)".to_string())].into();
+        changed[0].palette = Some(PaletteOverrides {
+            slots: [("primary".to_string(), "rgb(1, 2, 3)".to_string())].into(),
+        });
         let req = SavePlaylistRequest {
             settings: changed.clone(),
             set_settings: true,
@@ -588,9 +591,31 @@ ambient:
         assert_eq!(settings_of(&saved), changed);
         assert_ne!(saved.revision, echoed.revision);
 
-        // Clearing it writes the entry as its name again.
+        // Settings with no palette field (an app from before palettes) keep it.
+        let mut bare = changed.clone();
+        for s in &mut bare {
+            s.palette = None;
+        }
+        bare[0].auto_play = Some(AutoPlay { gap: "2s".into() });
         let req = SavePlaylistRequest {
-            settings: vec![EntrySettings::default(); 2],
+            settings: bare,
+            set_settings: true,
+            ..save_request("set", &["Song 3", "Song 1"], false)
+        };
+        let kept = save(&project, req).await.unwrap();
+        let kept = settings_of(&kept);
+        assert_eq!(kept[0].palette, changed[0].palette, "survives");
+        assert_eq!(kept[0].auto_play.as_ref().unwrap().gap, "2s");
+
+        // Present and empty clears it, writing the entry as its name again.
+        let req = SavePlaylistRequest {
+            settings: vec![
+                EntrySettings {
+                    palette: Some(PaletteOverrides::default()),
+                    ..Default::default()
+                },
+                EntrySettings::default(),
+            ],
             set_settings: true,
             ..save_request("set", &["Song 3", "Song 1"], false)
         };
@@ -600,7 +625,9 @@ ambient:
 
         // A colour that does not read is refused, and the file kept.
         let bad = EntrySettings {
-            palette: [("primary".to_string(), "notacolor".to_string())].into(),
+            palette: Some(PaletteOverrides {
+                slots: [("primary".to_string(), "notacolor".to_string())].into(),
+            }),
             ..Default::default()
         };
         let req = SavePlaylistRequest {

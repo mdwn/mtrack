@@ -30,7 +30,8 @@ use tonic::Status;
 
 use crate::config::{self, ambient::PlaylistAmbient, AutoPlayConfig, EntryFades, FadeConfig};
 use crate::proto::player::v1::{
-    AmbientSetting, AutoPlay, EntrySettings, Fade, SavePlaylistRequest, TrackNames,
+    AmbientSetting, AutoPlay, EntrySettings, Fade, PaletteOverrides, SavePlaylistRequest,
+    TrackNames,
 };
 use crate::webui::api::playlists::format_gap;
 
@@ -106,8 +107,10 @@ impl Reported {
                     .map(ambient_message),
                 palette: palettes
                     .get(i)
-                    .map(|p| p.clone().into_iter().collect())
-                    .unwrap_or_default(),
+                    .filter(|p| !p.is_empty())
+                    .map(|p| PaletteOverrides {
+                        slots: p.clone().into_iter().collect(),
+                    }),
             })
             .collect();
         let ambient = ambient.map(ambient_message);
@@ -135,9 +138,13 @@ fn revision(
         // The palette is a map, which encodes in no fixed order: hashed
         // sorted, with the rest of the settings encoded without it.
         let mut rest = settings.clone();
-        rest.palette.clear();
+        rest.palette = None;
         hash.update(rest.encode_length_delimited_to_vec());
-        let mut palette: Vec<_> = settings.palette.iter().collect();
+        let mut palette: Vec<_> = settings
+            .palette
+            .iter()
+            .flat_map(|p| p.slots.iter())
+            .collect();
         palette.sort();
         for (slot, colour) in palette {
             hash.update((slot.len() as u64).to_le_bytes());
@@ -264,10 +271,16 @@ pub(super) fn apply(
             .iter()
             .map(|s| s.ambient.as_ref().map(ambient_config))
             .collect();
-        let palettes: Vec<BTreeMap<String, String>> = req
+        // Absent keeps the entry's palette: a client that does not know
+        // palettes sets the rest without losing them.
+        let palettes: Vec<Option<BTreeMap<String, String>>> = req
             .settings
             .iter()
-            .map(|s| s.palette.clone().into_iter().collect())
+            .map(|s| {
+                s.palette
+                    .as_ref()
+                    .map(|p| p.slots.clone().into_iter().collect())
+            })
             .collect();
         playlist = playlist
             .with_fades(&fades)

@@ -358,10 +358,13 @@ impl Playlist {
     }
 
     /// This playlist with each entry's `palette` set from `palettes`, in
-    /// entry order, as [`Playlist::with_auto_play`] sets auto play.
-    pub fn with_entry_palettes(self, palettes: &[BTreeMap<String, String>]) -> Playlist {
+    /// entry order, as [`Playlist::with_auto_play`] sets auto play; `None`
+    /// keeps the entry's own.
+    pub fn with_entry_palettes(self, palettes: &[Option<BTreeMap<String, String>>]) -> Playlist {
         self.edit_entries(palettes, |configured, palette| {
-            configured.palette = palette.clone();
+            if let Some(palette) = palette {
+                configured.palette = palette.clone();
+            }
         })
     }
 
@@ -730,7 +733,8 @@ songs:
             BTreeMap::new(),
             BTreeMap::from([("primary".to_string(), "#2040ff".to_string())]),
         ];
-        let q = p.with_entry_palettes(&palettes);
+        let some: Vec<_> = palettes.iter().cloned().map(Some).collect();
+        let q = p.with_entry_palettes(&some);
         // A palette alone makes an entry a configured one, and none makes
         // it a name again.
         assert_eq!(q.entries()[0], PlaylistEntry::Song("A".to_string()));
@@ -745,7 +749,9 @@ songs:
             .with_songs(&["B".to_string(), "A".to_string()]);
         assert_eq!(r.entry_palettes()[0], palettes[1]);
         assert!(r.entry_palettes()[1].is_empty());
-        let cleared = r.with_entry_palettes(&[BTreeMap::new(), BTreeMap::new()]);
+        let kept = r.clone().with_entry_palettes(&[None, None]);
+        assert_eq!(kept.entry_palettes(), r.entry_palettes());
+        let cleared = r.with_entry_palettes(&[Some(BTreeMap::new()), Some(BTreeMap::new())]);
         assert!(cleared.entry_palettes().iter().all(BTreeMap::is_empty));
     }
 }

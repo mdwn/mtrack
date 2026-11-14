@@ -561,14 +561,20 @@ message EntrySettings {
     AutoPlay auto_play = 3;
     // Ambient light in the gap before the song. Absent: the playlist's.
     AmbientSetting ambient = 4;
-    // The lighting palette slots this entry recolours: a slot name to the
-    // colour it plays in, in anything the lighting DSL reads ("#2040ff",
-    // "rgb(32, 64, 255)", "cyan"). Laid over the song's own overrides and
-    // the show's defaults, for this song in this playlist only; a slot not
-    // named keeps its colour. Empty: none. A save that sets settings
-    // replaces the entry's palette with this one, as it does every other
-    // setting, so a client passes back the palette it read.
-    map<string, string> palette = 5;
+    // The lighting palette slots this entry recolours, laid over the song's
+    // own overrides and the show's defaults, for this song in this playlist
+    // only. GetPlaylist sends it when the entry has a palette and omits it
+    // when it has none. In SavePlaylist with set_settings, absent keeps the
+    // entry's existing palette (a client that does not know palettes loses
+    // none); present replaces it, and present with no slots clears it.
+    PaletteOverrides palette = 5;
+}
+
+// PaletteOverrides are lighting palette slots recoloured: a slot name to the
+// colour it plays in, in anything the lighting DSL reads ("#2040ff",
+// "rgb(32, 64, 255)", "cyan"). A message so that a setting can be absent.
+message PaletteOverrides {
+    map<string, string> slots = 1;
 }
 
 // Fade is a fade as a playlist file has it. Lengths are the player's own
