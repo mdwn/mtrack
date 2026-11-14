@@ -887,6 +887,46 @@ mod test {
         Ok(())
     }
 
+    /// A gRPC controller told to listen on loopback does, and the player
+    /// gives no port for a phone to try over Wi-Fi.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grpc_listens_on_the_bind_address_it_is_given() -> Result<(), Box<dyn Error>> {
+        let player = crate::testutil::player::assets_player().build()?;
+        player.await_hardware_ready().await;
+
+        let grpc_config = config::GrpcController::with_bind_address(0, "127.0.0.1");
+        let controller =
+            super::Controller::new(vec![config::Controller::Grpc(grpc_config)], player.clone());
+        let bound = controller.bound_addr(0).get().await;
+        assert!(bound.ip().is_loopback(), "{bound}");
+        assert_eq!(player.grpc_port(), None);
+        controller.shutdown();
+
+        // With none given, every interface, as before.
+        let controller = super::Controller::new(
+            vec![config::Controller::Grpc(config::GrpcController::new(0))],
+            player.clone(),
+        );
+        let bound = controller.bound_addr(0).get().await;
+        assert!(bound.ip().is_unspecified(), "{bound}");
+        controller.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn a_grpc_bind_address_that_is_no_address_is_refused() {
+        let player = crate::testutil::player::memory_player(&["Song A"]).build();
+        let config = config::GrpcController::with_bind_address(0, "everywhere");
+        let error = super::grpc::Driver::new(config, player)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(
+            error.contains("invalid bind_address `everywhere`"),
+            "{error}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_mcp() -> Result<(), Box<dyn Error>> {
         let player = crate::testutil::player::assets_player().build()?;

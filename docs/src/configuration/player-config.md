@@ -302,6 +302,11 @@ controllers:
   # The port the gRPC server should be hosted on. Defaults to 43234.
   port: 43234
 
+  # The address the gRPC server listens on. Defaults to 0.0.0.0, every
+  # interface. 127.0.0.1 keeps it to this machine: the mtrack CLI run on the
+  # player still works, and the phone app cannot connect over Wi-Fi.
+  # bind_address: 0.0.0.0
+
 # The OSC server configuration.
 - kind: osc
 
