@@ -207,12 +207,13 @@ leaves the app working.
 
 ## 9. Decisions
 
-1. **How the player advertises** (§3.1). Recommended: in the process, with
-   `mdns-sd`.
-2. **Advertising is on by default**, with a switch. Recommended: yes.
-3. **How the app scans** (§3.2). Recommended: a subnet sweep, not a new
-   broadcast protocol.
-4. **The sweep runs on a button**, not by itself. Recommended: yes. The
-   other choice is Mixing Station's, which searches as it opens.
+All five decided by Mike on 2026-11-14 as recommended ("I'm fine with your
+decisions").
+
+1. **How the player advertises** (§3.1): in the process, with `mdns-sd`,
+   under a host label of its own.
+2. **Advertising is on by default**, with a switch.
+3. **How the app scans** (§3.2): a subnet sweep, not a new broadcast
+   protocol.
+4. **The sweep runs on a button**, not by itself.
 5. **One list on the connect screen** for Wi-Fi and Bluetooth (§4).
-   Recommended: yes.
