@@ -484,7 +484,9 @@ app.put(
       res.status(409).json({ error: "This upload has its bytes already" });
       return;
     }
-    const length = Buffer.isBuffer(req.body) ? req.body.length : 0;
+    // The raw parser gives a Buffer; anything else is no body at all.
+    const body: unknown = req.body;
+    const length = body instanceof Uint8Array ? body.byteLength : 0;
     if (BigInt(length) > upload.size) {
       announced.delete(req.params.id as string);
       res.status(413).json({ error: "The body is longer than announced" });
