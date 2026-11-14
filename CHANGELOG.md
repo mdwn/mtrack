@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.7] - 2026-11-13
+
+Upgrade notes: what an existing setup can notice. Each is described in full below. Run
+`mtrack brightness-changes` on your project first; it lists every cue in your shows that will
+look different, with how to keep the old look.
+
+- **A colour on a higher layer is no longer dimmed by dimmers on the layers below it.** This is
+  most visible on fixtures with a dimmer channel: a show that sets the level on `background` and
+  replaces the colour on a higher layer now plays that colour brighter. To keep the old look, put
+  the level beside the colour (`dimmer:` on the same effect or layer), or blend the colour with
+  `blend_mode: multiply`.
+- **On fixtures without a dimmer channel, a level that replaces sets the level.** A dimmer,
+  pulse, chase or strobe with the default blend (`replace`) over a dimmed layer used to multiply
+  with it; it now sets the level, as it always did on fixtures with a dimmer channel. Add
+  `blend_mode: multiply` to keep the old result.
+- **On fixtures with a dimmer channel, a colour with no dimmer running is at full.** It used to
+  keep whatever dimmer value was last sent, so a fade-out that ended while its colour ran on
+  stayed dark; it now comes back up. End the colour with the fade, or run the fade to the
+  colour's end.
+- **A level with no colour beneath it shows white**, on every fixture: a strobe, dimmer, pulse
+  or chase over no colour no longer reuses the last colour sent (fixtures with a dimmer channel)
+  or shows nothing (dimmers and pulses on fixtures without one).
+
+### Added
+
+- **`mtrack brightness-changes [PROJECT]`** lists, song by song, each cue whose look the
+  brightness fix below changes, what will look different, and how to keep the old look. Run it
+  before upgrading a rig.
+
+### Fixed
+
+- **Brightness means the same on every fixture, and dimming never reaches a layer above it**:
+  dimming on a layer applies to that layer and the layers beneath it, never to the layers above,
+  whatever the blend mode and whatever the fixture. Fixtures with a dimmer channel and fixtures
+  without one used to disagree: dimmers reached every layer above them on the former, and every
+  layer but a foreground `replace` on the latter; a level that replaced set the level on the
+  former and multiplied on the latter; a colour with no dimmer was full on one and held the last
+  dimmer value on the other; and a strobe over a colour flashed that colour on one and white on
+  the other. A fixture's hardware now decides only how a level is sent: a fixture with a dimmer
+  channel gets the level on its dimmer and the colour at full, so a look built on one layer
+  sends exactly the values the show wrote, and one without carries the level in its colour.
+  Colour added on a higher layer (`add`, `screen`) sits over the dimmed light beneath without
+  being dimmed by it; a `multiply` colour filters it. Pixel bars with a master dimmer get the
+  brightest of their cells on the master and each cell's colour against it. Output from a MIDI
+  DMX show alone is unchanged.
+
 ## [0.17.6] - 2026-11-13
 
 ### Fixed
