@@ -76,6 +76,35 @@ at load with `dmx.lighting.fixtures is no longer supported: fixtures are patched
 the map; make that venue current or copy its lines into your own (see the
 [command-line reference](../reference/cli.md#mtrack-migrate)).
 
+### Layers
+
+Effects are drawn on layers, and a higher layer draws over a lower. The layers are the
+profile's `dmx.lighting.layers`, a list of names from the bottom up:
+
+```yaml
+dmx:
+  lighting:
+    layers: [background, midground, foreground, accents, blinders]
+```
+
+Left out, it is `[background, midground, foreground]`, so a project that never mentions layers
+behaves as it always has (and a save does not add the key). The names are identifiers (a letter or
+`_`, then letters, digits, `_` or `-`), unique, between one and sixteen of them; a list that is
+not one is refused when the config loads. An effect that names no layer runs on the bottom one.
+
+A show names a layer with `layer: accents`, and `clear`, `freeze`, `unfreeze` and `master` take
+the same names (`clear(layer: blinders)`). A show that names a layer the player does not have
+fails to load, and the error says which layer, where in the file, and the layers the player has.
+The same files on a player with other layers fail the same way, so a project shared between rigs
+needs the layers its shows use on each.
+
+A change to `layers` is taken up when the config is saved: the engine and the songs' shows are
+loaded again against the new list. The web UI's Groups page edits the list (add, rename, reorder
+and remove, top layer first), and **refuses to save a list that removes or renames a layer some
+show uses**, naming those shows. Reordering and adding layers are always allowed; a reordered list
+changes which layer draws over which. The timeline draws one lane for each layer, top layer on
+top, labelled by name, and an effect's layer is a dropdown of the player's layers.
+
 ### The universe must exist in olad
 
 olad drops streamed frames for a universe that has no port patched to it, silently: `ola_uni_info`
