@@ -13,12 +13,20 @@
 //
 
 //! Which operations stay open while the player is locked, on every control
-//! surface: one table, which MCP's `call_tool` gate, the gRPC service's
+//! surface: one table, which MCP's `call_tool` gate and the gRPC service's
 //! lock guard (`controller::grpc::LockGuard`, for native gRPC and gRPC-Web,
 //! on every service: an RPC is named by its method name alone, so no two
-//! services may share one, which a test in `controller::grpc` holds)
-//! and the web UI's lock middleware all ask, and one refusal,
-//! [`super::LockedError`].
+//! services may share one, which a test in `controller::grpc` holds) ask,
+//! and one refusal, [`super::LockedError`].
+//!
+//! The web server has no table of its own: everything the web UI does is a
+//! gRPC-Web call, held to the gRPC guard's. The three HTTP routes beside
+//! the static page are not lock-checked, each for its own reason:
+//! `PUT /uploads/{id}` and `GET /downloads/{id}` carry bytes for a transfer
+//! id that `BeginUpload` and `ExportMvr` issued under this table (the id is
+//! the permission), and `GET /lighting-assets/*` is a read of the asset
+//! store, open while locked as every web `GET` always was (as is the
+//! `GetLightingAsset` RPC).
 
 /// The surface an operation is named on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,13 +35,9 @@ pub enum Surface {
     Mcp,
     /// A gRPC (and gRPC-Web) RPC, by its method name.
     Grpc,
-    /// A web API route, as `METHOD /pattern` with the route's own pattern
-    /// (never the request path) and no `/api` prefix. Every `GET` is a read
-    /// and open.
-    Web,
 }
 
-use Surface::{Grpc, Mcp, Web};
+use Surface::{Grpc, Mcp};
 
 /// The operations that stay open while the player is locked: reads,
 /// validation and offline evaluation, and the playback controls
@@ -188,10 +192,9 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
 /// Whether `operation`, as `surface` names it, stays open while the player
 /// is locked.
 pub fn open_while_locked(surface: Surface, operation: &str) -> bool {
-    (surface == Web && operation.starts_with("GET "))
-        || OPEN_WHILE_LOCKED
-            .iter()
-            .any(|(s, name)| *s == surface && *name == operation)
+    OPEN_WHILE_LOCKED
+        .iter()
+        .any(|(s, name)| *s == surface && *name == operation)
 }
 
 /// The operations `surface` leaves open while locked, for its tests.
@@ -219,19 +222,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn web_gets_are_open_and_other_methods_are_listed() {
-        assert!(open_while_locked(Web, "GET /lighting/assets/{*path}"));
-        // The routes that moved to the gRPC services are no longer listed.
-        assert!(!open_while_locked(Web, "POST /lighting/mvr/inspect"));
-        assert!(!open_while_locked(Web, "POST /lighting/mvr/import"));
-        assert!(!open_while_locked(Web, "PUT /uploads/{upload_id}"));
-        // The routes that moved to LightingService are no longer listed.
-        assert!(!open_while_locked(Web, "POST /lighting/mvr/export/keep"));
-        assert!(!open_while_locked(Web, "PUT /lighting/venues/{name}"));
-        // The routes that moved to LightingService are no longer listed.
-        assert!(!open_while_locked(Web, "POST /lighting/validate"));
-        assert!(!open_while_locked(Web, "POST /lighting/evaluate"));
-        assert!(!open_while_locked(Web, "DELETE /lighting/fixture-test"));
+    fn the_table_names_operations_per_surface() {
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
         assert!(!open_while_locked(Mcp, "Play"));

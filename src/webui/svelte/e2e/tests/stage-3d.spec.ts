@@ -130,7 +130,7 @@ test.describe("3D on the venue card", () => {
   }) => {
     const rigRequests: string[] = [];
     page.on("request", (r) => {
-      if (r.url().includes("/api/lighting/assets/")) rigRequests.push(r.url());
+      if (r.url().includes("/lighting-assets/")) rigRequests.push(r.url());
     });
     // Asset failures surface only in the console; keep them in the report.
     page.on("console", (m) => {
@@ -139,7 +139,7 @@ test.describe("3D on the venue card", () => {
       }
     });
     page.on("response", (r) => {
-      if (r.url().includes("/api/lighting/assets/") && r.status() !== 200) {
+      if (r.url().includes("/lighting-assets/") && r.status() !== 200) {
         console.log(`[asset ${r.status()}] ${r.url()}`);
       }
     });

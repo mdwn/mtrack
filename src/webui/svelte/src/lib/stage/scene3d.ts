@@ -69,7 +69,7 @@ export type CameraPreset = "foh" | "top" | "side";
  * stage-only build (vite.stage.config.ts), which asks the host that serves
  * the page, beside the page itself.
  */
-const ASSETS = import.meta.env.VITE_STAGE_ASSET_BASE || "/api/lighting/assets/";
+const ASSETS = import.meta.env.VITE_STAGE_ASSET_BASE || "/lighting-assets/";
 const BACKGROUND = 0x0b0e13;
 const BODY_COLOR = 0x9aa4b2;
 const LENS_COLOR = 0x222222;

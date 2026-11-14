@@ -19,8 +19,8 @@
 //!   upload `BeginUpload` announced.
 //! - `GET /downloads/{id}` answers an archive `ExportMvr` staged.
 //!
-//! They are outside `/api` and not behind the lock middleware: the id is the
-//! permission, and it was issued under the lock policy. They are on the web
+//! They are not lock-checked: the id is the permission, and it was issued under
+//! the lock policy. They are on the web
 //! server only; the gRPC port serves neither.
 
 use axum::{

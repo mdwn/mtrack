@@ -57,28 +57,6 @@ profiles_dir: profiles
 samples: {}
 `;
 
-/// Records every config-writing REST request the page makes, so a test can
-/// assert what was *not* called as well as what was. The config store is
-/// written over gRPC (`UpdateProfile`, `UpdateMidi`, ...): a test reads those
-/// off its `mockRpc`.
-///
-/// Registered last and deferring with `fallback`, not `continue`: Playwright
-/// matches routes in reverse registration order, so a catch-all that continues
-/// swallows every specific handler registered before it and sends the request
-/// to the network instead.
-async function recordConfigWrites(page: Page): Promise<string[]> {
-  const writes: string[] = [];
-  await page.route("**/api/**", async (route) => {
-    const request = route.request();
-    const method = request.method();
-    if (method === "PUT" || method === "POST" || method === "DELETE") {
-      writes.push(`${method} ${new URL(request.url()).pathname}`);
-    }
-    await route.fallback();
-  });
-  return writes;
-}
-
 /// Opens the MIDI tab of the first profile with the section enabled.
 async function openMidiSection(page: Page, profileRow: string) {
   await page.goto("/#/config");
@@ -116,7 +94,6 @@ test.describe("Config editor - persist_tempo", () => {
       }),
     );
 
-    const writes = await recordConfigWrites(page);
     await openMidiSection(page, ".profile-row");
 
     await page.locator("#midi-device").fill("Test MIDI Device");
@@ -145,7 +122,6 @@ test.describe("Config editor - persist_tempo", () => {
     // And the discarded section must not be touched at all.
     expect(rpc.calls(PlayerService.method.updateMidi)).toHaveLength(0);
     expect(update.index).toBe(0);
-    expect(writes).not.toContain("PUT /api/config/midi");
   });
 
   test("unchecking persist_tempo removes it rather than sending false", async ({

@@ -168,14 +168,17 @@ pub async fn start_or_unlock(
     }
 }
 
-/// Starts the unified web server with dashboard, gRPC-Web, and REST API.
+/// Starts the unified web server with dashboard, gRPC-Web and file routes.
 ///
 /// The server serves:
 /// - `/` — Web UI SPA (dashboard, config editor, etc.)
 /// - `/player.v1.PlayerService/*` — gRPC-Web endpoints for player control
 /// - `/grpc.health.v1.Health/*` — the standard gRPC health service, over gRPC-Web
-/// - `/api/*` — what is left of REST: the lighting asset store
+/// - `/lighting-assets/*` — the lighting asset store (models, thumbnails)
 /// - `/uploads/{id}`, `/downloads/{id}` — file bytes (see `transfers`)
+///
+/// There is no REST API: nothing is served under `/api`, and a request for
+/// it gets what any unknown path gets.
 /// - Static assets from the embedded Svelte dist directory
 pub async fn start(
     webui_state: WebUiState,
@@ -185,12 +188,12 @@ pub async fn start(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     // Build the app router
-    let api_router = super::api::guarded_router(&webui_state);
     let app = Router::new()
-        .nest("/api", api_router)
-        // File bytes: outside `/api` and its lock middleware (the id was
-        // issued under the lock policy).
+        // File bytes (the id was issued under the lock policy) and the
+        // asset store's reads: not behind the lock, which the gRPC services
+        // enforce for themselves.
         .merge(super::transfer_routes::router())
+        .merge(super::lighting_asset_route::router())
         .route("/player.v1.PlayerService/{method}", any(grpc_web_handler))
         .route(
             "/player.v1.ConfigService/{method}",
@@ -516,20 +519,60 @@ mod test {
         assert_eq!(resp.status(), 404);
     }
 
+    /// Nothing is served under `/api`: every route that was is answered as
+    /// any unknown path is, whether that is the SPA's shell (a path without
+    /// an extension) or a plain 404 (one with).
     #[tokio::test]
-    async fn server_api_playlist() {
+    async fn nothing_is_served_under_api() {
         let (_handle, base_url, _dir) = start_test_server().await;
+        let client = reqwest::Client::new();
 
-        let resp = reqwest::get(format!("{}/api/playlist", base_url))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
+        let ask = |method: &'static str, path: String| {
+            let client = client.clone();
+            let url = format!("{base_url}{path}");
+            async move {
+                let resp = client
+                    .request(method.parse().unwrap(), url)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status();
+                let content_type = resp.headers().get("content-type").cloned();
+                (status, content_type, resp.bytes().await.unwrap())
+            }
+        };
+
+        for (method, path) in [
+            ("GET", "/api/songs"),
+            ("PUT", "/api/lock"),
+            ("GET", "/api/playlist"),
+            ("GET", "/api/playlists/all_songs"),
+            ("GET", "/api/config/samples"),
+            ("POST", "/api/songs/Song A/tracks"),
+            ("GET", "/api/lighting/show.light"),
+            ("GET", "/api/lighting/venues/Hall"),
+            ("GET", "/api/lighting/assets/abc/rig.json"),
+            ("GET", "/api/downloads/abc"),
+            ("PUT", "/api/uploads/abc"),
+            ("GET", "/api/ws"),
+        ] {
+            let at_api = ask(method, path.to_string()).await;
+            let elsewhere = ask(method, path.replacen("/api", "/nowhere", 1)).await;
+            assert_eq!(
+                at_api, elsewhere,
+                "{method} {path} is answered differently from an unknown path"
+            );
+            let json = at_api
+                .1
+                .as_ref()
+                .is_some_and(|t| t.to_str().unwrap().contains("json"));
+            assert!(!json, "{method} {path} still answers JSON");
+        }
     }
 
     /// The song list, the playlists and the lock are gRPC-Web calls on the
-    /// web port (they were `GET /api/songs`, `GET /api/playlists` and
-    /// `PUT /api/lock`): each answers, the lock toggle answers the lock as
-    /// it now stands, and none of the REST routes is left.
+    /// web port: each answers, and the lock toggle answers the lock as it now
+    /// stands.
     #[tokio::test]
     async fn the_song_list_playlists_and_lock_are_grpc_web_calls() {
         use crate::proto::player::v1::{
@@ -593,39 +636,12 @@ mod test {
             .unwrap();
             assert_eq!(answer.locked, locked);
         }
-
-        // The REST routes are gone: what answers is not the API's JSON.
-        for (method, path) in [
-            ("GET", "/api/songs"),
-            ("GET", "/api/playlists"),
-            ("PUT", "/api/lock"),
-            ("GET", "/api/playlists/all_songs"),
-        ] {
-            let resp = client
-                .request(method.parse().unwrap(), format!("{base_url}{path}"))
-                .send()
-                .await
-                .unwrap();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap().to_string())
-                .unwrap_or_default();
-            assert!(
-                !content_type.contains("json"),
-                "{method} {path} still answers JSON ({content_type})"
-            );
-        }
     }
 
     /// `ConfigService` is served by the web port's gRPC-Web beside
     /// `PlayerService`, behind the same lock: a write is refused while the
     /// player is locked, a read reaches its handler (which has no profiles
-    /// directory to read), and the REST routes it replaced (the sample and
-    /// metronome saves, the profile files, the device lists, the audio probe,
-    /// the calibration, the controller restart and the song config, file,
-    /// waveform, tempo, browse and import calls, and the Bluetooth pairing) are
-    /// gone.
+    /// directory to read).
     #[tokio::test]
     async fn config_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -704,61 +720,11 @@ mod test {
         let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
         let answer = tonic_health::pb::HealthCheckResponse::decode(&body[5..5 + len]).unwrap();
         assert_eq!(answer.status, ServingStatus::Serving as i32);
-
-        for (method, path) in [
-            ("PUT", "/api/config/samples"),
-            ("PUT", "/api/config/metronome"),
-            ("GET", "/api/profiles"),
-            ("GET", "/api/profiles/test-host"),
-            ("PUT", "/api/profiles/test-host"),
-            ("DELETE", "/api/profiles/test-host"),
-            ("GET", "/api/devices/audio"),
-            ("POST", "/api/devices/audio/probe"),
-            ("GET", "/api/devices/midi"),
-            ("POST", "/api/calibrate/start"),
-            ("POST", "/api/calibrate/capture"),
-            ("POST", "/api/calibrate/stop"),
-            ("DELETE", "/api/calibrate"),
-            ("POST", "/api/controllers/restart"),
-            ("GET", "/api/songs/Song A"),
-            ("POST", "/api/songs/Song A"),
-            ("PUT", "/api/songs/Song A"),
-            ("DELETE", "/api/songs/Song A"),
-            ("GET", "/api/songs/Song A/waveform"),
-            ("GET", "/api/songs/Song A/tempo-guess"),
-            ("GET", "/api/songs/Song A/files"),
-            ("POST", "/api/songs/Song A/import"),
-            ("GET", "/api/browse"),
-            ("POST", "/api/browse/create-song"),
-            ("POST", "/api/browse/bulk-import"),
-            ("GET", "/api/bluetooth"),
-            ("POST", "/api/bluetooth/pairing"),
-            ("DELETE", "/api/bluetooth/devices/00:00:00:00:00:01"),
-        ] {
-            let resp = client
-                .request(method.parse().unwrap(), format!("{base_url}{path}"))
-                .send()
-                .await
-                .unwrap();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap().to_string())
-                .unwrap_or_default();
-            assert!(
-                !content_type.contains("json"),
-                "{method} {path} still answers JSON ({content_type})"
-            );
-        }
     }
 
     /// `LightingService` is served by the web port's gRPC-Web beside the
     /// other services, behind the same lock: a write is refused while the
-    /// player is locked, a read reaches its handler, and the REST routes it
-    /// replaced (the light show files, their validation and evaluation, the
-    /// readiness, fit and groups, the fixture test, the fixture types and
-    /// their settings, and the venues and the MVR export's summary and keep)
-    /// are gone.
+    /// player is locked, a read reaches its handler.
     #[tokio::test]
     async fn lighting_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -950,70 +916,14 @@ mod test {
         let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
         let answer = tonic_health::pb::HealthCheckResponse::decode(&body[5..5 + len]).unwrap();
         assert_eq!(answer.status, ServingStatus::Serving as i32);
-
-        for (method, path) in [
-            ("GET", "/api/lighting/show.light"),
-            ("GET", "/api/lighting/b%2Flighting%2Fshow.light"),
-            ("PUT", "/api/lighting/show.light"),
-            ("DELETE", "/api/lighting/show.light"),
-            ("POST", "/api/lighting/validate"),
-            ("GET", "/api/lighting/readiness"),
-            ("GET", "/api/lighting/fit"),
-            ("POST", "/api/lighting/evaluate"),
-            ("GET", "/api/lighting/groups"),
-            ("POST", "/api/lighting/fixture-test"),
-            ("DELETE", "/api/lighting/fixture-test"),
-            ("GET", "/api/lighting/fixture-test/options"),
-            ("GET", "/api/lighting/fixture-types"),
-            ("GET", "/api/lighting/fixture-types/Par"),
-            ("PUT", "/api/lighting/fixture-types/Par"),
-            ("DELETE", "/api/lighting/fixture-types/Par"),
-            ("GET", "/api/lighting/fixture-types/Par/gdtf"),
-            ("GET", "/api/lighting/fixture-types/Par/settings"),
-            ("POST", "/api/lighting/fixture-types/Par/settings"),
-            ("GET", "/api/lighting/venues"),
-            ("GET", "/api/lighting/venues/Hall"),
-            ("PUT", "/api/lighting/venues/Hall"),
-            ("DELETE", "/api/lighting/venues/Hall"),
-            ("GET", "/api/lighting/venues/Hall/patch"),
-            ("GET", "/api/lighting/venues/Hall/scene"),
-            ("POST", "/api/lighting/venues/Hall/aim-points"),
-            ("GET", "/api/lighting/mvr/export/summary"),
-            ("POST", "/api/lighting/mvr/export/keep"),
-            // The routes that carried file bytes: `BeginUpload`, `PUT
-            // /uploads/{id}` and the claiming call replace them.
-            ("PUT", "/api/songs/Song/tracks/kick.wav"),
-            ("POST", "/api/songs/Song/tracks"),
-            ("PUT", "/api/samples/upload/kick.wav"),
-            ("POST", "/api/lighting/gdtf/import"),
-            ("POST", "/api/lighting/mvr/inspect"),
-            ("POST", "/api/lighting/mvr/import"),
-            ("GET", "/api/lighting/mvr/export"),
-        ] {
-            let resp = client
-                .request(method.parse().unwrap(), format!("{base_url}{path}"))
-                .send()
-                .await
-                .unwrap();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap().to_string())
-                .unwrap_or_default();
-            assert!(
-                !content_type.contains("json"),
-                "{method} {path} still answers JSON ({content_type})"
-            );
-        }
     }
 
     /// File bytes: `BeginUpload` over gRPC-Web answers an id and a path, the
-    /// bytes go to `PUT <path>` (outside `/api`, past the lock, over the
-    /// default body limit), and the claiming call takes them; a staged
-    /// download is fetched by `GET`. The web server serves both; nothing of
-    /// the kind is under `/api`.
+    /// bytes go to `PUT <path>` (past the lock, over the default body
+    /// limit), and the claiming call takes them; a staged download is
+    /// fetched by `GET`. The web server serves both.
     #[tokio::test]
-    async fn file_bytes_travel_by_put_and_get_outside_the_api_and_the_lock() {
+    async fn file_bytes_travel_by_put_and_get_past_the_lock() {
         use crate::proto::player::v1 as pb;
         use prost::Message;
         let (state, _dir) = test_webui_state();
@@ -1081,14 +991,7 @@ mod test {
         let begun = pb::BeginUploadResponse::decode(&body[5..5 + len]).unwrap();
         assert_eq!(begun.path, format!("/uploads/{}", begun.upload_id));
 
-        // The bytes: not under the API, and not behind the lock.
-        let misplaced = client
-            .put(format!("{base_url}/api{}", begun.path))
-            .body("abcdef")
-            .send()
-            .await
-            .unwrap();
-        assert!(!misplaced.status().is_success());
+        // The bytes: not behind the lock.
         let unknown = client
             .put(format!(
                 "{base_url}/uploads/0123456789abcdef0123456789abcdef"
@@ -1176,16 +1079,32 @@ mod test {
             );
             assert_eq!(got.bytes().await.unwrap(), "archive");
         }
-        let api = client
-            .get(format!("{base_url}/api/downloads/{id}"))
-            .send()
+        drop(handle);
+    }
+
+    /// The asset store is served at `/lighting-assets/`, on a locked player
+    /// too (a read), and not at the old place under `/api`.
+    #[tokio::test]
+    async fn lighting_assets_are_served_while_locked_and_not_under_api() {
+        let (state, dir) = test_webui_state();
+        let store = dir.path().join("lighting/.cache/assets/abc");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("rig.json"), "{\"version\":1}").unwrap();
+        state.player.set_locked(true);
+        let handle = start(state, "127.0.0.1".to_string(), 0).await.unwrap();
+        let base_url = format!("http://{}", handle.local_addr());
+
+        let got = reqwest::get(format!("{base_url}/lighting-assets/abc/rig.json"))
             .await
             .unwrap();
-        assert_ne!(
-            api.headers().get("content-type").map(|v| v.as_bytes()),
-            Some(&b"application/octet-stream"[..])
-        );
-        drop(handle);
+        assert_eq!(got.status(), 200);
+        assert_eq!(got.headers()["content-type"], "application/json");
+        assert_eq!(got.text().await.unwrap(), "{\"version\":1}");
+
+        let old = reqwest::get(format!("{base_url}/api/lighting/assets/abc/rig.json"))
+            .await
+            .unwrap();
+        assert_eq!(old.status(), 404);
     }
 
     #[tokio::test]

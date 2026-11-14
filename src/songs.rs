@@ -2177,7 +2177,7 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// has a song config ([`has_song_config`]), or a `song.yaml` or `song.yml`
 /// of another kind, which the new config would overwrite. The one guard of
 /// every writer of a new song config: `songs --init`, the bulk import, the
-/// web UI's create-song from a folder and `POST /api/songs/<name>`, and the
+/// web UI's create-song from a folder and `CreateSong`, and the
 /// config a track upload writes.
 pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
     let file = song_config_file(dir);

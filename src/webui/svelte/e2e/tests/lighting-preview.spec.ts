@@ -423,10 +423,13 @@ test.describe("3D Preview on the venue card", () => {
     await routeEvaluate(page, MOVING);
     let transport = 0;
     // The preview must never call the transport.
-    await page.route("**/api/player/**", async (route) => {
-      transport++;
-      await route.continue();
-    });
+    await page.route(
+      /\/player\.v1\.PlayerService\/(Play|PlayFrom|PlaySongFrom|Seek|SeekToSection|Stop|Next|Previous|NavigateToSong)$/,
+      async (route) => {
+        transport++;
+        await route.continue();
+      },
+    );
     await openCard(page, wsId, "&mode=preview");
     await page.getByRole("slider", { name: "Moment in the song" }).fill("30");
     await expect(page.getByTestId("preview-activity")).toBeVisible();

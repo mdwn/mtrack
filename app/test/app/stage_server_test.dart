@@ -363,7 +363,7 @@ void main() {
 
     Future<Answer> ask(String path, {String method = 'GET'}) => send(
       assetPort,
-      '$method $assetPrefix/api/lighting/assets/$path HTTP/1.1\r\n'
+      '$method $assetPrefix/lighting-assets/$path HTTP/1.1\r\n'
       'Host: 127.0.0.1:$assetPort\r\n'
       'Connection: close\r\n\r\n',
     );
@@ -445,13 +445,13 @@ void main() {
     test('only under the random name, and to its own Host', () async {
       final wrong = await send(
         assetPort,
-        'GET /api/lighting/assets/$rig HTTP/1.1\r\n'
+        'GET /lighting-assets/$rig HTTP/1.1\r\n'
         'Host: 127.0.0.1:$assetPort\r\nConnection: close\r\n\r\n',
       );
       expect(wrong.status, 404);
       final foreign = await send(
         assetPort,
-        'GET $assetPrefix/api/lighting/assets/$rig HTTP/1.1\r\n'
+        'GET $assetPrefix/lighting-assets/$rig HTTP/1.1\r\n'
         'Host: evil.example:$assetPort\r\nConnection: close\r\n\r\n',
       );
       expect(foreign.status, 403);
@@ -464,7 +464,7 @@ void main() {
         final at = await bare.start();
         final answer = await send(
           at.port,
-          'GET /${at.pathSegments.first}/api/lighting/assets/$rig HTTP/1.1\r\n'
+          'GET /${at.pathSegments.first}/lighting-assets/$rig HTTP/1.1\r\n'
           'Host: 127.0.0.1:${at.port}\r\nConnection: close\r\n\r\n',
         );
         expect(answer.status, 404);

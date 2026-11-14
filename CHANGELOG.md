@@ -134,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Control](docs/src/interfaces/bluetooth.md#streams).
 - **`GetLightingAsset` gRPC RPC**: a server stream of one file of the lighting asset store (the
   rig description, models and scenery the stage layout names) in chunks of 8 KiB, under the same
-  rules as the web UI's `/api/lighting/assets/`: the same file types, size cap and containment
+  rules as the web UI's `/lighting-assets/`: the same file types, size cap and containment
   in the store. `gzip` sends it compressed. A read, open while the player is locked. A phone can
   open it over Bluetooth beside `WatchStage`; none of its chunks is dropped, and the stage's
   frames still go out between them.
@@ -201,6 +201,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Breaking: the web API (`/api`) is gone, and the lighting assets moved.** The routes removed
+  above were all of it but one: the 3D models, rig descriptions and thumbnails of the lighting
+  asset store, which were `GET /api/lighting/assets/<path>`, are now `GET /lighting-assets/<path>`
+  on the web port, with the same file types, size cap, containment, content types and
+  caching. Nothing is served under `/api` any more: a request there gets what any unknown path gets (the web UI's page for a
+  path without an extension, a 404 for one with). What the web server answers is now the page and
+  its files, gRPC-Web for the three services and the health check, `PUT /uploads/<id>`,
+  `GET /downloads/<id>` and `GET /lighting-assets/<path>`; the last three are not checked against
+  the lock (an upload or download id comes from a call that is, and the assets are a read), and
+  every other operation is held to the lock by the gRPC services alone. A script, a bookmark or a
+  reverse proxy rule that named `/api/` should use the gRPC calls listed above, and
+  `/lighting-assets/`. The `GetLightingAsset` RPC is unchanged. See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: the web API's routes for light show files, validation, evaluation, readiness, fit,
   groups and the fixture test**: `GET`, `PUT` and `DELETE /api/lighting/<name>`,
   `POST /api/lighting/validate`, `GET /api/lighting/readiness`, `GET /api/lighting/fit`,
@@ -291,12 +303,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an MVR may declare at most 272 MiB, a body longer than announced is refused (413) and one
   shorter is refused by the call that uses it. `BeginUpload` is refused while the player is locked
   (`FAILED_PRECONDITION`, as HTTP 423 was) for every purpose but `MVR_INSPECT`, and so are the
-  calls that use an upload, but `InspectMvr`; `ExportMvr` is open, as the `GET` was. The lighting
-  assets (`GET /api/lighting/assets/...`) are unchanged. See [gRPC](docs/src/interfaces/grpc.md#files).
+  calls that use an upload, but `InspectMvr`; `ExportMvr` is open, as the `GET` was. See [gRPC](docs/src/interfaces/grpc.md#files).
 - **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
   `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and
-  `GET /api/lighting` (the list of `.light` files; `/api/lighting/<name>` stays). The web UI never
+  `GET /api/lighting` (the list of `.light` files). The web UI never
   used them. A script that did should use the gRPC `GetConfig`, `UpdateAudio`, `UpdateMidi`,
   `UpdateDmx` and `UpdateControllers` calls (see [gRPC](docs/src/interfaces/grpc.md)), which
   `GetConfig` also reads the YAML with its checksum for, and read the lock from the gRPC `Status`. Replacing the whole config file in one
@@ -307,7 +318,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages of the `WatchEvent` protobuf, and `WatchStage` carries the stage (the websocket's
   `metadata` and `state` messages went earlier in this release). The venues directory the
   `metadata` message named is not on the stream: a client that saves venue edits reads and writes
-  the venue through `/api/lighting/venues/<name>`, which uses the configured directory when none
+  the venue through `GetVenue` and `SaveVenue`, which use the configured directory when none
   is given. `GET /api/status`'s build, hardware and controller status is the `hardware` event of
   `Watch`, which opens with it and sends it again when it changes
   (`grpcurl -plaintext -d '{"topics":["WATCH_TOPIC_HARDWARE"]}' host:43234
@@ -326,8 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grid and sections, and a failed song's error in full), over gRPC or gRPC-Web; for example
   `grpcurl -plaintext -d '{"detailed":true}' host:43234 player.v1.PlayerService/ListSongs`. Each
   refusal is a status: a locked player is `FAILED_PRECONDITION`, a playlist that is not valid or
-  names a song the player does not have is `INVALID_ARGUMENT`, a missing one is `NOT_FOUND`. The
-  rest of `/api/songs/<name>` is unchanged. See [gRPC](docs/src/interfaces/grpc.md).
+  names a song the player does not have is `INVALID_ARGUMENT`, a missing one is `NOT_FOUND`. See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: the web API's routes for the config store and its profiles**: `GET /api/config/store`,
   `POST /api/config/profiles`, and `PUT` and `DELETE /api/config/profiles/<index>` are gone; the
   web UI calls the gRPC service for them. A script that used them should call `GetConfig` (the YAML

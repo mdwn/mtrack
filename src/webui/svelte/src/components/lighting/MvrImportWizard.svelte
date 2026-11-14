@@ -25,7 +25,7 @@
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { importMvr, inspectMvr } from "../../lib/api/config";
-  import { ApiError } from "../../lib/api/rest";
+  import { ApiError } from "../../lib/api/errors";
   import {
     defaultVenueName,
     fromPage,

@@ -78,7 +78,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": {
+      // The lighting asset store: models and thumbnails by URL.
+      "/lighting-assets": {
         target: proxyTarget,
       },
       "/player.v1.PlayerService": {

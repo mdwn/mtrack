@@ -260,7 +260,7 @@ test.describe("Fixture type details (GDTF)", () => {
     );
     await expect(page.getByTestId("ft-viewer-thumbnail")).toHaveAttribute(
       "src",
-      "/api/lighting/assets/abc/thumbnail.png",
+      "/lighting-assets/abc/thumbnail.png",
     );
     // What the archive does not state is left out, not shown as 0.
     await expect(page.getByTestId("ft-fact-output")).toHaveText("800 lm");

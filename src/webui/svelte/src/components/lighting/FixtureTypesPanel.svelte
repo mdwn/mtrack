@@ -976,7 +976,7 @@ fixture_type "Name" {
               {#if entry.gdtf?.thumbnail}
                 <img
                   class="card-thumb"
-                  src={`/api/lighting/assets/${entry.gdtf.thumbnail}`}
+                  src={`/lighting-assets/${entry.gdtf.thumbnail}`}
                   alt=""
                   data-testid="ft-card-thumb"
                 />

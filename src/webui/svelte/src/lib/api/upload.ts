@@ -17,7 +17,7 @@
 
 import { configClient } from "../grpc/client";
 import type { UploadPurpose } from "../../gen/player/v1/player_pb";
-import { ApiError } from "./rest";
+import { ApiError } from "./errors";
 
 /** What `PUT /uploads/{id}` said when it refused: the server's `error`, else
  *  the status. */

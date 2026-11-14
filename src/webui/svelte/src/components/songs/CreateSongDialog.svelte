@@ -16,7 +16,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { createSong } from "../../lib/api/songs";
-  import { ApiError } from "../../lib/api/rest";
+  import { ApiError } from "../../lib/api/errors";
 
   interface Props {
     oncreated: (name: string) => void;

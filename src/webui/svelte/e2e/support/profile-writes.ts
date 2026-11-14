@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The inline profiles a page wrote, read off a `mockRpc`: what the REST
-// specs got from `waitForRequest` on `PUT /api/config/profiles/0`.
+// The inline profiles a page wrote, read off a `mockRpc`: what a spec
+// reads of a profile save.
 //
 //   const rpc = await mockRpc(page);
 //   await page.getByRole("button", { name: "Save" }).click();

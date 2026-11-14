@@ -25,7 +25,7 @@ import 'lighting_assets.dart';
 typedef StageAssetLoader = Future<Uint8List?> Function(String path);
 
 /// Answers the lighting asset at a path under the player's
-/// `/api/lighting/assets/` (one that passed [checkLightingAssetPath]): its
+/// `/lighting-assets/` (one that passed [checkLightingAssetPath]): its
 /// bytes, null when the player has no such asset, or [AssetUnavailable]
 /// thrown when it cannot be had now.
 typedef LightingAssetSource = Future<Uint8List?> Function(String path);
@@ -36,7 +36,7 @@ const String stagePageFile = 'stage.html';
 /// Where, under the server's prefix, the page asks for lighting assets: the
 /// stage build asks relative to itself (`VITE_STAGE_ASSET_BASE` in
 /// `vite.stage.config.ts`).
-const List<String> stageAssetRoute = ['api', 'lighting', 'assets'];
+const List<String> stageAssetRoute = ['lighting-assets'];
 
 /// The only kinds of file served, and what each is served as. The page loads
 /// its script as modules and its WebAssembly with `instantiateStreaming`,
@@ -75,7 +75,7 @@ final RegExp _segment = RegExp(r'^[A-Za-z0-9_-][A-Za-z0-9._-]*$');
 ///   made of plain names.)
 ///
 /// The 3D view's lighting assets are asked for under the prefix, at
-/// `api/lighting/assets/<path>` ([stageAssetRoute]), and answered by
+/// `lighting-assets/<path>` ([stageAssetRoute]), and answered by
 /// [assets]: a path that is not an asset's ([checkLightingAssetPath]) is a
 /// 404 and never reaches it, an asset the player does not have is a 404, one
 /// that cannot be had now a 503. Such a request waits as long as its asset
@@ -227,7 +227,7 @@ class StageServer {
   }
 
   /// The lighting asset [uri] asks for, by its path under the player's
-  /// `/api/lighting/assets/`, or null when it asks for none: it is not under
+  /// `/lighting-assets/`, or null when it asks for none: it is not under
   /// the prefix and [stageAssetRoute], or the rest is not an asset's path.
   /// Read from the decoded names, so a name the page had to escape (a
   /// space) is the name the player gave.

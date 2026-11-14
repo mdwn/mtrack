@@ -159,60 +159,6 @@ impl Client {
         Ok(self.grpc().status(StatusRequest {}).await?.into_inner())
     }
 
-    /// Fetches `GET /api/<path>` as JSON.
-    pub async fn get_json(
-        &self,
-        path: &str,
-    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
-        let response = self.http.get(&url).send().await?;
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            return Err(format!("GET {url} returned {status}: {body}").into());
-        }
-        Ok(serde_json::from_str(&body)?)
-    }
-
-    /// POSTs JSON and returns the status alongside the parsed body.
-    ///
-    /// Separate from a plain request because axum's `Json` extractor rejects
-    /// anything not sent as `application/json`, and because the status is part
-    /// of what these endpoints are saying.
-    pub async fn post_json(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<(reqwest::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
-        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
-        let response = self.http.post(&url).json(&body).send().await?;
-        let status = response.status();
-        let text = response.text().await?;
-        let parsed = serde_json::from_str(&text).map_err(|e| {
-            format!("POST {url} returned {status} with a non-JSON body: {e}: {text}")
-        })?;
-        Ok((status, parsed))
-    }
-
-    /// PUTs a JSON body and returns the status and parsed response.
-    ///
-    /// Separate from [`Self::post_json`] because several config endpoints are
-    /// PUT-only, and they reject anything that is not `application/json`.
-    pub async fn put_json(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<(reqwest::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
-        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
-        let response = self.http.put(&url).json(&body).send().await?;
-        let status = response.status();
-        let text = response.text().await?;
-        let parsed = serde_json::from_str(&text).map_err(|e| {
-            format!("PUT {url} returned {status} with a non-JSON body: {e}: {text}")
-        })?;
-        Ok((status, parsed))
-    }
-
     /// The build, hardware and controllers as the player reports them: the
     /// hardware event `Watch` opens with.
     pub async fn hardware_status(&self) -> Result<HardwareStatus, Box<dyn std::error::Error>> {

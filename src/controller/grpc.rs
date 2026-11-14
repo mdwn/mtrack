@@ -1303,7 +1303,7 @@ impl PlayerService for PlayerServer {
 
     type GetLightingAssetStream = asset::AssetStream;
 
-    /// The web UI's `/api/lighting/assets/`, read the same way, in chunks.
+    /// The web UI's `/lighting-assets/`, read the same way, in chunks.
     async fn get_lighting_asset(
         &self,
         request: Request<GetLightingAssetRequest>,
@@ -2100,7 +2100,7 @@ mod test {
         Ok(())
     }
 
-    /// The lock toggle, which the web UI's `PUT /api/lock` was: it answers
+    /// The lock toggle, which the web UI uses: it answers
     /// the lock as it now stands, and it is open while locked (the way to
     /// unlock), as the lock policy lists it.
     #[tokio::test(flavor = "multi_thread")]

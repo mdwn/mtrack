@@ -17,11 +17,11 @@ import { ALL_SONGS } from "./helpers.js";
 import { configClientAt, playerClientAt } from "../support/player-client";
 
 /**
- * These tests exercise the REST API directly to verify the backend
+ * These tests exercise the gRPC services directly to verify the backend
  * is serving real data from the example song repository (and, for the
  * status, the stream the web UI reads it from).
  */
-test.describe("Smoke: REST API", () => {
+test.describe("Smoke: gRPC API", () => {
   test("the Watch stream says the build and the hardware status", async ({
     page,
   }) => {

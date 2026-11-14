@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The devices API's payloads (`/api/devices`, `/api/calibrate`).
+//! The devices payloads.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ use crate::config::StreamBufferSize;
 
 use crate::player::AudioOutputHealth;
 
-/// `POST /api/devices/audio/probe`: whether a device can stream. A device
+/// Whether a device can stream. A device
 /// this player already holds is reported from its health (`in_use`), not
 /// opened again; the fields a case does not decide are absent.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
@@ -50,7 +50,7 @@ pub enum ProbeKind {
     InUse,
 }
 
-/// `POST /api/calibrate/start`: a channel's noise floor, and the stream it
+/// A channel's noise floor, and the stream it
 /// was measured on.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

@@ -21,11 +21,10 @@
 //   await page.getByRole("button", { name: "Play" }).click();
 //   expect(rpc.calls(PlayerService.method.play)).toHaveLength(1);
 //
-// It is what `page.route("**/api/...")` is for the REST calls, for the calls
-// the app makes through the generated client (src/lib/grpc/client.ts): the
-// answer is a response message in the generated type, which the helper
-// encodes (./grpc-web.ts); a request is decoded to the generated type before
-// the answer or the recording sees it. A method nothing answers falls through
+// It stands in for the server on the calls the app makes through the
+// generated client (src/lib/grpc/client.ts): the answer is a response message
+// in the generated type, which the helper encodes (./grpc-web.ts); a request
+// is decoded to the generated type before the answer or the recording sees it. A method nothing answers falls through
 // to the mock server, as do the streams (`WatchStage`): they are not
 // answered from here, whatever is registered.
 import type { Page } from "@playwright/test";

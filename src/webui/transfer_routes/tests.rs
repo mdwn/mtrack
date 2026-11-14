@@ -235,7 +235,6 @@ async fn uploads_are_not_served_under_api() {
         .begin_upload(track(), "a.wav".into(), 1)
         .unwrap();
     let app = axum::Router::new()
-        .nest("/api", crate::webui::api::guarded_router(&state))
         .merge(router())
         .with_state(state.clone());
     let response = app

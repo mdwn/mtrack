@@ -255,7 +255,7 @@ fi
 
 echo
 echo "== the web UI =="
-# The first hardware event of the Watch stream is what GET /api/status was.
+# The first hardware event of the Watch stream is the player's status.
 status="$(rpc Watch watch-hardware 5 | "$HERE/grpcweb.py" status 2>/dev/null || true)"
 field() { # field <json> <python expression over d>
     python3 -c 'import json,sys

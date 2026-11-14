@@ -189,7 +189,7 @@ test.describe("Fixture Types Management", () => {
     );
     await expect(
       card(page, "unused").getByTestId("ft-card-thumb"),
-    ).toHaveAttribute("src", "/api/lighting/assets/abc/thumbnail.png");
+    ).toHaveAttribute("src", "/lighting-assets/abc/thumbnail.png");
   });
 
   test("clicking fixture type opens editor form", async ({ page }) => {

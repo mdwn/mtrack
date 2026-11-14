@@ -23,7 +23,7 @@ import {
   MvrInspectionSchema,
   MvrOptionsSchema,
 } from "../../gen/player/v1/player_pb";
-import { ApiError } from "../api/rest";
+import { ApiError } from "../api/errors";
 import { BadAnswerError } from "../lighting/answer";
 import { MVR_INSPECTION } from "../../../e2e/mock-server/test-data";
 import {

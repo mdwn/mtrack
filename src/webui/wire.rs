@@ -12,9 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! What the web UI reads from the player, as Rust types: the HTTP API's
-//! payloads and the hub's feed messages. Each module is light -- serde and
-//! the player's other light types only -- so `crates/mtrack-rules-wasm`
+//! What the web UI reads from the player, as Rust types: the payloads of the
+//! plain functions behind the gRPC services and the hub's feed messages. Each
+//! module is light -- serde and the player's other light types only -- so `crates/mtrack-rules-wasm`
 //! compiles it as it is and the UI's TypeScript types are generated from
 //! it (`tsify`), leaving the UI no copy of a payload's shape to drift.
 

@@ -15,6 +15,7 @@
 pub mod api;
 pub mod config_io;
 pub mod hub;
+pub mod lighting_asset_route;
 pub mod safe_path;
 pub mod server;
 pub mod state;

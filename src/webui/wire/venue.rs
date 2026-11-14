@@ -12,14 +12,14 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The venue API's payloads (`/api/lighting/venues`).
+//! The venue payloads.
 
 use serde::Serialize;
 
 use crate::lighting::findings::VenueError;
 use crate::lighting::patch::{PatchOverlap, PatchOverrun};
 
-/// `GET /api/lighting/venues/{name}/patch`: the addresses a venue's
+/// The addresses a venue's
 /// fixtures occupy, read from the files, and the player's findings on them.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

@@ -253,7 +253,7 @@ pub async fn start(
     // server starts or a gRPC controller is configured.
     let _hub_tasks = player.watch_hub().start(player.clone());
 
-    // Start the unified web server (dashboard + gRPC-Web + REST API)
+    // Start the unified web server (dashboard + gRPC-Web + file routes)
     let _webui_handle = {
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {

@@ -22,7 +22,7 @@
 
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { Duration } from "@bufbuild/protobuf/wkt";
-import { ApiError, ConflictError } from "../api/rest";
+import { ApiError, ConflictError } from "../api/errors";
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type {
   AmbientSetting,

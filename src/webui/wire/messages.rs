@@ -324,7 +324,7 @@ pub struct FixturePlacement {
     /// Degrees the venue says this unit really throws, or `null` for its
     /// type's own; a drawing hint only.
     pub beam_angle: Option<f64>,
-    /// The rig model's path under /api/lighting/assets/, when the type has
+    /// The rig model's path under /lighting-assets/, when the type has
     /// one; the 3D view draws a generic body without.
     pub rig: Option<String>,
 }
@@ -345,7 +345,7 @@ pub struct CellPlacement {
 pub struct StageVenue {
     pub name: String,
     pub focus_points: BTreeMap<String, Vec3>,
-    /// The scenery file under /api/lighting/assets/, when the venue came
+    /// The scenery file under /lighting-assets/, when the venue came
     /// from an MVR; the 3D view draws it.
     pub scenery: Option<String>,
     /// Why the scenery is missing, when the venue should have had some.

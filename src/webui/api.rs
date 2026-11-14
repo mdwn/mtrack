@@ -28,69 +28,9 @@ pub(crate) mod songs_api;
 pub(crate) mod status;
 pub(crate) mod write_lock;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
-use serde_json::json;
-
-use super::server::WebUiState;
-use crate::player::lock_policy::{self, Surface};
-
-/// True when a request may proceed while the player is locked: every GET,
-/// and the routes [`lock_policy::OPEN_WHILE_LOCKED`] lists, by method and
-/// the route's own pattern (never the request path: a venue named `lock`
-/// matches that route's pattern, not the lock toggle's).
-fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
-    let pattern = pattern.unwrap_or_default();
-    let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
-    lock_policy::open_while_locked(Surface::Web, &format!("{method} {pattern}"))
-}
-
-/// Middleware that rejects mutating requests (non-GET) when the player is locked,
-/// except the exact routes [`lock_policy::OPEN_WHILE_LOCKED`] lists.
-/// Applied at the server layer where the state is available.
-pub(crate) async fn lock_guard(
-    State(state): State<WebUiState>,
-    request: axum::http::Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let pattern = request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str().to_string());
-
-    if allowed_while_locked(request.method(), pattern.as_deref()) {
-        return next.run(request).await;
-    }
-
-    if let Err(e) = state.player.require_unlocked() {
-        return (StatusCode::LOCKED, Json(json!({"error": e.to_string()}))).into_response();
-    }
-
-    next.run(request).await
-}
-
-/// The API router with the lock guard applied to every route it matches.
-pub(crate) fn guarded_router(state: &WebUiState) -> Router<WebUiState> {
-    router().route_layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        lock_guard,
-    ))
-}
-
-/// Builds the API router for what is left of the REST API.
-///
-/// Playback control and every call are gRPC-Web (`PlayerService`,
-/// `ConfigService`, `LightingService`). File bytes go over `PUT /uploads/{id}`
-/// and `GET /downloads/{id}` (see `transfers`), outside `/api`.
-pub fn router() -> Router<WebUiState> {
-    Router::new().route(
-        "/lighting/assets/{*path}",
-        get(lighting_api::get_lighting_asset),
-    )
-}
-
 #[cfg(test)]
 pub(crate) mod test_helpers {
-    use super::*;
+    use crate::webui::server::WebUiState;
     use http_body_util::BodyExt;
 
     /// Creates a WebUiState with a test player and temp directories.
@@ -244,83 +184,5 @@ pub(crate) mod test_helpers {
         let path = dir.path().join("test.wav");
         crate::testutil::write_wav(path.clone(), vec![vec![0_i32; 4410]], 44100).unwrap();
         std::fs::read(&path).unwrap()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::test_helpers::*;
-    use super::*;
-    use axum::body::Body;
-    use axum::routing::put;
-    use tower::ServiceExt;
-
-    /// The guard's own routes: a write, by a pattern a name can match the
-    /// suffix of, and the one read the API keeps.
-    fn locked_app(state: &WebUiState) -> Router {
-        let routes = router()
-            .route("/songs/{name}/probe/{file}", put(|| async { "written" }))
-            .route("/lock", put(|| async { "written" }));
-        Router::new()
-            .nest(
-                "/api",
-                routes.route_layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    lock_guard,
-                )),
-            )
-            .with_state(state.clone())
-    }
-
-    async fn send(app: &Router, method: &str, uri: &str, body: &str) -> StatusCode {
-        app.clone()
-            .oneshot(
-                http::Request::builder()
-                    .method(method)
-                    .uri(uri)
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
-    }
-
-    #[tokio::test]
-    async fn locked_guard_matches_routes_not_path_suffixes() {
-        let (state, _dir) = test_state();
-        state.player.set_locked(true);
-        let app = locked_app(&state);
-
-        // A song named `lock` once rode the `/lock` suffix exemption.
-        let status = send(&app, "PUT", "/api/songs/lock/probe/kick.wav", "RIFF").await;
-        assert_eq!(status, StatusCode::LOCKED);
-        // Ordinary edits stay locked.
-        assert_eq!(
-            send(&app, "PUT", "/api/lock", "{}").await,
-            StatusCode::LOCKED
-        );
-        state.player.set_locked(false);
-        assert_eq!(
-            send(&app, "PUT", "/api/songs/lock/probe/kick.wav", "RIFF").await,
-            StatusCode::OK
-        );
-    }
-
-    #[tokio::test]
-    async fn locked_guard_lets_the_reads_through() {
-        let (state, _dir) = test_state();
-        state.player.set_locked(true);
-        let app = locked_app(&state);
-
-        // The web table lists no write: the MVR inspector, its one entry,
-        // is `ConfigService`'s `BeginUpload` and `LightingService`'s
-        // `InspectMvr` now, held to the same table by the gRPC lock guard's
-        // tests. A GET is a read.
-        assert_ne!(
-            send(&app, "GET", "/api/lighting/assets/x.json", "").await,
-            StatusCode::LOCKED
-        );
     }
 }

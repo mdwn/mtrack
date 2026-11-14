@@ -21,7 +21,7 @@ import {
   ListSongsResponseSchema,
   SavePlaylistRequestSchema,
 } from "../../gen/player/v1/player_pb";
-import { ApiError, ConflictError } from "../api/rest";
+import { ApiError, ConflictError } from "../api/errors";
 import {
   callError,
   mapPlaylistDetail,
