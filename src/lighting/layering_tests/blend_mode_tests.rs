@@ -55,6 +55,12 @@ fn test_fixture_state_blending() {
     );
 
     fixture1.blend_with(&fixture2);
+    // Colour is composited when the frame is resolved.
+    let channels: HashMap<String, u16> = [("red", 1), ("green", 2), ("blue", 3)]
+        .into_iter()
+        .map(|(n, o)| (n.to_string(), o))
+        .collect();
+    fixture1.resolve(&channels);
 
     // Green should be blended: 0.5 * 0.8 = 0.4
     let green_state = fixture1.channels.get("green").unwrap();

@@ -1073,10 +1073,10 @@ show "T" {
     }
 
     #[test]
-    fn a_colour_under_a_dimmer_never_sent_reads_dark() {
-        // The head's dimmer channel holds 0 when nothing ever sent it a
-        // byte: a colour alone puts no light out, and the state says so
-        // rather than taking the dimmer it left out as open.
+    fn a_colour_alone_opens_the_dimmer() {
+        // A colour with nothing dimming it is at full on every fixture
+        // (design 3.4, rule 6): the head's dimmer is sent open, not left
+        // at the 0 it holds when nothing ever sent it a byte.
         let fixtures = wire_rig();
         let source = "show \"T\" {\n    @0.000\n    par: static, red: 100%, duration: 5s\n}\n";
         let evaluation = &eval(source, &fixtures, &[1.0])[0];
@@ -1085,8 +1085,8 @@ show "T" {
             .iter()
             .find(|f| f.name == "par")
             .unwrap();
-        assert_eq!((par.channels["red"], par.channels["dimmer"]), (255, 0));
-        assert_eq!(evaluation.is_dark(), Some(true));
+        assert_eq!((par.channels["red"], par.channels["dimmer"]), (255, 255));
+        assert_eq!(evaluation.is_dark(), Some(false));
     }
 
     #[test]
