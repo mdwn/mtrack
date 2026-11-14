@@ -1811,3 +1811,159 @@ service PlayerService {
     // over Wi-Fi. Open while locked.
     rpc GetNetworkInfo(GetNetworkInfoRequest) returns (GetNetworkInfoResponse);
 }
+
+// ConfigService is what the editor pages use: config sections and the
+// profile files of a hardware profiles directory. It is served on the gRPC
+// port and the web UI's gRPC-Web beside PlayerService, behind the same lock,
+// and is not reachable over Bluetooth. An RPC name is unique across the
+// services, as the lock policy names an RPC by it.
+service ConfigService {
+    // UpdateSamples replaces the sample definitions and the player-wide
+    // voice limit, and applies the change as the other config writes do.
+    // FAILED_PRECONDITION when expected_checksum is not the config's;
+    // INVALID_ARGUMENT for samples that do not parse. Refused while locked.
+    rpc UpdateSamples(UpdateSamplesRequest) returns (UpdateConfigResponse);
+
+    // UpdateMetronome replaces the player-wide metronome defaults (or removes
+    // them), applies the change and reloads the songs, which take the default
+    // from it. A song reload that fails is answered beside the save, in
+    // songs_error. FAILED_PRECONDITION when expected_checksum is not the
+    // config's; INVALID_ARGUMENT for defaults that are not valid. Refused
+    // while locked.
+    rpc UpdateMetronome(UpdateMetronomeRequest) returns (UpdateConfigResponse);
+
+    // ListProfileFiles lists the hardware profile files of the profiles
+    // directory, sorted by stem then file name, each with the sections it
+    // has. A file that does not parse is listed, with why.
+    // FAILED_PRECONDITION when the config sets no profiles directory. Open
+    // while locked.
+    rpc ListProfileFiles(ListProfileFilesRequest) returns (ListProfileFilesResponse);
+
+    // GetProfileFile reads one profile file, as a profile and as written,
+    // with the version a save of it presents. NOT_FOUND when there is no
+    // such file; INVALID_ARGUMENT for a name that is not safe as a file
+    // name. Open while locked.
+    rpc GetProfileFile(GetProfileFileRequest) returns (GetProfileFileResponse);
+
+    // SaveProfileFile creates or updates a profile file, writes the change
+    // into the running config and applies it. Sections the profile leaves
+    // out keep their values in the file; a section sent as null is removed.
+    // ABORTED when expected_version is not the file's current version (that
+    // version is in the `x-current-version` metadata when the file exists) or
+    // when create is set and the name reaches a file already there.
+    // ALREADY_EXISTS for a new name that differs from a file only in case.
+    // INVALID_ARGUMENT for a name or a profile that is not valid.
+    // FAILED_PRECONDITION when the config sets no profiles directory.
+    // Refused while locked.
+    rpc SaveProfileFile(SaveProfileFileRequest) returns (ProfileFileSaved);
+
+    // DeleteProfileFile deletes a profile file, drops it from the running
+    // config and applies the change. NOT_FOUND when there is no such file.
+    // Refused while locked.
+    rpc DeleteProfileFile(DeleteProfileFileRequest) returns (ProfileFileSaved);
+}
+
+// UpdateSamplesRequest replaces the sample definitions.
+message UpdateSamplesRequest {
+    // The sample definitions as a JSON object keyed by sample name; "{}"
+    // removes them all.
+    string samples_json = 1;
+    // The player-wide limit on voices sounding at once; absent for none.
+    optional uint32 max_sample_voices = 2;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 3;
+}
+
+// UpdateMetronomeRequest replaces the player-wide metronome defaults.
+message UpdateMetronomeRequest {
+    // The defaults as a JSON object; empty or "null" removes them.
+    string metronome_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+message ListProfileFilesRequest {}
+
+message ListProfileFilesResponse {
+    repeated ProfileFileInfo files = 1;
+}
+
+// ProfileFileInfo is a profile file and the sections it has.
+message ProfileFileInfo {
+    // The file's name, extension included (`stage.yml`): what a client
+    // addresses it by, as two files may share a stem.
+    string file = 1;
+    // The file's stem (`stage`): for display only, never an address.
+    string filename = 2;
+    // Whether the other RPCs reach this file by `file`: false for a name
+    // that is not UTF-8 or not safe as a file name, which a client shows
+    // read-only.
+    bool addressable = 3;
+    // Why the file does not parse as a profile; absent when it does. Its
+    // sections are then all false.
+    optional string error = 4;
+    optional string hostname = 5;
+    bool has_audio = 6;
+    bool has_midi = 7;
+    bool has_dmx = 8;
+    bool has_trigger = 9;
+    bool has_controllers = 10;
+}
+
+message GetProfileFileRequest {
+    // The file's name (`stage.yml`), or its stem (`stage`: its .yaml, else
+    // its .yml).
+    string filename = 1;
+}
+
+message GetProfileFileResponse {
+    // The profile as a JSON object.
+    string profile_json = 1;
+    // The file as written.
+    string yaml = 2;
+    // The file's version: what a save of it presents as expected_version.
+    string version = 3;
+}
+
+message SaveProfileFileRequest {
+    // The file's name or stem, as for GetProfileFile; a name no file has is
+    // created, as `<name>.yaml` unless it ends in .yaml or .yml.
+    string filename = 1;
+    // The profile as a JSON object.
+    string profile_json = 2;
+    // The version the client read the file at. Absent (or empty) saves
+    // whatever the file holds.
+    optional string expected_version = 3;
+    // Only create: a name that reaches a file already there is refused,
+    // never merged into it.
+    bool create = 4;
+}
+
+// ProfileFileSaved is the answer to a profile file written or deleted, with
+// what became of the hardware reload (as UpdateConfigResponse says it).
+message ProfileFileSaved {
+    // "saved" or "deleted".
+    string status = 1;
+    // The file, by the name the request gave.
+    string filename = 2;
+    // A saved file's new version.
+    optional string version = 3;
+    // Whether the change has been applied to the running hardware.
+    bool applied = 4;
+    // Why the change has not been applied yet, when it has not.
+    string message = 5;
+    // "applied", "deferred" or "failed".
+    string reload = 6;
+    // Why the songs could not be reloaded beside the change, when they could
+    // not.
+    optional string songs_error = 7;
+    // For a deferred reload, the generation it waits for.
+    optional uint64 awaits_reload = 8;
+    // The process whose generation that is.
+    optional string awaits_process = 9;
+}
+
+message DeleteProfileFileRequest {
+    // The file's name or stem, as for GetProfileFile.
+    string filename = 1;
+}

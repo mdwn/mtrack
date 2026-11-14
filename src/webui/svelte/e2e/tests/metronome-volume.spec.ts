@@ -22,10 +22,13 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { parse } from "yaml";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { CONFIG_STORE } from "../mock-server/test-data";
 import { getConfigReply } from "../support/config-rpc";
-import { mockRpc } from "../support/rpc";
+import { mockRpc, type RpcMock } from "../support/rpc";
 
 const CONFIG_YAML = `songs: songs
 profiles:
@@ -59,7 +62,7 @@ interface MetronomeDefaults {
   sounds?: Record<string, unknown>;
 }
 
-async function openConfig(page: Page) {
+async function openConfig(page: Page): Promise<RpcMock> {
   const rpc = await mockRpc(page);
   rpc.unary(
     PlayerService.method.getConfig,
@@ -67,6 +70,7 @@ async function openConfig(page: Page) {
   );
   await page.goto("/#/config");
   await expect(page.locator(".metronome-defaults")).toBeVisible();
+  return rpc;
 }
 
 async function openSong(page: Page) {
@@ -102,7 +106,7 @@ test.describe("Master click volume", () => {
   test("the Config page loads and saves the player-wide volume", async ({
     page,
   }) => {
-    await openConfig(page);
+    const rpc = await openConfig(page);
     const master = page
       .locator(".metronome-defaults .master-volume")
       .getByRole("textbox");
@@ -111,17 +115,18 @@ test.describe("Master click volume", () => {
     await master.fill("0.5");
     await master.dispatchEvent("change");
 
-    const request = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/config/metronome") && req.method() === "PUT",
-    );
     await page.getByRole("button", { name: /Save Metronome/i }).click();
-    const body = JSON.parse((await request).postData() ?? "{}") as {
-      metronome: MetronomeDefaults | null;
-    };
-    expect(body.metronome?.volume).toBe(0.5);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.updateMetronome).length)
+      .toBe(1);
+    const [call] = rpc.calls(ConfigService.method.updateMetronome);
+    expect(call.expectedChecksum).toBe(CONFIG_STORE.checksum);
+    const metronome = JSON.parse(
+      call.metronomeJson,
+    ) as MetronomeDefaults | null;
+    expect(metronome?.volume).toBe(0.5);
     // Still default-on: the volume rides along with the rest of the block.
-    expect(body.metronome?.enabled).toBe(true);
+    expect(metronome?.enabled).toBe(true);
   });
 
   test("a song inherits the volume until it overrides it", async ({ page }) => {

@@ -21,6 +21,7 @@
 
 use std::time::{Duration, Instant};
 
+use mtrack::proto::player::v1::config_service_client::ConfigServiceClient;
 use mtrack::proto::player::v1::player_service_client::PlayerServiceClient;
 use mtrack::proto::player::v1::{
     HardwareSnapshot, HardwareStatus, SetLockRequest, SetLockResponse, StatusRequest,
@@ -36,6 +37,8 @@ pub struct Client {
     base_url: String,
     /// Absent for clients built with [`Client::connect_http_only`].
     grpc: Option<PlayerServiceClient<Channel>>,
+    /// The editor service, on the same channel as `grpc`.
+    config: Option<ConfigServiceClient<Channel>>,
 }
 
 impl Client {
@@ -45,9 +48,13 @@ impl Client {
         // starts answering, so the first connect is retried rather than
         // treated as a failure.
         let deadline = Instant::now() + Duration::from_secs(15);
-        let grpc = loop {
-            match PlayerServiceClient::connect(server.grpc_url()).await {
-                Ok(client) => break client,
+        let channel = loop {
+            let connecting = Channel::from_shared(server.grpc_url())
+                .map_err(|e| format!("bad gRPC address {}: {e}", server.grpc_url()))?
+                .connect()
+                .await;
+            match connecting {
+                Ok(channel) => break channel,
                 Err(e) if Instant::now() >= deadline => {
                     return Err(
                         format!("could not reach gRPC at {}: {e}", server.grpc_url()).into(),
@@ -56,11 +63,13 @@ impl Client {
                 Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
             }
         };
+        let channel_for_player = channel.clone();
 
         let client = Client {
             http: reqwest::Client::new(),
             base_url: server.base_url(),
-            grpc: Some(grpc),
+            config: Some(ConfigServiceClient::new(channel)),
+            grpc: Some(PlayerServiceClient::new(channel_for_player)),
         };
 
         // The player boots locked so a live show cannot be altered by accident.
@@ -97,6 +106,7 @@ impl Client {
             http: reqwest::Client::new(),
             base_url: server.base_url(),
             grpc: None,
+            config: None,
         };
         client.set_locked(false).await?;
         Ok(client)
@@ -105,6 +115,13 @@ impl Client {
     /// A mutable handle to the gRPC client for calls without a wrapper here.
     pub fn grpc(&mut self) -> &mut PlayerServiceClient<Channel> {
         self.grpc
+            .as_mut()
+            .expect("this client was built without gRPC; use the HTTP API instead")
+    }
+
+    /// A mutable handle to the editor service's gRPC client.
+    pub fn config(&mut self) -> &mut ConfigServiceClient<Channel> {
+        self.config
             .as_mut()
             .expect("this client was built without gRPC; use the HTTP API instead")
     }

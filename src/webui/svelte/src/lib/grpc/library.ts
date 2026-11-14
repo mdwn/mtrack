@@ -48,12 +48,17 @@ import type {
 
 // ---- Errors ----
 
+/** The metadata key of an `ABORTED` save of a profile file that says the
+ *  version the file is at (src/controller/grpc/config_service.rs). */
+const CURRENT_VERSION_KEY = "x-current-version";
+
 /** The error a failed call shows, as the REST routes' errors were: the
  *  server's own message, whatever the code (a locked player is
  *  `FAILED_PRECONDITION` with "Player is locked...", an invalid playlist
  *  `INVALID_ARGUMENT` with what is wrong with it, a missing one `NOT_FOUND`,
  *  one that exists `ALREADY_EXISTS`, one changed elsewhere `ABORTED`, which is
- *  a `ConflictError` as a stale version was); with
+ *  a `ConflictError` as a stale version was, carrying the version the file is
+ *  at when the server says it); with
  *  none, `fallback` and the code. Anything that is not a failed call (an
  *  error in the page's own code) passes through. */
 export function callError(e: unknown, fallback: string): Error {
@@ -61,7 +66,7 @@ export function callError(e: unknown, fallback: string): Error {
   if (!(e instanceof ConnectError)) return e instanceof Error ? e : err;
   const message = err.rawMessage || `${fallback}: ${Code[err.code]}`;
   return err.code === Code.Aborted
-    ? new ConflictError(message)
+    ? new ConflictError(message, err.metadata.get(CURRENT_VERSION_KEY))
     : new ApiError(message);
 }
 

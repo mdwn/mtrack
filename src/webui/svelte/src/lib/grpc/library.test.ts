@@ -349,6 +349,27 @@ describe("a failed call's error", () => {
     expect(e.message).toBe("changed");
   });
 
+  it("carries the version a changed profile file is at, when the server says", () => {
+    const at = callError(
+      new ConnectError(
+        "changed",
+        Code.Aborted,
+        new Headers({ "x-current-version": "v2" }),
+      ),
+      "Failed to save",
+    );
+    expect((at as ConflictError).version).toBe("v2");
+    // A create onto a file already there has no version to say.
+    expect(
+      (
+        callError(
+          new ConnectError("exists", Code.Aborted),
+          "Failed to save",
+        ) as ConflictError
+      ).version,
+    ).toBeNull();
+  });
+
   it("falls back to the code when the server says nothing", () => {
     expect(
       callError(new ConnectError("", Code.Unavailable), "Failed to save")

@@ -255,13 +255,10 @@ pub async fn start(
 
     // Start the unified web server (dashboard + gRPC-Web + REST API)
     let _webui_handle = {
-        let profiles_dir = player_config.resolved_profiles_dir(player_path);
-
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
                 player: player.clone(),
                 config_path: player_path.to_path_buf(),
-                profiles_dir,
             });
 
         crate::webui::server::start_or_unlock(

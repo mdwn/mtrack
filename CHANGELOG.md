@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
+  `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile` and
+  `DeleteProfileFile` (`player.v1.ConfigService`, in `player.proto`; the rest of the config
+  editor's calls follow it in later releases). It is served on the gRPC port and by the web UI's
+  gRPC-Web, behind the same lock as `PlayerService` (the four writes are refused while locked, the
+  two reads are open), listed in reflection and reported by the health service. It is not
+  reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
+  [gRPC](docs/src/interfaces/grpc.md).
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
   network at all. Add `- kind: ble` (optionally with a `name` to advertise, which defaults to the
   hostname) to a profile's `controllers`. Phones pair once and are trusted from then on. The
@@ -208,6 +216,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process that counts it (`awaits_process`), as the routes' answers did; the fields it had are
   unchanged, and the section updates (`UpdateAudio`, `UpdateMidi`, `UpdateDmx`,
   `UpdateControllers`) answer them as well. See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for the samples, the metronome defaults and the profile
+  files**: `PUT /api/config/samples`, `PUT /api/config/metronome`, `GET /api/profiles`, and `GET`,
+  `PUT` and `DELETE /api/profiles/<file>` are gone; the web UI calls the new `ConfigService` for
+  them (see Added). A script that used them should call `UpdateSamples`, `UpdateMetronome`,
+  `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile` and `DeleteProfileFile`, over gRPC or
+  gRPC-Web; for example `grpcurl -plaintext host:43234 player.v1.ConfigService/ListProfileFiles`.
+  The samples and the metronome defaults are JSON strings (`samples_json`, `metronome_json`; an
+  empty string or `null` removes the defaults), and a write sends the checksum it read as
+  `expected_checksum`, as `UpdateProfile` does: a stale one is `FAILED_PRECONDITION`, and one
+  not sent is a stale one, where the routes answered 400 ("missing expected_checksum"). A profile
+  file's `If-Match` is `expected_version` and its `If-None-Match: *` is `create: true`; a save
+  against a version the file has since left, and a create onto a file already there, are `ABORTED`
+  (the routes answered 409), the first with the version the file is at in the `x-current-version`
+  metadata. A new name that differs from a file only in case is `ALREADY_EXISTS`. A name or a
+  profile that is not valid (a name that leaves the directory included) is `INVALID_ARGUMENT`, a
+  missing file `NOT_FOUND`, and a config that sets no `profiles_dir` `FAILED_PRECONDITION` (the
+  routes answered 503). The profiles directory is read from the config as it stands, not as it was
+  when mtrack started, so a `profiles_dir` saved from the config editor is used at once. A save or
+  delete answers `ProfileFileSaved`: the file's new version and the reload facts
+  `UpdateConfigResponse` carries. See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.2] - 2026-11-13
 

@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod asset;
+mod config_service;
 mod playlist_settings;
 mod playlists;
 mod remote;
@@ -33,6 +34,7 @@ use crate::{
     config,
     player::{Player, PLAY_DECLINED_KEY},
     proto::player::v1::{
+        config_service_server::ConfigServiceServer,
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
@@ -123,7 +125,8 @@ impl super::Driver for Driver {
             Server::builder()
                 .add_service(reflection_service)
                 .add_service(health_service().await)
-                .add_service(player_service(player))
+                .add_service(player_service(player.clone()))
+                .add_service(config_service(player))
                 .serve_with_incoming(
                     tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true)),
                 )
@@ -195,14 +198,29 @@ pub(crate) fn player_service(player: Arc<Player>) -> LockGuard<PlayerServiceServ
     }
 }
 
+/// The editor service, behind the lock: what the gRPC controller and the
+/// web UI's gRPC-Web route serve beside [`player_service`]. Bluetooth does
+/// not carry it.
+pub(crate) fn config_service(
+    player: Arc<Player>,
+) -> LockGuard<ConfigServiceServer<config_service::ConfigServer>> {
+    LockGuard {
+        inner: ConfigServiceServer::new(config_service::ConfigServer::new(player.clone())),
+        player,
+    }
+}
+
 /// The standard `grpc.health.v1.Health` service, reporting the server as a
-/// whole and the player service as serving. It is not behind the lock: a
+/// whole and the player and editor services as serving. It is not behind the lock: a
 /// health check must answer on a locked player. The gRPC controller and the
 /// web UI's gRPC-Web route both serve it.
 pub(crate) async fn health_service() -> HealthServer<impl Health> {
     let (reporter, service) = tonic_health::server::health_reporter();
     reporter
         .set_serving::<PlayerServiceServer<PlayerServer>>()
+        .await;
+    reporter
+        .set_serving::<ConfigServiceServer<config_service::ConfigServer>>()
         .await;
     service
 }
@@ -2683,14 +2701,44 @@ mod test {
         Ok(())
     }
 
+    /// The RPCs in the proto, each with the service it is in.
+    fn proto_service_rpcs() -> Vec<(&'static str, &'static str)> {
+        let mut service = "";
+        let mut rpcs = Vec::new();
+        for line in include_str!("../proto/player/v1/player.proto")
+            .lines()
+            .map(str::trim)
+        {
+            if let Some(name) = line.strip_prefix("service ") {
+                service = name.trim_end_matches('{').trim();
+            } else if let Some(rpc) = line.strip_prefix("rpc ") {
+                rpcs.push((service, rpc.split('(').next().unwrap().trim()));
+            }
+        }
+        rpcs
+    }
+
     /// The RPCs in the proto.
     fn proto_rpcs() -> Vec<&'static str> {
-        include_str!("../proto/player/v1/player.proto")
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("rpc "))
-            .filter_map(|l| l.split('(').next())
-            .map(str::trim)
+        proto_service_rpcs()
+            .into_iter()
+            .map(|(_, rpc)| rpc)
             .collect()
+    }
+
+    /// The lock policy names an RPC by its name alone, so no two services
+    /// may share one: a `ConfigService` RPC named as an open `PlayerService`
+    /// one would be open while locked too.
+    #[test]
+    fn no_two_services_share_an_rpc_name() {
+        let rpcs = proto_rpcs();
+        let unique: std::collections::HashSet<&&str> = rpcs.iter().collect();
+        assert_eq!(unique.len(), rpcs.len(), "an RPC name is in two services");
+        let services: std::collections::HashSet<&str> = proto_service_rpcs()
+            .into_iter()
+            .map(|(service, _)| service)
+            .collect();
+        assert!(services.contains("PlayerService") && services.contains("ConfigService"));
     }
 
     /// Every RPC the lock policy leaves open is in the proto.
@@ -2703,31 +2751,57 @@ mod test {
         }
     }
 
-    /// Every RPC in the proto the lock policy does not leave open is
-    /// refused by the service's lock guard while the player is locked,
-    /// before its handler runs, so a new RPC is locked out until listed.
+    /// Every RPC in the proto, of either service, the lock policy does not
+    /// leave open is refused by the service's lock guard while the player is
+    /// locked, before its handler runs, so a new RPC is locked out until
+    /// listed.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_lock_guard_refuses_every_rpc_not_left_open() -> Result<(), Box<dyn Error>> {
+        use tonic::server::NamedService;
         use tower::ServiceExt;
         let (player, _client, _device) = setup_grpc().await?;
         player.set_locked(true);
         let open: Vec<&str> =
             crate::player::lock_policy::open_on(crate::player::lock_policy::Surface::Grpc)
                 .collect();
-        let locked: Vec<&str> = proto_rpcs()
+        let locked: Vec<(&str, &str)> = proto_service_rpcs()
             .into_iter()
-            .filter(|rpc| !open.contains(rpc))
+            .filter(|(_, rpc)| !open.contains(rpc))
             .collect();
-        assert!(locked.contains(&"UpdateAudio"));
-        for rpc in locked {
-            use tonic::server::NamedService;
-            let service = <super::PlayerServiceServer<super::PlayerServer> as NamedService>::NAME;
-            let request = http::Request::post(format!("/{service}/{rpc}"))
-                .header("content-type", "application/grpc")
-                .body(tonic::body::Body::empty())?;
-            let response = super::player_service(player.clone())
-                .oneshot(request)
-                .await?;
+        assert!(locked.contains(&("PlayerService", "UpdateAudio")));
+        for rpc in ["UpdateSamples", "UpdateMetronome"] {
+            assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
+        }
+        for rpc in ["SaveProfileFile", "DeleteProfileFile"] {
+            assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
+        }
+        // The reads are open.
+        for rpc in ["ListProfileFiles", "GetProfileFile"] {
+            assert!(open.contains(&rpc), "{rpc}");
+        }
+        for (service, rpc) in locked {
+            let path = |name: &str| format!("/{name}/{rpc}");
+            let request = |name: &str| {
+                http::Request::post(path(name))
+                    .header("content-type", "application/grpc")
+                    .body(tonic::body::Body::empty())
+            };
+            let response = match service {
+                "PlayerService" => {
+                    let name =
+                        <super::PlayerServiceServer<super::PlayerServer> as NamedService>::NAME;
+                    super::player_service(player.clone())
+                        .oneshot(request(name)?)
+                        .await?
+                }
+                "ConfigService" => {
+                    let name = <super::ConfigServiceServer<super::config_service::ConfigServer> as NamedService>::NAME;
+                    super::config_service(player.clone())
+                        .oneshot(request(name)?)
+                        .await?
+                }
+                other => panic!("{other} is served by no lock guard in this test"),
+            };
             let status = tonic::Status::from_header_map(response.headers()).expect(rpc);
             assert_eq!(status.code(), tonic::Code::FailedPrecondition, "{rpc}");
             assert_eq!(
@@ -2775,6 +2849,7 @@ mod test {
         let names: Vec<&str> = list.service.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"grpc.health.v1.Health"), "{names:?}");
         assert!(names.contains(&"player.v1.PlayerService"), "{names:?}");
+        assert!(names.contains(&"player.v1.ConfigService"), "{names:?}");
         Ok(())
     }
 
@@ -2795,7 +2870,7 @@ mod test {
             .await?;
         let mut health = HealthClient::new(channel);
 
-        for service in ["", "player.v1.PlayerService"] {
+        for service in ["", "player.v1.PlayerService", "player.v1.ConfigService"] {
             let status = health
                 .check(HealthCheckRequest {
                     service: service.to_string(),

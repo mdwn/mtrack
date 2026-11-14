@@ -77,8 +77,6 @@ pub struct WebUiState {
     pub config_path: PathBuf,
     /// The hub's waveform cache.
     pub waveform_cache: ws_state::WaveformCache,
-    /// Canonicalized path to the profiles directory (if configured).
-    pub profiles_dir: Option<PathBuf>,
     /// Active calibration session (at most one at a time).
     pub(crate) calibration:
         Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
@@ -124,7 +122,6 @@ fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
 pub struct WebUiStateParams {
     pub player: Arc<Player>,
     pub config_path: PathBuf,
-    pub profiles_dir: Option<PathBuf>,
 }
 
 impl WebUiState {
@@ -134,7 +131,6 @@ impl WebUiState {
             waveform_cache: params.player.watch_hub().waveform_cache().clone(),
             player: params.player,
             config_path: canonicalize_or_keep(params.config_path),
-            profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
             calibration: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -210,6 +206,10 @@ pub async fn start(
     let app = Router::new()
         .nest("/api", api_router)
         .route("/player.v1.PlayerService/{method}", any(grpc_web_handler))
+        .route(
+            "/player.v1.ConfigService/{method}",
+            any(grpc_config_handler),
+        )
         .route("/grpc.health.v1.Health/{method}", any(grpc_health_handler))
         .route("/", get(index_handler))
         .fallback(get(static_handler))
@@ -265,6 +265,19 @@ async fn grpc_web_handler(
     // The same service, behind the same lock, as native gRPC.
     serve_grpc_web(
         crate::controller::grpc::player_service(state.player.clone()),
+        request,
+    )
+    .await
+}
+
+/// Handles gRPC-Web requests for `ConfigService`: the editor pages' calls,
+/// behind the same lock as `PlayerService`.
+async fn grpc_config_handler(
+    State(state): State<WebUiState>,
+    request: axum::extract::Request,
+) -> Response {
+    serve_grpc_web(
+        crate::controller::grpc::config_service(state.player.clone()),
         request,
     )
     .await
@@ -584,6 +597,115 @@ mod test {
             ("GET", "/api/playlists"),
             ("PUT", "/api/lock"),
             ("GET", "/api/playlists/all_songs"),
+        ] {
+            let resp = client
+                .request(method.parse().unwrap(), format!("{base_url}{path}"))
+                .send()
+                .await
+                .unwrap();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap().to_string())
+                .unwrap_or_default();
+            assert!(
+                !content_type.contains("json"),
+                "{method} {path} still answers JSON ({content_type})"
+            );
+        }
+    }
+
+    /// `ConfigService` is served by the web port's gRPC-Web beside
+    /// `PlayerService`, behind the same lock: a write is refused while the
+    /// player is locked, a read reaches its handler (which has no profiles
+    /// directory to read), and the REST routes it replaced (the sample and
+    /// metronome saves and the profile files) are gone.
+    #[tokio::test]
+    async fn config_service_is_a_grpc_web_service_behind_the_lock() {
+        use prost::Message;
+        use tonic_health::pb::{health_check_response::ServingStatus, HealthCheckRequest};
+        let (_handle, base_url, _dir) = start_test_server().await;
+        let client = reqwest::Client::new();
+        let frame = |message: Vec<u8>| {
+            let mut frame = vec![0u8];
+            frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+            frame.extend_from_slice(&message);
+            frame
+        };
+        // Headers and body as one lowercase text: a refusal is in the
+        // headers or the trailer frame.
+        let call = |method: &'static str, message: Vec<u8>| {
+            let client = client.clone();
+            let base_url = base_url.clone();
+            let body = frame(message);
+            async move {
+                let resp = client
+                    .post(format!("{base_url}/player.v1.ConfigService/{method}"))
+                    .header("content-type", "application/grpc-web+proto")
+                    .header("x-grpc-web", "1")
+                    .body(body)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), 200, "{method}");
+                let headers = format!("{:?}", resp.headers()).to_lowercase();
+                let body = String::from_utf8_lossy(&resp.bytes().await.unwrap()).to_lowercase();
+                format!("{headers} {body}")
+            }
+        };
+
+        // The message is percent-encoded in the header.
+        assert!(
+            call(
+                "UpdateSamples",
+                crate::proto::player::v1::UpdateSamplesRequest {
+                    samples_json: "{}".to_string(),
+                    max_sample_voices: None,
+                    expected_checksum: String::new(),
+                }
+                .encode_to_vec()
+            )
+            .await
+            .contains("locked"),
+            "a write while locked"
+        );
+        // FAILED_PRECONDITION is status 9, for the lock and for no profiles
+        // directory alike: the message tells them apart.
+        let read = call(
+            "ListProfileFiles",
+            crate::proto::player::v1::ListProfileFilesRequest {}.encode_to_vec(),
+        )
+        .await;
+        assert!(
+            read.contains("no%20profiles%20directory%20configured") && !read.contains("locked"),
+            "{read}"
+        );
+
+        // Served as such.
+        let msg = HealthCheckRequest {
+            service: "player.v1.ConfigService".to_string(),
+        }
+        .encode_to_vec();
+        let resp = client
+            .post(format!("{base_url}/grpc.health.v1.Health/Check"))
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(frame(msg))
+            .send()
+            .await
+            .unwrap();
+        let body = resp.bytes().await.unwrap();
+        let len = u32::from_be_bytes(body[1..5].try_into().unwrap()) as usize;
+        let answer = tonic_health::pb::HealthCheckResponse::decode(&body[5..5 + len]).unwrap();
+        assert_eq!(answer.status, ServingStatus::Serving as i32);
+
+        for (method, path) in [
+            ("PUT", "/api/config/samples"),
+            ("PUT", "/api/config/metronome"),
+            ("GET", "/api/profiles"),
+            ("GET", "/api/profiles/test-host"),
+            ("PUT", "/api/profiles/test-host"),
+            ("DELETE", "/api/profiles/test-host"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

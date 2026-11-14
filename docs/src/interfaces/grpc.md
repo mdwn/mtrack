@@ -1,6 +1,8 @@
 # gRPC Control
 
-The player exposes a gRPC service, `PlayerService`, defined in
+The player exposes two gRPC services, `PlayerService` (what a performer or a remote uses during a
+show, and the calls below) and `ConfigService` (what the editor pages use; see
+[ConfigService](#configservice)), defined in
 [`player.proto`](https://github.com/mdwn/mtrack/blob/main/src/proto/player/v1/player.proto).
 The gRPC controller listens on port 43234 unless the profile's `grpc` controller sets another
 `port` (see [Player Configuration](../configuration/player-config.md)).
@@ -106,11 +108,37 @@ for, which has started once the `Watch` stream's `hardware_reload_started` reach
 saved config). `songs_error` says why the songs could not be reloaded beside it, when they could
 not.
 
+## ConfigService
+
+`player.v1.ConfigService` is served on the same port as `PlayerService` and by the web UI's
+gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
+service, and is not reachable over Bluetooth. The web UI's config editor calls it for the samples,
+the metronome defaults and the hardware profile files of the `profiles_dir`.
+
+| RPC | Description |
+|---|---|
+| `UpdateSamples` | Replaces the sample definitions (`samples_json`, a JSON object keyed by sample name) and the player-wide voice limit (`max_sample_voices`, absent for none). Answers `UpdateConfigResponse`, as the other config writes do. |
+| `UpdateMetronome` | Replaces the player-wide metronome defaults (`metronome_json`; empty or `null` removes them), applies the change and reloads the songs, which take the default from it. A song reload that fails is answered in `songs_error` beside the save. Defaults that are not valid are `INVALID_ARGUMENT`. |
+| `ListProfileFiles` | Lists the profile files of the config's `profiles_dir`, sorted by stem and file name, each with its hostname and which sections it has. `file` is the address (two files may share a stem); `addressable` is false for a name the other calls cannot take back as written; `error` says why a file does not parse (it is still listed). Open while locked. |
+| `GetProfileFile` | Reads a profile file by full file name (`stage.yml`) or stem (`stage`: its `.yaml`, else its `.yml`): the profile (`profile_json`), the file as written (`yaml`) and its `version`. `NOT_FOUND` for no such file. Open while locked. |
+| `SaveProfileFile` | Creates or updates a profile file. Sections `profile_json` leaves out keep their values in the file, `null` removes one, and keys the profile does not model are kept. `expected_version` is the `version` the file was read at (absent saves whatever is there); `create` makes the save only a create. The change goes into the running config and is applied; the answer, `ProfileFileSaved`, is the file's new `version` and the reload facts `UpdateConfigResponse` carries. |
+| `DeleteProfileFile` | Deletes a profile file, drops it from the running config and applies the change. Answers `ProfileFileSaved` (no `version`). |
+
+The refusals are statuses: a version the file has since left, or a `create` onto a file that is
+there (including one a stem reaches, `stage.yaml` with only `stage.yaml.yaml`), is `ABORTED` (the
+first carries the file's current version in the `x-current-version` metadata); a new name that
+differs from a file only in case is `ALREADY_EXISTS`; a name or a profile that is not valid,
+including a name that would leave the directory, is `INVALID_ARGUMENT`; no such file is
+`NOT_FOUND`; a config that sets no `profiles_dir` is `FAILED_PRECONDITION`; a player with no config
+store answers the samples and metronome writes `UNIMPLEMENTED`. `UpdateSamples` and `UpdateMetronome`
+send `expected_checksum` like the other config writes (a stale one is `FAILED_PRECONDITION`).
+
 ## Lock mode
 
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
-`UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile` and
-`RemoveProfile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile`, `RemoveProfile`
+and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile` and
+`DeleteProfileFile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are
@@ -121,7 +149,8 @@ player runs unlocked, since the web UI is how the lock is normally released.
 
 The player serves the standard [`grpc.health.v1.Health`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)
 service on the gRPC port, and on the web UI's port over gRPC-Web. `Check` answers `SERVING` for the
-server as a whole (the empty service name) and for `player.v1.PlayerService`; any other name is
+server as a whole (the empty service name) and for `player.v1.PlayerService` and
+`player.v1.ConfigService`; any other name is
 `NOT_FOUND`. It answers while the player is locked. Tools that speak the protocol, such as
 `grpc_health_probe` and load balancers, can use it as they would for any gRPC server:
 

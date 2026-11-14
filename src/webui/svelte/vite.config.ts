@@ -84,6 +84,9 @@ export default defineConfig({
       "/player.v1.PlayerService": {
         target: proxyTarget,
       },
+      "/player.v1.ConfigService": {
+        target: proxyTarget,
+      },
     },
   },
 });
