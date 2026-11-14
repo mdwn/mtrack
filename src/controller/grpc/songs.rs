@@ -1823,23 +1823,32 @@ notification_audio:
 
             // The playlist editor's read: the same, per song, with the library.
             project.write("set", "songs:\n- Painted\n- Full\n").await;
-            let ask = |with_library: bool| {
+            let ask = |with_library: bool, with_palettes: bool| {
                 let project = &project;
                 async move {
                     server(project)
                         .get_playlist(Request::new(GetPlaylistRequest {
                             name: "set".into(),
                             with_library,
+                            with_palettes,
                         }))
                         .await
                         .unwrap()
                         .into_inner()
                 }
             };
-            assert!(ask(false).await.song_palettes.is_empty());
-            let palettes = ask(true).await.song_palettes;
+            assert!(ask(false, false).await.song_palettes.is_empty());
+            let palettes = ask(true, false).await.song_palettes;
             assert_eq!(palettes["Painted"], painted);
             assert!(!palettes.contains_key("Full"), "none is left out");
+
+            // The phone's lean read: the palettes of this playlist's songs
+            // and no library.
+            let lean = ask(false, true).await;
+            assert_eq!(lean.song_palettes["Painted"], painted);
+            assert!(!lean.song_palettes.contains_key("Full"));
+            assert!(lean.available_songs.is_empty());
+            assert!(lean.song_tracks.is_empty());
         }
 
         #[tokio::test(flavor = "multi_thread")]

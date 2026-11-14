@@ -201,6 +201,91 @@ String? fadeDetails(player.Fade? fade) {
 /// The gap of an auto play, empty for at once.
 String autoPlayGap(player.AutoPlay autoPlay) => autoPlay.gap.trim();
 
+/// Colours offered in the picker, as `#rrggbb`.
+const List<String> paletteChoices = [
+  '#ff0000',
+  '#ff6600',
+  '#ffaa00',
+  '#ffff00',
+  '#88ff00',
+  '#00ff00',
+  '#00ff99',
+  '#00ffff',
+  '#0088ff',
+  '#0000ff',
+  '#8800ff',
+  '#ff00ff',
+  '#ff0066',
+  '#ffffff',
+  '#ffcc88',
+  '#000000',
+];
+
+final RegExp _hexColour = RegExp(r'^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$');
+
+/// [text] as the player takes a colour, lower case `#rrggbb`; null when it
+/// is not one. Accepts `#rgb` and `rgb` forms and the missing `#`.
+String? normalizeColour(String text) {
+  final match = _hexColour.firstMatch(text.trim());
+  if (match == null) {
+    return null;
+  }
+  var digits = match.group(1)!.toLowerCase();
+  if (digits.length == 3) {
+    digits = digits.split('').map((c) => '$c$c').join();
+  }
+  return '#$digits';
+}
+
+/// The colour [slot] has in [song] before any entry recolours it: the
+/// song's override, else the show's. Null when the song does not declare
+/// the slot.
+String? baseColour(player.SongPalette song, String slot) {
+  final declared = song.slots.where((s) => s.name == slot).firstOrNull;
+  if (declared == null) {
+    return null;
+  }
+  return normalizeColour(song.overrides[slot] ?? '') ?? declared.color;
+}
+
+/// Whether the song's override, not the show, gives [slot] its colour.
+bool songOverrides(player.SongPalette song, String slot) =>
+    song.slots.any((s) => s.name == slot) && song.overrides.containsKey(slot);
+
+/// The slots of [overrides] that [song] does not declare, sorted.
+List<String> unknownSlots(
+  player.SongPalette? song,
+  Map<String, String> overrides,
+) {
+  final declared = {
+    for (final s in song?.slots ?? <player.PaletteSlot>[]) s.name,
+  };
+  return [
+    for (final slot in overrides.keys)
+      if (!declared.contains(slot)) slot,
+  ]..sort();
+}
+
+/// [initial] with its palette made [slots].
+///
+/// Nothing is sent that was not changed: when [slots] are the palette as
+/// read, [initial] is returned as it was (a palette if it had one, none if
+/// not). Changed, the palette is present with [slots], and empty to clear.
+player.EntrySettings withPaletteSlots(
+  player.EntrySettings initial,
+  Map<String, String> slots,
+) {
+  if (_sameSlots(slots, initial.hasPalette() ? initial.palette.slots : {})) {
+    return initial;
+  }
+  final next = initial.deepCopy();
+  next.palette = player.PaletteOverrides(slots: slots.entries);
+  return next;
+}
+
+bool _sameSlots(Map<String, String> a, Map<String, String> b) =>
+    a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
+
 /// Everything an entry sets, in short, for its row; empty when it sets
 /// nothing. As the web UI's transitions button says it.
 String entrySummary(player.EntrySettings settings) {
@@ -213,6 +298,10 @@ String entrySummary(player.EntrySettings settings) {
           : 'auto play, ${autoPlayGap(settings.autoPlay)} gap',
     if (settings.hasAmbient())
       settings.ambient.on ? 'own ambient' : 'no ambient before',
+    if (settings.hasPalette() && settings.palette.slots.isNotEmpty)
+      settings.palette.slots.length == 1
+          ? '1 colour'
+          : '${settings.palette.slots.length} colours',
   ];
   return parts.join(' · ');
 }

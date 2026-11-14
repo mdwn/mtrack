@@ -882,6 +882,145 @@ void main() {
       expect(lastSave(h).settings[2].autoPlay.gap, '500ms');
     }, setup: withSettings);
 
+    void withPalettes(Rig rig) {
+      withSettings(rig);
+      rig.entrySettings['Set']![0] = pp.EntrySettings(
+        palette: pp.PaletteOverrides(
+          slots: {'wash': '#ff0000', 'gone': '#123456'}.entries,
+        ),
+      );
+      rig.songPalettes['First'] = pp.SongPalette(
+        slots: [
+          pp.PaletteSlot(name: 'wash', color: '#0000ff'),
+          pp.PaletteSlot(name: 'accent', color: '#ffff00'),
+        ],
+        overrides: {'accent': '#00ff00'}.entries,
+      );
+      rig.songPalettes['Second'] = pp.SongPalette(
+        slots: [pp.PaletteSlot(name: 'wash', color: '#0000ff')],
+      );
+    }
+
+    Future<void> pick(AppHarness h, String slot, String hex) async {
+      final button = find.byTooltip('Pick colour for $slot');
+      await h.tester.ensureVisible(button);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(button);
+      await pumpFor(h, 50);
+      await h.tester.tap(find.byKey(ValueKey('choice-$hex')));
+      await pumpFor(h, 50);
+    }
+
+    appTest('the colours show only for a song with a palette', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Third');
+      expect(find.text('COLOURS'), findsNothing);
+      await done(h);
+      await openSettingsOf(h, 'First');
+      expect(find.text('COLOURS'), findsOneWidget);
+      expect(find.text('wash'), findsOneWidget);
+      expect(find.text('accent'), findsOneWidget);
+      // Before the entry: the show's colour, or the song's own.
+      expect(find.text('was show #0000ff, now #ff0000'), findsOneWidget);
+      expect(find.text('song #00ff00'), findsOneWidget);
+    }, setup: withPalettes);
+
+    appTest('an override of a slot the song lacks is warned of', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      expect(find.textContaining('Not in this song'), findsOneWidget);
+      final remove = find.byTooltip('Remove gone');
+      await h.tester.ensureVisible(remove);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(remove);
+      await pumpFor(h, 50);
+      expect(find.textContaining('Not in this song'), findsNothing);
+      await done(h);
+      await save(h);
+      final palette = lastSave(h).settings[0].palette;
+      expect(palette.slots, {'wash': '#ff0000'});
+    }, setup: withPalettes);
+
+    appTest('an untouched palette is not sent', (h) async {
+      await startEditing(h);
+      // Second has a palette but this entry none; First has overrides.
+      await openSettingsOf(h, 'Second');
+      await h.tester.enterText(field('Length'), '1s');
+      await done(h);
+      await save(h);
+      final sent = lastSave(h);
+      expect(sent.settings[1].hasPalette(), isFalse);
+      // First was not opened: its palette goes back as it was read.
+      expect(sent.settings[0].palette.slots, {
+        'wash': '#ff0000',
+        'gone': '#123456',
+      });
+    }, setup: withPalettes);
+
+    appTest('picking a colour sends the palette, with the others kept', (
+      h,
+    ) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Second');
+      await pick(h, 'wash', '#00ff00');
+      expect(find.text('was show #0000ff, now #00ff00'), findsOneWidget);
+      await done(h);
+      expect(find.textContaining('1 colour'), findsOneWidget);
+      await save(h);
+      expect(lastSave(h).settings[1].palette.slots, {'wash': '#00ff00'});
+    }, setup: withPalettes);
+
+    appTest('a typed hex is taken, a bad one is not', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Second');
+      final button = find.byTooltip('Pick colour for wash');
+      await h.tester.ensureVisible(button);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(button);
+      await pumpFor(h, 50);
+      await h.tester.enterText(field('Hex'), 'nope');
+      await h.tester.tap(find.text('Use'));
+      await pumpFor(h, 50);
+      expect(find.textContaining('Not a colour'), findsOneWidget);
+      await h.tester.enterText(field('Hex'), 'F80');
+      await h.tester.tap(find.text('Use'));
+      await pumpFor(h, 50);
+      expect(find.text('was show #0000ff, now #ff8800'), findsOneWidget);
+    }, setup: withPalettes);
+
+    appTest('resetting every override sends an empty palette', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'First');
+      for (final slot in ['wash', 'gone']) {
+        final tooltip = slot == 'wash' ? 'Reset wash' : 'Remove gone';
+        final button = find.byTooltip(tooltip);
+        await h.tester.ensureVisible(button);
+        await h.tester.pumpAndSettle();
+        await h.tester.tap(button);
+        await pumpFor(h, 50);
+      }
+      await done(h);
+      await save(h);
+      final sent = lastSave(h).settings[0];
+      expect(sent.hasPalette(), isTrue);
+      expect(sent.palette.slots, isEmpty);
+    }, setup: withPalettes);
+
+    appTest('Cancel keeps the palette', (h) async {
+      await startEditing(h);
+      await openSettingsOf(h, 'Second');
+      await pick(h, 'wash', '#00ff00');
+      final cancel = find.text('CANCEL').last;
+      await h.tester.ensureVisible(cancel);
+      await h.tester.pumpAndSettle();
+      await h.tester.tap(cancel);
+      await pumpFor(h);
+      expect(find.textContaining('1 colour'), findsNothing);
+      await h.tester.tap(find.text('SAVE'));
+      await pumpFor(h, 50);
+      expect(calls(h, 'SavePlaylist'), 0);
+    }, setup: withPalettes);
+
     appTest('a fade that cannot be a length keeps the sheet open', (h) async {
       await startEditing(h);
       await openSettingsOf(h, 'First');

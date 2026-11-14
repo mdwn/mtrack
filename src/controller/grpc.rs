@@ -1117,6 +1117,17 @@ impl PlayerService for PlayerServer {
                 );
             }
         }
+        if request.with_palettes {
+            // Only this playlist's songs, and nothing of the library.
+            for song_name in playlist.songs() {
+                if let Some(palette) = playlist
+                    .get_song(song_name)
+                    .and_then(|song| songs::song_palette(&song))
+                {
+                    response.song_palettes.insert(song_name.clone(), palette);
+                }
+            }
+        }
         Ok(Response::new(response))
     }
 
