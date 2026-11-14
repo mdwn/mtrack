@@ -42,14 +42,16 @@ pub fn write(path: &Path, content: &str, new: bool) -> std::io::Result<()> {
 /// so validating a tempo-inheriting show without it rejects content the player
 /// loads without complaint. `path` is where the content is (or will be)
 /// saved, which its `include`s resolve against; `root`, when given, is the
-/// folder they must stay inside.
+/// folder they must stay inside. `layers` are the player's: a show naming a
+/// layer they lack is invalid.
 pub fn validate_light_show(
+    layers: &crate::lighting::effects::LayerSet,
     content: &str,
     path: Option<&Path>,
     root: Option<&Path>,
     tempo: Option<&crate::tempo::TempoMap>,
 ) -> Result<(), Vec<String>> {
-    crate::lighting::parser::parse_light_file_within(content, path, root, tempo)
+    crate::lighting::parser::parse_light_file_within(layers, content, path, root, tempo)
         .map_err(|e| vec![format!("{}", e)])?;
     Ok(())
 }
@@ -57,6 +59,7 @@ pub fn validate_light_show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lighting::effects::LayerSet;
 
     #[test]
     fn test_staged_write() {
@@ -83,12 +86,12 @@ show "test" {
     lights: static color: "red", duration: 5s
 }
 "#;
-        assert!(validate_light_show(content, None, None, None).is_ok());
+        assert!(validate_light_show(LayerSet::standard(), content, None, None, None).is_ok());
     }
 
     #[test]
     fn test_validate_light_show_invalid() {
         let content = "this is not valid DSL content {{{";
-        assert!(validate_light_show(content, None, None, None).is_err());
+        assert!(validate_light_show(LayerSet::standard(), content, None, None, None).is_err());
     }
 }

@@ -29,7 +29,8 @@ running. Fixture Types and Venues edit them directly, in `lighting/fixture_types
 The engine reads the same places, so a new project needs no directories setting: what you make
 here is what the show uses ([Where the lighting files live](configuration.md#where-the-lighting-files-live)).
 
-**Profile settings** — logical groups and the current venue — belong to one hardware profile,
+**Profile settings** — logical groups, the current venue and the [layers](configuration.md#layers)
+— belong to one hardware profile,
 because the rig at home and the rig on tour select different venues. The Groups page edits them
 for the profile you pick. It starts on the profile the player is running (the one whose
 `hostname` matches the Status page). When no profile matches this host, or the status cannot be

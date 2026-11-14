@@ -95,8 +95,8 @@ pub struct EffectWords {
     pub params: Vec<&'static str>,
 }
 
-/// The [`Vocabulary`] of the grammar.
-pub fn vocabulary() -> Vocabulary {
+/// The [`Vocabulary`] of the grammar, its layers those of `layers`.
+pub fn vocabulary(layers: &LayerSet) -> Vocabulary {
     fn words<T>(table: &[(T, &'static str)]) -> Vec<&'static str> {
         table.iter().map(|(_, word)| *word).collect()
     }
@@ -108,7 +108,7 @@ pub fn vocabulary() -> Vocabulary {
                 params: kind.params().to_vec(),
             })
             .collect(),
-        layers: LayerSet::standard().names().to_vec(),
+        layers: layers.names().to_vec(),
         blend_modes: words(&BLEND_KEYWORDS),
         curves: words(&DIMMER_CURVES),
         easings: words(&EASINGS),

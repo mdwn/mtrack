@@ -38,6 +38,7 @@
   import { tempoSourceOf } from "../../lib/lighting/timeline-state";
   import { absoluteTimestamp, emptyCue } from "../../lib/lighting/types";
   import { rules } from "../../lib/rules";
+  import { layerNames } from "../../lib/lighting/layers";
   import type {
     IncludeSource,
     Layout,
@@ -313,6 +314,7 @@
       const laid = rules.layout({
         source,
         path: lf.path,
+        layers: $layerNames,
         song_tempo: songTempoSource ?? undefined,
         includes: includeSources,
         until_ms: song.duration_ms || 60000,

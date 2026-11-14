@@ -136,6 +136,9 @@ impl Dmx {
         if let Some(retired) = self.lighting.as_ref().and_then(|l| l.retired_field_error()) {
             errors.push(retired.to_string());
         }
+        if let Some(Err(e)) = self.lighting.as_ref().map(|l| l.layer_set()) {
+            errors.push(format!("dmx lighting layers: {e}"));
+        }
         if let Some(Err(e)) = self
             .lighting
             .as_ref()

@@ -15,7 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { Cue, SubLaneType } from "../../../lib/lighting/types";
-  import { rules } from "../../../lib/rules";
+  import { layerNames } from "../../../lib/lighting/layers";
   import type {
     CueLayout,
     GridLine,
@@ -78,16 +78,13 @@
   }: Props = $props();
 
   let subLanes = $derived([
-    // An effect lane per layer, foreground on top, labelled by its initials
-    // (FG, MG, BG).
-    ...rules
-      .vocabulary()
-      .layers.reverse()
-      .map((layer) => ({
-        type: `effects:${layer}` as SubLaneType,
-        label: `${layer[0]}G`.toUpperCase(),
-        height: 40,
-      })),
+    // An effect lane per layer of the player's, the top layer on top,
+    // labelled by name (cut short with an ellipsis when it does not fit).
+    ...[...$layerNames].reverse().map((layer) => ({
+      type: `effects:${layer}` as SubLaneType,
+      label: layer,
+      height: 40,
+    })),
     {
       type: "commands" as SubLaneType,
       label: $t("timeline.showGroup.cmds"),
@@ -116,7 +113,7 @@
     <div class="sublane-labels">
       {#each subLanes as sl (sl.type)}
         <div class="sublane-row" style:height="{sl.height}px">
-          <span class="sublane-type-label">{sl.label}</span>
+          <span class="sublane-type-label" title={sl.label}>{sl.label}</span>
         </div>
       {/each}
     </div>
@@ -201,6 +198,10 @@
     box-sizing: content-box;
   }
   .sublane-type-label {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-family: var(--nc-font-sans);
     font-weight: 700;
     font-size: 10px;

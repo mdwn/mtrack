@@ -27,6 +27,8 @@ use std::rc::Rc;
 
 use pest::iterators::Pair;
 
+use crate::lighting::effects::LayerSet;
+
 use pest::Parser;
 
 use super::super::tempo::TempoMap;
@@ -72,11 +74,13 @@ pub(crate) struct SequenceLibrary {
     /// The slots `palette.<slot>` may name in any of the sequences, with
     /// their defaults: the file's own and those of the files it includes.
     palette: Rc<Palette>,
+    /// The layers the sequences' effects and layer commands may name.
+    layers: LayerSet,
 }
 
 impl SequenceLibrary {
-    /// A library with no sequences in it.
-    pub(crate) fn empty() -> Self {
+    /// A library with no sequences in it, parsing against `layers`.
+    pub(crate) fn empty(layers: &LayerSet) -> Self {
         SequenceLibrary {
             templates: HashMap::new(),
             global_tempo: None,
@@ -84,6 +88,7 @@ impl SequenceLibrary {
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
             palette: Rc::default(),
+            layers: layers.clone(),
         }
     }
 
@@ -104,15 +109,20 @@ impl SequenceLibrary {
     pub(crate) fn without_sequences(&self) -> Self {
         SequenceLibrary {
             palette: self.palette.clone(),
-            ..SequenceLibrary::empty()
+            ..SequenceLibrary::empty(&self.layers)
         }
     }
 
+    /// The layers effects and layer commands are parsed against.
+    pub(crate) fn layers(&self) -> &LayerSet {
+        &self.layers
+    }
+
     /// A library for a file whose shows run under `global_tempo`.
-    pub(crate) fn new(global_tempo: &Option<TempoMap>) -> Self {
+    pub(crate) fn new(global_tempo: &Option<TempoMap>, layers: &LayerSet) -> Self {
         SequenceLibrary {
             global_tempo: global_tempo.clone(),
-            ..SequenceLibrary::empty()
+            ..SequenceLibrary::empty(layers)
         }
     }
 

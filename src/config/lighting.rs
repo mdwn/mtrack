@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::effects::LayerSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -86,6 +87,15 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
     lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
 }
 
+/// The layers a profile's lighting section configures, or the defaults when
+/// it has none. A section whose layers are not a set (refused when the
+/// config loads) gives the defaults too.
+pub fn layer_set(lighting: Option<&Lighting>) -> LayerSet {
+    lighting
+        .and_then(|l| l.layer_set().ok())
+        .unwrap_or_else(|| LayerSet::standard().clone())
+}
+
 /// A project's fixture types and venues directories, relative to the
 /// project: a profile's configured ones, else the defaults. What the
 /// engine reads on this host is the host-matched profile's
@@ -141,6 +151,23 @@ pub struct Lighting {
     /// The show the rig plays while no song is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ambient: Option<super::ambient::Ambient>,
+
+    /// The lighting layers, bottom to top. Effects name one with
+    /// `layer:`; a higher layer is drawn over a lower. Between one and
+    /// sixteen identifiers. Left out, it is `background`, `midground` and
+    /// `foreground`, and is not written back.
+    #[serde(default = "default_layers", skip_serializing_if = "is_default_layers")]
+    layers: Vec<String>,
+}
+
+/// The layers a lighting section with none of its own has.
+fn default_layers() -> Vec<String> {
+    LayerSet::standard().names().to_vec()
+}
+
+/// Whether `layers` are the defaults, which a save leaves out.
+fn is_default_layers(layers: &[String]) -> bool {
+    layers == LayerSet::standard().names()
 }
 
 /// Directory configuration for loading fixture types and venues.
@@ -170,7 +197,26 @@ impl Lighting {
             groups,
             directories,
             ambient: None,
+            layers: default_layers(),
         }
+    }
+
+    /// This configuration with `layers` as its layers, bottom to top.
+    pub fn with_layers(mut self, layers: Vec<String>) -> Lighting {
+        self.layers = layers;
+        self
+    }
+
+    /// The configured layer names, bottom to top, as written. Use
+    /// [`Self::layer_set`] for the validated set.
+    pub fn layers(&self) -> &[String] {
+        &self.layers
+    }
+
+    /// The configured layers as a set, or why they are not one: between
+    /// one and sixteen unique identifiers.
+    pub fn layer_set(&self) -> Result<LayerSet, String> {
+        LayerSet::new(self.layers.clone())
     }
 
     /// This configuration with `ambient` as its ambient light.
@@ -430,5 +476,86 @@ mod tests {
         assert!(lighting.retired_field_error().is_none());
         assert!(lighting.groups().is_empty());
         assert!(lighting.directories().is_none());
+    }
+
+    fn lighting_yaml(yaml: &str) -> Lighting {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn layers_default_to_the_three() {
+        let l = lighting_yaml("current_venue: v\n");
+        assert_eq!(l.layers(), ["background", "midground", "foreground"]);
+        assert_eq!(l.layer_set().unwrap(), *LayerSet::standard());
+        assert_eq!(layer_set(None), *LayerSet::standard());
+        assert_eq!(layer_set(Some(&l)), *LayerSet::standard());
+        assert_eq!(
+            Lighting::new(None, None, None).layers(),
+            ["background", "midground", "foreground"]
+        );
+    }
+
+    #[test]
+    fn layers_are_read_bottom_to_top() {
+        let l = lighting_yaml("layers: [floor, mid, accents, blinders]\n");
+        assert_eq!(l.layers(), ["floor", "mid", "accents", "blinders"]);
+        let set = layer_set(Some(&l));
+        assert_eq!(set.len(), 4);
+        assert_eq!(set.top(), crate::lighting::effects::EffectLayer(3));
+    }
+
+    #[test]
+    fn a_config_without_layers_is_written_without_them() {
+        let l = lighting_yaml("current_venue: v\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert!(!written.contains("layers"), "{written}");
+        // Spelled out as the default, they are the default and written
+        // the same way.
+        let spelled = lighting_yaml("layers: [background, midground, foreground]\n");
+        assert!(!crate::util::to_yaml_string(&spelled)
+            .unwrap()
+            .contains("layers"));
+    }
+
+    #[test]
+    fn configured_layers_are_written_back() {
+        let l = lighting_yaml("layers: [a, b]\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert_eq!(lighting_yaml(&written).layers(), ["a", "b"]);
+    }
+
+    #[test]
+    fn layers_that_are_not_a_set_are_refused_with_why() {
+        let many: Vec<String> = (0..17).map(|i| format!("l{i}")).collect();
+        let cases: Vec<(Vec<String>, &str)> = vec![
+            (vec![], "at least one"),
+            (vec!["a".into(), "a".into()], "duplicate layer name 'a'"),
+            (many, "at most 16"),
+            (vec!["has space".into()], "not an identifier"),
+            (vec!["1st".into()], "not an identifier"),
+            (vec!["a:b".into()], "not an identifier"),
+            (vec!["".into()], "layer names cannot be empty"),
+        ];
+        for (names, want) in cases {
+            let l = Lighting::new(None, None, None).with_layers(names.clone());
+            let error = l.layer_set().unwrap_err();
+            assert!(error.contains(want), "{names:?}: {error}");
+        }
+        // Sixteen is the most there can be.
+        let sixteen: Vec<String> = (0..16).map(|i| format!("l{i}")).collect();
+        assert!(Lighting::new(None, None, None)
+            .with_layers(sixteen)
+            .layer_set()
+            .is_ok());
+        // Dashes and underscores are identifier characters.
+        assert!(Lighting::new(None, None, None)
+            .with_layers(vec!["_a".into(), "b-c".into(), "D9".into()])
+            .layer_set()
+            .is_ok());
     }
 }

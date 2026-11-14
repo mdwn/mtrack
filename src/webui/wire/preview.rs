@@ -78,6 +78,9 @@ pub struct LightFileInfo {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingGroups {
     pub groups: Vec<LightingGroup>,
+    /// The player's lighting layers, bottom to top: the names a cue's
+    /// `layer:` may take, and the lanes the timeline draws.
+    pub layers: Vec<String>,
     /// `false` without a DMX engine: the names come from the config, and
     /// no group lists its fixtures.
     #[serde(skip_serializing_if = "Option::is_none")]

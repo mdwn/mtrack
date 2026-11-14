@@ -436,6 +436,7 @@ pub(super) fn groups(g: &preview_wire::LightingGroups) -> proto::ListLightingGro
             })
             .collect(),
         resolved: g.resolved,
+        layers: g.layers.clone(),
     }
 }
 

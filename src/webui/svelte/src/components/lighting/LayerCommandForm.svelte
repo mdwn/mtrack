@@ -16,8 +16,9 @@
   import { t } from "svelte-i18n";
   import type { LayerCommand } from "../../lib/lighting/types";
   import { rules } from "../../lib/rules";
+  import { layerNames } from "../../lib/lighting/layers";
 
-  const words = rules.vocabulary();
+  const words = $derived(rules.vocabulary($layerNames));
 
   interface Props {
     command: LayerCommand;
@@ -26,6 +27,14 @@
   }
 
   let { command, onchange, ondelete }: Props = $props();
+
+  /** The layers the dropdown offers: the player's, and the one the command
+   *  names when the player has no such layer (so it is shown, not blank). */
+  let layerOptions = $derived(
+    command.layer && !words.layers.includes(command.layer)
+      ? [command.layer, ...words.layers]
+      : words.layers,
+  );
 
   function update(key: string, value: string | undefined) {
     onchange({ ...command, [key]: value });
@@ -58,7 +67,7 @@
         }}
       >
         <option value="">--</option>
-        {#each words.layers as l (l)}
+        {#each layerOptions as l (l)}
           <option value={l}>{l}</option>
         {/each}
       </select>

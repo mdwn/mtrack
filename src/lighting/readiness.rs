@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::dmx::engine::Engine;
+use crate::lighting::effects::LayerSet;
 use crate::lighting::lint::{
     lint_shows, universe_coverage, GroupCapabilities, LintContext, Severity, Warning,
 };
@@ -85,6 +86,8 @@ pub struct VenueFacts {
     /// cannot be driven. The whole venue fails then (no fixture lights), so
     /// the group counts above, read from what did resolve, are empty.
     pub venue_error: Option<VenueError>,
+    /// The player's lighting layers: what the lint names a layer by.
+    pub layers: LayerSet,
 }
 
 impl VenueFacts {
@@ -170,16 +173,18 @@ impl VenueFacts {
         names: Vec<String>,
     ) -> Result<VenueFacts, tokio::task::JoinError> {
         let configured = dmx.as_ref().map(|d| d.configured_universes());
-        match dmx.and_then(|dmx| dmx.broadcast_handles().lighting_system) {
+        let layers = dmx.as_ref().map(|d| d.layers()).unwrap_or_default();
+        let facts = match dmx.and_then(|dmx| dmx.broadcast_handles().lighting_system) {
             Some(system) => {
                 tokio::task::spawn_blocking(move || {
                     let mut guard = system.lock();
                     VenueFacts::collect(&mut guard, &names, configured.as_deref())
                 })
-                .await
+                .await?
             }
-            None => Ok(VenueFacts::default()),
-        }
+            None => VenueFacts::default(),
+        };
+        Ok(VenueFacts { layers, ..facts })
     }
 
     /// The lint context for shows accompanying `song` (or a bare source when
@@ -194,6 +199,7 @@ impl VenueFacts {
             palette_overrides: song
                 .map(|s| s.palette().keys().cloned().collect())
                 .unwrap_or_default(),
+            layers: self.layers.clone(),
         }
     }
 

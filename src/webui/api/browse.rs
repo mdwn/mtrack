@@ -197,8 +197,9 @@ pub(crate) async fn create_song_in_directory(
     // Same blocking decode/analysis as the bulk path, for one song.
     let scan = tokio::task::spawn_blocking({
         let dir = dir_canonical.clone();
+        let layers = player.layers();
         move || {
-            songs::Song::initialize(&dir)
+            songs::Song::initialize_in(&layers, &dir)
                 .map(|song| song.get_config())
                 .map_err(|e| e.to_string())
         }

@@ -555,6 +555,7 @@ fn a_sequence_in_an_included_file_can_use_the_included_palette() {
         None,
         None,
         &sources,
+        crate::lighting::effects::LayerSet::standard(),
     )
     .unwrap();
     let played = show(&shows);
@@ -568,6 +569,7 @@ fn a_sequence_in_an_included_file_can_use_the_included_palette() {
         None,
         None,
         &sources,
+        crate::lighting::effects::LayerSet::standard(),
     )
     .unwrap();
     assert_eq!(rgb(effects(show(&shows))[0]), (0, 255, 255));

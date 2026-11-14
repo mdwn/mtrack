@@ -132,8 +132,9 @@ Effects in mtrack are **finite, independent blocks on a timeline**:
   is removed. Dimmer effects do not persist their final brightness level.
 
 This model simplifies reasoning about light shows: each effect is a self-contained block with
-a defined start time and duration. The timeline editor's layer lanes (foreground, midground,
-background) make it easy to visualize how effects overlap and compose.
+a defined start time and duration. The timeline editor's layer lanes (one for each of the player's
+[layers](configuration.md#layers), the top layer on top; `foreground`, `midground` and
+`background` by default) make it easy to visualize how effects overlap and compose.
 
 ## Getting Started
 

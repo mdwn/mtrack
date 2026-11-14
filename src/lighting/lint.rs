@@ -75,6 +75,9 @@ pub struct LintContext<'a> {
     /// The palette slots the song overrides (its `palette:`). Leave empty
     /// for a bare source.
     pub palette_overrides: Vec<String>,
+    /// The player's lighting layers, by which warnings name a layer. The
+    /// default set when left out.
+    pub layers: LayerSet,
 }
 
 impl Want {
@@ -292,7 +295,7 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
-    stomping_replace_effects(&cues, &ends, &mut warnings);
+    stomping_replace_effects(&cues, &ends, ctx, &mut warnings);
     warnings
 }
 
@@ -636,7 +639,12 @@ type Span<'a> = (Duration, Duration, &'a Effect);
 /// a `stop sequence` naming the effect's sequence or a later move taking its
 /// heads ends it there, and comparing written spans would report a stomp
 /// between two effects that never coexist.
-fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<Warning>) {
+fn stomping_replace_effects(
+    cues: &[&Cue],
+    ends: &[EffectEnd],
+    ctx: &LintContext,
+    out: &mut Vec<Warning>,
+) {
     // (layer, group) -> the spans replace-blend effects occupy on it, with the
     // effect occupying each.
     let mut spans: BTreeMap<(EffectLayer, String), Vec<Span>> = BTreeMap::new();
@@ -681,7 +689,7 @@ fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<War
                 format!(
                     "two `replace` effects overlap on `{group}` in the {} layer between \
                      {:.3}s and {:.3}s — the later one wins and the earlier appears to do nothing",
-                    LayerSet::standard().display_name(layer),
+                    ctx.layers.display_name(layer),
                     second_start.as_secs_f64(),
                     first_end.as_secs_f64(),
                 ),
@@ -1868,7 +1876,7 @@ show "T" {
     #[test]
     fn the_editors_parameter_table_matches_what_the_engine_accepts() {
         let mut checked = 0;
-        for words in crate::lighting::parser::edit::vocabulary().effects {
+        for words in crate::lighting::parser::edit::vocabulary(LayerSet::standard()).effects {
             let kind = words.kind.keyword();
             for param in words.params {
                 let value = sample_value(kind, param);

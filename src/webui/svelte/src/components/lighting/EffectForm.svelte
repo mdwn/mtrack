@@ -18,6 +18,7 @@
   import ColorInput from "./ColorInput.svelte";
   import type { EffectEdit, MoveParam } from "../../gen/rules/mtrack_rules";
   import { rules } from "../../lib/rules";
+  import { layerNames } from "../../lib/lighting/layers";
   import { venueStore } from "../../lib/ws/stores";
 
   /** The effect with a form's edit made, the value written by the
@@ -68,7 +69,15 @@
 
   /** The effects, the parameters each reads, and the values of each
    *  keyword parameter: the parser's own tables. */
-  const words = rules.vocabulary();
+  const words = $derived(rules.vocabulary($layerNames));
+
+  /** The layers the dropdown offers: the player's, and the one the effect
+   *  names when the player has no such layer (so it is shown, not blank). */
+  let layerOptions = $derived(
+    p.layer && !words.layers.includes(p.layer)
+      ? [p.layer, ...words.layers]
+      : words.layers,
+  );
 
   /** A new type keeps only what it reads, with the layer, blend and
    *  timing parameters every type takes (`EffectEdit::Kind`). */
@@ -697,7 +706,7 @@
                 (e.target as HTMLSelectElement).value || undefined,
               )}
           >
-            <option value="">--</option>{#each words.layers as l (l)}<option
+            <option value="">--</option>{#each layerOptions as l (l)}<option
                 value={l}>{l}</option
               >{/each}
           </select>
