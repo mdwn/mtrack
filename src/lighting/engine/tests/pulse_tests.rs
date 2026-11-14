@@ -110,7 +110,7 @@ fn test_pulse_effect() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     // Should have dimmer command since fixture has dedicated dimmer channel
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
 
     // Check that dimmer command exists (values are u8, so always in valid range)
     let _dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();

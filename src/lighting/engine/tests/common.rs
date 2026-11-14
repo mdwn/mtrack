@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use crate::lighting::effects::FixtureInfo;
+use crate::lighting::effects::{DmxCommand, FixtureInfo};
 use std::collections::HashMap;
 
 pub(crate) fn create_test_fixture(name: &str, universe: u16, address: u16) -> FixtureInfo {
@@ -31,4 +31,13 @@ pub(crate) fn create_test_fixture(name: &str, universe: u16, address: u16) -> Fi
         channels,
         Some(20.0),
     )
+}
+
+/// The command written to `channel`. A level with no colour beneath it shows
+/// white (design 3.4, rule 7), so the dimmer is no longer the only command.
+pub(crate) fn on_channel(commands: &[DmxCommand], channel: u16) -> &DmxCommand {
+    commands
+        .iter()
+        .find(|c| c.channel == channel)
+        .expect("a command on the channel")
 }

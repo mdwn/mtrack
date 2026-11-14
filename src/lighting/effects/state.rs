@@ -14,24 +14,10 @@
 
 use std::collections::HashMap;
 
-use super::fixture::{FixtureInfo, MULTIPLIER_PREFIXES};
+use super::composite::{self, Op};
+use super::fixture::FixtureInfo;
 use super::physical::PhysicalState;
 use super::types::{BlendMode, EffectLayer};
-
-/// Check if a channel name is a multiplier channel (dimmer, pulse or chase)
-/// These are special internal channels used for RGB-only fixtures
-#[inline]
-pub fn is_multiplier_channel(channel_name: &str) -> bool {
-    // Real channel names never start with an underscore, so this bails out
-    // immediately for the overwhelmingly common case.
-    let Some(rest) = channel_name.strip_prefix('_') else {
-        return false;
-    };
-    MULTIPLIER_PREFIXES.iter().any(|prefix| {
-        rest.strip_prefix(prefix)
-            .is_some_and(|tail| tail.starts_with("_mult"))
-    })
-}
 
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
@@ -84,22 +70,7 @@ impl ChannelState {
 
     /// Blend this channel state with another
     pub fn blend_with(&self, other: ChannelState) -> ChannelState {
-        let blended_value = match other.blend_mode {
-            BlendMode::Replace => {
-                crate::lighting::channels::lerp(self.value, other.value, other.mix)
-            }
-            BlendMode::Multiply => self.value * other.value,
-            BlendMode::Add => (self.value + other.value).min(1.0),
-            BlendMode::Overlay => {
-                // Overlay: multiply if base < 0.5, screen if base >= 0.5
-                if self.value < 0.5 {
-                    2.0 * self.value * other.value
-                } else {
-                    1.0 - 2.0 * (1.0 - self.value) * (1.0 - other.value)
-                }
-            }
-            BlendMode::Screen => 1.0 - (1.0 - self.value) * (1.0 - other.value),
-        };
+        let blended_value = blend_value(self.value, other.value, other.blend_mode, other.mix);
 
         // Use the higher layer's blend mode for the result
         let result_layer = self.layer.max(other.layer);
@@ -118,6 +89,25 @@ impl ChannelState {
     }
 }
 
+/// One value laid over another by a blend mode. `mix` is how far a
+/// `Replace` moves toward `over`; the other modes ignore it.
+pub(super) fn blend_value(base: f64, over: f64, mode: BlendMode, mix: f64) -> f64 {
+    match mode {
+        BlendMode::Replace => crate::lighting::channels::lerp(base, over, mix),
+        BlendMode::Multiply => base * over,
+        BlendMode::Add => (base + over).min(1.0),
+        BlendMode::Overlay => {
+            // Overlay: multiply if base < 0.5, screen if base >= 0.5
+            if base < 0.5 {
+                2.0 * base * over
+            } else {
+                1.0 - 2.0 * (1.0 - base) * (1.0 - over)
+            }
+        }
+        BlendMode::Screen => 1.0 - (1.0 - base) * (1.0 - over),
+    }
+}
+
 /// Represents the current state of a fixture
 #[derive(Debug, Clone)]
 pub struct FixtureState {
@@ -131,6 +121,15 @@ pub struct FixtureState {
     /// phase. Later writer wins, as the effect order runs. `None` when no
     /// software strobe drives it.
     pub strobe_hz: Option<f64>,
+    /// What effects asked of the fixture's colour (`red`, `green`, `blue`,
+    /// `white`) and of its level, in the order they came, each with its
+    /// layer. Not channels: they are composited, bottom layer up, into the
+    /// plain channels by [`Self::resolve`] once the frame's layers are all
+    /// in (design 3.4). Empty once resolved.
+    pub(super) ops: Vec<Op>,
+    /// How many effects' ops `ops` holds, so the ops of one effect stay
+    /// together when states merge.
+    pub(super) groups: u32,
 }
 
 impl Default for FixtureState {
@@ -145,26 +144,90 @@ impl FixtureState {
             channels: HashMap::new(),
             physical: PhysicalState::default(),
             strobe_hz: None,
+            ops: Vec::new(),
+            groups: 0,
         }
     }
 
+    /// A channel as the tests read it: a plain one, or the latest colour
+    /// or level an effect asked for that has not been resolved yet.
     #[cfg(test)]
     pub fn get_channel(&self, name: &str) -> Option<&ChannelState> {
-        self.channels.get(name)
+        match composite::op_kind(name) {
+            Some(kind) => self
+                .ops
+                .iter()
+                .rev()
+                .find(|op| op.kind == kind)
+                .map(|op| &op.state),
+            None => self.channels.get(name),
+        }
     }
 
     /// Create a FixtureState from an iterator of channel name/state pairs.
     pub fn from_channels(channels: impl IntoIterator<Item = (String, ChannelState)>) -> Self {
-        Self {
-            channels: channels.into_iter().collect(),
-            physical: PhysicalState::default(),
-            strobe_hz: None,
+        let mut out = Self::new();
+        for (name, state) in channels {
+            out.set_channel(name, state);
+        }
+        out
+    }
+
+    /// Set a channel value. A colour channel or the internal level
+    /// ([`composite::INTENSITY`]) is recorded as an op to composite, not
+    /// blended into a channel; setting one again within the same effect's
+    /// state replaces it.
+    pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
+        match composite::op_kind(&channel_name) {
+            Some(kind) => {
+                if self.groups == 0 {
+                    self.groups = 1;
+                }
+                let group = self.groups - 1;
+                self.ops
+                    .retain(|op| !(op.group == group && op.kind == kind));
+                self.ops.push(Op { kind, state, group });
+            }
+            None => {
+                self.channels.insert(channel_name, state);
+            }
         }
     }
 
-    /// Set a channel value
-    pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
-        self.channels.insert(channel_name, state);
+    /// Every value the state carries, plain channels and unresolved colour
+    /// and level alike, for tests that read an effect's output as it is
+    /// before the frame is composited.
+    #[cfg(test)]
+    pub fn all_states(&self) -> impl Iterator<Item = &ChannelState> {
+        self.channels
+            .values()
+            .chain(self.ops.iter().map(|op| &op.state))
+    }
+
+    /// Forgets colour and level not yet composited, for a state that
+    /// belongs to no fixture.
+    pub fn drop_unresolved(&mut self) {
+        self.ops.clear();
+        self.groups = 0;
+    }
+
+    /// Scale every value this state carries, channels and ops alike (a
+    /// layer's intensity master).
+    pub fn scale_values(&mut self, factor: f64) {
+        for channel_state in self.channels.values_mut() {
+            channel_state.value *= factor;
+        }
+        for op in &mut self.ops {
+            op.state.value *= factor;
+        }
+    }
+
+    /// Composite the colour and level effects asked for, bottom layer up,
+    /// into plain `red/green/blue/white/dimmer` channels for a fixture (or
+    /// a cell) with `channels` (design 3.4). Values already in the plain
+    /// channels (a MIDI DMX show's) are the bottom of the stack.
+    pub fn resolve<V>(&mut self, channels: &HashMap<String, V>) {
+        composite::resolve_plain(self, channels);
     }
 
     /// Blend this fixture state with another
@@ -173,14 +236,16 @@ impl FixtureState {
         if other.strobe_hz.is_some() {
             self.strobe_hz = other.strobe_hz;
         }
+        // Colour and level are composited at the end of the frame.
+        for op in &other.ops {
+            self.ops.push(Op {
+                group: op.group + self.groups,
+                ..*op
+            });
+        }
+        self.groups += other.groups;
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
-            // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames
-            if is_multiplier_channel(channel_name) {
-                self.channels.insert(channel_name.clone(), *other_state);
-                continue;
-            }
-
             if let Some(self_state) = self.channels.get(channel_name) {
                 // Blend existing channel
                 let blended_state = self_state.blend_with(*other_state);
@@ -192,19 +257,6 @@ impl FixtureState {
                     .insert(channel_name.clone(), other_state.resolved());
             }
         }
-    }
-
-    /// Compute the effective value for a channel, applying RGB multipliers
-    /// for fixtures without a dedicated dimmer.
-    pub fn effective_channel_value(
-        &self,
-        channel_name: &str,
-        state: &ChannelState,
-        has_dedicated_dimmer: bool,
-    ) -> f64 {
-        effective_value(channel_name, state, has_dedicated_dimmer, |k| {
-            self.channels.get(k).map(|c| c.value).unwrap_or(1.0)
-        })
     }
 
     /// The flags a CMY fixture's colour goes out as: on a fixture mixing
@@ -219,82 +271,28 @@ impl FixtureState {
     pub fn cmy_flags<V>(
         &self,
         channels: &HashMap<String, V>,
-        has_dedicated_dimmer: bool,
     ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
         let subtractive = super::fixture::has_cmy(channels);
         crate::lighting::channels::CMY_OF_RGB
             .map(|(rgb, cmy)| {
                 let state = self.channels.get(rgb).filter(|_| subtractive)?;
-                Some((
-                    cmy,
-                    1.0 - self.effective_channel_value(rgb, state, has_dedicated_dimmer),
-                ))
+                Some((cmy, 1.0 - state.value))
             })
             .into_iter()
             .flatten()
     }
 }
 
-/// [`FixtureState::effective_channel_value`] over any source of multiplier
-/// channels — a fixture's own state, or a cell's over its fixture's.
-fn effective_value(
-    channel_name: &str,
-    state: &ChannelState,
-    has_dedicated_dimmer: bool,
-    read: impl Fn(&str) -> f64,
-) -> f64 {
-    {
-        let mut value = state.value;
-        if !has_dedicated_dimmer
-            && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
-        {
-            let dimmer_mult =
-                read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
-            let pulse_mult =
-                read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
-            let chase_mult =
-                read("_chase_mult_bg") * read("_chase_mult_mid") * read("_chase_mult_fg");
-            let combined_multiplier = (dimmer_mult * pulse_mult * chase_mult).clamp(0.0, 1.0);
-            let fg_multiplier =
-                (read("_dimmer_mult_fg") * read("_pulse_mult_fg") * read("_chase_mult_fg"))
-                    .clamp(0.0, 1.0);
-
-            let effective_multiplier = if state.layer == EffectLayer::Foreground
-                && state.blend_mode == BlendMode::Replace
-            {
-                fg_multiplier
-            } else {
-                combined_multiplier
-            };
-            if effective_multiplier != 1.0 {
-                value = (value * effective_multiplier).clamp(0.0, 1.0);
-            }
-        }
-        value
-    }
-}
-
 impl FixtureState {
-    /// A cell's effective channel values (0..1), by channel name, from this
+    /// A cell's channel values (0..1), by channel name, from this
     /// fixture-level state with the cell's own state (`own`) blended over
-    /// it (design §17.3). A cell's effects were computed against the cell's
-    /// own channels — a chase on a cell without a dimmer dims its colour
-    /// through multipliers — so they resolve the same way. Nothing is
-    /// cloned: each channel is the fixture's blended with the cell's, and a
-    /// multiplier is read from the cell's state first (the last writer, as
-    /// `blend_with` would have it), else the fixture's.
+    /// it (design 17.3). Both are resolved: the brightness model has
+    /// already put each cell's colour and level in plain channels.
     pub fn cell_values(
         &self,
         cell: &crate::lighting::types::Cell,
         own: Option<&FixtureState>,
     ) -> Vec<(String, f64)> {
-        let cell_has_dimmer = cell.has_dimmer();
-        let read = |k: &str| {
-            own.and_then(|o| o.channels.get(k))
-                .or_else(|| self.channels.get(k))
-                .map(|c| c.value)
-                .unwrap_or(1.0)
-        };
         let mut out = Vec::with_capacity(cell.channels.len());
         for channel_name in cell.channels.keys() {
             let base = self.channels.get(channel_name);
@@ -305,10 +303,7 @@ impl FixtureState {
                 (None, Some(o)) => o.resolved(),
                 (None, None) => continue,
             };
-            out.push((
-                channel_name.clone(),
-                effective_value(channel_name, &state, cell_has_dimmer, read),
-            ));
+            out.push((channel_name.clone(), state.value));
         }
         out
     }
@@ -334,6 +329,32 @@ impl FixtureState {
         fixture_info: &FixtureInfo,
         cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
     ) -> Vec<DmxCommand> {
+        // The engine resolves every frame's states before they get here; a
+        // state built by hand may still hold colour and level to composite.
+        let pending = !self.ops.is_empty()
+            || fixture_info
+                .cells
+                .iter()
+                .any(|c| cell_state(&c.name).is_some_and(|s| !s.ops.is_empty()));
+        if pending {
+            let mut parent = self.clone();
+            let mut cells: HashMap<String, FixtureState> = fixture_info
+                .cells
+                .iter()
+                .filter_map(|c| cell_state(&c.name).map(|s| (c.name.clone(), s.clone())))
+                .collect();
+            composite::resolve_fixture(&mut parent, &mut cells, fixture_info);
+            return parent.emit_commands(fixture_info, |name| cells.get(name));
+        }
+        self.emit_commands(fixture_info, cell_state)
+    }
+
+    /// The bytes of a resolved state.
+    fn emit_commands<'a>(
+        &self,
+        fixture_info: &FixtureInfo,
+        cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
+    ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
         // A byte for the channel at `offset`, where the fixture has one.
         let command = |(offset, value): (u16, u8)| {
@@ -343,7 +364,6 @@ impl FixtureState {
                 value,
             })
         };
-        let has_dedicated_dimmer = fixture_info.has_dimmer();
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
         let cell_owned = |channel: &str| {
@@ -358,7 +378,7 @@ impl FixtureState {
                 continue;
             }
             if let Some(def) = fixture_info.channel_defs.get(channel_name) {
-                let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
+                let value = state.value;
                 commands
                     .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
@@ -369,7 +389,7 @@ impl FixtureState {
         // primary no effect drives is left alone, open, as a colour-less
         // fixture is. Written after the named channels, so an effect's
         // colour wins over a `static` naming the flag directly.
-        for (cmy, value) in self.cmy_flags(&fixture_info.channel_defs, has_dedicated_dimmer) {
+        for (cmy, value) in self.cmy_flags(&fixture_info.channel_defs) {
             if let Some(def) = fixture_info.channel_defs.get(cmy) {
                 commands
                     .extend(super::physical::resolve_normalized(def, value).filter_map(command));
@@ -394,87 +414,6 @@ impl FixtureState {
 mod tests {
     use super::super::physical::{Intent, PhysicalParameter};
     use super::*;
-
-    // ── is_multiplier_channel ──────────────────────────────────────
-
-    #[test]
-    fn is_multiplier_dimmer_bg() {
-        assert!(is_multiplier_channel("_dimmer_mult_bg"));
-    }
-
-    #[test]
-    fn is_multiplier_dimmer_fg() {
-        assert!(is_multiplier_channel("_dimmer_mult_fg"));
-    }
-
-    #[test]
-    fn is_multiplier_pulse_mid() {
-        assert!(is_multiplier_channel("_pulse_mult_mid"));
-    }
-
-    #[test]
-    fn is_multiplier_chase_fg() {
-        assert!(is_multiplier_channel("_chase_mult_fg"));
-    }
-
-    #[test]
-    fn is_multiplier_regular_channel() {
-        assert!(!is_multiplier_channel("red"));
-        assert!(!is_multiplier_channel("dimmer"));
-        assert!(!is_multiplier_channel("strobe"));
-    }
-
-    #[test]
-    fn is_multiplier_rejects_lookalikes() {
-        assert!(!is_multiplier_channel("_dimmer"));
-        assert!(!is_multiplier_channel("_chase_bg"));
-        assert!(!is_multiplier_channel("dimmer_mult_bg"));
-        assert!(!is_multiplier_channel("_unknown_mult_bg"));
-    }
-
-    #[test]
-    fn effective_value_with_chase_multiplier() {
-        let mut fs = FixtureState::new();
-        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), red);
-        fs.set_channel(
-            "_chase_mult_mid".to_string(),
-            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
-        );
-        assert!((fs.effective_channel_value("red", &red, false) - 0.5).abs() < 1e-9);
-    }
-
-    /// Dimmer, pulse and chase multipliers compose rather than clobbering each other,
-    /// so a chase over a dimmed bed lands at the product of the two.
-    #[test]
-    fn effective_value_composes_chase_with_dimmer() {
-        let mut fs = FixtureState::new();
-        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), red);
-        fs.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        fs.set_channel(
-            "_chase_mult_mid".to_string(),
-            ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Multiply),
-        );
-        assert!((fs.effective_channel_value("red", &red, false) - 0.2).abs() < 1e-9);
-    }
-
-    /// Multiplier channels are internal — a fixture with a real dimmer channel gets
-    /// its level on that channel instead, so RGB must not be scaled twice.
-    #[test]
-    fn effective_value_ignores_multipliers_with_dedicated_dimmer() {
-        let mut fs = FixtureState::new();
-        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), red);
-        fs.set_channel(
-            "_chase_mult_mid".to_string(),
-            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
-        );
-        assert!((fs.effective_channel_value("red", &red, true) - 1.0).abs() < 1e-9);
-    }
 
     // ── ChannelState::new ──────────────────────────────────────────
 
@@ -617,7 +556,7 @@ mod tests {
             ),
         ];
         let fs = FixtureState::from_channels(channels);
-        assert_eq!(fs.channels.len(), 2);
+        assert_eq!(fs.ops.len(), 2, "colour is recorded as ops");
     }
 
     // ── FixtureState::blend_with ───────────────────────────────────
@@ -660,93 +599,73 @@ mod tests {
         assert!((red.value - 0.8).abs() < 1e-9); // Replace mode
     }
 
+    /// Colour and level are recorded, not blended: both asks survive the
+    /// merge, in order, for the end-of-frame composite.
     #[test]
-    fn fixture_state_blend_multiplier_overwrites() {
+    fn fixture_state_blend_keeps_colour_and_level_as_ops() {
         let mut fs1 = FixtureState::new();
         fs1.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
         );
-
         let mut fs2 = FixtureState::new();
         fs2.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.8, EffectLayer::Background, BlendMode::Multiply),
+            "red".to_string(),
+            ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Replace),
         );
-
+        fs2.set_channel(
+            "_intensity".to_string(),
+            ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Multiply),
+        );
         fs1.blend_with(&fs2);
-        let mult = fs1.get_channel("_dimmer_mult_bg").unwrap();
-        // Multiplier channels overwrite, not blend
-        assert!((mult.value - 0.8).abs() < 1e-9);
+        assert!(fs1.channels.is_empty());
+        assert_eq!(fs1.ops.len(), 3);
+        assert_eq!(fs1.get_channel("red").unwrap().value, 0.8);
+        assert_eq!(fs1.get_channel("_intensity").unwrap().value, 0.4);
     }
 
-    // ── effective_channel_value ─────────────────────────────────────
-
+    /// The layer intensity master scales the ops as it scales channels.
     #[test]
-    fn effective_value_with_dedicated_dimmer() {
+    fn scale_values_scales_ops_and_channels() {
         let mut fs = FixtureState::new();
-        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), cs);
-        // With a dedicated dimmer, multipliers should NOT apply
-        let value = fs.effective_channel_value("red", &cs, true);
-        assert!((value - 0.8).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_value_without_dimmer_no_multipliers() {
-        let mut fs = FixtureState::new();
-        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), cs);
-        // No multipliers set → defaults to 1.0 → no change
-        let value = fs.effective_channel_value("red", &cs, false);
-        assert!((value - 0.8).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_value_with_dimmer_multiplier() {
-        let mut fs = FixtureState::new();
-        let cs = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("red".to_string(), cs);
         fs.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        // Only bg dimmer set (0.5), mid/fg default to 1.0, pulse defaults to 1.0
-        // combined = 0.5 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 = 0.5
-        let value = fs.effective_channel_value("red", &cs, false);
-        assert!((value - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_value_non_rgb_channel_unaffected() {
-        let mut fs = FixtureState::new();
-        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
-        fs.set_channel("strobe".to_string(), cs);
-        fs.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.1, EffectLayer::Background, BlendMode::Multiply),
-        );
-        // Non-RGB channels are not affected by multipliers
-        let value = fs.effective_channel_value("strobe", &cs, false);
-        assert!((value - 0.8).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_value_foreground_replace_uses_fg_only() {
-        let mut fs = FixtureState::new();
-        let cs = ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace);
-        fs.set_channel("red".to_string(), cs);
-        fs.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.1, EffectLayer::Background, BlendMode::Multiply),
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
         fs.set_channel(
-            "_dimmer_mult_fg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Multiply),
+            "_intensity".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
         );
-        // Foreground+Replace uses only fg multiplier: dimmer_fg * pulse_fg = 0.5 * 1.0
-        let value = fs.effective_channel_value("red", &cs, false);
-        assert!((value - 0.5).abs() < 1e-9);
+        fs.set_channel(
+            "pan".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        fs.scale_values(0.5);
+        assert_eq!(fs.get_channel("red").unwrap().value, 0.5);
+        assert_eq!(fs.get_channel("_intensity").unwrap().value, 0.25);
+        assert_eq!(fs.get_channel("pan").unwrap().value, 0.5);
+    }
+
+    /// A state built with colour and a level still produces the bytes of
+    /// the composite when converted by hand.
+    #[test]
+    fn to_dmx_commands_composites_unresolved_ops() {
+        let fixture = make_fixture_info(vec![("dimmer", 1), ("red", 2)], 1);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        fs.set_channel(
+            "_intensity".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut cmds = fs.to_dmx_commands(&fixture);
+        cmds.sort_by_key(|c| c.channel);
+        assert_eq!(
+            cmds.iter().map(|c| c.value).collect::<Vec<_>>(),
+            vec![128, 255]
+        );
     }
 
     // ── to_dmx_commands ────────────────────────────────────────────
@@ -889,19 +808,6 @@ mod tests {
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
-        assert!(cmds.is_empty());
-    }
-
-    #[test]
-    fn to_dmx_commands_skips_multiplier_channels() {
-        let fixture = make_fixture_info(vec![("red", 1)], 1);
-        let mut fs = FixtureState::new();
-        fs.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        let cmds = fs.to_dmx_commands(&fixture);
-        // Multiplier channels have no fixture mapping, so they produce no commands
         assert!(cmds.is_empty());
     }
 
@@ -1065,12 +971,12 @@ mod tests {
     #[test]
     fn cell_values_multiplies_a_cells_own_state_over_the_bed() {
         let mut fs = FixtureState::new();
-        fs.set_channel(
+        fs.channels.insert(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
         );
         let mut own = FixtureState::new();
-        own.set_channel(
+        own.channels.insert(
             "red".to_string(),
             ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
         );
@@ -1082,7 +988,7 @@ mod tests {
     fn cell_values_a_cell_only_channel_takes_the_cells_value() {
         let fs = FixtureState::new(); // fixture has no "red" of its own
         let mut own = FixtureState::new();
-        own.set_channel(
+        own.channels.insert(
             "red".to_string(),
             ChannelState::new(0.75, EffectLayer::Background, BlendMode::Replace),
         );
@@ -1090,11 +996,11 @@ mod tests {
         assert_eq!(values, vec![("red".to_string(), 0.75)]);
     }
 
-    /// A `_chase_mult_mid` multiplier on the cell's own state, with no
-    /// dimmer on the cell, dims the cell's red through the multiplier even
-    /// though the fixture-level state carries no multiplier of its own.
+    /// A level on the cell's own state dims the cell's colour, on a cell
+    /// with no dimmer, through the composite.
     #[test]
-    fn cell_values_reads_a_multiplier_from_the_cells_own_state_first() {
+    fn a_cells_own_level_dims_its_colour() {
+        let fixture = two_cell_fixture();
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
@@ -1102,37 +1008,12 @@ mod tests {
         );
         let mut own = FixtureState::new();
         own.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        own.set_channel(
-            "_chase_mult_mid".to_string(),
+            "_intensity".to_string(),
             ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Multiply),
         );
-        let values = fs.cell_values(&red_cell(), Some(&own));
-        assert_eq!(values, vec![("red".to_string(), 0.0)]);
-    }
-
-    /// The same multiplier, but only on the fixture-level state (not the
-    /// cell's own) — the fallback read still applies it.
-    #[test]
-    fn cell_values_falls_back_to_the_fixtures_multiplier() {
-        let mut fs = FixtureState::new();
-        fs.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        fs.set_channel(
-            "_chase_mult_mid".to_string(),
-            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Multiply),
-        );
-        let mut own = FixtureState::new();
-        own.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        let values = fs.cell_values(&red_cell(), Some(&own));
-        assert_eq!(values, vec![("red".to_string(), 0.0)]);
+        let cmds = fs.to_dmx_commands_with_cells(&fixture, |name| (name == "b").then_some(&own));
+        assert_eq!(byte_at(&cmds, 10), 255, "cell a keeps the fixture's red");
+        assert_eq!(byte_at(&cmds, 11), 0, "cell b is dimmed out");
     }
 
     #[test]

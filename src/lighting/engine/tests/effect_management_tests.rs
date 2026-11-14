@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::lighting::effects::*;
-use crate::lighting::engine::tests::common::create_test_fixture;
+use crate::lighting::engine::tests::common::{create_test_fixture, on_channel};
 use crate::lighting::engine::EffectEngine;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -64,8 +64,8 @@ fn test_effect_priority() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     // Should have only one dimmer command (high priority wins)
-    assert_eq!(commands.len(), 1);
-    let dimmer_cmd = &commands[0];
+    assert_eq!(commands.len(), 5);
+    let dimmer_cmd = on_channel(commands, 1);
     assert_eq!(dimmer_cmd.value, 204); // 80% of 255
 }
 
@@ -94,13 +94,13 @@ fn test_effect_stop() {
 
     // Update the engine - should have command
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
 
     // Stop the effect
 
     // Update again - should still have commands since we didn't stop the effect
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn test_effect_duration_expiry() {
 
     // Update before expiry - should have commands
     let commands = engine.update(Duration::from_millis(50), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
 
     // Update after expiry - timed static effects end and don't preserve their state
     let commands = engine.update(Duration::from_millis(100), None).unwrap();
@@ -194,7 +194,7 @@ fn same_time_effects_stack_in_start_order_whatever_their_ids() {
             engine.start_effect(effect).unwrap();
         }
         let commands = engine.update(Duration::from_millis(16), None).unwrap();
-        assert_eq!(commands.len(), 1, "{first}, {second}");
-        assert_eq!(commands[0].value, 204, "{first} then {second}");
+        assert_eq!(commands.len(), 5, "{first}, {second}");
+        assert_eq!(on_channel(commands, 1).value, 204, "{first} then {second}");
     }
 }

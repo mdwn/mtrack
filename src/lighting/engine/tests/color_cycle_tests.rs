@@ -49,7 +49,7 @@ fn test_color_cycle_effect() {
     // Test cycling over time
     // At t=0ms: should be red (index 0)
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -59,7 +59,7 @@ fn test_color_cycle_effect() {
 
     // At t=500ms: should be green (index 1) - clearly in green's range
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -69,7 +69,7 @@ fn test_color_cycle_effect() {
 
     // At t=300ms: should be blue (index 2) - 300ms into the second cycle
     let commands = engine.update(Duration::from_millis(300), None).unwrap();
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();

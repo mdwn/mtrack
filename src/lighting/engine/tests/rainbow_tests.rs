@@ -128,7 +128,7 @@ fn test_rainbow_effect() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     // Should have RGB commands
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
 
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2);
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 3);
