@@ -18,6 +18,9 @@
 // player's (`rules.palette_edit`), so the file saved is what these read.
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { lightShowReply } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 
 const SHOW = `tempo {
     start: 0.0s
@@ -48,24 +51,11 @@ show "Main" {
 /** Serves SHOW as the song's light file, and collects what is saved to it. */
 async function stubShow(page: Page): Promise<{ saved: string[] }> {
   const saved: string[] = [];
-  await page.route(/\/api\/lighting\/show\.light$/, (route) => {
-    const method = route.request().method();
-    if (method === "PUT") {
-      saved.push(route.request().postData() ?? "");
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved" }),
-      });
-    }
-    if (method === "GET") {
-      return route.fulfill({
-        status: 200,
-        contentType: "text/plain",
-        body: SHOW,
-      });
-    }
-    return route.fallback();
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getLightShow, () => lightShowReply(SHOW));
+  rpc.unary(LightingService.method.saveLightShow, (req) => {
+    saved.push(req.source);
+    return {};
   });
   return { saved };
 }

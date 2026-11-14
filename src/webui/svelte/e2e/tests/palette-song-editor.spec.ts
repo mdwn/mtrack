@@ -20,7 +20,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import YAML from "yaml";
 import { SONGS } from "../mock-server/test-data";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  ConfigService,
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import { serveSongConfig } from "../support/config-rpc";
+import { lightShowReply } from "../support/lighting-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
 
@@ -35,8 +41,6 @@ show "Main" {
     back: static color: palette.secondary, duration: 5s
 }
 `;
-
-const SONG_URL = /\/api\/songs\/Test(%20| )Song(%20| )Alpha$/;
 
 /** The song page of Test Song Alpha, with the show above and the song file
  *  as `yaml` says; returns what is saved to the song. */
@@ -66,29 +70,11 @@ async function openSong(
       ),
     }),
   );
-  await page.route(/\/api\/lighting\/show\.light$/, (route) =>
-    route.request().method() === "GET"
-      ? route.fulfill({ status: 200, contentType: "text/plain", body: SHOW })
-      : route.fallback(),
-  );
-  await page.route(SONG_URL, (route) => {
-    const method = route.request().method();
-    if (method === "PUT") {
-      saved.push(route.request().postData() ?? "");
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved" }),
-      });
-    }
-    if (method === "GET") {
-      return route.fulfill({
-        status: 200,
-        contentType: "text/yaml",
-        body: yaml,
-      });
-    }
-    return route.fallback();
+  rpc.unary(LightingService.method.getLightShow, () => lightShowReply(SHOW));
+  serveSongConfig(rpc, "Test Song Alpha", yaml);
+  rpc.unary(ConfigService.method.saveSongConfig, (req) => {
+    saved.push(req.yaml);
+    return {};
   });
   await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
   await expect(page.getByTestId("song-palette")).toBeVisible();

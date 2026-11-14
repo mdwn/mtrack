@@ -69,13 +69,12 @@ test.describe("Playlist editor: palette", () => {
     await expect(strip).toBeVisible();
     await expect(strip.getByRole("listitem")).toHaveCount(3);
     // The show's default, then the song's own override.
-    expect(await tileColors(page.getByTestId("strip-tile-1"))).toEqual([
-      "#c01020",
-      "#ffa500",
-    ]);
-    expect(await tileColors(page.getByTestId("strip-tile-2"))).toEqual([
-      "#00aa44",
-    ]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-1")))
+      .toEqual(["#c01020", "#ffa500"]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-2")))
+      .toEqual(["#00aa44"]);
     await expect(
       page.getByTestId("strip-tile-2").getByTestId("strip-band"),
     ).toHaveAttribute("data-source", "song");
@@ -109,10 +108,9 @@ test.describe("Playlist editor: palette", () => {
     const panel = await playlists.openTransitions(row);
     await expect(panel.getByTestId("transitions-palette")).toBeVisible();
     await panel.locator("input[type=color]").first().fill("#2040ff");
-    expect(await tileColors(page.getByTestId("strip-tile-1"))).toEqual([
-      "#2040ff",
-      "#ffa500",
-    ]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-1")))
+      .toEqual(["#2040ff", "#ffa500"]);
     await expect(
       page.getByTestId("strip-tile-1").getByTestId("strip-band").first(),
     ).toHaveAttribute("data-source", "entry");
@@ -139,18 +137,16 @@ test.describe("Playlist editor: palette", () => {
     await playlists.goto();
     await playlists.selectPlaylist("setlist");
     // A name the player reads is shown as its colour.
-    expect(await tileColors(page.getByTestId("strip-tile-1"))).toEqual([
-      "#00ffff",
-      "#ffa500",
-    ]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-1")))
+      .toEqual(["#00ffff", "#ffa500"]);
 
     const row = playlists.playlistSongs().first();
     const panel = await playlists.openTransitions(row);
     await panel.getByTestId(/-palette-reset-primary$/).click();
-    expect(await tileColors(page.getByTestId("strip-tile-1"))).toEqual([
-      "#c01020",
-      "#ffa500",
-    ]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-1")))
+      .toEqual(["#c01020", "#ffa500"]);
     await playlists.saveButton.click();
     await expect.poll(() => bodies.length).toBe(1);
     expect(bodies[0].entry_palette).toEqual([{}, {}, {}]);
@@ -167,14 +163,12 @@ test.describe("Playlist editor: palette", () => {
     const playlists = new PlaylistEditorPage(page);
     await playlists.goto();
     await playlists.selectPlaylist("setlist");
-    expect(await tileColors(page.getByTestId("strip-tile-1"))).toEqual([
-      "#c01020",
-      "#ffa500",
-    ]);
-    expect(await tileColors(page.getByTestId("strip-tile-2"))).toEqual([
-      "#c01020",
-      "#112233",
-    ]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-1")))
+      .toEqual(["#c01020", "#ffa500"]);
+    await expect
+      .poll(() => tileColors(page.getByTestId("strip-tile-2")))
+      .toEqual(["#c01020", "#112233"]);
   });
 
   test("an override for a slot the song lacks is flagged and can be removed", async ({
