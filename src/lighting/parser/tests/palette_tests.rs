@@ -572,3 +572,34 @@ fn a_sequence_in_an_included_file_can_use_the_included_palette() {
     .unwrap();
     assert_eq!(rgb(effects(show(&shows))[0]), (0, 255, 255));
 }
+
+#[test]
+fn an_inline_loop_names_the_files_palette_slots() {
+    let shows = parse(&format!(
+        "{PALETTE}\nshow \"S\" {{\n    @1/1\n    loop {{\n        @1/1\n        a: static, color: palette.primary, duration: 1beat\n    }} repeats: 2\n}}\n"
+    ))
+    .unwrap();
+    let found = effects(show(&shows));
+    assert_eq!(found.len(), 2, "one per pass");
+    for effect in found {
+        assert_eq!(rgb(effect), (PRIMARY.r, PRIMARY.g, PRIMARY.b));
+    }
+
+    let resolved = crate::lighting::parser::resolve_shows(
+        vec![show(&shows).clone()],
+        &overrides(&[("primary", BLUE)]),
+    );
+    for effect in resolved[0].cues.iter().flat_map(|c| c.effects.iter()) {
+        assert_eq!(
+            rgb(effect),
+            (BLUE.r, BLUE.g, BLUE.b),
+            "overridden in the loop"
+        );
+    }
+
+    let err = parse(
+        "show \"S\" {\n    @1/1\n    loop {\n        @1/1\n        a: static, color: palette.nope, duration: 1beat\n    } repeats: 2\n}\n",
+    )
+    .unwrap_err();
+    assert!(err.contains("palette slot 'nope' is not declared"), "{err}");
+}
