@@ -38,7 +38,7 @@ void main() {
   group('finding a player', () {
     appTest('shows the first-time hint while it looks', (h) async {
       expect(find.text('Find your player'), findsOneWidget);
-      expect(find.text('Looking for players…'), findsOneWidget);
+      expect(find.text('Searching…'), findsOneWidget);
       expect(find.textContaining('First time?'), findsOneWidget);
       expect(find.textContaining('Pair a phone'), findsOneWidget);
       expect(find.textContaining('code while pairing'), findsOneWidget);
@@ -65,7 +65,7 @@ void main() {
       expect(find.textContaining('No players found'), findsOneWidget);
       await h.tester.tap(button('Look again'));
       await h.settle();
-      expect(find.text('Looking for players…'), findsOneWidget);
+      expect(find.text('Searching…'), findsOneWidget);
       expect(h.rig.link.calls.where((c) => c == 'scan'), hasLength(2));
     }, known: false);
 
@@ -85,12 +85,12 @@ void main() {
       await h.session.startScan();
       await h.settle();
       expect(find.text('Bluetooth is off'), findsOneWidget);
-      expect(find.text('Looking for players…'), findsNothing);
+      expect(find.text('Searching…'), findsNothing);
       h.rig.link.adapter = AdapterState.ready;
       await h.tester.tap(button('Try again'));
       await h.settle();
       expect(find.text('Bluetooth is off'), findsNothing);
-      expect(find.text('Looking for players…'), findsOneWidget);
+      expect(find.text('Searching…'), findsOneWidget);
     }, known: false);
 
     appTest('asks again for permission when it was refused', (h) async {
@@ -103,7 +103,7 @@ void main() {
       await h.settle();
       expect(h.rig.link.calls, contains('requestAccess'));
       expect(find.text('mtrack needs Bluetooth'), findsNothing);
-      expect(find.text('Looking for players…'), findsOneWidget);
+      expect(find.text('Searching…'), findsOneWidget);
     }, known: false);
 
     appTest('has no retry for a phone without Bluetooth Low Energy', (h) async {

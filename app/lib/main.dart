@@ -17,6 +17,7 @@ import 'package:path_provider/path_provider.dart';
 import 'src/app/asset_cache.dart';
 import 'src/app/session.dart';
 import 'src/ble/ble_link.dart';
+import 'src/platform/bonsoir_player_browser.dart';
 import 'src/platform/grpc_wifi_link.dart';
 import 'src/platform/preferences_store.dart';
 import 'src/platform/wakelock_screen_wake.dart';
@@ -32,6 +33,7 @@ void main() {
     store: PreferencesPlayerStore(),
     wake: const WakelockScreenWake(),
     wifi: const GrpcWifiLink(),
+    browser: const BonsoirPlayerBrowser(),
     assetCache: LightingAssetCache(getApplicationCacheDirectory),
   );
   session.start();

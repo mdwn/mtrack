@@ -27,6 +27,7 @@ class PreferencesPlayerStore implements PlayerStore {
   static const String _portKey = 'player.wifi.port';
   static const String _hostnameKey = 'player.wifi.hostname';
   static const String _bluetoothKey = 'player.bluetooth';
+  static const String _mdnsKey = 'player.wifi.mdns';
 
   final SharedPreferencesAsync _preferences;
 
@@ -38,6 +39,7 @@ class PreferencesPlayerStore implements PlayerStore {
     }
     final name = await _preferences.getString(_nameKey);
     final hostname = await _preferences.getString(_hostnameKey);
+    final mdnsName = await _preferences.getString(_mdnsKey);
     return RememberedPlayer(
       id: id,
       name: name ?? id,
@@ -46,6 +48,8 @@ class PreferencesPlayerStore implements PlayerStore {
       hostname: hostname == null || hostname.isEmpty ? null : hostname,
       // A player kept before Wi-Fi was Bluetooth's.
       bluetooth: await _preferences.getBool(_bluetoothKey) ?? true,
+      // A player kept before it could be found on the network has none.
+      mdnsName: mdnsName == null || mdnsName.isEmpty ? null : mdnsName,
     );
   }
 
@@ -66,6 +70,12 @@ class PreferencesPlayerStore implements PlayerStore {
     } else {
       await _preferences.setString(_hostnameKey, hostname);
     }
+    final mdnsName = player.mdnsName;
+    if (mdnsName == null) {
+      await _preferences.remove(_mdnsKey);
+    } else {
+      await _preferences.setString(_mdnsKey, mdnsName);
+    }
     await _preferences.setBool(_bluetoothKey, player.bluetooth);
   }
 
@@ -78,6 +88,7 @@ class PreferencesPlayerStore implements PlayerStore {
       _portKey,
       _hostnameKey,
       _bluetoothKey,
+      _mdnsKey,
     ]) {
       await _preferences.remove(key);
     }

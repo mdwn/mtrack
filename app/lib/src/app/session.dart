@@ -129,6 +129,16 @@ const Duration wifiRetryInterval = Duration(seconds: 20);
 /// to finish before it gives the attempt up until the next interval.
 const Duration switchPatience = Duration(seconds: 10);
 
+/// How long the connect screen says it is searching for players on the
+/// network. Browsing goes on after that, and players that answer later still
+/// appear; this is only how long the screen waits before saying it found
+/// none.
+const Duration browseSearchWindow = Duration(seconds: 6);
+
+/// How long to browse for a remembered player's name when none of its
+/// addresses answers.
+const Duration refindWindow = Duration(seconds: 4);
+
 /// A reading of a monotonic clock, as time since some fixed start.
 typedef Monotonic = Duration Function();
 
@@ -143,16 +153,20 @@ class Session extends ChangeNotifier {
   /// A session over [link], remembering its player in [store], and keeping
   /// the lighting assets it fetches in [assetCache] (none kept when null).
   /// With [wifi], a player is also reached over the network when it answers
-  /// there; without, over Bluetooth alone.
+  /// there; without, over Bluetooth alone. With [browser], the connect screen
+  /// also lists the players on the network.
   Session({
     required this._link,
     required this._store,
     this._wake,
     this._wifi,
+    this._browser,
     Monotonic? monotonic,
     this._backoff = reconnectBackoff,
     this._wifiTimeout = wifiConnectTimeout,
     this._wifiInterval = wifiRetryInterval,
+    this._browseWindow = browseSearchWindow,
+    this._refindWindow = refindWindow,
     LightingAssetCache? assetCache,
   }) : _monotonic = monotonic ?? _stopwatchClock() {
     clock = PlaybackClock(_monotonic);
@@ -186,8 +200,11 @@ class Session extends ChangeNotifier {
   final Monotonic _monotonic;
   final List<Duration> _backoff;
   final WifiLink? _wifi;
+  final PlayerBrowser? _browser;
   final Duration _wifiTimeout;
   final Duration _wifiInterval;
+  final Duration _browseWindow;
+  final Duration _refindWindow;
 
   /// The song position to show, run between status messages.
   late final PlaybackClock clock;
@@ -251,6 +268,13 @@ class Session extends ChangeNotifier {
   List<DiscoveredPlayer> _found = const [];
   bool _scanning = false;
   StreamSubscription<DiscoveredPlayer>? _scan;
+
+  List<FoundPlayer> _wifiFound = const [];
+  StreamSubscription<List<FoundPlayer>>? _browse;
+  Timer? _browseTimer;
+  bool _browseSettling = false;
+  bool _browseFailed = false;
+  Completer<FoundPlayer?>? _refinding;
 
   bool _foreground = true;
   bool? _wakeAsked;
@@ -422,6 +446,18 @@ class Session extends ChangeNotifier {
   /// True while a scan is running.
   bool get scanning => _scanning;
 
+  /// The players found on the network, by name. Kept up to date while the
+  /// connect screen is up: a player that goes away leaves it.
+  List<FoundPlayer> get wifiFound => _wifiFound;
+
+  /// True when browsing the network failed, so the screen says it could not
+  /// search. Bluetooth and an address still work.
+  bool get browseFailed => _browseFailed;
+
+  /// True while a search for players is under way: the Bluetooth scan, or
+  /// the first moments of browsing the network.
+  bool get searching => _scanning || _browseSettling;
+
   /// True when the link is up and the player's state is current.
   bool get isReady => _phase == ConnectionPhase.ready;
 
@@ -518,6 +554,17 @@ class Session extends ChangeNotifier {
     return _connect(target);
   }
 
+  /// Connects to [found], a player seen on the network, and remembers it
+  /// once the connection is up, under its name. Such a player is reached
+  /// over Wi-Fi alone, with no pairing.
+  Future<void> connectToFound(FoundPlayer found) {
+    stopScan();
+    _connectError = null;
+    final target = RememberedPlayer.byService(found);
+    _target = target;
+    return _connect(target);
+  }
+
   /// Tries again to connect to the player, after a refusal to pair or a lost
   /// link, without waiting for the next scheduled attempt.
   Future<void> retryNow() {
@@ -592,7 +639,10 @@ class Session extends ChangeNotifier {
     try {
       // Wi-Fi first, when there is anywhere to look: it is quicker, carries
       // more, and needs no pairing. Bluetooth when nothing answers.
-      final wifi = await _tryWifi(target, epoch);
+      var wifi = await _tryWifi(target, epoch);
+      if (wifi == null && !_stale(epoch)) {
+        wifi = await _tryRefound(target, epoch);
+      }
       if (_stale(epoch)) {
         await wifi?.channel.dispose();
         return;
@@ -775,6 +825,94 @@ class Session extends ChangeNotifier {
       }
     }
     return null;
+  }
+
+  /// For a remembered player found on the network by name, whose addresses
+  /// all failed: browses for that name for a few seconds and, when it is
+  /// found with an address that was not tried, tries what it has now. The
+  /// result is as [_tryWifi]'s, with the new addresses remembered in it.
+  Future<({PlayerChannel channel, RememberedPlayer target})?> _tryRefound(
+    RememberedPlayer target,
+    int epoch,
+  ) async {
+    final name = target.mdnsName;
+    if (name == null || _browser == null) {
+      return null;
+    }
+    // A player just chosen from the list was found a moment ago, so only one
+    // that was connected to before is looked for again.
+    final kept = await _store.load();
+    if (kept?.id != target.id || _stale(epoch)) {
+      return null;
+    }
+    final found = await _findByName(name);
+    if (found == null || _stale(epoch)) {
+      return null;
+    }
+    final now = found.orderedHosts.take(maxWifiHosts).toList();
+    final tried = target.hosts.take(maxWifiHosts).toSet();
+    if (now.every(tried.contains)) {
+      // Where it was is where it is: it is not the address that is wrong.
+      return null;
+    }
+    final error = _wifiError;
+    final moved = RememberedPlayer(
+      id: target.id,
+      name: target.name,
+      hosts: found.orderedHosts.take(RememberedPlayer.maxHosts).toList(),
+      port: found.port,
+      hostname: target.hostname,
+      bluetooth: target.bluetooth,
+      mdnsName: name,
+    );
+    final result = await _tryWifi(moved, epoch);
+    if (result == null && error != null && _wifiError == null) {
+      _wifiError = error;
+    }
+    return result;
+  }
+
+  /// Browses for the player called [name] and returns it once found, or
+  /// null when [_refindWindow] passes, browsing fails, or the connection
+  /// attempt it is for ends.
+  Future<FoundPlayer?> _findByName(String name) async {
+    final done = Completer<FoundPlayer?>();
+    _refinding = done;
+    StreamSubscription<List<FoundPlayer>>? subscription;
+    final timer = Timer(_refindWindow, () {
+      if (!done.isCompleted) {
+        done.complete(null);
+      }
+    });
+    try {
+      subscription = _browser!.browse().listen(
+        (players) {
+          for (final p in players) {
+            if (p.name == name && !done.isCompleted) {
+              done.complete(p);
+            }
+          }
+        },
+        onError: (Object _) {
+          if (!done.isCompleted) {
+            done.complete(null);
+          }
+        },
+      );
+      return await done.future;
+    } on Object {
+      return null;
+    } finally {
+      timer.cancel();
+      if (identical(_refinding, done)) {
+        _refinding = null;
+      }
+      // Cancelling stops delivery at once; the future only reports the
+      // stream's own clean-up.
+      if (subscription != null) {
+        unawaited(subscription.cancel());
+      }
+    }
   }
 
   /// Asks the player, over Bluetooth, where it is on the network, and
@@ -970,6 +1108,10 @@ class Session extends ChangeNotifier {
     _retryTimer = null;
     _detailsTimer?.cancel();
     _detailsTimer = null;
+    final refinding = _refinding;
+    if (refinding != null && !refinding.isCompleted) {
+      refinding.complete(null);
+    }
   }
 
   // The status, and what is fetched because of it.
@@ -1149,11 +1291,13 @@ class Session extends ChangeNotifier {
   /// screen started by itself, on coming back to the choice of players
   /// because of it, [keepError] does not.
   Future<void> startScan({bool keepError = false}) async {
-    stopScan();
+    _stopBluetoothScan();
     _found = const [];
     if (!keepError) {
       _connectError = null;
     }
+    // The network is searched whatever Bluetooth is doing.
+    _startBrowse();
     final adapter = await _link.adapterState();
     if (_disposed) {
       return;
@@ -1161,6 +1305,10 @@ class Session extends ChangeNotifier {
     _adapter = adapter;
     if (adapter != AdapterState.ready) {
       _notify();
+      return;
+    }
+    if (_phase != ConnectionPhase.noPlayer) {
+      // A player was chosen while the adapter was being asked.
       return;
     }
     _scanning = true;
@@ -1187,8 +1335,82 @@ class Session extends ChangeNotifier {
     );
   }
 
-  /// Ends a scan.
+  /// Starts browsing the network for players, if that is possible and it is
+  /// not under way already. Only while no player is chosen. A failure is
+  /// kept for the screen to say; it is tried again by the next scan.
+  void _startBrowse() {
+    final browser = _browser;
+    if (browser == null || _disposed || _phase != ConnectionPhase.noPlayer) {
+      return;
+    }
+    final running = _browse != null;
+    _browseFailed = false;
+    _browseSettling = true;
+    _browseTimer?.cancel();
+    _browseTimer = Timer(_browseWindow, () {
+      _browseTimer = null;
+      _browseSettling = false;
+      _notify();
+    });
+    void failed() {
+      _browse = null;
+      _browseFailed = true;
+      _wifiFound = const [];
+      _endSettling();
+    }
+
+    if (running) {
+      // Looking again: what is found stays, and the search is shown anew.
+      _notify();
+      return;
+    }
+    try {
+      _browse = browser.browse().listen(
+        (players) {
+          _wifiFound = [...players]..sort((a, b) => a.name.compareTo(b.name));
+          _notify();
+        },
+        onError: (Object _) => failed(),
+        onDone: () {
+          _browse = null;
+          _endSettling();
+        },
+        cancelOnError: true,
+      );
+    } on Object {
+      failed();
+    }
+    _notify();
+  }
+
+  void _endSettling() {
+    _browseTimer?.cancel();
+    _browseTimer = null;
+    _browseSettling = false;
+    _notify();
+  }
+
+  /// Ends browsing the network.
+  void _stopBrowse() {
+    final browse = _browse;
+    _browse = null;
+    _browseTimer?.cancel();
+    _browseTimer = null;
+    _browseSettling = false;
+    _wifiFound = const [];
+    _browseFailed = false;
+    if (browse != null) {
+      unawaited(browse.cancel());
+    }
+  }
+
+  /// Ends a scan, and browsing the network with it.
   void stopScan() {
+    _stopBrowse();
+    _stopBluetoothScan();
+  }
+
+  void _stopBluetoothScan() {
     final scan = _scan;
     _scan = null;
     if (scan != null) {
@@ -1459,6 +1681,10 @@ class Session extends ChangeNotifier {
 
   void _setPhase(ConnectionPhase phase) {
     _phase = phase;
+    if (phase != ConnectionPhase.noPlayer) {
+      // The choice of players is not showing: nothing to look for.
+      stopScan();
+    }
     _updateWake();
     _stage.linkChanged(ready: phase == ConnectionPhase.ready);
     lightingAssets.linkChanged(ready: phase == ConnectionPhase.ready);
@@ -1494,6 +1720,7 @@ class Session extends ChangeNotifier {
     _cancelTimers();
     unawaited(_scan?.cancel());
     _scan = null;
+    _stopBrowse();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }

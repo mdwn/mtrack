@@ -71,6 +71,60 @@ void main() {
     expect(loaded!.hasWifi, isFalse);
   });
 
+  test('keeps the name a player was found under on the network', () async {
+    final player = RememberedPlayer.byService(
+      const FoundPlayer(
+        name: 'stage',
+        hosts: ['fe80::1', '192.168.1.40'],
+        port: 43234,
+        version: '0.18.3',
+      ),
+    );
+    expect(player.hosts, ['192.168.1.40', 'fe80::1']);
+    await PreferencesPlayerStore().save(player);
+    final loaded = await PreferencesPlayerStore().load();
+    expect(loaded, player);
+    expect(loaded!.mdnsName, 'stage');
+    expect(loaded.id, 'mdns:stage');
+    expect(loaded.bluetooth, isFalse);
+  });
+
+  test('reads a Wi-Fi player kept before names were kept, with none', () async {
+    final preferences = SharedPreferencesAsync();
+    await preferences.setString('player.id', 'wifi:10.0.0.2:43234');
+    await preferences.setString('player.name', 'stage');
+    await preferences.setStringList('player.wifi.hosts', ['10.0.0.2']);
+    await preferences.setInt('player.wifi.port', 43234);
+    await preferences.setString('player.wifi.hostname', 'stage');
+    await preferences.setBool('player.bluetooth', false);
+    final loaded = await PreferencesPlayerStore().load();
+    expect(loaded!.mdnsName, isNull);
+    expect(loaded.hosts, ['10.0.0.2']);
+    expect(loaded.bluetooth, isFalse);
+  });
+
+  test('a player saved without a name does not keep the last one', () async {
+    final store = PreferencesPlayerStore();
+    await store.save(
+      const RememberedPlayer(id: 'mdns:a', name: 'a', mdnsName: 'a'),
+    );
+    await store.save(const RememberedPlayer(id: 'p', name: 'b'));
+    expect((await store.load())!.mdnsName, isNull);
+  });
+
+  test('updating what a found player is reachable at keeps its name', () async {
+    final store = PreferencesPlayerStore();
+    final first = RememberedPlayer.byService(
+      const FoundPlayer(name: 'stage', hosts: ['10.0.0.2'], port: 43234),
+    );
+    await store.save(first);
+    await store.save(first.copyWith(hosts: ['10.0.0.9'], port: 50051));
+    final loaded = (await store.load())!;
+    expect(loaded.hosts, ['10.0.0.9']);
+    expect(loaded.port, 50051);
+    expect(loaded.mdnsName, 'stage');
+  });
+
   test('forgetting a player forgets its addresses too', () async {
     final store = PreferencesPlayerStore();
     await store.save(
@@ -80,6 +134,7 @@ void main() {
         hosts: ['10.0.0.2'],
         port: 43234,
         hostname: 'stage',
+        mdnsName: 'stage',
       ),
     );
     await store.clear();
@@ -87,6 +142,7 @@ void main() {
     // A player saved after has none of the old one's.
     await store.save(const RememberedPlayer(id: 'BB', name: 'other'));
     expect(await store.load(), const RememberedPlayer(id: 'BB', name: 'other'));
+    expect((await store.load())!.mdnsName, isNull);
   });
 
   test('replaces the player, and forgets it', () async {

@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 
 import '../app/player_link.dart';
+import '../app/ports.dart';
 import '../app/session.dart';
 import '../app/wifi_address.dart';
 import 'session_scope.dart';
@@ -277,12 +278,6 @@ class _Finder extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final adapter = session.adapter;
-    final Widget results;
-    if (adapter != AdapterState.ready) {
-      results = _AdapterProblem(session: session, adapter: adapter);
-    } else {
-      results = _Results(session: session);
-    }
     return ScrollingColumn(
       children: [
         Text(
@@ -300,7 +295,11 @@ class _Finder extends StatelessWidget {
           ),
           const SizedBox(height: 12),
         ],
-        results,
+        _Results(session: session),
+        if (adapter != AdapterState.ready) ...[
+          const SizedBox(height: 14),
+          _AdapterProblem(session: session, adapter: adapter),
+        ],
         const SizedBox(height: 14),
         address,
         const SizedBox(height: 14),
@@ -359,7 +358,7 @@ class _AdapterProblem extends StatelessWidget {
             'does not use your location.';
       case AdapterState.unsupported:
         title = 'No Bluetooth Low Energy';
-        detail = 'This phone cannot talk to a player.';
+        detail = 'This phone cannot find a player over Bluetooth.';
       case AdapterState.ready:
         title = '';
         detail = '';
@@ -401,41 +400,33 @@ class _Results extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final wifi = session.wifiFound;
     final found = session.found;
+    final empty = wifi.isEmpty && found.isEmpty;
+    final searching = session.searching;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        for (final player in wifi)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _WifiRow(session: session, player: player),
+          ),
         for (final player in found)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: RowCard(
-              onTap: () => session.connectTo(player),
-              semanticLabel:
-                  '${player.name}${player.signalLabel.isEmpty ? '' : ', ${player.signalLabel} signal'}',
-              semanticHint: 'Connect to this player',
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      player.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.row.copyWith(color: colors.text),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    player.signalLabel,
-                    style: AppText.time(
-                      11,
-                      weight: 500,
-                    ).copyWith(color: colors.muted),
-                  ),
-                ],
-              ),
+            child: _BluetoothRow(session: session, player: player),
+          ),
+        if (session.browseFailed) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              'Could not search the network.',
+              style: AppText.body.copyWith(color: colors.muted),
             ),
           ),
-        if (session.scanning)
+        ],
+        if (searching)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Row(
@@ -447,15 +438,16 @@ class _Results extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  'Looking for players…',
+                  'Searching…',
                   style: AppText.body.copyWith(color: colors.muted),
                 ),
               ],
             ),
           )
-        else if (found.isEmpty) ...[
+        else if (empty) ...[
           Text(
-            'No players found. Make sure the player is on and close by.',
+            'No players found. Make sure the player is on, and that your '
+            'phone is on its network or close by.',
             style: AppText.body.copyWith(color: colors.muted),
           ),
           const SizedBox(height: 12),
@@ -478,6 +470,98 @@ class _Results extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// A player found on the network: its name, "Wi-Fi" and its first address.
+/// A tap connects, with no pairing.
+class _WifiRow extends StatelessWidget {
+  const _WifiRow({required this.session, required this.player});
+
+  final Session session;
+  final FoundPlayer player;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final small = AppText.time(11, weight: 500).copyWith(color: colors.muted);
+    final hosts = player.orderedHosts;
+    final address = hosts.isEmpty ? null : hosts.first;
+    return RowCard(
+      onTap: () => session.connectToFound(player),
+      semanticLabel:
+          '${player.name}, Wi-Fi${address == null ? '' : ', $address'}',
+      semanticHint: 'Connect to this player',
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  player.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.row.copyWith(color: colors.text),
+                ),
+                if (address != null)
+                  Text(
+                    address,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: small,
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text('Wi-Fi', style: small),
+        ],
+      ),
+    );
+  }
+}
+
+/// A player found by Bluetooth: its name, "Bluetooth" and its signal. A tap
+/// connects and pairs if need be.
+class _BluetoothRow extends StatelessWidget {
+  const _BluetoothRow({required this.session, required this.player});
+
+  final Session session;
+  final DiscoveredPlayer player;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final small = AppText.time(11, weight: 500).copyWith(color: colors.muted);
+    return RowCard(
+      onTap: () => session.connectTo(player),
+      semanticLabel:
+          '${player.name}, Bluetooth'
+          '${player.signalLabel.isEmpty ? '' : ', ${player.signalLabel} signal'}',
+      semanticHint: 'Connect to this player',
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              player.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.row.copyWith(color: colors.text),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('Bluetooth', style: small),
+              if (player.signalLabel.isNotEmpty)
+                Text(player.signalLabel, style: small),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -505,15 +589,22 @@ class _AddressEntry extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     if (!entering) {
-      return ChunkyButton(
-        height: 52,
-        fontSize: 16,
-        label: 'Enter an address',
-        semanticLabel: 'Enter an address',
-        fill: colors.surface,
-        borderColor: colors.cyan,
-        foreground: colors.cyan,
-        onPressed: onOpen,
+      // A row of buttons: "Scan this network" goes beside this one.
+      return Row(
+        children: [
+          Expanded(
+            child: ChunkyButton(
+              height: 52,
+              fontSize: 16,
+              label: 'Enter an address',
+              semanticLabel: 'Enter an address',
+              fill: colors.surface,
+              borderColor: colors.cyan,
+              foreground: colors.cyan,
+              onPressed: onOpen,
+            ),
+          ),
+        ],
       );
     }
     return Column(

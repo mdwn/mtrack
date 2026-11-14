@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps `<host name>.local`. On by default; `advertise: false` on the gRPC controller starts no
   mDNS at all. If it cannot start, the player logs one warning and gRPC runs as before. See
   [gRPC](docs/src/interfaces/grpc.md) and [Security](docs/src/deployment/security.md).
+- **The phone app lists the players on its network**: the connect screen is one list, with the
+  players found over Wi-Fi (by the `_mtrack._tcp` advert, shown by name and first address) and over
+  Bluetooth, each row saying which. Tap a Wi-Fi row to connect: no pairing, as with a typed
+  address. It works with Bluetooth off or refused, and says in one line when the network could not
+  be searched; **Enter an address** stays under the list. A player found this way is remembered by
+  its name as well as its addresses, and when none of them answers the app looks for the name for
+  a few seconds and takes the address the player has now. Neither phone asks for anything new: Android
+  only declares multicast (a normal permission, no prompt) for the lookup, and iOS lists
+  `_mtrack._tcp` for the local network prompt it already shows. Not yet run on a phone.
 - **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
   `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile`,
   `DeleteProfileFile`, `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`,

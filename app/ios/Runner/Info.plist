@@ -18,6 +18,13 @@
 	<string>mtrack uses Bluetooth to control your mtrack player.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>mtrack uses your local network to control your mtrack player over Wi-Fi.</string>
+	<!-- The Bonjour service a player advertises, which the app browses for to
+	     list the players on the network. iOS only lets an app browse for the
+	     types listed here. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mtrack._tcp</string>
+	</array>
 	<!-- The Lights tab's web view loads the stage page, which ships inside
 	     the app, over plain HTTP from a server in the app on 127.0.0.1.
 	     This allows that and no other insecure load. -->
