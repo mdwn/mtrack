@@ -12,48 +12,70 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::webui::wire::devices::{AudioProbe, NoiseFloor, ProbeAudioRequest, ProbeKind};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use serde_json::json;
+//! Audio and MIDI devices, the audio probe and trigger calibration, as plain
+//! functions: what `ConfigService`'s device RPCs call. No transport types
+//! here, so a caller maps a [`DeviceError`] to its own refusal.
 
-use super::super::server::WebUiState;
+use std::fmt;
+
+use crate::device_info::{AudioDeviceInfo, ChannelCalibration, MidiDeviceInfo};
+use crate::player::Player;
+use crate::webui::wire::devices::{AudioProbe, NoiseFloor, ProbeAudioRequest, ProbeKind};
 use crate::{audio, calibrate, midi};
 
-/// GET /api/devices/audio — lists available audio devices.
-pub(super) async fn get_audio_devices() -> impl IntoResponse {
-    match tokio::task::spawn_blocking(|| audio::list_device_info().map_err(|e| e.to_string())).await
-    {
-        Ok(Ok(devices)) => (StatusCode::OK, Json(json!(devices))).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to list audio devices: {}", e)})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("task failed: {}", e)})),
-        )
-            .into_response(),
+/// Why a device call was refused. The message is the caller's to show.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DeviceError {
+    /// The request is not valid.
+    Invalid(String),
+    /// The device the request names is not there.
+    NotFound(String),
+    /// The player or the session is in a state the call does not fit:
+    /// playing, or no calibration session.
+    WrongState(String),
+    /// The device could not be opened or started.
+    Unavailable(String),
+    /// A task failed.
+    Internal(String),
+}
+
+impl fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeviceError::Invalid(m)
+            | DeviceError::NotFound(m)
+            | DeviceError::WrongState(m)
+            | DeviceError::Unavailable(m)
+            | DeviceError::Internal(m) => f.write_str(m),
+        }
     }
 }
 
-/// GET /api/devices/midi — lists available MIDI devices.
+/// Lists the available audio devices.
+pub(crate) async fn list_audio_devices() -> Result<Vec<AudioDeviceInfo>, DeviceError> {
+    match tokio::task::spawn_blocking(|| audio::list_device_info().map_err(|e| e.to_string())).await
+    {
+        Ok(Ok(devices)) => Ok(devices),
+        Ok(Err(e)) => Err(DeviceError::Internal(format!(
+            "failed to list audio devices: {e}"
+        ))),
+        Err(e) => Err(DeviceError::Internal(format!("task failed: {e}"))),
+    }
+}
+
+/// Lists the available MIDI devices.
 ///
-/// Returns an empty array if the MIDI subsystem is unavailable (e.g. no ALSA
-/// on WSL2), rather than a 500 error.
-pub(super) async fn get_midi_devices() -> impl IntoResponse {
+/// Lists none if the MIDI subsystem is unavailable (e.g. no ALSA on WSL2),
+/// rather than failing.
+pub(crate) async fn list_midi_devices() -> Result<Vec<MidiDeviceInfo>, DeviceError> {
     match tokio::task::spawn_blocking(|| midi::list_device_info().map_err(|e| e.to_string())).await
     {
-        Ok(Ok(devices)) => (StatusCode::OK, Json(json!(devices))).into_response(),
+        Ok(Ok(devices)) => Ok(devices),
         Ok(Err(e)) => {
             tracing::warn!("MIDI subsystem unavailable: {}", e);
-            (StatusCode::OK, Json(json!([]))).into_response()
+            Ok(Vec::new())
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("task failed: {}", e)})),
-        )
-            .into_response(),
+        Err(e) => Err(DeviceError::Internal(format!("task failed: {e}"))),
     }
 }
 
@@ -63,8 +85,7 @@ pub(super) async fn get_midi_devices() -> impl IntoResponse {
 /// for is the hardware, not the session.
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// POST /api/devices/audio/probe — opens a device, confirms its callback runs,
-/// and closes it again.
+/// Opens a device, confirms its callback runs, and closes it again.
 ///
 /// The check the device picker cannot make on its own: listing a device proves
 /// its name exists, not that the format will be accepted or that a callback
@@ -74,21 +95,17 @@ static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// instead of being probed. It would refuse the second open, and answering
 /// "could not be opened" for the device currently playing is worse than not
 /// answering at all.
-pub(super) async fn post_probe_audio_device(
-    State(state): State<WebUiState>,
-    Json(body): Json<ProbeAudioRequest>,
-) -> impl IntoResponse {
+pub(crate) async fn probe_audio_device(
+    player: &Player,
+    body: ProbeAudioRequest,
+) -> Result<AudioProbe, DeviceError> {
     let name = body.device.trim().to_string();
     if name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "device is required"})),
-        )
-            .into_response();
+        return Err(DeviceError::Invalid("device is required".to_string()));
     }
 
-    if state.player.holds_audio_device(&name) {
-        let health = state.player.hardware_status().audio_output;
+    if player.holds_audio_device(&name) {
+        let health = player.hardware_status().audio_output;
         // No health means a device that cannot report one — a mock. It is open
         // and in use, which is all that can be said, and all a probe of it
         // would have said either.
@@ -99,29 +116,23 @@ pub(super) async fn post_probe_audio_device(
                     | crate::audio::health::OutputStatus::Recovering
             )
         });
-        return (
-            StatusCode::OK,
-            Json(AudioProbe {
-                outcome: ProbeKind::InUse,
-                ok,
-                reason: None,
-                callbacks: health.as_ref().map(|h| h.callbacks),
-                health: Some(health),
-            }),
-        )
-            .into_response();
+        return Ok(AudioProbe {
+            outcome: ProbeKind::InUse,
+            ok,
+            reason: None,
+            callbacks: health.as_ref().map(|h| h.callbacks),
+            health: Some(health),
+        });
     }
 
     // Opening a second interface mid-song risks an xrun on the one that is
     // playing. Deliberately after the in-use branch: asking about the device
     // currently playing is answered from health, opens nothing, and is exactly
     // the question worth asking when a rig goes quiet during a set.
-    if state.player.is_playing().await {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "Cannot test another audio device during playback"})),
-        )
-            .into_response();
+    if player.is_playing().await {
+        return Err(DeviceError::WrongState(
+            "Cannot test another audio device during playback".to_string(),
+        ));
     }
 
     // One test at a time. A probe opens a real interface, and two overlapping
@@ -166,77 +177,69 @@ pub(super) async fn post_probe_audio_device(
                     (ProbeKind::OpenedCannotReport, None, None)
                 }
             };
-            let probe = AudioProbe {
+            Ok(AudioProbe {
                 outcome: kind,
                 ok: outcome.is_ok(),
                 reason: Some(reason),
                 callbacks,
                 health: None,
-            };
-            (StatusCode::OK, Json(probe)).into_response()
+            })
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("task failed: {}", e)})),
-        )
-            .into_response(),
+        Err(e) => Err(DeviceError::Internal(format!("task failed: {e}"))),
     }
 }
 
 // ---------------------------------------------------------------------------
-// Calibration endpoints
+// Calibration
 // ---------------------------------------------------------------------------
 
 /// Server-side state for an in-progress calibration session.
-pub(crate) struct CalibrationSession {
+struct CalibrationSession {
     device: cpal::Device,
     stream_config: cpal::StreamConfig,
     stream_format: cpal::SampleFormat,
     num_device_channels: u16,
     target_channel: u16,
     sample_rate: u32,
-    #[allow(dead_code)]
-    device_name: String,
     noise_floor: calibrate::NoiseFloorStats,
     // Phase 2 state
     hit_buffer: Option<std::sync::Arc<calibrate::CaptureBuffer>>,
     hit_stream: Option<cpal::Stream>,
 }
 
-#[derive(serde::Deserialize)]
-pub(super) struct CalibrateStartRequest {
-    device: String,
-    channel: u16,
-    #[serde(default = "default_noise_duration")]
-    duration: f32,
-    sample_rate: Option<u32>,
-    /// "int" or "float"
-    sample_format: Option<String>,
-    bits_per_sample: Option<u16>,
+/// The calibration session (at most one at a time). Process-wide like
+/// [`PROBE_LOCK`], for the same reason: the thing contended for is the
+/// hardware, and every transport and port serves the one player.
+static CALIBRATION: parking_lot::Mutex<Option<CalibrationSession>> = parking_lot::Mutex::new(None);
+
+/// What a calibration is asked to measure.
+pub(crate) struct CalibrateStart {
+    pub device: String,
+    /// The device's channel, from 1.
+    pub channel: u16,
+    /// Seconds of noise to record; kept between 0.5 and 30.
+    pub duration: f32,
+    pub sample_rate: Option<u32>,
+    /// "int" or "float".
+    pub sample_format: Option<String>,
+    pub bits_per_sample: Option<u16>,
 }
 
-fn default_noise_duration() -> f32 {
-    3.0
-}
+/// How long a noise floor is recorded when the request names no time.
+pub(crate) const DEFAULT_NOISE_DURATION: f32 = 3.0;
 
-/// POST /api/calibrate/start — begins noise floor measurement.
+/// Begins noise floor measurement.
 ///
-/// Blocks for `duration` seconds while capturing audio, then returns
-/// the noise floor stats for the target channel.
-pub(super) async fn post_calibrate_start(
-    State(state): State<WebUiState>,
-    Json(body): Json<CalibrateStartRequest>,
-) -> impl IntoResponse {
+/// Takes `duration` seconds while capturing audio, then answers the noise
+/// floor stats for the target channel and keeps the session for the capture.
+/// Replaces any session already open.
+pub(crate) async fn calibrate_start(body: CalibrateStart) -> Result<NoiseFloor, DeviceError> {
     use cpal::traits::StreamTrait;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     if body.channel < 1 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "channel must be >= 1"})),
-        )
-            .into_response();
+        return Err(DeviceError::Invalid("channel must be >= 1".to_string()));
     }
 
     // Explicit comparisons rather than `clamp`, which passes NaN through; every
@@ -256,9 +259,9 @@ pub(super) async fn post_calibrate_start(
         body.sample_format.as_deref().and_then(|s| s.parse().ok());
     let bits_per_sample_opt = body.bits_per_sample;
 
-    let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let device =
-            audio::find_input_device(&device_name).map_err(|e| format!("Device not found: {e}"))?;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, DeviceError> {
+        let device = audio::find_input_device(&device_name)
+            .map_err(|e| DeviceError::NotFound(format!("Device not found: {e}")))?;
 
         let cal_config = calibrate::CalibrationConfig {
             device_name: device_name.clone(),
@@ -269,13 +272,14 @@ pub(super) async fn post_calibrate_start(
         };
 
         let (channels, sample_rate, stream_format) =
-            calibrate::resolve_stream_params(&device, &cal_config)
-                .map_err(|e| format!("Failed to resolve stream params: {e}"))?;
+            calibrate::resolve_stream_params(&device, &cal_config).map_err(|e| {
+                DeviceError::Invalid(format!("Failed to resolve stream params: {e}"))
+            })?;
 
         if target_channel > channels {
-            return Err(format!(
+            return Err(DeviceError::Invalid(format!(
                 "Channel {target_channel} exceeds device's {channels} channels"
-            ));
+            )));
         }
 
         let stream_config = cpal::StreamConfig {
@@ -297,11 +301,11 @@ pub(super) async fn post_calibrate_start(
             channels,
             stream_format,
         )
-        .map_err(|e| format!("Failed to build capture stream: {e}"))?;
+        .map_err(|e| DeviceError::Unavailable(format!("Failed to build capture stream: {e}")))?;
 
         stream
             .play()
-            .map_err(|e| format!("Failed to start stream: {e}"))?;
+            .map_err(|e| DeviceError::Unavailable(format!("Failed to start stream: {e}")))?;
         std::thread::sleep(std::time::Duration::from_secs_f32(duration));
         buffer.active.store(false, Ordering::Relaxed);
         drop(stream);
@@ -317,22 +321,13 @@ pub(super) async fn post_calibrate_start(
             stream_format,
             channels,
             sample_rate,
-            device_name,
             noise_floor,
         ))
     })
     .await;
 
     match result {
-        Ok(Ok((
-            device,
-            stream_config,
-            stream_format,
-            channels,
-            sample_rate,
-            device_name,
-            noise_floor,
-        ))) => {
+        Ok(Ok((device, stream_config, stream_format, channels, sample_rate, noise_floor))) => {
             let response = NoiseFloor {
                 peak: noise_floor.peak.into(),
                 rms: noise_floor.rms.into(),
@@ -349,41 +344,31 @@ pub(super) async fn post_calibrate_start(
                 num_device_channels: channels,
                 target_channel,
                 sample_rate,
-                device_name,
                 noise_floor,
                 hit_buffer: None,
                 hit_stream: None,
             };
 
             // Replace any existing session
-            *state.calibration.lock() = Some(session);
+            *CALIBRATION.lock() = Some(session);
 
-            (StatusCode::OK, Json(response)).into_response()
+            Ok(response)
         }
-        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Task failed: {e}")})),
-        )
-            .into_response(),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(DeviceError::Internal(format!("Task failed: {e}"))),
     }
 }
 
-/// POST /api/calibrate/capture — starts hit capture phase.
-pub(super) async fn post_calibrate_capture(State(state): State<WebUiState>) -> impl IntoResponse {
+/// Starts the hit capture phase of the open session.
+pub(crate) fn calibrate_capture() -> Result<(), DeviceError> {
     use cpal::traits::StreamTrait;
     use std::sync::Arc;
 
-    let mut guard = state.calibration.lock();
-    let session = match guard.as_mut() {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "No calibration session — call /calibrate/start first"})),
-            )
-                .into_response()
-        }
+    let mut guard = CALIBRATION.lock();
+    let Some(session) = guard.as_mut() else {
+        return Err(DeviceError::WrongState(
+            "No calibration session — call StartCalibration first".to_string(),
+        ));
     };
 
     // Stop any existing capture
@@ -396,62 +381,40 @@ pub(super) async fn post_calibrate_capture(State(state): State<WebUiState>) -> i
         session.sample_rate,
     ));
 
-    let stream = match calibrate::build_capture_stream(
+    let stream = calibrate::build_capture_stream(
         &session.device,
         &session.stream_config,
         buffer.clone(),
         session.num_device_channels,
         session.stream_format,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to build capture stream: {e}")})),
-            )
-                .into_response()
-        }
-    };
+    )
+    .map_err(|e| DeviceError::Unavailable(format!("Failed to build capture stream: {e}")))?;
 
-    if let Err(e) = stream.play() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to start capture: {e}")})),
-        )
-            .into_response();
-    }
+    stream
+        .play()
+        .map_err(|e| DeviceError::Unavailable(format!("Failed to start capture: {e}")))?;
 
     session.hit_buffer = Some(buffer);
     session.hit_stream = Some(stream);
-
-    (StatusCode::OK, Json(json!({"status": "capturing"}))).into_response()
+    Ok(())
 }
 
-/// POST /api/calibrate/stop — stops capture and returns calibration results.
-pub(super) async fn post_calibrate_stop(State(state): State<WebUiState>) -> impl IntoResponse {
+/// Stops the capture, closes the session and answers the calibration derived
+/// from it. The session is closed even when no capture had started.
+pub(crate) fn calibrate_stop() -> Result<ChannelCalibration, DeviceError> {
     use std::sync::atomic::Ordering;
 
-    let mut guard = state.calibration.lock();
-    let session = match guard.take() {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "No calibration session active"})),
-            )
-                .into_response()
-        }
+    let mut guard = CALIBRATION.lock();
+    let Some(session) = guard.take() else {
+        return Err(DeviceError::WrongState(
+            "No calibration session active".to_string(),
+        ));
     };
 
-    let hit_buffer = match session.hit_buffer {
-        Some(b) => b,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Capture not started — call /calibrate/capture first"})),
-            )
-                .into_response()
-        }
+    let Some(hit_buffer) = session.hit_buffer else {
+        return Err(DeviceError::WrongState(
+            "Capture not started — call CaptureCalibration first".to_string(),
+        ));
     };
 
     // Stop the stream
@@ -462,19 +425,17 @@ pub(super) async fn post_calibrate_stop(State(state): State<WebUiState>) -> impl
     let samples = std::mem::take(&mut *hit_buffer.channels[ch_idx].lock());
 
     let hits = calibrate::detect_hits(&samples, &session.noise_floor, session.sample_rate);
-    let calibration = calibrate::derive_channel_params(
+    Ok(calibrate::derive_channel_params(
         session.target_channel,
         &session.noise_floor,
         &hits,
         session.sample_rate,
-    );
-
-    (StatusCode::OK, Json(json!(calibration))).into_response()
+    ))
 }
 
-/// DELETE /api/calibrate — cancels any in-progress calibration session.
-pub(super) async fn delete_calibrate(State(state): State<WebUiState>) -> impl IntoResponse {
-    let mut guard = state.calibration.lock();
+/// Cancels any in-progress calibration session.
+pub(crate) fn calibrate_cancel() {
+    let mut guard = CALIBRATION.lock();
     if let Some(mut session) = guard.take() {
         // Stop any active capture
         if let Some(ref buffer) = session.hit_buffer {
@@ -484,324 +445,5 @@ pub(super) async fn delete_calibrate(State(state): State<WebUiState>) -> impl In
         }
         session.hit_stream = None;
         session.hit_buffer = None;
-    }
-    (StatusCode::OK, Json(json!({"status": "cancelled"}))).into_response()
-}
-
-#[cfg(test)]
-mod test {
-    use super::super::router;
-    use super::super::test_helpers::*;
-    use axum::body::Body;
-    use axum::http::StatusCode;
-    use serde_json::{json, Value};
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn get_audio_devices_returns_array() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/devices/audio")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed.is_array(), "expected array, got {parsed}");
-    }
-
-    /// POSTs to the probe endpoint and returns the parsed body.
-    async fn probe(state: super::WebUiState, body: serde_json::Value) -> (StatusCode, Value) {
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/devices/audio/probe")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let parsed = serde_json::from_str(&response_body(response).await).unwrap();
-        (status, parsed)
-    }
-
-    #[tokio::test]
-    async fn probe_without_a_device_is_rejected() {
-        let (state, _dir) = test_state();
-        let (status, body) = probe(state, json!({"device": "   "})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].is_string(), "expected an error, got {body}");
-    }
-
-    #[tokio::test]
-    async fn probe_of_a_missing_device_reports_why_it_could_not_open() {
-        let (state, _dir) = test_state();
-        let (status, body) = probe(
-            state,
-            json!({"device": "definitely-not-a-real-device-for-probing"}),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["outcome"], "could_not_open");
-        assert_eq!(body["ok"], false);
-        // The reason is the whole point: "it failed" sends nobody anywhere.
-        let reason = body["reason"].as_str().unwrap_or_default();
-        assert!(
-            reason.contains("definitely-not-a-real-device-for-probing"),
-            "reason should name the device, got {reason:?}"
-        );
-    }
-
-    /// Probing the device the player already holds must not open it a second
-    /// time. It would be refused, and reporting "could not be opened" for the
-    /// device currently playing is the worst answer this endpoint could give.
-    #[tokio::test]
-    async fn probe_of_the_held_device_reports_it_in_use_rather_than_opening_it() {
-        let (state, _dir) = test_state_with_audio_device("mock-held-device");
-        let (status, body) = probe(state, json!({"device": "mock-held-device"})).await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["outcome"], "in_use");
-        assert_eq!(body["ok"], true);
-    }
-
-    /// The guard is about *this* device, not about holding any device at all.
-    #[tokio::test]
-    async fn probe_of_another_device_is_not_confused_by_the_held_one() {
-        let (state, _dir) = test_state_with_audio_device("mock-held-device");
-        let (status, body) = probe(state, json!({"device": "some-other-device"})).await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_ne!(body["outcome"], "in_use");
-    }
-
-    /// Format settings must reach the probe: a device that opens at one format
-    /// and refuses another is the failure this endpoint exists for, so probing
-    /// at defaults would answer a question nobody asked.
-    #[tokio::test]
-    async fn probe_accepts_the_format_settings_beside_the_device() {
-        let (state, _dir) = test_state();
-        let (status, body) = probe(
-            state,
-            json!({
-                "device": "mock-probe-target",
-                "sample_rate": 48000,
-                "sample_format": "int",
-                "bits_per_sample": 24,
-                "buffer_size": 2048,
-                "stream_buffer_size": "min",
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        // A mock opens but cannot report liveness.
-        assert_eq!(body["outcome"], "opened_cannot_report");
-        assert_eq!(body["ok"], true);
-    }
-
-    #[tokio::test]
-    async fn get_midi_devices_returns_array_or_error() {
-        // MIDI device listing may fail on systems without MIDI support (e.g. CI).
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/devices/midi")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = response.status();
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-
-        if status == StatusCode::OK {
-            assert!(parsed.is_array(), "expected array, got {parsed}");
-        } else {
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(parsed["error"].is_string());
-        }
-    }
-
-    #[tokio::test]
-    async fn calibrate_start_without_device_returns_error() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/start")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"device": "nonexistent", "channel": 1}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = response.status();
-        assert!(
-            status == StatusCode::BAD_REQUEST || status == StatusCode::INTERNAL_SERVER_ERROR,
-            "expected 400 or 500, got {status}"
-        );
-    }
-
-    #[tokio::test]
-    async fn calibrate_stop_without_session_returns_error() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/stop")
-                    .header("content-type", "application/json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn calibrate_delete_without_session_returns_ok() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("DELETE")
-                    .uri("/calibrate")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["status"], "cancelled");
-    }
-
-    #[tokio::test]
-    async fn calibrate_start_missing_fields() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        // Missing required "device" and "channel" fields.
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/start")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Axum returns 422 when JSON deserialization fails (missing required fields).
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
-    #[tokio::test]
-    async fn calibrate_start_invalid_channel() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        // Channel 0 is invalid (must be >= 1).
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/start")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"device": "nonexistent", "channel": 0}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["error"], "channel must be >= 1");
-    }
-
-    #[tokio::test]
-    async fn calibrate_capture_no_session_returns_error_body() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/capture")
-                    .header("content-type", "application/json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("No calibration session"));
-    }
-
-    #[tokio::test]
-    async fn calibrate_stop_returns_error_body() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/calibrate/stop")
-                    .header("content-type", "application/json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("No calibration session"));
     }
 }

@@ -17,10 +17,19 @@
 // a real server does where it once called the REST API.
 import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 
 /** A client of the player whose web server is at `baseUrl`
  *  (`http://127.0.0.1:8080`). */
 export function playerClientAt(baseUrl: string) {
   return createClient(PlayerService, createGrpcWebTransport({ baseUrl }));
+}
+
+/** A client of the editor service of the player whose web server is at
+ *  `baseUrl`. */
+export function configClientAt(baseUrl: string) {
+  return createClient(ConfigService, createGrpcWebTransport({ baseUrl }));
 }

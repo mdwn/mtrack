@@ -65,12 +65,19 @@ import type {
 } from "../../gen/rules/mtrack_rules";
 import { configClient, playerClient } from "../grpc/client";
 import {
+  mapAudioDevices,
+  mapAudioProbe,
+  mapCalibration,
   mapConfigSaved,
   mapConfigStore,
   mapFileSaved,
+  mapMidiDevices,
+  mapNoiseFloor,
   mapProfileFile,
   mapProfileFiles,
   metronomeJson,
+  probeAudioRequest,
+  startCalibrationRequest,
 } from "../grpc/config";
 import {
   callError,
@@ -118,29 +125,39 @@ export async function fetchConfigStore(): Promise<StoreSnapshot> {
 }
 
 export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
-  const res = await get("/devices/audio");
-  if (!res.ok) throw new Error(`Failed to fetch audio devices: ${res.status}`);
-  return res.json();
+  try {
+    return mapAudioDevices(await configClient.listAudioDevices({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch audio devices");
+  }
 }
 
 /**
  * Opens a device, confirms its output callback runs, and closes it again.
  *
  * Silent: no audio is played, so this is safe to run with the PA up. Takes up
- * to a couple of seconds, since it waits for a callback before giving up.
+ * to a couple of seconds, since it waits for a callback before giving up
+ * (longer when another test is running: they run one at a time). Nothing in
+ * the client times the call out.
  */
 export async function probeAudioDevice(
   req: ProbeAudioRequest,
 ): Promise<AudioProbe> {
-  const res = await post("/devices/audio/probe", JSON.stringify(req));
-  if (!res.ok) throw await apiError(res, "Device test failed");
-  return res.json();
+  try {
+    return mapAudioProbe(
+      await configClient.probeAudioDevice(probeAudioRequest(req)),
+    );
+  } catch (e) {
+    throw callError(e, "Device test failed");
+  }
 }
 
 export async function fetchMidiDevices(): Promise<MidiDeviceInfo[]> {
-  const res = await get("/devices/midi");
-  if (!res.ok) throw new Error(`Failed to fetch MIDI devices: ${res.status}`);
-  return res.json();
+  try {
+    return mapMidiDevices(await configClient.listMidiDevices({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch MIDI devices");
+  }
 }
 
 /** A profile as the editor holds it: the generated `Profile`, a section
@@ -304,31 +321,52 @@ export async function uploadSampleFile(file: File): Promise<SampleUploaded> {
 
 // Calibration API
 
+/** Records the channel's noise for `duration` seconds (3 by default, up to
+ *  30), so the call takes that long: nothing in the client times it out. */
 export async function startCalibration(
   device: string,
   channel: number,
   duration?: number,
 ): Promise<NoiseFloor> {
-  const body: Record<string, unknown> = { device, channel };
-  if (duration !== undefined) body.duration = duration;
-  const res = await post("/calibrate/start", JSON.stringify(body));
-  if (!res.ok) throw await apiError(res, "Calibration start failed");
-  return res.json();
+  try {
+    return mapNoiseFloor(
+      await configClient.startCalibration(
+        startCalibrationRequest(device, channel, duration),
+      ),
+    );
+  } catch (e) {
+    throw callError(e, "Calibration start failed");
+  }
 }
 
 export async function startCapture(): Promise<void> {
-  const res = await post("/calibrate/capture");
-  if (!res.ok) throw await apiError(res, "Capture start failed");
+  try {
+    await configClient.captureCalibration({});
+  } catch (e) {
+    throw callError(e, "Capture start failed");
+  }
 }
 
 export async function stopCapture(): Promise<ChannelCalibration> {
-  const res = await post("/calibrate/stop");
-  if (!res.ok) throw await apiError(res, "Capture stop failed");
-  return res.json();
+  try {
+    return mapCalibration(await configClient.stopCalibration({}));
+  } catch (e) {
+    throw callError(e, "Capture stop failed");
+  }
 }
 
 export async function cancelCalibration(): Promise<void> {
-  await del("/calibrate");
+  await configClient.cancelCalibration({});
+}
+
+/** Restarts the controllers from the current config. The new status arrives
+ *  on the `Watch` stream. Refused during playback. */
+export async function restartControllers(): Promise<void> {
+  try {
+    await configClient.restartControllers({});
+  } catch (e) {
+    throw callError(e, "Restart failed");
+  }
 }
 
 /** The sample rates and bit depths offered when the device does not say

@@ -17,6 +17,10 @@ import type { Status } from "../../src/gen/rules/mtrack_rules";
 import { StatusPageModel } from "../pages/status.page.js";
 import { STATUS } from "../mock-server/test-data";
 import { sendWatch, type WatchPush } from "../support/watch";
+import { Code } from "@connectrpc/connect";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { restartControllersReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 
 let testCounter = 0;
 
@@ -121,29 +125,38 @@ test.describe("Status Page", () => {
     await expect(status.buildInfoCard).toContainText("0.1.0-test");
   });
 
-  test("restart controllers calls API", async ({ page }) => {
-    let restartCalled = false;
-    await page.route("**/api/controllers/restart", async (route) => {
-      restartCalled = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          status: "restarted",
-          controllers: [
-            {
-              kind: "osc",
-              status: "running",
-              detail: "0.0.0.0:9000",
-              error: null,
-            },
-          ],
-        }),
-      });
-    });
+  test("restart controllers calls the player", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.restartControllers,
+      restartControllersReply([
+        {
+          kind: "osc",
+          status: "running",
+          detail: "0.0.0.0:9000",
+          error: null,
+        },
+      ]),
+    );
 
     await status.restartButton.click();
-    expect(restartCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.restartControllers).length)
+      .toBe(1);
+  });
+
+  test("a refused restart says why", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    rpc.error(
+      ConfigService.method.restartControllers,
+      Code.FailedPrecondition,
+      "Cannot restart controllers during playback",
+    );
+
+    await status.restartButton.click();
+    await expect(
+      page.getByText("Cannot restart controllers during playback"),
+    ).toBeVisible();
   });
 
   test("shows error banner when the Watch stream fails", async ({ page }) => {

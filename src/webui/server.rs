@@ -77,9 +77,6 @@ pub struct WebUiState {
     pub config_path: PathBuf,
     /// The hub's waveform cache.
     pub waveform_cache: ws_state::WaveformCache,
-    /// Active calibration session (at most one at a time).
-    pub(crate) calibration:
-        Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
 }
 
 impl WebUiState {
@@ -131,7 +128,6 @@ impl WebUiState {
             waveform_cache: params.player.watch_hub().waveform_cache().clone(),
             player: params.player,
             config_path: canonicalize_or_keep(params.config_path),
-            calibration: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 }
@@ -619,7 +615,8 @@ mod test {
     /// `PlayerService`, behind the same lock: a write is refused while the
     /// player is locked, a read reaches its handler (which has no profiles
     /// directory to read), and the REST routes it replaced (the sample and
-    /// metronome saves and the profile files) are gone.
+    /// metronome saves, the profile files, the device lists, the audio probe,
+    /// the calibration and the controller restart) are gone.
     #[tokio::test]
     async fn config_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -706,6 +703,14 @@ mod test {
             ("GET", "/api/profiles/test-host"),
             ("PUT", "/api/profiles/test-host"),
             ("DELETE", "/api/profiles/test-host"),
+            ("GET", "/api/devices/audio"),
+            ("POST", "/api/devices/audio/probe"),
+            ("GET", "/api/devices/midi"),
+            ("POST", "/api/calibrate/start"),
+            ("POST", "/api/calibrate/capture"),
+            ("POST", "/api/calibrate/stop"),
+            ("DELETE", "/api/calibrate"),
+            ("POST", "/api/controllers/restart"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

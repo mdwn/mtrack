@@ -14,21 +14,39 @@
 
 import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import {
+  AudioOutputHealthSchema,
+  CalibrationNoiseFloorSchema,
+  CalibrationResultSchema,
   GetConfigResponseSchema,
   GetProfileFileResponseSchema,
+  ListAudioDevicesResponseSchema,
+  ListMidiDevicesResponseSchema,
   ListProfileFilesResponseSchema,
+  ProbeAudioDeviceRequestSchema,
+  ProbeAudioDeviceResponseSchema,
+  ProbeOutcome,
   ProfileFileSavedSchema,
   UpdateConfigResponseSchema,
 } from "../../gen/player/v1/player_pb";
 import {
+  f32,
+  mapAudioDevices,
+  mapAudioProbe,
+  mapCalibration,
   mapConfigSaved,
   mapConfigStore,
   mapFileSaved,
+  mapMidiDevices,
+  mapNoiseFloor,
   mapProfileFile,
   mapProfileFiles,
   metronomeJson,
+  probeAudioRequest,
+  startCalibrationRequest,
 } from "./config";
+import { callError } from "./library";
 
 describe("the config read", () => {
   it("is the yaml and the checksum a save presents", () => {
@@ -235,5 +253,238 @@ describe("the metronome defaults", () => {
   it("send null, which removes them, when nothing differs", () => {
     expect(metronomeJson(null, false, null)).toBe("null");
     expect(metronomeJson({}, false, 1)).toBe("null");
+  });
+});
+
+describe("the device lists", () => {
+  it("map an audio device with what it supports", () => {
+    const [device] = mapAudioDevices(
+      create(ListAudioDevicesResponseSchema, {
+        devices: [
+          {
+            name: "USB Interface",
+            maxChannels: 18,
+            hostName: "ALSA",
+            supportedSampleRates: [44100, 48000],
+            supportedFormats: [{ sampleFormat: "int", bitsPerSample: 24 }],
+            virtualNode: false,
+            channelsKnown: true,
+          },
+        ],
+      }),
+    );
+    expect(device).toEqual({
+      name: "USB Interface",
+      max_channels: 18,
+      host_name: "ALSA",
+      supported_sample_rates: [44100, 48000],
+      supported_formats: [{ sample_format: "int", bits_per_sample: 24 }],
+      virtual_node: false,
+      channels_known: true,
+    });
+  });
+
+  it("map a MIDI device, and no devices to none", () => {
+    expect(
+      mapMidiDevices(
+        create(ListMidiDevicesResponseSchema, {
+          devices: [{ name: "Pad", hasInput: true, hasOutput: false }],
+        }),
+      ),
+    ).toEqual([{ name: "Pad", has_input: true, has_output: false }]);
+    expect(mapMidiDevices(create(ListMidiDevicesResponseSchema))).toEqual([]);
+  });
+});
+
+describe("the audio probe", () => {
+  it("asks with what the form has set, and leaves the rest out", () => {
+    const bare = create(
+      ProbeAudioDeviceRequestSchema,
+      probeAudioRequest({ device: "d", sample_rate: null }),
+    );
+    expect(bare.device).toBe("d");
+    expect(bare.sampleRate).toBeUndefined();
+    expect(bare.bufferSize).toBeUndefined();
+    expect(bare.streamBufferSize).toBeUndefined();
+
+    const full = create(
+      ProbeAudioDeviceRequestSchema,
+      probeAudioRequest({
+        device: "d",
+        sample_rate: 48000,
+        sample_format: "int",
+        bits_per_sample: 24,
+        buffer_size: 2048,
+        stream_buffer_size: 1024,
+      }),
+    );
+    expect(full.sampleRate).toBe(48000);
+    expect(full.sampleFormat).toBe("int");
+    expect(full.bitsPerSample).toBe(24);
+    expect(full.bufferSize).toBe(2048n);
+    expect(full.streamBufferSize?.size).toEqual({
+      case: "frames",
+      value: 1024n,
+    });
+  });
+
+  it("says the stream buffer keywords as kinds", () => {
+    const kind = (size: "default" | "min") =>
+      create(
+        ProbeAudioDeviceRequestSchema,
+        probeAudioRequest({ device: "d", stream_buffer_size: size }),
+      ).streamBufferSize?.size;
+    expect(kind("min")).toEqual({ case: "kind", value: 2 });
+    expect(kind("default")).toEqual({ case: "kind", value: 1 });
+  });
+
+  it("reads a device that streams", () => {
+    expect(
+      mapAudioProbe(
+        create(ProbeAudioDeviceResponseSchema, {
+          outcome: ProbeOutcome.STREAMING,
+          ok: true,
+          callbacks: 7n,
+        }),
+      ),
+    ).toEqual({ outcome: "streaming", ok: true, reason: null, callbacks: 7 });
+  });
+
+  it("reads why a device would not open", () => {
+    expect(
+      mapAudioProbe(
+        create(ProbeAudioDeviceResponseSchema, {
+          outcome: ProbeOutcome.COULD_NOT_OPEN,
+          ok: false,
+          reason: "Unsupported bit depth",
+        }),
+      ),
+    ).toEqual({
+      outcome: "could_not_open",
+      ok: false,
+      reason: "Unsupported bit depth",
+      callbacks: null,
+    });
+  });
+
+  it("reads the held device from its health, or none for one that has none", () => {
+    const held = mapAudioProbe(
+      create(ProbeAudioDeviceResponseSchema, {
+        outcome: ProbeOutcome.IN_USE,
+        ok: true,
+        callbacks: 4821n,
+        health: create(AudioOutputHealthSchema, {
+          status: "healthy",
+          callbackAlive: true,
+          callbacks: 4821n,
+        }),
+      }),
+    );
+    expect(held.outcome).toBe("in_use");
+    expect(held.health?.status).toBe("healthy");
+    expect(held.callbacks).toBe(4821);
+
+    const mock = mapAudioProbe(
+      create(ProbeAudioDeviceResponseSchema, {
+        outcome: ProbeOutcome.IN_USE,
+        ok: true,
+      }),
+    );
+    expect(mock.health).toBeNull();
+    expect(mock.callbacks).toBeNull();
+  });
+
+  it("refuses an outcome it does not know", () => {
+    expect(() =>
+      mapAudioProbe(create(ProbeAudioDeviceResponseSchema, { ok: true })),
+    ).toThrow();
+  });
+});
+
+describe("the calibration", () => {
+  it("begins with the duration only when one is given", () => {
+    expect(startCalibrationRequest("d", 2)).toEqual({
+      device: "d",
+      channel: 2,
+      duration: undefined,
+    });
+    expect(startCalibrationRequest("d", 2, 5).duration).toBe(5);
+  });
+
+  it("reads the noise floor as the player measured it", () => {
+    expect(
+      mapNoiseFloor(
+        create(CalibrationNoiseFloorSchema, {
+          peak: 0.01,
+          rms: 0.005,
+          lowFreqEnergy: 0.002,
+          channel: 3,
+          sampleRate: 48000,
+          deviceChannels: 8,
+        }),
+      ),
+    ).toEqual({
+      peak: 0.01,
+      rms: 0.005,
+      low_freq_energy: 0.002,
+      channel: 3,
+      sample_rate: 48000,
+      device_channels: 8,
+    });
+  });
+
+  it("reads a 32-bit float as the shortest number it prints as", () => {
+    expect(f32(Math.fround(0.1))).toBe(0.1);
+    expect(f32(Math.fround(0.8))).toBe(0.8);
+    expect(f32(Math.fround(1234.5))).toBe(1234.5);
+    expect(f32(Math.fround(1 / 3))).toBe(0.33333334);
+    expect(f32(0)).toBe(0);
+  });
+
+  it("reads the calibrated parameters, the optional ones only when derived", () => {
+    const fully = mapCalibration(
+      create(CalibrationResultSchema, {
+        channel: 1,
+        threshold: Math.fround(0.1),
+        gain: 1,
+        scanTimeMs: 50,
+        retriggerTimeMs: 200,
+        highpassFreq: Math.fround(80.5),
+        dynamicThresholdDecayMs: 150,
+        numHitsDetected: 5n,
+        noiseFloorPeak: Math.fround(0.01),
+        maxHitAmplitude: Math.fround(0.8),
+      }),
+    );
+    expect(fully).toEqual({
+      channel: 1,
+      threshold: 0.1,
+      gain: 1,
+      scan_time_ms: 50,
+      retrigger_time_ms: 200,
+      highpass_freq: 80.5,
+      dynamic_threshold_decay_ms: 150,
+      num_hits_detected: 5,
+      noise_floor_peak: 0.01,
+      max_hit_amplitude: 0.8,
+    });
+    const bare = mapCalibration(
+      create(CalibrationResultSchema, { channel: 2 }),
+    );
+    expect(bare).not.toHaveProperty("highpass_freq");
+    expect(bare).not.toHaveProperty("dynamic_threshold_decay_ms");
+  });
+
+  it("shows the player's refusal as it said it", () => {
+    const refused = callError(
+      new ConnectError(
+        "No calibration session — call StartCalibration first",
+        Code.FailedPrecondition,
+      ),
+      "Capture start failed",
+    );
+    expect(refused.message).toBe(
+      "No calibration session — call StartCalibration first",
+    );
   });
 });

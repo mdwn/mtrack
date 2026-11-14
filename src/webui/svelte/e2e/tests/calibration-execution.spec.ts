@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Calibration Execution", () => {
   test.beforeEach(async ({ page }) => {
@@ -35,6 +37,7 @@ test.describe("Calibration Execution", () => {
   test("start calibration calls API and shows noise floor", async ({
     page,
   }) => {
+    const rpc = await mockRpc(page);
     // Fill in required device field (Start is disabled without a device)
     const deviceInput = page.locator("#cal-device");
     await deviceInput.evaluate((el) => el.scrollIntoView({ block: "center" }));
@@ -50,6 +53,14 @@ test.describe("Calibration Execution", () => {
 
     // After API returns, wizard should advance to show noise floor stats
     await expect(page.locator(".cal-stats")).toBeVisible({ timeout: 10000 });
+
+    // The call named the device and the channel the wizard showed.
+    const [request, ...others] = rpc.calls(
+      ConfigService.method.startCalibration,
+    );
+    expect(others).toHaveLength(0);
+    expect(request.device).toBe("Default Audio Device");
+    expect(request.channel).toBe(1);
   });
 
   test("cancel during setup closes wizard without API call", async ({

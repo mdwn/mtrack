@@ -1861,6 +1861,208 @@ service ConfigService {
     // config and applies the change. NOT_FOUND when there is no such file.
     // Refused while locked.
     rpc DeleteProfileFile(DeleteProfileFileRequest) returns (ProfileFileSaved);
+
+    // ListAudioDevices lists the audio devices the player can see, with what
+    // each supports. Open while locked.
+    rpc ListAudioDevices(ListAudioDevicesRequest) returns (ListAudioDevicesResponse);
+
+    // ProbeAudioDevice opens an audio device, confirms its output callback
+    // runs (waiting up to about two seconds for one) and closes it again.
+    // Silent: no audio is played, so it is safe with the PA up. A device this
+    // player already holds is reported from its health (IN_USE), not opened
+    // again. One probe runs at a time; a second waits its turn.
+    // INVALID_ARGUMENT when no device is named. FAILED_PRECONDITION during
+    // playback (opening a second interface mid-song risks an xrun; retry
+    // when the player is stopped). Refused while locked.
+    rpc ProbeAudioDevice(ProbeAudioDeviceRequest) returns (ProbeAudioDeviceResponse);
+
+    // ListMidiDevices lists the MIDI devices the player can see. A MIDI
+    // subsystem that is not available (no ALSA on WSL2, say) lists none
+    // rather than failing. Open while locked.
+    rpc ListMidiDevices(ListMidiDevicesRequest) returns (ListMidiDevicesResponse);
+
+    // StartCalibration begins a trigger calibration: it records the device's
+    // channel for the duration (3 seconds when absent, kept between 0.5 and
+    // 30), so the call takes that long, and answers the channel's noise
+    // floor. It replaces any session already open. INVALID_ARGUMENT for a
+    // channel under 1 or above the device's, or a format the device cannot
+    // stream; NOT_FOUND when there is no such device; UNAVAILABLE when the
+    // device could not be opened. Refused while locked.
+    rpc StartCalibration(StartCalibrationRequest) returns (CalibrationNoiseFloor);
+
+    // CaptureCalibration starts recording the hits of the session's channel
+    // (for up to 60 seconds), replacing a capture already running.
+    // FAILED_PRECONDITION when there is no session (StartCalibration first);
+    // UNAVAILABLE when the device could not be opened again. Refused while
+    // locked.
+    rpc CaptureCalibration(CaptureCalibrationRequest) returns (CaptureCalibrationResponse);
+
+    // StopCalibration ends the session and answers the channel parameters
+    // derived from the noise floor and the hits captured. FAILED_PRECONDITION
+    // when there is no session, or no capture started (the session is closed
+    // either way). Refused while locked.
+    rpc StopCalibration(StopCalibrationRequest) returns (CalibrationResult);
+
+    // CancelCalibration closes any calibration session and stops its capture.
+    // Nothing to cancel is not an error. Refused while locked.
+    rpc CancelCalibration(CancelCalibrationRequest) returns (CancelCalibrationResponse);
+
+    // RestartControllers restarts every controller from the current config and
+    // answers their status. FAILED_PRECONDITION during playback, so active
+    // control surfaces are not disrupted; INTERNAL when the restart fails.
+    // Open while locked.
+    rpc RestartControllers(RestartControllersRequest) returns (RestartControllersResponse);
+}
+
+message ListAudioDevicesRequest {}
+
+message ListAudioDevicesResponse {
+    repeated AudioDeviceInfo devices = 1;
+}
+
+// AudioDeviceInfo is an audio device and what it supports.
+message AudioDeviceInfo {
+    string name = 1;
+    uint32 max_channels = 2;
+    string host_name = 3;
+    repeated uint32 supported_sample_rates = 4;
+    repeated SupportedFormat supported_formats = 5;
+    // Whether this is an ALSA plug/virtual node: a legitimate and sometimes
+    // mandatory choice, so it is labelled rather than hidden.
+    bool virtual_node = 6;
+    // Whether max_channels is the device's real maximum. False when it is
+    // the backend's clamp and no hardware node was available to resolve it:
+    // the true figure is max_channels or more.
+    bool channels_known = 7;
+}
+
+// SupportedFormat is a sample format an audio device takes.
+message SupportedFormat {
+    // "int" or "float".
+    string sample_format = 1;
+    uint32 bits_per_sample = 2;
+}
+
+// ProbeAudioDeviceRequest names a device and whichever format settings are
+// filled in beside it, which mirror the profile's audio block: the probe
+// opens the device the way saving that profile would.
+message ProbeAudioDeviceRequest {
+    string device = 1;
+    optional uint32 sample_rate = 2;
+    // "int" or "float".
+    optional string sample_format = 3;
+    optional uint32 bits_per_sample = 4;
+    optional uint64 buffer_size = 5;
+    optional StreamBufferSize stream_buffer_size = 6;
+}
+
+// StreamBufferSize is how the stream's period is chosen: the backend's
+// default, the device's smallest, or a fixed number of frames.
+message StreamBufferSize {
+    oneof size {
+        StreamBufferKind kind = 1;
+        uint64 frames = 2;
+    }
+}
+
+enum StreamBufferKind {
+    STREAM_BUFFER_KIND_UNSPECIFIED = 0;
+    // The backend's default (may be high latency on some systems).
+    STREAM_BUFFER_KIND_DEFAULT = 1;
+    // The device's minimum supported period (lowest latency, most
+    // jitter-sensitive).
+    STREAM_BUFFER_KIND_MIN = 2;
+}
+
+// ProbeOutcome is what a probe found.
+enum ProbeOutcome {
+    PROBE_OUTCOME_UNSPECIFIED = 0;
+    PROBE_OUTCOME_STREAMING = 1;
+    PROBE_OUTCOME_OPENED_BUT_SILENT = 2;
+    PROBE_OUTCOME_COULD_NOT_OPEN = 3;
+    PROBE_OUTCOME_OPENED_CANNOT_REPORT = 4;
+    // Already open by this player, so reported rather than probed.
+    PROBE_OUTCOME_IN_USE = 5;
+}
+
+// ProbeAudioDeviceResponse is whether a device can stream.
+message ProbeAudioDeviceResponse {
+    ProbeOutcome outcome = 1;
+    // Whether the device proved it can stream.
+    bool ok = 2;
+    // Why it could not be opened; present only for COULD_NOT_OPEN.
+    optional string reason = 3;
+    // Callbacks counted, when the outcome says.
+    optional uint64 callbacks = 4;
+    // The held device's health, for IN_USE when it can report one.
+    optional AudioOutputHealth health = 5;
+}
+
+message ListMidiDevicesRequest {}
+
+message ListMidiDevicesResponse {
+    repeated MidiDeviceInfo devices = 1;
+}
+
+message MidiDeviceInfo {
+    string name = 1;
+    bool has_input = 2;
+    bool has_output = 3;
+}
+
+// StartCalibrationRequest names the device and the channel to calibrate.
+message StartCalibrationRequest {
+    string device = 1;
+    // The device's channel, from 1.
+    uint32 channel = 2;
+    // Seconds of noise to record; 3 when absent, kept between 0.5 and 30.
+    optional float duration = 3;
+    optional uint32 sample_rate = 4;
+    // "int" or "float".
+    optional string sample_format = 5;
+    optional uint32 bits_per_sample = 6;
+}
+
+// CalibrationNoiseFloor is a channel's noise floor, and the stream it was
+// measured on.
+message CalibrationNoiseFloor {
+    double peak = 1;
+    double rms = 2;
+    double low_freq_energy = 3;
+    uint32 channel = 4;
+    uint32 sample_rate = 5;
+    uint32 device_channels = 6;
+}
+
+message CaptureCalibrationRequest {}
+
+message CaptureCalibrationResponse {}
+
+message StopCalibrationRequest {}
+
+// CalibrationResult is the calibrated parameters of a channel.
+message CalibrationResult {
+    uint32 channel = 1;
+    float threshold = 2;
+    float gain = 3;
+    uint32 scan_time_ms = 4;
+    uint32 retrigger_time_ms = 5;
+    optional float highpass_freq = 6;
+    optional uint32 dynamic_threshold_decay_ms = 7;
+    uint64 num_hits_detected = 8;
+    float noise_floor_peak = 9;
+    float max_hit_amplitude = 10;
+}
+
+message CancelCalibrationRequest {}
+
+message CancelCalibrationResponse {}
+
+message RestartControllersRequest {}
+
+// RestartControllersResponse is the controllers after the restart.
+message RestartControllersResponse {
+    repeated ControllerStatus controllers = 1;
 }
 
 // UpdateSamplesRequest replaces the sample definitions.

@@ -14,7 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { ALL_SONGS } from "./helpers.js";
-import { playerClientAt } from "../support/player-client";
+import { configClientAt, playerClientAt } from "../support/player-client";
 
 /**
  * These tests exercise the REST API directly to verify the backend
@@ -62,19 +62,16 @@ test.describe("Smoke: REST API", () => {
     expect(body.tracks.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("GET /api/devices/audio returns device list", async ({ request }) => {
-    const response = await request.get("/api/devices/audio");
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+  test("ListAudioDevices returns device list", async ({ baseURL }) => {
+    const body = await configClientAt(baseURL!).listAudioDevices({});
 
-    expect(Array.isArray(body)).toBe(true);
     // Should have at least one audio device on any real machine.
-    expect(body.length).toBeGreaterThanOrEqual(1);
+    expect(body.devices.length).toBeGreaterThanOrEqual(1);
 
     // Each device should have expected fields.
-    const device = body[0];
-    expect(device.name).toBeDefined();
-    expect(device.max_channels).toBeDefined();
+    const device = body.devices[0];
+    expect(device.name).not.toBe("");
+    expect(device.maxChannels).toBeDefined();
   });
 
   test("ListPlaylists returns playlist list", async ({ baseURL }) => {

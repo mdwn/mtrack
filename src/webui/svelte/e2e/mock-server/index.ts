@@ -18,7 +18,6 @@ import type {
   AimPoints,
   Browse,
   BulkImport,
-  ChannelCalibration,
   FixtureTypeDeleted,
   LightingGroups,
   LightingValidation,
@@ -37,7 +36,6 @@ import type {
   VenueDetail,
   VenueList,
   VenueScene,
-  NoiseFloor,
   Preview,
 } from "../../src/gen/rules/mtrack_rules";
 import express from "express";
@@ -53,6 +51,8 @@ import {
   AUDIO_DEVICES,
   AUDIO_PROBE_RESULTS,
   MIDI_DEVICES,
+  NOISE_FLOOR,
+  CALIBRATION,
   PROFILE_FILES,
   PROFILE_FILE_DETAIL,
   PLAYBACK_STATE,
@@ -71,6 +71,10 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code } from "@connectrpc/connect";
 import {
   AddProfileRequestSchema,
+  CalibrationNoiseFloorSchema,
+  CalibrationResultSchema,
+  CancelCalibrationResponseSchema,
+  CaptureCalibrationResponseSchema,
   DeletePlaylistRequestSchema,
   DeletePlaylistResponseSchema,
   DeleteProfileFileRequestSchema,
@@ -78,11 +82,16 @@ import {
   GetPlaylistRequestSchema,
   GetPlaylistResponseSchema,
   GetProfileFileResponseSchema,
+  ListAudioDevicesResponseSchema,
+  ListMidiDevicesResponseSchema,
   ListPlaylistsResponseSchema,
   ListProfileFilesResponseSchema,
   ListSongsResponseSchema,
+  ProbeAudioDeviceRequestSchema,
+  ProbeAudioDeviceResponseSchema,
   ProfileFileSavedSchema,
   RemoveProfileRequestSchema,
+  RestartControllersResponseSchema,
   SavePlaylistRequestSchema,
   SaveProfileFileRequestSchema,
   SetLockRequestSchema,
@@ -99,10 +108,16 @@ import {
   unaryBody,
 } from "../support/grpc-web.js";
 import {
+  calibrationReply,
   getConfigReply,
   getProfileFileReply,
+  listAudioDevicesReply,
+  listMidiDevicesReply,
   listProfileFilesReply,
+  noiseFloorReply,
+  probeAudioReply,
   profileFileSavedReply,
+  restartControllersReply,
   savedReply,
 } from "../support/config-rpc.js";
 import {
@@ -330,26 +345,68 @@ app.post("/api/songs/:name/import", (_req, res) => {
   res.json({ status: "imported" });
 });
 
-// --- Devices ---
+// --- Devices, the audio probe and the controller restart: ConfigService ---
 
-app.get("/api/devices/audio", (_req, res) => {
-  res.json(AUDIO_DEVICES);
-});
+grpcUnary(
+  "ListAudioDevices",
+  () =>
+    toBinary(
+      ListAudioDevicesResponseSchema,
+      create(
+        ListAudioDevicesResponseSchema,
+        listAudioDevicesReply(AUDIO_DEVICES),
+      ),
+    ),
+  "ConfigService",
+);
 
 // Canned probe results keyed by device name, so a test can drive each branch
 // of the result panel without any audio hardware in the loop.
-app.post("/api/devices/audio/probe", (req, res) => {
-  const device = String(req.body?.device ?? "").trim();
-  if (!device) {
-    res.status(400).json({ error: "device is required" });
-    return;
-  }
-  res.json(AUDIO_PROBE_RESULTS[device] ?? AUDIO_PROBE_RESULTS.default);
-});
+grpcUnary(
+  "ProbeAudioDevice",
+  (request) => {
+    const device = fromBinary(
+      ProbeAudioDeviceRequestSchema,
+      request,
+    ).device.trim();
+    if (!device) {
+      throw new GrpcFailure(Code.InvalidArgument, "device is required");
+    }
+    return toBinary(
+      ProbeAudioDeviceResponseSchema,
+      create(
+        ProbeAudioDeviceResponseSchema,
+        probeAudioReply(
+          AUDIO_PROBE_RESULTS[device] ?? AUDIO_PROBE_RESULTS.default,
+        ),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
-app.get("/api/devices/midi", (_req, res) => {
-  res.json(MIDI_DEVICES);
-});
+grpcUnary(
+  "ListMidiDevices",
+  () =>
+    toBinary(
+      ListMidiDevicesResponseSchema,
+      create(ListMidiDevicesResponseSchema, listMidiDevicesReply(MIDI_DEVICES)),
+    ),
+  "ConfigService",
+);
+
+grpcUnary(
+  "RestartControllers",
+  () =>
+    toBinary(
+      RestartControllersResponseSchema,
+      create(
+        RestartControllersResponseSchema,
+        restartControllersReply(STATUS.controllers),
+      ),
+    ),
+  "ConfigService",
+);
 
 // --- Profile files, samples and the metronome: ConfigService ---
 
@@ -434,12 +491,6 @@ app.put("/api/samples/upload/:filename", (_req, res) => {
     file: "sample.wav",
     path: "/samples/sample.wav",
   } satisfies SampleUploaded);
-});
-
-// --- Status ---
-
-app.post("/api/controllers/restart", (_req, res) => {
-  res.json({ status: "restarted", controllers: STATUS.controllers });
 });
 
 // --- Bluetooth ---
@@ -1133,39 +1184,47 @@ app.post("/api/browse/bulk-import", (_req, res) => {
   res.json({ created: [], skipped: [], failed: [] } satisfies BulkImport);
 });
 
-// --- Calibration ---
+// --- Calibration: ConfigService ---
 
-app.post("/api/calibrate/start", (_req, res) => {
-  res.json({
-    peak: 0.01,
-    rms: 0.005,
-    low_freq_energy: 0.002,
-    channel: 0,
-    sample_rate: 48000,
-    device_channels: 2,
-  } satisfies NoiseFloor);
-});
+grpcUnary(
+  "StartCalibration",
+  () =>
+    toBinary(
+      CalibrationNoiseFloorSchema,
+      create(CalibrationNoiseFloorSchema, noiseFloorReply(NOISE_FLOOR)),
+    ),
+  "ConfigService",
+);
 
-app.post("/api/calibrate/capture", (_req, res) => {
-  res.json({ status: "capturing" });
-});
+grpcUnary(
+  "CaptureCalibration",
+  () =>
+    toBinary(
+      CaptureCalibrationResponseSchema,
+      create(CaptureCalibrationResponseSchema),
+    ),
+  "ConfigService",
+);
 
-app.post("/api/calibrate/stop", (_req, res) => {
-  res.json({
-    channel: 0,
-    threshold: 0.1,
-    gain: 1.0,
-    scan_time_ms: 50,
-    retrigger_time_ms: 200,
-    num_hits_detected: 5,
-    noise_floor_peak: 0.01,
-    max_hit_amplitude: 0.8,
-  } satisfies ChannelCalibration);
-});
+grpcUnary(
+  "StopCalibration",
+  () =>
+    toBinary(
+      CalibrationResultSchema,
+      create(CalibrationResultSchema, calibrationReply(CALIBRATION)),
+    ),
+  "ConfigService",
+);
 
-app.delete("/api/calibrate", (_req, res) => {
-  res.json({ status: "cancelled" });
-});
+grpcUnary(
+  "CancelCalibration",
+  () =>
+    toBinary(
+      CancelCalibrationResponseSchema,
+      create(CancelCalibrationResponseSchema),
+    ),
+  "ConfigService",
+);
 
 // --- Test Control ---
 // How long a test's POST waits for the page it just opened: the browser may

@@ -24,17 +24,31 @@
 //
 // The mock server answers the same calls with the same helpers.
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import type {
-  GetConfigResponseSchema,
-  GetProfileFileResponseSchema,
-  ListProfileFilesResponseSchema,
-  ProfileFileSavedSchema,
-  UpdateConfigResponseSchema,
+import {
+  ProbeOutcome,
+  type CalibrationNoiseFloorSchema,
+  type CalibrationResultSchema,
+  type GetConfigResponseSchema,
+  type GetProfileFileResponseSchema,
+  type ListAudioDevicesResponseSchema,
+  type ListMidiDevicesResponseSchema,
+  type ListProfileFilesResponseSchema,
+  type ProbeAudioDeviceResponseSchema,
+  type ProfileFileSavedSchema,
+  type RestartControllersResponseSchema,
+  type UpdateConfigResponseSchema,
 } from "../../src/gen/player/v1/player_pb";
 import type {
+  AudioDeviceInfo,
+  AudioProbe,
+  ChannelCalibration,
   ConfigReload,
+  ControllerStatus,
+  MidiDeviceInfo,
+  NoiseFloor,
   Profile,
   ProfileFileInfo,
+  ProbeKind,
   StoreSnapshot,
 } from "../../src/gen/rules/mtrack_rules";
 
@@ -119,5 +133,108 @@ export function profileFileSavedReply(
     filename: saved.filename ?? "",
     version: saved.version,
     ...reloadFields(reload),
+  };
+}
+
+/** The audio devices the picker lists. */
+export function listAudioDevicesReply(
+  devices: AudioDeviceInfo[],
+): MessageInitShape<typeof ListAudioDevicesResponseSchema> {
+  return {
+    devices: devices.map((d) => ({
+      name: d.name,
+      maxChannels: d.max_channels,
+      hostName: d.host_name,
+      supportedSampleRates: d.supported_sample_rates,
+      supportedFormats: d.supported_formats.map((f) => ({
+        sampleFormat: f.sample_format,
+        bitsPerSample: f.bits_per_sample,
+      })),
+      virtualNode: d.virtual_node,
+      channelsKnown: d.channels_known,
+    })),
+  };
+}
+
+/** The MIDI devices the picker lists. */
+export function listMidiDevicesReply(
+  devices: MidiDeviceInfo[],
+): MessageInitShape<typeof ListMidiDevicesResponseSchema> {
+  return {
+    devices: devices.map((d) => ({
+      name: d.name,
+      hasInput: d.has_input,
+      hasOutput: d.has_output,
+    })),
+  };
+}
+
+const PROBE_OUTCOMES: Record<ProbeKind, ProbeOutcome> = {
+  streaming: ProbeOutcome.STREAMING,
+  opened_but_silent: ProbeOutcome.OPENED_BUT_SILENT,
+  could_not_open: ProbeOutcome.COULD_NOT_OPEN,
+  opened_cannot_report: ProbeOutcome.OPENED_CANNOT_REPORT,
+  in_use: ProbeOutcome.IN_USE,
+};
+
+/** An audio probe's answer. A held device's health is not carried here: a
+ *  spec that needs it names the message itself. */
+export function probeAudioReply(
+  probe: AudioProbe,
+): MessageInitShape<typeof ProbeAudioDeviceResponseSchema> {
+  return {
+    outcome: PROBE_OUTCOMES[probe.outcome],
+    ok: probe.ok,
+    reason: probe.reason ?? undefined,
+    callbacks:
+      probe.callbacks !== null && probe.callbacks !== undefined
+        ? BigInt(probe.callbacks)
+        : undefined,
+  };
+}
+
+/** A calibration's noise floor. */
+export function noiseFloorReply(
+  floor: NoiseFloor,
+): MessageInitShape<typeof CalibrationNoiseFloorSchema> {
+  return {
+    peak: floor.peak,
+    rms: floor.rms,
+    lowFreqEnergy: floor.low_freq_energy,
+    channel: floor.channel,
+    sampleRate: floor.sample_rate,
+    deviceChannels: floor.device_channels,
+  };
+}
+
+/** A calibration's result. */
+export function calibrationReply(
+  c: ChannelCalibration,
+): MessageInitShape<typeof CalibrationResultSchema> {
+  return {
+    channel: c.channel,
+    threshold: c.threshold,
+    gain: c.gain,
+    scanTimeMs: c.scan_time_ms,
+    retriggerTimeMs: c.retrigger_time_ms,
+    highpassFreq: c.highpass_freq,
+    dynamicThresholdDecayMs: c.dynamic_threshold_decay_ms,
+    numHitsDetected: BigInt(c.num_hits_detected),
+    noiseFloorPeak: c.noise_floor_peak,
+    maxHitAmplitude: c.max_hit_amplitude,
+  };
+}
+
+/** The controllers after a restart. */
+export function restartControllersReply(
+  controllers: ControllerStatus[],
+): MessageInitShape<typeof RestartControllersResponseSchema> {
+  return {
+    controllers: controllers.map((c) => ({
+      kind: c.kind,
+      status: c.status,
+      detail: c.detail ?? undefined,
+      error: c.error ?? undefined,
+    })),
   };
 }
