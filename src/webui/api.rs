@@ -111,16 +111,6 @@ pub fn router() -> Router<WebUiState> {
     // All other routes use the default body limit.
     Router::new()
         .route(
-            "/lighting/{name}",
-            get(lighting_api::get_lighting_file)
-                .put(lighting_api::put_lighting_file)
-                .delete(lighting_api::delete_lighting_file),
-        )
-        .route("/lighting/validate", post(lighting_api::validate_lighting))
-        .route("/lighting/readiness", get(lighting_api::get_readiness))
-        .route("/lighting/fit", get(lighting_api::get_fit))
-        .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
-        .route(
             "/lighting/fixture-types",
             get(lighting_api::get_fixture_types),
         )
@@ -137,15 +127,6 @@ pub fn router() -> Router<WebUiState> {
         .route(
             "/lighting/fixture-types/{name}/settings",
             get(fixture_settings::get_settings).post(fixture_settings::post_settings),
-        )
-        .route("/lighting/groups", get(lighting_api::get_lighting_groups))
-        .route(
-            "/lighting/fixture-test",
-            post(fixture_test::post_test).delete(fixture_test::delete_test),
-        )
-        .route(
-            "/lighting/fixture-test/options",
-            get(fixture_test::get_options),
         )
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
         .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
@@ -571,16 +552,13 @@ mod test {
         .await;
         assert_eq!(status, StatusCode::LOCKED);
         assert!(!dir.path().join("lighting/venues/lock.light").exists());
-        for uri in ["/api/lighting/fixture-types/lock", "/api/lighting/activate"] {
-            assert_eq!(
-                send(&app, "PUT", uri, "{}").await,
-                StatusCode::LOCKED,
-                "{uri}"
-            );
-        }
+        assert_eq!(
+            send(&app, "PUT", "/api/lighting/fixture-types/lock", "{}").await,
+            StatusCode::LOCKED
+        );
         // Ordinary edits stay locked.
         assert_eq!(
-            send(&app, "PUT", "/api/lighting/ordinary", "{}").await,
+            send(&app, "PUT", "/api/lighting/venues/ordinary", "{}").await,
             StatusCode::LOCKED
         );
     }
@@ -591,20 +569,13 @@ mod test {
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // The validator answers rather than 423. (The lock toggle, the
-        // playlist switch and the controller restart are gRPC calls, held to
-        // the same table by the gRPC lock guard's tests.)
+        // The MVR inspector writes nothing. (The lock toggle, the playlist
+        // switch, the controller restart and the lighting validation,
+        // evaluation and fixture test release are gRPC calls, held to the
+        // same table by the gRPC lock guard's tests.)
         assert_ne!(
-            send(&app, "POST", "/api/lighting/validate", "").await,
+            send(&app, "POST", "/api/lighting/mvr/inspect", "").await,
             StatusCode::LOCKED
         );
-        // The inspectors and the preview write nothing.
-        for uri in ["/api/lighting/mvr/inspect", "/api/lighting/evaluate"] {
-            assert_ne!(
-                send(&app, "POST", uri, "").await,
-                StatusCode::LOCKED,
-                "{uri}"
-            );
-        }
     }
 }

@@ -27,14 +27,19 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { CONFIG_STORE, FIT, STATUS } from "../mock-server/test-data";
 import { getConfigReply } from "../support/config-rpc";
+import { readinessReply, testOptionsReply } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import type {
   GdtfMode,
   Readiness,
   Status,
+  TestOptions,
 } from "../../src/gen/rules/mtrack_rules";
 import { sendStageUnchecked } from "../support/stage";
 import {
@@ -623,8 +628,9 @@ async function rig(page: Page, status: StatusExtras = {}) {
     PlayerService.method.getConfig,
     getConfigReply({ ...CONFIG_STORE, yaml: CONFIG_YAML }),
   );
-  await page.route("**/api/lighting/readiness*", (route) =>
-    json(route, READINESS),
+  rpc.unary(
+    LightingService.method.getLightingReadiness,
+    readinessReply(READINESS as Readiness),
   );
   await page.route(/\/api\/lighting\/fixture-types(\/|\?|$)/, (route) => {
     const url = decoded(route);
@@ -690,12 +696,9 @@ async function rig(page: Page, status: StatusExtras = {}) {
           : "",
     });
   });
-  await page.route("**/api/lighting/fixture-test/options*", (route) => {
-    const name = new URL(route.request().url()).searchParams.get(
-      "fixture_type",
-    );
-    return json(route, testOptions(name ?? BRICK));
-  });
+  rpc.unary(LightingService.method.getFixtureTestOptions, (req) =>
+    testOptionsReply(testOptions(req.fixtureType || BRICK) as TestOptions),
+  );
   await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
     json(route, {
       venues: {

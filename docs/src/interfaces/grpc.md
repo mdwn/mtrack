@@ -1,8 +1,9 @@
 # gRPC Control
 
-The player exposes two gRPC services, `PlayerService` (what a performer or a remote uses during a
-show, and the calls below) and `ConfigService` (what the editor pages use; see
-[ConfigService](#configservice)), defined in
+The player exposes three gRPC services, `PlayerService` (what a performer or a remote uses during a
+show, and the calls below), `ConfigService` (what the editor pages use; see
+[ConfigService](#configservice)) and `LightingService` (the lighting pages' calls; see
+[LightingService](#lightingservice)), defined in
 [`player.proto`](https://github.com/mdwn/mtrack/blob/main/src/proto/player/v1/player.proto).
 The gRPC controller listens on port 43234 unless the profile's `grpc` controller sets another
 `port` (see [Player Configuration](../configuration/player-config.md)). It listens on every
@@ -162,6 +163,31 @@ including a name that would leave the directory, is `INVALID_ARGUMENT`; no such 
 store answers the samples and metronome writes `UNIMPLEMENTED`. `UpdateSamples` and `UpdateMetronome`
 send `expected_checksum` like the other config writes (a stale one is `FAILED_PRECONDITION`).
 
+## LightingService
+
+`player.v1.LightingService` is served on the same port as `PlayerService` and by the web UI's
+gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
+service, and is not reachable over Bluetooth. The web UI's lighting pages and a song's lighting
+editor call it for a song's light show files, their validation and evaluation, the Lighting
+overview's readiness checks and the Fit shows page, the groups a cue can target, and the fixture
+test. Fixture types, venues and MVR files are still the web API's.
+
+| RPC | Description |
+|---|---|
+| `GetLightShow` | Reads the text of a song's light show file (`source`). `name` is the file's path under the songs directory, as the song list names it (`my_song/lighting/show.light`). `NOT_FOUND` when there is no such file, or the name leads outside the songs directory (by `..`, an absolute path or a link). Open while locked. |
+| `SaveLightShow` | Validates and writes a song's light show, in a folder that is there (`NOT_FOUND` otherwise), against the tempo of the song the file belongs to and with its `include`s resolved where it is written and kept inside the songs directory. A show that does not parse is `INVALID_ARGUMENT`, with every problem in the message (each `Invalid light show DSL: ...`, joined by `; `); a name that is not a `.light` file, or is in the venues or fixture types directory this host reads, is `INVALID_ARGUMENT`; a name outside the songs directory, or a link whose target is, is `PERMISSION_DENIED`. There is no revision to present: the last save wins. Refused while locked. |
+| `DeleteLightShow` | Deletes a song's light show file (a link is removed, never what it leads to). `NOT_FOUND` when there is none; the other refusals are `SaveLightShow`'s. Refused while locked. |
+| `ValidateLightShow` | Checks light show text (`source`) without saving it, and answers normally: `valid`, and the `errors` when it is not. `song` names the song whose tempo map the text is read against (measure and beat timing does not parse without one); `file` is the file the text is a draft of, so its `include`s resolve where saving it would (a `file` outside the songs directory is `PERMISSION_DENIED`). Open while locked. |
+| `GetLightingReadiness` | The facts behind the Lighting overview's five checks (`LightingReadiness`: the venue, its fixture types, the groups the shows target, every song's shows and what lint says, the DMX output and olad's patch), and the checks' verdicts on them, each with its `summary` parts and `findings`. Open while locked. |
+| `GetLightingFit` | The facts and suggestions behind the Fit shows page (`LightingFit`): the venue's fixtures, and for each group the shows target what it needs, what it finds and the tags that would satisfy it; the focus points the venue lacks; the universes with no output. Open while locked. |
+| `EvaluateSongLighting` | What a song's shows would be doing at each of `times` (seconds), offline, without touching the running engine (`LightingPreview`: for each time the stage values, as a live frame carries them, and the active effects, and the fixtures no cue targets). `NOT_FOUND` for no such song; `INVALID_ARGUMENT` for a song whose lighting did not load or has none, or times that are not non-negative seconds. Open while locked. |
+| `ListLightingGroups` | The logical groups a cue can target, with the fixtures each resolves to in the loaded venue. Without a DMX engine the names come from the config and `resolved` is `false`. A config that does not load is `INTERNAL`. Open while locked. |
+| `StartFixtureTest` | Starts or updates a test of one fixture at a universe and address: the `controls` (colour, level, strobe rate, pan and tilt, further channel levels) and `raw` channel values become the DMX a show would send for it, laid over the engine's output for a few seconds; the page keeps it alive while it is open. Answers the frame, how long it holds, and warnings (fixtures of the venue it is lit over, a span past address 512, olad not answering or not patched, controls the mode has no channel for). A refusal says why in the `x-refusal-reason` metadata: `playing`, `no_dmx` and `no_universes` (all `FAILED_PRECONDITION`), `universe`, `address`, `controls`, `mode` and `raw` (`INVALID_ARGUMENT`), `type` (`NOT_FOUND`), `files` (`INTERNAL`). Refused while locked. |
+| `StopFixtureTest` | Releases the test output now. Open while locked: letting go only hands the lights back to the show. |
+| `GetFixtureTestOptions` | What a test of a fixture type can do: its modes (each with the controls it supports and its channels), the running profile's universes with olad's patch state, and whether a test can run now (`available`, else `unavailable` says why). `NOT_FOUND` for a fixture type that is not there. Open while locked. |
+
+A player with no config store answers the calls that read its config path (the light show writes, `ListLightingGroups` and the fixture test) `UNIMPLEMENTED`.
+
 ## Lock mode
 
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
@@ -169,7 +195,8 @@ While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAud
 and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
 `DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
 `DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `SetBluetoothPairing` and
-`ForgetBluetoothDevice`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`ForgetBluetoothDevice`, and `LightingService`'s `SaveLightShow`, `DeleteLightShow` and
+`StartFixtureTest`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are
@@ -180,8 +207,8 @@ player runs unlocked, since the web UI is how the lock is normally released.
 
 The player serves the standard [`grpc.health.v1.Health`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)
 service on the gRPC port, and on the web UI's port over gRPC-Web. `Check` answers `SERVING` for the
-server as a whole (the empty service name) and for `player.v1.PlayerService` and
-`player.v1.ConfigService`; any other name is
+server as a whole (the empty service name) and for `player.v1.PlayerService`,
+`player.v1.ConfigService` and `player.v1.LightingService`; any other name is
 `NOT_FOUND`. It answers while the player is locked. Tools that speak the protocol, such as
 `grpc_health_probe` and load balancers, can use it as they would for any gRPC server:
 

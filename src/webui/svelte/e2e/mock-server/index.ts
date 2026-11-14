@@ -17,8 +17,6 @@ import type {
   FixtureTypeSaved,
   AimPoints,
   FixtureTypeDeleted,
-  LightingGroups,
-  LightingValidation,
   MvrKept,
   SampleUploaded,
   MvrImportAnswer,
@@ -33,7 +31,7 @@ import type {
   VenueDetail,
   VenueList,
   VenueScene,
-  Preview,
+  TestMode,
 } from "../../src/gen/rules/mtrack_rules";
 import express from "express";
 import { readFileSync } from "node:fs";
@@ -55,6 +53,7 @@ import {
   PLAYBACK_STATE,
   METADATA_STATE,
   FIT,
+  LIGHTING_GROUPS,
   READINESS,
   FIXTURE_STATE,
   TEST_RIG,
@@ -67,7 +66,15 @@ import {
   MVR_INSPECTION,
   MVR_EXPORT_SUMMARY,
 } from "./test-data.js";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import {
+  create,
+  fromBinary,
+  toBinary,
+  type DescMessage,
+  type DescMethodUnary,
+  type MessageInitShape,
+  type MessageShape,
+} from "@bufbuild/protobuf";
 import { Code } from "@connectrpc/connect";
 import {
   AddProfileRequestSchema,
@@ -100,6 +107,7 @@ import {
   GuessSongTempoRequestSchema,
   ImportSongFileRequestSchema,
   ImportSongFileResponseSchema,
+  LightingService,
   ListAudioDevicesResponseSchema,
   ListMidiDevicesResponseSchema,
   ListPlaylistsResponseSchema,
@@ -158,6 +166,16 @@ import {
   listPlaylistsReply,
   listSongsReply,
 } from "../support/library-rpc.js";
+import {
+  fitReply,
+  groupsReply,
+  lightShowReply,
+  previewReply,
+  readinessReply,
+  testAnswerReply,
+  testOptionsReply,
+  validationReply,
+} from "../support/lighting-rpc.js";
 import { StageStream, type StageMessage } from "../support/stage-stream.js";
 import { watchFrame, type WatchPush } from "../support/watch-stream.js";
 
@@ -650,22 +668,6 @@ grpcUnary(
 
 // --- Lighting ---
 
-app.get("/api/lighting/readiness", (_req, res) => {
-  res.json(READINESS);
-});
-
-app.get("/api/lighting/fit", (_req, res) => {
-  res.json(FIT);
-});
-
-app.get("/api/lighting/validate", (_req, res) => {
-  res.json({ valid: true });
-});
-
-app.post("/api/lighting/validate", (_req, res) => {
-  res.json({ valid: true } satisfies LightingValidation);
-});
-
 // The three forms a fixture type comes in: a v1 `.light` channel map, a
 // hand-written rich `.fixture`, and one distilled from a GDTF archive —
 // which has no channels of its own until the lighting system expands it.
@@ -902,7 +904,7 @@ function testModeFor(
   name: string | null,
   channels: Record<string, number>,
   strobe: { min_hz: number; max_hz: number } | null,
-) {
+): TestMode {
   const has = (c: string) => c in channels;
   const color = has("red") && has("green") && has("blue");
   return {
@@ -924,10 +926,70 @@ function testModeFor(
   };
 }
 
-app.get("/api/lighting/fixture-test/options", (req, res) => {
-  const name = String(req.query.fixture_type ?? "");
+// --- Lighting: LightingService ---
+// The lighting pages' facts are fixtures; a save and a delete of a light show
+// change nothing, as the REST routes they replace did not; the fixture test
+// is stateless, derived from the type (the PB15's two modes, or a
+// hand-written type's channels). A spec that needs other answers or the
+// requests uses mockRpc (e2e/support/rpc.ts), which is consulted first.
+
+function lightingUnary<I extends DescMessage, O extends DescMessage>(
+  method: DescMethodUnary<I, O>,
+  answer: (request: MessageShape<I>) => MessageInitShape<O>,
+): void {
+  grpcUnary(
+    method.name,
+    (request) =>
+      toBinary(
+        method.output,
+        create(method.output, answer(fromBinary(method.input, request))),
+      ),
+    "LightingService",
+  );
+}
+
+lightingUnary(LightingService.method.getLightingReadiness, () =>
+  readinessReply(READINESS),
+);
+lightingUnary(LightingService.method.getLightingFit, () => fitReply(FIT));
+lightingUnary(LightingService.method.listLightingGroups, () =>
+  groupsReply(LIGHTING_GROUPS),
+);
+lightingUnary(LightingService.method.validateLightShow, () =>
+  validationReply({ valid: true }),
+);
+lightingUnary(LightingService.method.getLightShow, () =>
+  lightShowReply(
+    'show "Main" {\n    @00:00.000\n    front: static, color: "blue", duration: 5s\n}\n',
+  ),
+);
+lightingUnary(LightingService.method.saveLightShow, () => ({}));
+lightingUnary(LightingService.method.deleteLightShow, () => ({}));
+
+// The 3D view's Preview: an idle show. Tests that need a moment answer their
+// own.
+lightingUnary(LightingService.method.evaluateSongLighting, (req) =>
+  previewReply({
+    song: req.song,
+    evaluations: req.times.map((time) => ({
+      time,
+      fixtures: {},
+      poses: {},
+      cells: {},
+      strobe_rates: {},
+      active_effects: [],
+    })),
+    untouched: [],
+    venue_error: null,
+  }),
+);
+
+lightingUnary(LightingService.method.getFixtureTestOptions, (req) => {
+  const name = req.fixtureType;
   const entry = FIXTURE_TYPES[name];
-  if (!entry) return res.status(404).json({ error: "Fixture type not found" });
+  if (!entry) {
+    throw new GrpcFailure(Code.NotFound, `no fixture type named "${name}"`);
+  }
   const modes = entry.referential
     ? GDTF_INSPECTION.modes.map((m) =>
         testModeFor(
@@ -942,7 +1004,7 @@ app.get("/api/lighting/fixture-test/options", (req, res) => {
         ),
       )
     : [testModeFor(null, entry.fixture_type.channels, null)];
-  res.json({
+  return testOptionsReply({
     fixture_type: name,
     gdtf: entry.referential,
     modes,
@@ -955,20 +1017,19 @@ app.get("/api/lighting/fixture-test/options", (req, res) => {
   });
 });
 
-app.post("/api/lighting/fixture-test", (req, res) => {
-  const body = req.body ?? {};
-  const address = Number(body.address ?? 1);
-  const hex = String(body.controls?.color ?? "#000000");
+lightingUnary(LightingService.method.startFixtureTest, (req) => {
+  const address = req.address;
+  const hex = req.controls?.color ?? "#000000";
   const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) || 0);
   const frame = ["red", "green", "blue", "strobe"].map((name, i) => {
     const offset = i + 1;
-    const raw = body.raw?.[String(offset)];
+    const raw = req.raw[String(offset)];
     const value =
       raw !== undefined
         ? raw
         : i < 3
           ? rgb[i]
-          : body.controls?.strobe
+          : req.controls?.strobe?.hertz
             ? 128
             : 0;
     return {
@@ -979,41 +1040,22 @@ app.post("/api/lighting/fixture-test", (req, res) => {
       raw: raw !== undefined,
     };
   });
-  res.json({
+  return testAnswerReply({
     active: true,
-    universe: body.universe ?? 1,
+    universe: req.universe,
     address,
     footprint: 4,
-    fixture_type: body.fixture_type,
-    mode: body.mode ?? null,
+    fixture_type: req.fixtureType,
+    mode: req.mode ?? null,
     expires_in_secs: 5,
     frame,
     warnings: [],
   });
 });
 
-app.delete("/api/lighting/fixture-test", (_req, res) => {
-  res.json({ active: false });
-});
-
-// The 3D view's Preview: an idle show. Tests that need a moment routed with
-// `page.route`.
-app.post("/api/lighting/evaluate", (req, res) => {
-  const times: number[] = Array.isArray(req.body?.times) ? req.body.times : [];
-  res.json({
-    song: req.body?.song,
-    evaluations: times.map((time) => ({
-      time,
-      fixtures: {},
-      poses: {},
-      cells: {},
-      strobe_rates: {},
-      active_effects: [],
-    })),
-    untouched: [],
-    venue_error: null,
-  } satisfies Preview);
-});
+lightingUnary(LightingService.method.stopFixtureTest, () => ({
+  active: false,
+}));
 
 // One-step import: no mode, no name. The mock answers as if the archive
 // became the mock's "pixelbrick", so the page it opens exists.
@@ -1232,35 +1274,6 @@ app.get("/test/last-venue-put", (req, res) => {
 });
 
 app.delete("/api/lighting/venues/:name", (_req, res) => {
-  res.json({ status: "deleted" });
-});
-
-// Before the `:name` route, or it captures "groups" and answers with DSL text —
-// which `fetchLightingGroups` then fails to parse as JSON. That was invisible
-// while the callers swallowed the error and became a fabricated message on
-// every mock run once they stopped.
-app.get("/api/lighting/groups", (_req, res) => {
-  res.json({
-    groups: [
-      { name: "front_wash", fixtures: ["par1", "par2"] },
-      { name: "back_wash", fixtures: ["par3"] },
-    ],
-  } satisfies LightingGroups);
-});
-
-app.get("/api/lighting/:name", (_req, res) => {
-  res
-    .type("text/plain")
-    .send(
-      'show "Main" {\n    @00:00.000\n    front: static, color: "blue", duration: 5s\n}\n',
-    );
-});
-
-app.put("/api/lighting/:name", (_req, res) => {
-  res.json({ status: "saved" });
-});
-
-app.delete("/api/lighting/:name", (_req, res) => {
   res.json({ status: "deleted" });
 });
 

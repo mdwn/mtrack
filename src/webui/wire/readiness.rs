@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! `GET /api/lighting/readiness`: the facts behind the Lighting overview's
+//! `GetLightingReadiness`: the facts behind the Lighting overview's
 //! checks, and the checks' verdicts on them ([`Readiness::verdicts`]). The
 //! page words them and links each finding to where it is fixed.
 

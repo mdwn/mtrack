@@ -17,12 +17,16 @@
 import type { Page } from "@playwright/test";
 import {
   ConfigService,
+  LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { ConnectError, Code } from "@connectrpc/connect";
 import {
   AUDIO_DEVICES,
   CONFIG_STORE,
+  FIT,
+  LIGHTING_GROUPS,
+  READINESS,
   SONG_FILES,
   songConfigYaml,
   songWaveform,
@@ -48,6 +52,7 @@ import {
   listPlaylistsReply,
   listSongsReply,
 } from "./library-rpc";
+import { fitReply, groupsReply, readinessReply } from "./lighting-rpc";
 import { mockRpc, type GrpcReply } from "./rpc";
 
 export type { GrpcReply };
@@ -69,9 +74,12 @@ const LIBRARY_READS = new Set<string>([
   ConfigService.method.getSongConfig.name,
   ConfigService.method.getSongWaveform.name,
   ConfigService.method.listSongFiles.name,
+  LightingService.method.getLightingReadiness.name,
+  LightingService.method.getLightingFit.name,
+  LightingService.method.listLightingGroups.name,
 ]);
 
-/** Answers every PlayerService and ConfigService call but the streams (`WatchStage`) with
+/** Answers every PlayerService, ConfigService and LightingService call but the streams (`WatchStage`) with
  *  success (see {@link GrpcReply}), calling `onCall` first, if given, for
  *  each but the reads of the song library and the playlists, which are
  *  answered with the mock server's songs and playlists. */
@@ -115,6 +123,15 @@ export async function stubPlayerService(
     waveformReply(songWaveform(req.name)),
   );
   rpc.unary(ConfigService.method.listSongFiles, listSongFilesReply(SONG_FILES));
+  rpc.unary(
+    LightingService.method.getLightingReadiness,
+    readinessReply(READINESS),
+  );
+  rpc.unary(LightingService.method.getLightingFit, fitReply(FIT));
+  rpc.unary(
+    LightingService.method.listLightingGroups,
+    groupsReply(LIGHTING_GROUPS),
+  );
   rpc.unary(PlayerService.method.getPlaylist, (req) => {
     const detail = PLAYLIST_DETAILS[req.name];
     if (!detail) throw new ConnectError("Playlist not found", Code.NotFound);

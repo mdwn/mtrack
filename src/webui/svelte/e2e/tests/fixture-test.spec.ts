@@ -13,12 +13,21 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import type { MessageShape } from "@bufbuild/protobuf";
+import {
+  FixtureTestUnavailable,
+  LightingService,
+  type FixtureTestOptionsSchema,
+  type StartFixtureTestRequestSchema,
+} from "../../src/gen/player/v1/player_pb";
 import { sendWatch, setWatchOpening } from "../support/watch";
 import { PLAYBACK_STATE, STATUS } from "../mock-server/test-data";
+import { lightingClientAt } from "../support/player-client";
+import { mockRpc } from "../support/rpc";
 
 // "Test this fixture" on a fixture's page: does the light answer when
 // mtrack sends to it, and if not, why not. Every test records what the page
-// sends with `page.route` and lets the mock answer.
+// sends with `mockRpc` and lets the mock answer.
 
 let counter = 0;
 const wsId = () =>
@@ -29,31 +38,63 @@ interface Sent {
   body: Record<string, unknown> | null;
 }
 
-/** Records every POST and DELETE to the test endpoint, in order. */
+/** The request as the page once sent it as JSON, so the assertions read the
+ *  controls and the raw channels the way the test panel means them. */
+function bodyOf(req: MessageShape<typeof StartFixtureTestRequestSchema>) {
+  const c = req.controls;
+  const controls: Record<string, unknown> = {};
+  if (c) {
+    if (c.color !== undefined) controls.color = c.color;
+    if (c.dimmer !== undefined) controls.dimmer = c.dimmer;
+    if (c.strobe) controls.strobe = c.strobe.hertz ?? null;
+    if (c.pan !== undefined) controls.pan = c.pan;
+    if (c.tilt !== undefined) controls.tilt = c.tilt;
+    Object.assign(controls, c.levels);
+  }
+  return {
+    fixture_type: req.fixtureType,
+    mode: req.mode ?? null,
+    universe: req.universe,
+    address: req.address,
+    controls,
+    raw: Object.fromEntries(Object.entries(req.raw)),
+  };
+}
+
+/** Records every start (`POST`) and stop (`DELETE`) of the test, in order,
+ *  and lets the mock server answer them. */
 async function record(page: Page): Promise<Sent[]> {
   const sent: Sent[] = [];
-  await page.route(/\/api\/lighting\/fixture-test(\?.*)?$/, async (route) => {
-    const method = route.request().method();
-    sent.push({
-      method,
-      body: method === "POST" ? route.request().postDataJSON() : null,
-    });
-    await route.fallback();
+  await mockRpc(page, {
+    onCall: (call) => {
+      if (call.method === "StartFixtureTest") {
+        sent.push({
+          method: "POST",
+          body: bodyOf(
+            call.request as MessageShape<typeof StartFixtureTestRequestSchema>,
+          ),
+        });
+      } else if (call.method === "StopFixtureTest") {
+        sent.push({ method: "DELETE", body: null });
+      }
+    },
   });
   return sent;
 }
 
-/** Rewrites the options the mock answers. */
+/** Rewrites the options the mock server answers. */
 async function options(
   page: Page,
-  change: (o: Record<string, unknown>) => void,
+  change: (o: MessageShape<typeof FixtureTestOptionsSchema>) => void,
+  type = "pixelbrick",
 ): Promise<void> {
-  await page.route(/\/api\/lighting\/fixture-test\/options/, async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    change(body);
-    await route.fulfill({ response: res, json: body });
+  const baseURL = test.info().project.use.baseURL;
+  const real = await lightingClientAt(baseURL!).getFixtureTestOptions({
+    fixtureType: type,
   });
+  change(real);
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getFixtureTestOptions, real);
 }
 
 async function playback(page: Page, id: string, extra: object) {
@@ -229,7 +270,7 @@ test("help while live lists the unpatched universe first, with olad's page", asy
   page,
 }) => {
   await options(page, (o) => {
-    (o.universes as { patched: boolean }[])[0].patched = false;
+    o.universes[0].patched = false;
   });
   await openTest(page);
   await expect(page.getByTestId("ftest-unpatched")).toBeVisible();
@@ -316,7 +357,10 @@ test.describe("when testing cannot happen, the section says why", () => {
     }) => {
       await options(page, (o) => {
         o.available = false;
-        o.unavailable = reason;
+        o.unavailable =
+          reason === "no_dmx"
+            ? FixtureTestUnavailable.NO_DMX
+            : FixtureTestUnavailable.NO_UNIVERSES;
         if (reason === "no_universes") o.universes = [];
       });
       await page.goto(`/?wsId=${wsId()}#/lighting/fixtures/pixelbrick`);

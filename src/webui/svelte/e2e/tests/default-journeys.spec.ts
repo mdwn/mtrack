@@ -13,7 +13,10 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { getConfigReply, savedReply } from "../support/config-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
@@ -476,12 +479,8 @@ test.describe("Song lighting", () => {
   test("+ DSL: Confirm waits for a name, then the new file is written", async ({
     page,
   }) => {
-    const writes: Request[] = [];
-    await page.route("**/api/**", (r) => {
-      if (r.request().method() === "GET") return r.fallback();
-      writes.push(r.request());
-      return r.fulfill(json({ status: "saved" }));
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.saveLightShow, {});
     await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
     await expect(page.locator(".lighting-section")).toBeVisible();
     await page.getByRole("button", { name: /\+ DSL/i }).click();
@@ -496,7 +495,11 @@ test.describe("Song lighting", () => {
     await confirm.click();
     await page.getByRole("button", { name: "Save" }).click();
     await expect
-      .poll(() => writes.some((w) => w.url().includes("encore.light")))
+      .poll(() =>
+        rpc
+          .calls(LightingService.method.saveLightShow)
+          .some((w) => w.name.includes("encore.light")),
+      )
       .toBe(true);
   });
 });

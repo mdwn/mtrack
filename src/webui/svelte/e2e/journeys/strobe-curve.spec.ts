@@ -13,14 +13,15 @@
 //
 
 import { CONFIG, expect, synthGdtf, test, type Project } from "./harness";
+import { lightingClientAt } from "../support/player-client";
 import { silentWav } from "../support/wav";
 
 // The strobe curve, end to end on the real binary: the synthetic GDTF's
 // strobe function has only its endpoints (0.4–25 Hz over DMX 7–255), so by
 // the GDTF rule a 10 Hz strobe is linear in Hz (~104). Setting the curve to
 // period on the fixture's page (as the Astera PixelBrick needs) moves the
-// same show's strobe to 249 (248.95, rounded). Read through POST
-// /api/lighting/evaluate, the show preview's offline evaluation of the song
+// same show's strobe to 249 (248.95, rounded). Read through the
+// EvaluateSongLighting call, the show preview's offline evaluation of the song
 // with the loaded venue.
 
 test.use({
@@ -44,16 +45,11 @@ test.use({
 
 /** The strobe byte the show gives B1 one second in. */
 async function strobeAt1s(project: Project): Promise<number | undefined> {
-  const res = await fetch(`${project.url}/api/lighting/evaluate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ song: "Strobe", times: [1] }),
+  const preview = await lightingClientAt(project.url).evaluateSongLighting({
+    song: "Strobe",
+    times: [1],
   });
-  if (!res.ok) throw new Error(`evaluate: ${res.status} ${await res.text()}`);
-  const body = (await res.json()) as {
-    evaluations: { fixtures: Record<string, Record<string, number>> }[];
-  };
-  return body.evaluations[0]?.fixtures.B1?.strobe;
+  return preview.evaluations[0]?.frame?.fixtures.B1?.values.strobe;
 }
 
 test("the strobe curve set on the fixture's page changes what a show sends", async ({

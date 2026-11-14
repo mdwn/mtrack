@@ -19,13 +19,18 @@ import type {
   Finding,
   Readiness,
 } from "../../src/gen/rules/mtrack_rules";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { READINESS } from "../mock-server/test-data";
 import { getConfigReply } from "../support/config-rpc";
+import { readinessReply } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { openWithStage, sendStage } from "../support/stage";
 
-// Every test routes its own readiness answer with `page.route`, so no test
+// Every test routes its own readiness answer with `mockRpc`, so no test
 // depends on state another one left in the shared mock server. The verdicts
 // are the player's (`Readiness::verdicts`, whose own tests hold the rules);
 // these hold the page to showing what the answer says.
@@ -85,14 +90,8 @@ async function routeReadiness(
 ) {
   const facts = structuredClone(READINESS);
   change(facts);
-  await page.route("**/api/lighting/readiness", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(facts),
-    });
-  });
   const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getLightingReadiness, readinessReply(facts));
   rpc.unary(
     PlayerService.method.getConfig,
     getConfigReply({ yaml: PROFILE_YAML, checksum: "hub" }),
@@ -395,7 +394,7 @@ test.describe("Lighting hub", () => {
     await expect(findings).toContainText("a cue starts after the song ends");
 
     // A capability gap does.
-    await page.unroute("**/api/lighting/readiness");
+    // The newer answer is consulted first.
     await routeReadiness(page, (r) => {
       verdict(
         r,
@@ -611,10 +610,9 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     const wsId = `hub-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
-    let requests = 0;
     let broken = false;
-    await page.route("**/api/lighting/readiness", async (route) => {
-      requests++;
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.getLightingReadiness, () => {
       const facts = structuredClone(READINESS);
       if (broken)
         verdict(
@@ -624,18 +622,16 @@ test.describe("Lighting hub", () => {
           [],
           [{ kind: "attention", count: 1 }],
         );
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(facts),
-      });
+      return readinessReply(facts);
     });
     await page.goto(`/?wsId=${wsId}#/lighting`);
     await expect(page.getByTestId("check-groups")).toHaveAttribute(
       "data-state",
       "ready",
     );
-    const before = requests;
+    const before = rpc.calls(
+      LightingService.method.getLightingReadiness,
+    ).length;
 
     // The server re-broadcasts metadata after a venue or config reload.
     broken = true;
@@ -648,7 +644,9 @@ test.describe("Lighting hub", () => {
       "data-state",
       "attention",
     );
-    expect(requests).toBeGreaterThan(before);
+    expect(
+      rpc.calls(LightingService.method.getLightingReadiness).length,
+    ).toBeGreaterThan(before);
   });
 
   test("it works at phone width with the checks stacked", async ({ page }) => {
@@ -701,20 +699,10 @@ test.describe("Lighting hub", () => {
 
   test("a failed read is reported with a way to retry", async ({ page }) => {
     let fail = true;
-    await page.route("**/api/lighting/readiness", async (route) => {
-      if (fail) {
-        await route.fulfill({
-          status: 500,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "boom" }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(READINESS),
-      });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.getLightingReadiness, () => {
+      if (fail) throw new ConnectError("boom", Code.Internal);
+      return readinessReply(READINESS);
     });
     await openWithStage(page, "#/lighting");
     await expect(page.getByTestId("hub-error")).toContainText("boom");
@@ -727,24 +715,15 @@ test.describe("Lighting hub", () => {
     await expect(page.getByTestId("hub-error")).toHaveCount(0);
   });
 
-  for (const [label, body, contentType] of [
-    ["an empty object", "{}", "application/json"],
-    ["an HTML page", "<html><body>gateway</body></html>", "text/html"],
-    ["a JSON array", "[]", "application/json"],
-  ] as const) {
-    test(`${label} answering 200 is an error with Retry, not a crash`, async ({
-      page,
-    }) => {
+  for (const label of ["an empty answer"]) {
+    test(`${label} is an error with Retry, not a crash`, async ({ page }) => {
       const pageErrors: Error[] = [];
       page.on("pageerror", (e) => pageErrors.push(e));
       let broken = true;
-      await page.route("**/api/lighting/readiness", async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: broken ? contentType : "application/json",
-          body: broken ? body : JSON.stringify(READINESS),
-        });
-      });
+      const rpc = await mockRpc(page);
+      rpc.unary(LightingService.method.getLightingReadiness, () =>
+        broken ? {} : readinessReply(READINESS),
+      );
       await openWithStage(page, "#/lighting");
       await expect(page.getByTestId("hub-error")).toContainText(
         "answer was not understood",

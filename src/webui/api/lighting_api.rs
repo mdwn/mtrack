@@ -31,23 +31,19 @@ use axum::{
 use serde_json::json;
 
 use super::super::config_io;
-use super::super::safe_path::{SafePathError, VerifiedRoot};
+use super::super::safe_path::VerifiedRoot;
 use super::super::server::WebUiState;
-use super::lighting_writes;
+use super::lighting_writes::{self, Answer};
 use crate::lighting;
 use crate::lighting::files::Kind;
 
 /// The canonical project root the lighting endpoints write into.
-#[allow(clippy::result_large_err)]
-pub(super) fn project_root(
-    config_path: &std::path::Path,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+pub(super) fn project_root(config_path: &std::path::Path) -> Result<std::path::PathBuf, Answer> {
     let canonical = config_path.canonicalize().map_err(|_| {
-        (
+        Answer::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to resolve config path"})),
+            "Failed to resolve config path",
         )
-            .into_response()
     })?;
     Ok(canonical
         .parent()
@@ -257,49 +253,32 @@ pub(crate) fn find_light_files(
 }
 
 /// The 404 for a lighting file `name` that is not there.
-fn lighting_file_not_found(name: &str) -> axum::response::Response {
-    (
+fn lighting_file_not_found(name: &str) -> Answer {
+    Answer::new(
         StatusCode::NOT_FOUND,
-        Json(json!({"error": format!("Lighting file not found: {name}")})),
+        format!("Lighting file not found: {name}"),
     )
-        .into_response()
 }
 
-/// GET /api/lighting/:name — returns the raw DSL content of a .light file.
-///
-/// The `name` parameter is the relative path within the songs directory (as returned by
-/// the listing endpoint). Path traversal is guarded.
-pub(super) async fn get_lighting_file(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
+/// The text of a song's light show: `name` is the file's path under the
+/// songs directory `songs_path` (as the listing returns it). A path that
+/// leaves the songs directory, by `..`, an absolute name or a link, is not
+/// found.
+pub(crate) async fn read_light_show(
+    songs_path: &std::path::Path,
+    name: &str,
+) -> Result<String, Answer> {
+    use super::super::safe_path::SafePath;
 
-    let root = match VerifiedRoot::new(&state.songs_path()) {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
-        Ok(p) => p,
-        Err(_) => {
-            return lighting_file_not_found(&name);
-        }
-    };
+    let root = VerifiedRoot::new(songs_path)?;
+    let safe = SafePath::resolve(&songs_path.join(name), &root)
+        .map_err(|_| lighting_file_not_found(name))?;
 
     let path = safe.as_path().to_path_buf();
-    match super::helpers::spawn_blocking_io("read lighting file", move || {
+    super::helpers::blocking_answer("read lighting file", move || {
         crate::util::read_to_string(&path)
     })
     .await
-    {
-        Ok(content) => (
-            StatusCode::OK,
-            [("content-type", "text/plain; charset=utf-8")],
-            content,
-        )
-            .into_response(),
-        Err(e) => e,
-    }
 }
 
 /// The one songs-root rule for a song's light show, written, deleted or
@@ -317,14 +296,13 @@ pub(super) async fn get_lighting_file(
 /// removes the link, never what it leads to. A write follows it, so
 /// [`light_show_to_write`] holds what it leads to as well. 403 outside
 /// the root.
-#[allow(clippy::result_large_err)]
 pub(crate) fn light_show_in_songs_root(
     root: &VerifiedRoot,
     path: &std::path::Path,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+) -> Result<std::path::PathBuf, Answer> {
     use super::super::safe_path::{SafePath, SafePathError};
 
-    let outside = || SafePathError::OutsideRoot.into_response();
+    let outside = || Answer::from(SafePathError::OutsideRoot);
     let (Some(folder), Some(file_name)) = (path.parent(), path.file_name()) else {
         return Err(outside());
     };
@@ -354,7 +332,7 @@ pub(crate) fn light_show_in_songs_root(
                     _ => return Err(outside()),
                 }
             }
-            Err(e) => return Err(e.into_response()),
+            Err(e) => return Err(e.into()),
         }
     }
 }
@@ -366,20 +344,13 @@ pub(crate) fn light_show_in_songs_root(
 /// its target, wherever that is. Both the name written and the file a
 /// link leads to must be `.light` files (400 otherwise): a show is never
 /// written over a song's config or anything else.
-#[allow(clippy::result_large_err)]
 fn light_show_to_write(
     root: &VerifiedRoot,
     path: &std::path::Path,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+) -> Result<std::path::PathBuf, Answer> {
     use super::super::safe_path::{SafePath, SafePathError};
 
-    let not_a_show = || {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only write .light files"})),
-        )
-            .into_response()
-    };
+    let not_a_show = || Answer::bad("Can only write .light files");
     let is_show = crate::songs::FileKind::is_lighting;
     let path = light_show_in_songs_root(root, path)?;
     if !is_show(&path) {
@@ -387,8 +358,8 @@ fn light_show_to_write(
     }
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
         let target = SafePath::resolve(&path, root).map_err(|e| match e {
-            SafePathError::NotFound => SafePathError::OutsideRoot.into_response(),
-            e => e.into_response(),
+            SafePathError::NotFound => Answer::from(SafePathError::OutsideRoot),
+            e => Answer::from(e),
         })?;
         if !is_show(target.as_path()) {
             return Err(not_a_show());
@@ -437,42 +408,36 @@ async fn refuse_venue_or_type_file(
     }
 }
 
-/// PUT /api/lighting/:name — validates and atomically writes a lighting DSL
-/// file: a song's light show ([`save_light_show`]).
-pub(super) async fn put_lighting_file(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
+/// Saves a song's light show: `name` is the file's path under the songs
+/// directory `songs_path`, `body` its text ([`save_light_show`]). A new
+/// file goes in a folder already there, as the editor saves it.
+pub(crate) async fn put_light_show(
+    player: &crate::player::Player,
+    config_path: &std::path::Path,
+    songs_path: &std::path::Path,
+    name: &str,
     body: String,
-) -> impl IntoResponse {
-    // A new file goes in a folder already there, as the editor saves it.
-    let songs_root = state.songs_path();
-    let root = match VerifiedRoot::new(&songs_root) {
-        Ok(root) => root,
-        Err(e) => return e.into_response(),
-    };
-    let verified_path = match light_show_in_songs_root(&root, &songs_root.join(&name)) {
+) -> Result<(), Answer> {
+    let root = VerifiedRoot::new(songs_path)?;
+    let verified_path = match light_show_in_songs_root(&root, &songs_path.join(name)) {
         Ok(path) if path.parent().is_some_and(std::path::Path::is_dir) => path,
-        Ok(_) => return lighting_file_not_found(&name),
-        Err(e) => return e,
+        Ok(_) => return Err(lighting_file_not_found(name)),
+        Err(e) => return Err(e),
     };
 
     // Held from reading the song's tempo: a song save changing it reloads
     // the songs under this lock.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    let tempo = song_tempo_for_path(&state, &verified_path);
-    match save_light_show(
-        &state.config_path,
+    let tempo = song_tempo_for_path(player, &verified_path);
+    save_light_show(
+        config_path,
         &root,
         &verified_path,
-        &name,
+        name,
         body,
         tempo.as_ref(),
     )
     .await
-    {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
-        Err(e) => e,
-    }
 }
 
 /// Writes a song's light show `body` to `path` (shown as `name`), by the
@@ -493,13 +458,11 @@ pub(crate) async fn save_light_show(
     name: &str,
     body: String,
     tempo: Option<&crate::tempo::TempoMap>,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), Answer> {
     // The venues and fixture types refusal first: it says what to do
     // instead, where the songs-root one, for those directories outside the
     // songs root, says only no.
-    refuse_venue_or_type_file(config_path, path, name)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    refuse_venue_or_type_file(config_path, path, name).await?;
     let path = &light_show_to_write(root, path)?;
     if let Err(errors) =
         config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
@@ -508,11 +471,14 @@ pub(crate) async fn save_light_show(
             .into_iter()
             .map(|e| format!("Invalid light show DSL: {e}"))
             .collect();
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+        return Err(Answer {
+            status: StatusCode::BAD_REQUEST,
+            body: json!({"errors": errors}),
+        });
     }
 
     let vp = path.to_path_buf();
-    super::helpers::spawn_blocking_io("write lighting file", move || {
+    super::helpers::blocking_answer("write lighting file", move || {
         if let Some(parent) = vp.parent() {
             crate::util::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -521,33 +487,21 @@ pub(crate) async fn save_light_show(
     .await
 }
 
-/// DELETE /api/lighting/:name — deletes a song's `.light` file from disk,
-/// by the one rule of MCP's `delete_song_lighting` too
-/// ([`check_light_show_delete`]): a link is removed, never what it leads
-/// to.
-pub(super) async fn delete_lighting_file(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
-    let songs_root = state.songs_path();
-    let root = match VerifiedRoot::new(&songs_root) {
-        Ok(root) => root,
-        Err(e) => return e.into_response(),
-    };
+/// Deletes a song's `.light` file from disk: `name` is its path under the
+/// songs directory `songs_path`. By the one rule of MCP's
+/// `delete_song_lighting` too ([`check_light_show_delete`]): a link is
+/// removed, never what it leads to.
+pub(crate) async fn delete_light_show(
+    config_path: &std::path::Path,
+    songs_path: &std::path::Path,
+    name: &str,
+) -> Result<(), Answer> {
+    let root = VerifiedRoot::new(songs_path)?;
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    let path =
-        match check_light_show_delete(&state.config_path, &root, &songs_root.join(&name), &name)
-            .await
-        {
-            Ok(path) => path,
-            Err(refused) => return refused,
-        };
-    match remove_light_show(&songs_root, &path).await {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
-        Err(e) => e,
-    }
+    let path = check_light_show_delete(config_path, &root, &songs_path.join(name), name).await?;
+    remove_light_show(songs_path, &path).await
 }
 
 /// Whether the file at `path` (shown as `name`) may be deleted as a song's
@@ -562,23 +516,17 @@ pub(crate) async fn check_light_show_delete(
     root: &VerifiedRoot,
     path: &std::path::Path,
     name: &str,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+) -> Result<std::path::PathBuf, Answer> {
     // The name checked is the one removed: the resolved path keeps it.
     if !crate::songs::FileKind::is_lighting(path) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete .light files"})),
-        )
-            .into_response());
+        return Err(Answer::bad("Can only delete .light files"));
     }
     // As a save: the venues and fixture types refusal, which says what to
     // do instead, before the songs root's. Of where the file is, its
     // folder: a link there is removed, not what it leads to, so where it
     // leads does not matter.
     let folder = path.parent().unwrap_or(path);
-    refuse_venue_or_type_file(config_path, folder, name)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    refuse_venue_or_type_file(config_path, folder, name).await?;
     let path = light_show_in_songs_root(root, path)?;
     if std::fs::symlink_metadata(&path).is_err() {
         return Err(lighting_file_not_found(name));
@@ -593,76 +541,54 @@ pub(crate) async fn check_light_show_delete(
 pub(crate) async fn remove_light_show(
     songs_root: &std::path::Path,
     path: &std::path::Path,
-) -> Result<(), axum::response::Response> {
-    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
+) -> Result<(), Answer> {
+    let root = VerifiedRoot::new(songs_root)?;
     // codeql[rust/path-injection] the folder is verified via SafePath::resolve against the songs root.
     let path = light_show_in_songs_root(&root, path)?;
-    super::helpers::spawn_blocking_io("delete lighting file", move || std::fs::remove_file(&path))
+    super::helpers::blocking_answer("delete lighting file", move || std::fs::remove_file(&path))
         .await
 }
 
-/// A `?song=` on an endpoint that otherwise works on bare DSL, naming the song
-/// whose tempo map the source should be parsed against.
-#[derive(serde::Deserialize)]
-pub(super) struct ValidateQuery {
-    song: Option<String>,
-    /// The lighting file the source is a draft of, as `PUT /api/lighting/:name`
-    /// names it, so its `include`s resolve where saving it would.
-    file: Option<String>,
-}
-
-/// POST /api/lighting/validate — validates lighting DSL content without saving.
-///
-/// Pass `?song=` when the source belongs to one. Measure-based timing does not
-/// parse at all without a tempo map, so validating a bar/beat show without it
-/// reports a failure the save path does not agree with.
-pub(super) async fn validate_lighting(
-    State(state): State<WebUiState>,
-    Query(query): Query<ValidateQuery>,
-    body: String,
-) -> impl IntoResponse {
-    let song = query
-        .song
-        .as_deref()
-        .and_then(|name| state.player.songs().get(name).ok());
+/// Checks light show text without saving it. `song` names the song the text
+/// belongs to: measure-based timing does not parse at all without a tempo
+/// map, so validating a bar/beat show without it reports a failure the save
+/// path does not agree with. `file` is the lighting file (as
+/// [`put_light_show`] names it) the text is a draft of, so its `include`s
+/// resolve where saving it would. The problems are the answer; a `file`
+/// that leads outside the songs directory is the error.
+pub(crate) fn validate_light_show_text(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    body: &str,
+    song: Option<&str>,
+    file: Option<&str>,
+) -> Result<LightingValidation, Answer> {
+    let song = song.and_then(|name| player.songs().get(name).ok());
     let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
-    let path = match query.file.as_deref() {
+    let path = match file {
         Some(file) => {
-            let songs_root = state.songs_path();
-            let root = match VerifiedRoot::new(&songs_root) {
-                Ok(root) => root,
-                Err(e) => return e.into_response(),
-            };
-            match light_show_in_songs_root(&root, &songs_root.join(file)) {
-                Ok(path) => Some(path),
-                Err(e) => return e,
-            }
+            let root = VerifiedRoot::new(songs_path)?;
+            Some(light_show_in_songs_root(&root, &songs_path.join(file))?)
         }
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
-    match config_io::validate_light_show(
-        &body,
-        path.as_deref(),
-        Some(&state.songs_path()),
-        tempo.as_ref(),
-    ) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(LightingValidation {
+    Ok(
+        match config_io::validate_light_show(
+            body,
+            path.as_deref(),
+            Some(songs_path),
+            tempo.as_ref(),
+        ) {
+            Ok(()) => LightingValidation {
                 valid: true,
                 errors: None,
-            }),
-        )
-            .into_response(),
-        Err(errors) => (
-            StatusCode::BAD_REQUEST,
-            Json(LightingValidation {
+            },
+            Err(errors) => LightingValidation {
                 valid: false,
                 errors: Some(errors),
-            }),
-        )
-            .into_response(),
-    }
+            },
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -693,18 +619,16 @@ pub(super) fn configured_lighting_dirs(
 /// The project-relative directory `which` a request names, else the one
 /// the engine reads on this host. A config that does not load is a 500,
 /// as it is to MCP: the defaults might not be where this host's files are.
-#[allow(clippy::result_large_err)]
 pub(super) fn lighting_dir(
     config_path: &std::path::Path,
     requested: Option<&str>,
     which: LightingDir,
-) -> Result<String, axum::response::Response> {
+) -> Result<String, Answer> {
     if let Some(dir) = requested.filter(|d| !d.is_empty()) {
         return Ok(dir.to_string());
     }
-    let dirs = configured_lighting_dirs(config_path).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response()
-    })?;
+    let dirs = configured_lighting_dirs(config_path)
+        .map_err(|e| Answer::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(match which {
         LightingDir::FixtureTypes => dirs.fixture_types,
         LightingDir::Venues => dirs.venues,
@@ -790,19 +714,18 @@ pub(super) fn stale_venue_response(name: &str, current: Option<String>) -> light
 /// one the request names (from a query param), else this host's
 /// ([`lighting_dir`]). Returns an error response if the project root cannot
 /// be canonicalized or the resolved path would escape it.
-#[allow(clippy::result_large_err)]
 pub(super) fn resolve_lighting_dir(
     config_path: &std::path::Path,
     override_dir: Option<&str>,
     which: LightingDir,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+) -> Result<std::path::PathBuf, Answer> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let root = VerifiedRoot::new(&project_root(config_path)?).map_err(|e| e.into_response())?;
+    let root = VerifiedRoot::new(&project_root(config_path)?)?;
 
     let relative = lighting_dir(config_path, override_dir, which)?;
 
-    SafePath::validate_relative(&relative, &root).map_err(|e| e.into_response())
+    Ok(SafePath::validate_relative(&relative, &root)?)
 }
 
 /// Checks a referential type's archive the way the lighting system will when
@@ -830,16 +753,12 @@ pub(super) fn validate_referential_archives(
 }
 
 /// The project root, canonicalized, for [`resolve_referential_archive`].
-#[allow(clippy::result_large_err)]
-pub(super) fn canonical_project_root(
-    root: &std::path::Path,
-) -> Result<std::path::PathBuf, axum::response::Response> {
+pub(super) fn canonical_project_root(root: &std::path::Path) -> Result<std::path::PathBuf, Answer> {
     root.canonicalize().map_err(|_| {
-        (
+        Answer::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to resolve project root"})),
+            "Failed to resolve project root",
         )
-            .into_response()
     })
 }
 
@@ -1699,14 +1618,14 @@ pub(super) async fn delete_fixture_type(
 /// The tempo a `.light` file at this path will be loaded with, found by
 /// matching the path against the loaded songs' directories.
 fn song_tempo_for_path(
-    state: &WebUiState,
+    player: &crate::player::Player,
     path: &std::path::Path,
 ) -> Option<crate::tempo::TempoMap> {
     // Both sides resolved: `path` is, and a song's folder need not be (one
     // built from a path through a linked songs folder). The plain
     // comparison first, so the folders are canonicalized only when no
     // song's matches as written.
-    let songs = state.player.songs().list();
+    let songs = player.songs().list();
     let song = songs
         .iter()
         .find(|song| path.starts_with(song.base_path()))
@@ -1726,9 +1645,11 @@ fn song_tempo_for_path(
 /// These are the logical groups declared under `dmx.lighting.groups`. Venues no
 /// longer define groups of their own — fixtures carry tags, and logical groups
 /// select on them — so this is the only list a show can target.
-pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl IntoResponse {
-    let Some(system) = state
-        .player
+pub(crate) async fn lighting_groups(
+    player: &crate::player::Player,
+    config_path: &std::path::Path,
+) -> Result<LightingGroups, Answer> {
+    let Some(system) = player
         .dmx_engine()
         .and_then(|dmx| dmx.broadcast_handles().lighting_system)
     else {
@@ -1736,7 +1657,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
         // case for editing a show. The groups are declared in the player config,
         // not by the engine, so the names are still knowable; only the fixtures
         // each resolves to are not.
-        return groups_from_config(&state.config_path).await;
+        return groups_from_config(config_path).await;
     };
 
     // The lighting system's mutex is shared with the effects loop thread, and
@@ -1760,21 +1681,19 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
     .await;
 
     match groups {
-        Ok(groups) => Json(LightingGroups {
+        Ok(groups) => Ok(LightingGroups {
             groups,
             resolved: None,
-        })
-        .into_response(),
-        Err(e) => (
+        }),
+        Err(e) => Err(Answer::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to resolve groups: {e}")})),
-        )
-            .into_response(),
+            format!("Failed to resolve groups: {e}"),
+        )),
     }
 }
 
-/// GET /api/lighting/readiness — the facts behind the Lighting overview's five
-/// checks: does the show reach the lights?
+/// The facts behind the Lighting overview's five checks: does the show
+/// reach the lights?
 ///
 /// Facts, not verdicts. The UI turns them into ready / needs attention /
 /// blocked / unknown, so the wording and the rules live in one place. Every
@@ -1782,48 +1701,40 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
 /// songs' parsed shows, the same lint MCP's `validate_lighting` runs, and the
 /// olad patch probe. All of it is blocking (the lighting-system mutex is shared
 /// with the effects loop, the probe is HTTP), so it runs off the async worker.
-pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoResponse {
-    let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || readiness_report(&player)).await {
-        Ok(report) => Json(report).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to gather readiness: {e}")})),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /api/lighting/fit — the facts and suggestions behind the "Fit shows"
-/// page: for each group the shows use, what it needs and what would satisfy it;
-/// the focus points the shows aim at that the venue lacks; and the universes
-/// with no output. The suggestion rules live in `lighting::fit`, shared with
-/// MCP's `suggest_group_tags`. Blocking (lighting-system mutex, olad probe), so
-/// off the async worker.
-pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoResponse {
-    let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+pub(crate) async fn readiness(
+    player: std::sync::Arc<crate::player::Player>,
+) -> Result<crate::webui::wire::readiness::Readiness, Answer> {
+    tokio::task::spawn_blocking(move || readiness_report(&player))
         .await
-    {
-        Ok(report) => Json(report).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to gather fit: {e}")})),
-        )
-            .into_response(),
-    }
+        .map_err(|e| {
+            Answer::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to gather readiness: {e}"),
+            )
+        })
 }
 
-/// Body of `POST /api/lighting/evaluate`.
-#[derive(serde::Deserialize)]
-pub(super) struct EvaluateRequest {
-    song: String,
-    /// Song times, in seconds.
-    times: Vec<f64>,
+/// The facts and suggestions behind the "Fit shows" page: for each group the
+/// shows use, what it needs and what would satisfy it; the focus points the
+/// shows aim at that the venue lacks; and the universes with no output. The
+/// suggestion rules live in `lighting::fit`, shared with MCP's
+/// `suggest_group_tags`. Blocking (lighting-system mutex, olad probe), so off
+/// the async worker.
+pub(crate) async fn fit(
+    player: std::sync::Arc<crate::player::Player>,
+) -> Result<crate::lighting::fit::FitReport, Answer> {
+    tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+        .await
+        .map_err(|e| {
+            Answer::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to gather fit: {e}"),
+            )
+        })
 }
 
-/// POST /api/lighting/evaluate — what a song's shows would be doing at each
-/// requested time, offline: the Preview mode's data.
+/// What a song's shows would be doing at each of `times` (song seconds),
+/// offline: the Preview mode's data.
 ///
 /// Each evaluation carries the live `state` message's `fixtures`, `poses` and
 /// `cells` (built by the same helper, so the 3D scene is fed one shape from
@@ -1833,54 +1744,48 @@ pub(super) struct EvaluateRequest {
 /// through `evaluate_with_system` — the function MCP's `evaluate_show` uses —
 /// and never touches the DMX engine's effect engine, so a playing song plays
 /// on.
-pub(super) async fn evaluate_lighting(
-    State(state): State<WebUiState>,
-    Json(request): Json<EvaluateRequest>,
-) -> impl IntoResponse {
-    let error = |status: StatusCode, message: String| {
-        (status, Json(json!({"error": message}))).into_response()
-    };
-    if request.times.iter().any(|t| !t.is_finite() || *t < 0.0) {
-        return error(
+pub(crate) async fn evaluate_song(
+    player: &crate::player::Player,
+    song: &str,
+    times: &[f64],
+) -> Result<crate::webui::wire::preview::Preview, Answer> {
+    let error = |status: StatusCode, message: String| Answer::new(status, message);
+    if times.iter().any(|t| !t.is_finite() || *t < 0.0) {
+        return Err(error(
             StatusCode::BAD_REQUEST,
             "times must be non-negative seconds".to_string(),
-        );
+        ));
     }
 
-    let songs = state.player.songs();
-    let song = match songs.get(&request.song) {
-        Ok(song) => song,
-        // A song whose lighting fails to parse never loads: the registry
-        // keeps its failure, and the message says why.
-        Err(e) => return super::helpers::song_lookup_response(e),
-    };
-    let shows = crate::lighting::evaluate::registered_shows(&song);
+    let songs = player.songs();
+    // A song whose lighting fails to parse never loads: the registry
+    // keeps its failure, and the message says why.
+    let song_loaded = songs.get(song)?;
+    let shows = crate::lighting::evaluate::registered_shows(&song_loaded);
     if shows.is_empty() {
-        return error(
+        return Err(error(
             StatusCode::BAD_REQUEST,
-            format!("song `{}` has no lighting loaded", request.song),
-        );
+            format!("song `{song}` has no lighting loaded"),
+        ));
     }
-    let tempo = song.lighting_tempo_map();
+    let tempo = song_loaded.lighting_tempo_map();
     // Duration::from_secs_f64 panics on what it cannot hold; the evaluator
     // bounds the count and the latest instant itself. Collected rather than
     // sized up front: a capacity taken from the request is what CodeQL flags.
-    let times: Vec<std::time::Duration> = match request
-        .times
+    let times: Vec<std::time::Duration> = match times
         .iter()
         .map(|t| crate::util::duration_from_secs(*t))
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,
         None => {
-            return error(
+            return Err(error(
                 StatusCode::BAD_REQUEST,
                 crate::lighting::evaluate::EvaluateError::TimeOutOfRange.to_string(),
-            )
+            ))
         }
     };
-    let lighting_system = state
-        .player
+    let lighting_system = player
         .dmx_engine()
         .and_then(|dmx| dmx.broadcast_handles().lighting_system);
 
@@ -1897,12 +1802,12 @@ pub(super) async fn evaluate_lighting(
     .await;
     let evaluated = match evaluated {
         Ok(Ok(evaluated)) => evaluated,
-        Ok(Err(e)) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+        Ok(Err(e)) => return Err(error(StatusCode::BAD_REQUEST, e.to_string())),
         Err(e) => {
-            return error(
+            return Err(error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to evaluate: {e}"),
-            )
+            ))
         }
     };
 
@@ -1934,13 +1839,12 @@ pub(super) async fn evaluate_lighting(
                 .collect(),
         })
         .collect();
-    Json(Preview {
-        song: request.song,
+    Ok(Preview {
+        song: song.to_string(),
         evaluations,
         untouched,
         venue_error: evaluated.venue_error,
     })
-    .into_response()
 }
 
 /// The readiness facts for the player's running profile.
@@ -2133,7 +2037,7 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
 /// player config when no engine is running to resolve them against.
-async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
+async fn groups_from_config(config_path: &std::path::Path) -> Result<LightingGroups, Answer> {
     // codeql[rust/path-injection] config_path is set at startup, not user input.
     let path = config_path.to_path_buf();
     // A parse failure is reported, not swallowed. `.ok()` here answered
@@ -2159,23 +2063,19 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
     let names = match loaded {
         Ok(Ok(names)) => names,
         Ok(Err(e)) => {
-            return (
+            return Err(Answer::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!(
-                        "no DMX engine is running, and the player config could not be read \
-                         to list the declared groups: {e}"
-                    )
-                })),
-            )
-                .into_response();
+                format!(
+                    "no DMX engine is running, and the player config could not be read \
+                     to list the declared groups: {e}"
+                ),
+            ));
         }
         Err(e) => {
-            return (
+            return Err(Answer::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("reading the player config failed: {e}")})),
-            )
-                .into_response();
+                format!("reading the player config failed: {e}"),
+            ));
         }
     };
 
@@ -2186,11 +2086,10 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
             fixtures: vec![],
         })
         .collect();
-    Json(LightingGroups {
+    Ok(LightingGroups {
         groups,
         resolved: Some(false),
     })
-    .into_response()
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
@@ -2936,422 +2835,9 @@ mod test {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    /// With no DMX device, the group names still come back — from the config.
-    ///
-    /// Authoring on a laptop is the normal case for editing a show, and the
-    /// groups are declared under `dmx.lighting.groups` in the player config, not
-    /// by the engine. Answering `{"groups": []}` there emptied the cue-target
-    /// autocomplete with no error to explain it, because the endpoint only read
-    /// them off a live engine.
-    #[tokio::test]
-    async fn lighting_groups_come_from_this_hosts_profile() {
-        let (state, dir) = test_state();
-        std::fs::write(
-            &state.config_path,
-            r#"songs: songs
-profiles:
-  - hostname: not-this-host-x9
-    dmx:
-      universes: []
-      lighting:
-        groups:
-          elsewhere:
-            name: elsewhere
-            constraints:
-              - AllOf: ["x"]
-  - dmx:
-      universes: []
-      lighting:
-        groups:
-          here:
-            name: here
-            constraints:
-              - AllOf: ["y"]
-"#,
-        )
-        .unwrap();
-        let _keep = dir;
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/groups")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        let names: Vec<&str> = parsed["groups"]
-            .as_array()
-            .expect("groups")
-            .iter()
-            .filter_map(|g| g["name"].as_str())
-            .collect();
-        assert_eq!(names, vec!["here"], "{parsed}");
-    }
-
-    #[tokio::test]
-    async fn lighting_groups_come_from_the_config_without_a_dmx_engine() {
-        let (state, dir) = test_state();
-        std::fs::write(
-            &state.config_path,
-            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
-             lighting:\n    groups:\n      front_wash:\n        \
-             name: front_wash\n        constraints:\n          - AllOf: [\"wash\"]\n      \
-             back_wash:\n        name: back_wash\n        constraints:\n          \
-             - AllOf: [\"back\"]\n",
-        )
-        .unwrap();
-        let _keep = dir;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/groups")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        let names: Vec<&str> = parsed["groups"]
-            .as_array()
-            .expect("groups")
-            .iter()
-            .filter_map(|g| g["name"].as_str())
-            .collect();
-        assert_eq!(
-            names,
-            vec!["back_wash", "front_wash"],
-            "the declared groups must be listed even with no engine to resolve them"
-        );
-        // Flagged as unresolved: the names are knowable without an engine, the
-        // fixtures each resolves to are not, and a caller has to be able to tell
-        // "no fixtures" from "not asked yet".
-        assert_eq!(parsed["resolved"], serde_json::json!(false));
-        for group in parsed["groups"].as_array().expect("groups") {
-            assert!(group["fixtures"].as_array().expect("fixtures").is_empty());
-        }
-    }
-
-    /// A config that will not load is reported, not answered as "no groups".
-    ///
-    /// The fallback exists because an empty list was indistinguishable from a
-    /// rig with nothing declared. Swallowing a parse error with `.ok()` put that
-    /// exact ambiguity back one layer down — a missing `dmx.universes` read as
-    /// an empty autocomplete with no explanation.
-    #[tokio::test]
-    async fn a_config_that_does_not_load_is_reported_not_answered_empty() {
-        let (state, dir) = test_state();
-        // `dmx.universes` is required, so this parses as YAML and fails to load
-        // as config — the shape most likely to be hit by hand-editing.
-        std::fs::write(
-            &state.config_path,
-            "songs: songs\ndmx:\n  lighting:\n    groups:\n      wash:\n        name: wash\n",
-        )
-        .unwrap();
-        let _keep = dir;
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/groups")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        assert!(
-            parsed["error"]
-                .as_str()
-                .is_some_and(|e| e.contains("could not be read")),
-            "the reason must reach the caller: {parsed}"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_success() {
-        let (state, _dir) = test_state();
-        std::fs::write(state.songs_path().join("show.light"), "light content").unwrap();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/show.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        assert_eq!(body, "light content");
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_path_traversal() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/..%2F..%2Fetc%2Fpasswd")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_ne!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_symlink_escape() {
-        let (state, _dir) = test_state();
-        let outside_dir = tempfile::tempdir().unwrap();
-        let secret_file = outside_dir.path().join("secret.light");
-        std::fs::write(&secret_file, "secret content").unwrap();
-        std::os::unix::fs::symlink(&secret_file, state.songs_path().join("evil.light")).unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/evil.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = response.status();
-        assert!(
-            status == StatusCode::FORBIDDEN
-                || status == StatusCode::BAD_REQUEST
-                || status == StatusCode::NOT_FOUND,
-            "expected rejection for symlink escape, got {status}"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_not_found() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/nonexistent.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_unreadable() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (state, _dir) = test_state();
-        let file = state.songs_path().join("unreadable.light");
-        std::fs::write(&file, "content").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/unreadable.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[tokio::test]
-    async fn validate_lighting_valid() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let body = r#"
-show "test" {
-    @00:00.000
-    lights: static color: "red", duration: 5s
-}
-"#;
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/validate")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["valid"], true);
-    }
-
-    #[tokio::test]
-    async fn validate_lighting_invalid() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/validate")
-                    .body(Body::from("invalid {{{ content"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn validate_lighting_resolves_includes_from_the_named_file() {
-        let (state, _dir) = test_state();
-        let songs = state.songs_path().clone();
-        std::fs::create_dir_all(songs.join("song/lighting")).unwrap();
-        std::fs::write(
-            songs.join("common.light"),
-            "sequence \"wash\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n",
-        )
-        .unwrap();
-        std::fs::write(songs.parent().unwrap().join("outside.light"), "").unwrap();
-        let validate = |file: &str, body: &'static str| {
-            let app = router().with_state(state.clone());
-            let uri = format!("/lighting/validate?file={file}");
-            async move {
-                let response = app
-                    .oneshot(
-                        http::Request::builder()
-                            .method("POST")
-                            .uri(uri)
-                            .body(Body::from(body))
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                (response.status(), response_body(response).await)
-            }
-        };
-        let show = "include \"../../common.light\"\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
-
-        let (status, body) = validate("song/lighting/show.light", show).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        // From another folder the same include misses.
-        let (status, _) = validate("song/show.light", show).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        // And it may not leave the songs folder.
-        let (status, body) = validate("song/show.light", "include \"../../outside.light\"\n").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("outside the songs folder"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_valid() {
-        let (state, _dir) = test_state();
-        let file_path = state.songs_path().join("new.light");
-        let content =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/new.light")
-                    .body(Body::from(content))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(file_path.exists());
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_path_traversal() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/..%2F..%2Fevil.light")
-                    .body(Body::from("content"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_ne!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_outside_base() {
-        let (state, _dir) = test_state();
-        let outside_dir = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside_dir.path(), state.songs_path().join("escape")).unwrap();
-
-        let content =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/escape%2Fevil.light")
-                    .body(Body::from(content))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = response.status();
-        assert!(
-            status == StatusCode::FORBIDDEN
-                || status == StatusCode::BAD_REQUEST
-                || status == StatusCode::NOT_FOUND,
-            "expected rejection for symlink escape, got {status}"
-        );
-    }
-
     /// A project whose songs root is the project itself (`songs: "."`, as
-    /// on the harness), so the light-show endpoint reaches the lighting
-    /// directories; `config` is its mtrack.yaml.
+    /// on the harness), so the endpoints reach the lighting directories;
+    /// `config` is its mtrack.yaml.
     fn light_shows_at_the_root(config: &str) -> (axum::Router, tempfile::TempDir) {
         let (state, dir) = test_state();
         std::fs::write(dir.path().join("mtrack.yaml"), config).unwrap();
@@ -3374,76 +2860,6 @@ show "test" {
         (router().with_state(state), dir)
     }
 
-    async fn light_show_call(app: &axum::Router, method: &str, path: &str) -> (StatusCode, String) {
-        let show =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method(method)
-                    .uri(format!("/lighting/{path}"))
-                    .body(Body::from(show))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (status, response_body(response).await)
-    }
-
-    #[tokio::test]
-    async fn the_light_show_endpoint_writes_no_venue_or_type_file() {
-        let (app, dir) = light_shows_at_the_root("songs: \".\"\n");
-        let club = dir.path().join("lighting/venues/club.light");
-        let before = std::fs::read_to_string(&club).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("lighting/venues"), dir.path().join("alias"))
-            .unwrap();
-        for path in [
-            "lighting%2Fvenues%2Fclub.light",
-            "lighting%2Fvenues%2Fnew.light",
-            "lighting%2Ffixture_types%2Fnew.light",
-            "lighting%2Fx%2F..%2Fvenues%2Fnew.light",
-            "shows%2F..%2Flighting%2Fvenues%2Fclub.light",
-            "alias%2Fclub.light",
-            "alias%2Fnew.light",
-        ] {
-            let (status, body) = light_show_call(&app, "PUT", path).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "PUT {path}: {body}");
-            assert!(body.contains("song light shows"), "PUT {path}: {body}");
-        }
-        for path in [
-            "lighting%2Fvenues%2Fclub.light",
-            "lighting%2Fx%2F..%2Fvenues%2Fclub.light",
-            "alias%2Fclub.light",
-        ] {
-            let (status, body) = light_show_call(&app, "DELETE", path).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "DELETE {path}: {body}");
-        }
-        // Another case is another directory here (a case-sensitive file
-        // system), so there is nothing to write into; on one that folds
-        // case it is the venues directory, which identity finds.
-        for path in [
-            "Lighting%2FVenues%2Fnew.light",
-            "lighting%2FVENUES%2Fclub.light",
-        ] {
-            let (status, body) = light_show_call(&app, "PUT", path).await;
-            assert_ne!(status, StatusCode::OK, "PUT {path}: {body}");
-        }
-        assert_eq!(std::fs::read_to_string(&club).unwrap(), before);
-        let venues: Vec<_> = std::fs::read_dir(dir.path().join("lighting/venues"))
-            .unwrap()
-            .collect();
-        assert_eq!(venues.len(), 1, "nothing new in the venues directory");
-        assert!(!dir.path().join("lighting/fixture_types/new.light").exists());
-
-        // A song's light show elsewhere is still written and deleted.
-        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let (status, body) = light_show_call(&app, "DELETE", "shows%2Fa.light").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-
     #[test]
     fn a_path_is_within_a_dir_by_identity() {
         let dir = tempfile::tempdir().unwrap();
@@ -3462,52 +2878,6 @@ show "test" {
             &dir.path().join("x"),
             &dir.path().join("missing")
         ));
-    }
-
-    #[tokio::test]
-    async fn the_light_show_endpoint_refuses_the_hosts_configured_dirs() {
-        let config = "songs: \".\"\nprofiles:\n  - hostname: not-this-host-x9\n    dmx:\n      universes: []\n      lighting:\n        directories:\n          venues: shows\n  - dmx:\n      universes: []\n      lighting:\n        directories:\n          venues: rig/venues\n";
-        let (app, dir) = light_shows_at_the_root(config);
-        std::fs::create_dir_all(dir.path().join("rig/venues")).unwrap();
-        let (status, body) = light_show_call(&app, "PUT", "rig%2Fvenues%2Fnew.light").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert!(body.contains("venues directory (rig/venues)"), "{body}");
-        // The other host's directory, and the default one this host does
-        // not read, are not this host's venues.
-        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let (status, body) = light_show_call(&app, "PUT", "lighting%2Fvenues%2Fnew.light").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-
-    /// A config that does not load is a 500 here as at every endpoint that
-    /// reads the lighting directories, not the defaults, which may not be
-    /// this host's.
-    #[tokio::test]
-    async fn the_light_show_endpoint_answers_a_broken_config_with_a_500() {
-        let (app, _dir) = light_shows_at_the_root("profiles: [\n");
-        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        assert!(body.contains("the config does not load"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_invalid_dsl() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/test.light")
-                    .body(Body::from("invalid {{{ content"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -3543,204 +2913,6 @@ show "test" {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].path, "Show.LIGHT");
         assert_eq!(results[0].name, "Show");
-    }
-
-    /// A request to the lighting endpoints, its status and body.
-    async fn lighting_request(
-        state: &WebUiState,
-        method: &str,
-        uri: &str,
-        body: &str,
-    ) -> (StatusCode, String) {
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method(method)
-                    .uri(uri)
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        (response.status(), response_body(response).await)
-    }
-
-    /// A light show that is a link is deleted as the link: what it leads
-    /// to, another song's config or show, is left.
-    #[tokio::test]
-    async fn delete_lighting_file_removes_a_link_not_its_target() {
-        let (state, _dir) = test_state();
-        let songs = state.songs_path();
-        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
-        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
-        std::fs::write(songs.join("a/lighting/show.light"), "a's show").unwrap();
-        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
-        std::os::unix::fs::symlink("../song.yaml", songs.join("b/lighting/show.light")).unwrap();
-        std::os::unix::fs::symlink(
-            "../../a/lighting/show.light",
-            songs.join("b/lighting/a.light"),
-        )
-        .unwrap();
-
-        for file in ["show.light", "a.light"] {
-            let uri = format!("/lighting/b%2Flighting%2F{file}");
-            let (status, body) = lighting_request(&state, "DELETE", &uri, "").await;
-            assert_eq!(status, StatusCode::OK, "{file}: {body}");
-            assert!(
-                std::fs::symlink_metadata(songs.join("b/lighting").join(file)).is_err(),
-                "{file}: the link is gone"
-            );
-        }
-        assert_eq!(
-            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
-            "name: B\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
-            "a's show"
-        );
-    }
-
-    /// Only `.light` files are written as light shows: not a song's config
-    /// by name.
-    #[tokio::test]
-    async fn put_lighting_file_refuses_a_file_that_is_no_show() {
-        let (state, _dir) = test_state();
-        let songs = state.songs_path();
-        std::fs::create_dir_all(songs.join("b")).unwrap();
-        std::fs::write(songs.join("b/song.yaml"), "name: B\n").unwrap();
-        let show =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-
-        let (status, body) = lighting_request(&state, "PUT", "/lighting/b%2Fsong.yaml", show).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(
-            std::fs::read_to_string(songs.join("b/song.yaml")).unwrap(),
-            "name: B\n"
-        );
-    }
-
-    /// A bar/beat show is checked against its song's tempo when the song's
-    /// folder is spelled through a link (the songs folder reached through
-    /// one): the show's path, resolved, and the song's folder are compared
-    /// resolved. The loader resolves the folders it loads, so this is a
-    /// song built from an unresolved path.
-    #[tokio::test]
-    async fn put_lighting_file_finds_the_songs_tempo_through_a_linked_folder() {
-        let outer = tempfile::tempdir().unwrap();
-        let real = outer.path().join("real");
-        std::fs::create_dir_all(real.join("t/lighting")).unwrap();
-        std::fs::write(
-            real.join("t/song.yaml"),
-            "name: T\ntracks: []\ntempo:\n  bpm: 120\n  time_signature: 4/4\n",
-        )
-        .unwrap();
-        let link = outer.path().join("songs-link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        let config = crate::config::Song::deserialize(&link.join("t/song.yaml")).unwrap();
-        let song = crate::songs::Song::new(&link.join("t"), &config).unwrap();
-        assert!(song.lighting_tempo_map().is_some());
-        let songs = crate::songs::Songs::new(std::collections::HashMap::from([(
-            "T".to_string(),
-            std::sync::Arc::new(song),
-        )]));
-        let (state, _dir) = test_state_with_registry(std::sync::Arc::new(songs));
-        {
-            let mut sources = state.player.song_sources().unwrap_or_default();
-            sources.songs = link;
-            state.player.set_song_sources(sources);
-        }
-        let show =
-            "show \"bars\" {\n    @1/1\n    lights: static color: \"red\", duration: 1beat\n}\n";
-
-        let (status, body) =
-            lighting_request(&state, "PUT", "/lighting/t%2Flighting%2Fshow.light", show).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-
-    /// A light show that is a link leading nowhere is not written: the
-    /// write would make its target, outside the songs folder.
-    #[tokio::test]
-    async fn put_lighting_file_refuses_a_link_leading_nowhere() {
-        let (state, _dir) = test_state();
-        let songs = state.songs_path();
-        let outside = tempfile::tempdir().unwrap();
-        let target = outside.path().join("x.light");
-        std::fs::create_dir_all(songs.join("foo/lighting")).unwrap();
-        std::os::unix::fs::symlink(&target, songs.join("foo/lighting/show.light")).unwrap();
-        let show =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-
-        let (status, body) =
-            lighting_request(&state, "PUT", "/lighting/foo%2Flighting%2Fshow.light", show).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert!(!target.exists(), "written outside");
-    }
-
-    /// A light show saved through a link has its `include`s resolved
-    /// where the song loader resolves them: beside the link, not beside
-    /// what it leads to.
-    #[tokio::test]
-    async fn put_lighting_file_resolves_includes_beside_a_link() {
-        let (state, _dir) = test_state();
-        let songs = state.songs_path();
-        std::fs::create_dir_all(songs.join("a/lighting")).unwrap();
-        std::fs::create_dir_all(songs.join("b/lighting")).unwrap();
-        let shared = "sequence \"wash\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-        std::fs::write(songs.join("a/lighting/common.light"), shared).unwrap();
-        std::fs::write(songs.join("a/lighting/show.light"), "").unwrap();
-        std::os::unix::fs::symlink(
-            "../../a/lighting/show.light",
-            songs.join("b/lighting/show.light"),
-        )
-        .unwrap();
-        let show =
-            "include \"common.light\"\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
-
-        // Beside B's link there is no common.light: the loader would fail.
-        let (status, body) =
-            lighting_request(&state, "PUT", "/lighting/b%2Flighting%2Fshow.light", show).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(
-            std::fs::read_to_string(songs.join("a/lighting/show.light")).unwrap(),
-            ""
-        );
-        // Saved as A's, it is found.
-        let (status, body) =
-            lighting_request(&state, "PUT", "/lighting/a%2Flighting%2Fshow.light", show).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-
-    /// The editor deletes a `Show.LIGHT` as it does a `show.light`; a file
-    /// that is no light show is still refused.
-    #[tokio::test]
-    async fn delete_lighting_file_reads_extensions_in_any_case() {
-        let (state, _dir) = test_state();
-        let show = state.songs_path().join("Show.LIGHT");
-        std::fs::write(&show, "content").unwrap();
-        let notes = state.songs_path().join("notes.txt");
-        std::fs::write(&notes, "content").unwrap();
-
-        for (uri, expected) in [
-            ("/lighting/Show.LIGHT", StatusCode::OK),
-            ("/lighting/notes.txt", StatusCode::BAD_REQUEST),
-        ] {
-            let response = router()
-                .with_state(state.clone())
-                .oneshot(
-                    http::Request::builder()
-                        .method("DELETE")
-                        .uri(uri)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected, "{uri}");
-        }
-        assert!(!show.exists());
-        assert!(notes.exists());
     }
 
     #[test]
@@ -3806,144 +2978,6 @@ show "test" {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "show");
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_path_traversal_via_dotdot() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/..%2Fpasswd")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Path traversal: expect rejection (NOT_FOUND, FORBIDDEN, or BAD_REQUEST).
-        let status = response.status();
-        assert!(
-            status == StatusCode::NOT_FOUND
-                || status == StatusCode::FORBIDDEN
-                || status == StatusCode::BAD_REQUEST,
-            "expected rejection, got {status}"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_not_found_body_contains_name() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/missing.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Lighting file not found"));
-    }
-
-    #[tokio::test]
-    async fn get_lighting_file_unreadable_body_contains_message() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (state, _dir) = test_state();
-        let file = state.songs_path().join("broken.light");
-        std::fs::write(&file, "content").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/broken.light")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to read lighting file"));
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_path_traversal_returns_invalid_path() {
-        let (state, _dir) = test_state();
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/..%2Fevil.light")
-                    .body(Body::from(
-                        "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = response.status();
-        assert!(
-            status == StatusCode::NOT_FOUND
-                || status == StatusCode::FORBIDDEN
-                || status == StatusCode::BAD_REQUEST,
-            "expected rejection for path traversal, got {status}"
-        );
-    }
-
-    #[tokio::test]
-    async fn put_lighting_file_write_failure_returns_500() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (state, _dir) = test_state();
-        let sub = state.songs_path().join("readonly");
-        std::fs::create_dir(&sub).unwrap();
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-        let content =
-            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
-        let app = router().with_state(state.clone());
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/readonly%2Ftest.light")
-                    .body(Body::from(content))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].is_string());
     }
 
     // -----------------------------------------------------------------------
@@ -7510,833 +6544,6 @@ show "test" {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    // -----------------------------------------------------------------------
-    // GET /lighting/readiness
-    // -----------------------------------------------------------------------
-
-    const TYPE_PAR: &str =
-        "fixture_type \"Par\" {\n  channels: 2\n  channel_map: { \"dimmer\": 1, \"red\": 2 }\n}\n";
-
-    /// A project on disk plus a player running a DMX engine over it.
-    struct Rig {
-        state: WebUiState,
-        _state_dir: tempfile::TempDir,
-        _project: tempfile::TempDir,
-        /// The port olad's web server is looked for on, where nothing listens.
-        _olad: crate::testutil::net::ClosedPort,
-    }
-
-    /// Writes one song directory per (name, show file body) and loads them.
-    fn song_registry(
-        root: &std::path::Path,
-        songs: &[(&str, &str)],
-    ) -> std::sync::Arc<crate::songs::Songs> {
-        let songs_dir = root.join("songs");
-        std::fs::create_dir_all(&songs_dir).unwrap();
-        for (name, show) in songs {
-            let dir = songs_dir.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100)
-                .unwrap();
-            std::fs::write(dir.join("show.light"), show).unwrap();
-            std::fs::write(
-                dir.join("song.yaml"),
-                format!(
-                    "kind: song\nname: {name}\ntracks:\n  - name: kick\n    file: kick.wav\n\
-                     lighting:\n  - file: show.light\n"
-                ),
-            )
-            .unwrap();
-        }
-        crate::songs::get_all_songs(&songs_dir).unwrap()
-    }
-
-    /// `venue` is the venue file's body (`None` for no current venue), `songs`
-    /// are (directory, show file body) pairs, `universes` the configured
-    /// outputs. olad's web server is pointed at a port nothing listens on so
-    /// the probe never meets a real daemon.
-    fn rig(
-        types: &[(&str, &str)],
-        venue: Option<&str>,
-        songs: &[(&str, &str)],
-        universes: &[u16],
-    ) -> Rig {
-        rig_with_library(types, venue, songs, universes, &[])
-    }
-
-    /// [`rig`], with these archives in `lighting/library/` before it loads.
-    fn rig_with_library(
-        types: &[(&str, &str)],
-        venue: Option<&str>,
-        songs: &[(&str, &str)],
-        universes: &[u16],
-        library: &[(&str, &[u8])],
-    ) -> Rig {
-        let project = tempfile::tempdir().unwrap();
-        let root = project.path();
-        std::fs::create_dir_all(root.join("lighting/library")).unwrap();
-        for (file, bytes) in library {
-            std::fs::write(root.join("lighting/library").join(file), bytes).unwrap();
-        }
-        std::fs::create_dir_all(root.join("types")).unwrap();
-        std::fs::create_dir_all(root.join("venues")).unwrap();
-        for (file, body) in types {
-            std::fs::write(root.join("types").join(file), body).unwrap();
-        }
-        if let Some(venue) = venue {
-            std::fs::write(root.join("venues/v.light"), venue).unwrap();
-        }
-        let songs = song_registry(root, songs);
-
-        let olad = crate::testutil::net::ClosedPort::bind();
-        let dead_port = olad.port();
-        let universe_yaml: String = universes
-            .iter()
-            .map(|u| format!("  - universe: {u}\n    name: u{u}\n"))
-            .collect();
-        let current_venue = if venue.is_some() {
-            "  current_venue: v\n"
-        } else {
-            ""
-        };
-        let dmx_yaml = format!(
-            "ola_http_port: {dead_port}\nuniverses:\n{universe_yaml}lighting:\n  directories:\n    \
-             fixture_types: types\n    venues: venues\n{current_venue}  groups:\n    washes:\n      \
-             name: washes\n      constraints:\n        - AllOf: [\"wash\"]\n"
-        );
-        let dmx: crate::config::Dmx = config::Config::builder()
-            .add_source(config::File::from_str(&dmx_yaml, config::FileFormat::Yaml))
-            .build()
-            .unwrap()
-            .try_deserialize()
-            .unwrap();
-        let engine = crate::dmx::engine::Engine::new(
-            &dmx,
-            dmx.lighting(),
-            Some(root),
-            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
-        )
-        .unwrap();
-        let (state, state_dir) = test_state_with_dmx(songs, std::sync::Arc::new(engine));
-        Rig {
-            state,
-            _state_dir: state_dir,
-            _project: project,
-            _olad: olad,
-        }
-    }
-
-    async fn readiness(state: WebUiState) -> serde_json::Value {
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/readiness")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        serde_json::from_str(&response_body(response).await).unwrap()
-    }
-
-    #[tokio::test]
-    async fn readiness_without_dmx_has_no_venue_but_still_reports_shows() {
-        let project = tempfile::tempdir().unwrap();
-        let songs = song_registry(
-            project.path(),
-            &[
-                (
-                    "Good",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-                ),
-                // No `duration`: the song does not load, DMX or not.
-                (
-                    "Bad",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
-                ),
-            ],
-        );
-        let (state, _dir) = test_state_with_registry(songs);
-        let report = readiness(state).await;
-        assert_eq!(report["dmx"], json!(false));
-        assert_eq!(report["venue"], json!(null));
-        assert_eq!(report["groups"], json!([]));
-        assert_eq!(report["output"]["olad"], json!(null));
-        assert_eq!(report["fixture_types"]["unresolved"], json!([]));
-
-        let shows = report["shows"].as_array().unwrap();
-        let bad = shows.iter().find(|s| s["song"] == json!("Bad")).unwrap();
-        assert!(bad["error"].as_str().unwrap().contains("duration"));
-        let good = shows.iter().find(|s| s["song"] == json!("Good")).unwrap();
-        assert!(good.get("error").is_none());
-        // Nothing that needs a venue is guessed at without one.
-        for w in good["warnings"].as_array().unwrap() {
-            assert!(
-                !["empty-group", "unconfigured-universe", "capability-gap"]
-                    .contains(&w["kind"].as_str().unwrap()),
-                "{w}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn readiness_puts_patch_findings_on_the_venue_not_under_every_song() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            // Partly over each other: an overlap. And a gang at 1:10.
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  \
-                 fixture \"B\" Par @ 1:2\n  fixture \"G1\" Par @ 1:10\n  \
-                 fixture \"G2\" Par @ 1:10\n}\n",
-            ),
-            &[(
-                "Esaweg",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-            )],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-        assert!(report["venue_error"].is_null(), "{report}");
-        let patch = report["patch_warnings"].as_array().unwrap();
-        assert_eq!(patch.len(), 1, "the gang is quiet: {report}");
-        assert_eq!(patch[0]["kind"], "patch-overlap");
-        assert!(patch[0]["message"].as_str().unwrap().contains("\"A\""));
-        for show in report["shows"].as_array().unwrap() {
-            assert!(
-                show["warnings"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|w| w["kind"] != "patch-overlap"),
-                "{report}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn readiness_says_when_the_venue_will_not_load_and_which_fixture() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            // A native type has no modes: this fails the whole venue.
-            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par mode \"x\" @ 1:5\n}\n"),
-            &[],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-        assert_eq!(report["venue_error"]["venue"], "v", "{report}");
-        assert_eq!(report["venue_error"]["fixture"], "B", "{report}");
-        assert!(
-            report["venue_error"]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("not GDTF-sourced"),
-            "{report}"
-        );
-        // And the fixture is listed as unresolved, with the same reason.
-        assert_eq!(report["fixture_types"]["unresolved"][0]["fixture"], "B");
-    }
-
-    #[tokio::test]
-    async fn readiness_reports_an_untagged_venue_as_groups_with_no_fixtures() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            // A is tagged, B is not; a show that targets `washes` finds A and a
-            // show that targets `movers` (declared nowhere) finds nothing.
-            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  fixture \"B\" Par @ 1:3\n}\n"),
-            &[(
-                "Esaweg",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
-                 movers: static color: \"blue\", duration: 2s\n}\n",
-            )],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-
-        assert_eq!(report["dmx"], json!(true));
-        assert_eq!(report["venue"]["name"], json!("v"));
-        assert_eq!(report["venue"]["fixtures"], json!(2));
-        assert_eq!(report["venue"]["placed"], json!(0));
-        assert_eq!(report["venue"]["focus_points"], json!([]));
-        assert_eq!(report["fixture_types"]["in_use"], json!(["Par"]));
-        assert_eq!(report["fixture_types"]["unresolved"], json!([]));
-
-        let groups = report["groups"].as_array().unwrap();
-        let by_name = |name: &str| groups.iter().find(|g| g["name"] == json!(name)).unwrap();
-        assert_eq!(by_name("washes")["fixtures"], json!(1));
-        assert_eq!(by_name("movers")["fixtures"], json!(0));
-        assert_eq!(by_name("movers")["songs"], json!(["Esaweg"]));
-
-        let shows = report["shows"].as_array().unwrap();
-        assert_eq!(shows.len(), 1);
-        assert_eq!(shows[0]["song"], json!("Esaweg"));
-        assert_eq!(shows[0]["files"], json!(["show.light"]));
-        assert!(shows[0].get("error").is_none(), "{report}");
-        let kinds: Vec<&str> = shows[0]["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|w| w["kind"].as_str())
-            .collect();
-        assert!(kinds.contains(&"empty-group"), "{kinds:?}");
-        // The Groups check carries the empty group, not the song's.
-        let checks = report["checks"].as_array().unwrap();
-        let groups_check = checks.iter().find(|c| c["key"] == json!("groups")).unwrap();
-        assert_eq!(groups_check["state"], json!("attention"), "{report}");
-
-        // Nothing listens where olad's web server should be.
-        assert_eq!(report["output"]["universes"], json!([1]));
-        assert_eq!(report["output"]["unconfigured"], json!([]));
-        assert_eq!(report["output"]["olad"]["reachable"], json!(false));
-    }
-
-    #[tokio::test]
-    async fn readiness_reports_a_show_that_does_not_parse() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n}\n"),
-            &[
-                (
-                    "Good",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-                ),
-                // No `duration`: the parser refuses it, and the song with it.
-                (
-                    "Bad",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
-                ),
-            ],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-        let shows = report["shows"].as_array().unwrap();
-        let bad = shows.iter().find(|s| s["song"] == json!("Bad")).unwrap();
-        let error = bad["error"].as_str().expect("error present");
-        assert!(error.contains("duration"), "{error}");
-        let good = shows.iter().find(|s| s["song"] == json!("Good")).unwrap();
-        assert!(good.get("error").is_none());
-    }
-
-    #[tokio::test]
-    async fn readiness_lists_a_universe_with_no_output() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 4:1\n}\n"),
-            &[(
-                "Song",
-                "show \"S\" {\n    @00:00.000\n    all: static color: \"red\", duration: 2s\n}\n",
-            )],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-        assert_eq!(report["output"]["universes"], json!([1, 4]));
-        assert_eq!(report["output"]["unconfigured"], json!([4]));
-        // Output carries it; no song repeats it.
-        assert_eq!(report["shows"].as_array().unwrap().len(), 1);
-        for show in report["shows"].as_array().unwrap() {
-            for w in show["warnings"].as_array().unwrap() {
-                assert_ne!(w["kind"], json!("unconfigured-universe"), "{report}");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn readiness_says_why_a_fixture_type_did_not_load() {
-        let rig = rig(
-            &[
-                ("par.light", TYPE_PAR),
-                (
-                    "ghost.fixture",
-                    "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\")\n{ }\n",
-                ),
-            ],
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"G\" Ghost mode \"M\" @ 1:5\n  \
-                 fixture \"N\" Nope @ 1:9\n}\n",
-            ),
-            &[],
-            &[1],
-        );
-        let report = readiness(rig.state.clone()).await;
-        assert_eq!(report["fixture_types"]["in_use"], json!(["Par"]));
-        let unresolved = report["fixture_types"]["unresolved"].as_array().unwrap();
-        assert_eq!(unresolved.len(), 2);
-        assert_eq!(unresolved[0]["fixture"], json!("G"));
-        assert_eq!(unresolved[0]["type"], json!("Ghost"));
-        assert!(
-            unresolved[0]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("missing.gdtf"),
-            "the loader's own reason: {report}"
-        );
-        assert_eq!(unresolved[1]["fixture"], json!("N"));
-        assert!(unresolved[1]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("no fixture type named 'Nope'"));
-    }
-
-    #[tokio::test]
-    async fn readiness_lists_the_library_s_name_collisions_and_unreadable_archives() {
-        let archive = synthetic_gdtf_bytes();
-        let rig = rig_with_library(
-            &[("par.light", TYPE_PAR)],
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  \
-                 fixture \"B\" \"Synth Brick (b)\" mode \"8: RGBS\" @ 1:5\n}\n",
-            ),
-            &[],
-            &[1],
-            &[
-                ("a.gdtf", archive.as_slice()),
-                ("b.gdtf", archive.as_slice()),
-                ("junk.gdtf", b"not a zip".as_slice()),
-            ],
-        );
-        let report = readiness(rig.state.clone()).await;
-        assert!(report["venue_error"].is_null(), "{report}");
-        let library = report["fixture_types"]["library"].as_array().unwrap();
-        let kinds: Vec<(&str, &str)> = library
-            .iter()
-            .map(|f| (f["kind"].as_str().unwrap(), f["file"].as_str().unwrap()))
-            .collect();
-        assert_eq!(
-            kinds,
-            [
-                ("gdtf-name-collision", "b.gdtf"),
-                ("gdtf-unreadable", "junk.gdtf")
-            ],
-            "{report}"
-        );
-        // One finding per renamed archive, naming both.
-        let collision = library[0]["message"].as_str().unwrap();
-        assert!(
-            collision.contains("a.gdtf") && collision.contains("\"Synth Brick (b)\""),
-            "{collision}"
-        );
-    }
-
-    #[tokio::test]
-    async fn readiness_without_a_current_venue_has_none() {
-        let rig = rig(&[("par.light", TYPE_PAR)], None, &[], &[1]);
-        let report = readiness(rig.state.clone()).await;
-        assert_eq!(report["dmx"], json!(true));
-        assert_eq!(report["venue"], json!(null));
-        assert_eq!(report["output"]["universes"], json!([]));
-    }
-
-    // -----------------------------------------------------------------------
-    // GET /lighting/fit
-    // -----------------------------------------------------------------------
-
-    const TYPE_MOVER: &str = "fixture_type \"Mover\" {\n  channels: 6\n  channel_map: { \"pan\": 1, \"tilt\": 2, \"red\": 3, \"green\": 4, \"blue\": 5, \"dimmer\": 6 }\n}\n";
-
-    const TYPE_WASH: &str = "fixture_type \"Wash\" {\n  channels: 4\n  channel_map: { \"red\": 1, \"green\": 2, \"blue\": 3, \"dimmer\": 4 }\n}\n";
-
-    async fn fit(state: WebUiState) -> serde_json::Value {
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .uri("/lighting/fit")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        serde_json::from_str(&response_body(response).await).unwrap()
-    }
-
-    #[tokio::test]
-    async fn fit_without_dmx_has_no_venue_and_no_groups() {
-        let project = tempfile::tempdir().unwrap();
-        let songs = song_registry(
-            project.path(),
-            &[(
-                "Song",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-            )],
-        );
-        let (state, _dir) = test_state_with_registry(songs);
-        let report = fit(state).await;
-        assert_eq!(report["venue"], json!(null));
-        assert_eq!(report["groups"], json!([]));
-        assert_eq!(report["focus_points_wanted"], json!([]));
-    }
-
-    #[tokio::test]
-    async fn fit_suggests_tags_for_an_untagged_group_and_lists_wanted_focus_points() {
-        // `washes` needs the `wash` tag and is empty. The shows ask it to move
-        // and to colour, which only the Mover does.
-        let rig = rig(
-            &[("par.light", TYPE_PAR), ("mover.light", TYPE_MOVER)],
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 1:3\n  \
-                 fixture \"M\" Mover @ 1:10 tags [\"other\"]\n  focus \"center\" (0, 3, 0)\n}\n",
-            ),
-            &[(
-                "Esaweg",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
-                 washes: move focus: \"drummer\", duration: 1s\n    \
-                 washes: move focus: \"center\", duration: 1s\n}\n",
-            )],
-            &[1],
-        );
-        let report = fit(rig.state.clone()).await;
-
-        assert_eq!(report["venue"]["name"], json!("v"));
-        assert_eq!(report["venue"]["fixtures"].as_array().unwrap().len(), 3);
-        assert_eq!(report["venue"]["focus_points"], json!(["center"]));
-        let m = report["venue"]["fixtures"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f["name"] == json!("M"))
-            .unwrap();
-        assert_eq!(m["tags"], json!(["other"]));
-        assert_eq!(
-            m["capabilities"],
-            json!(["color", "pan_tilt", "strobe", "dimmer"])
-        );
-
-        let groups = report["groups"].as_array().unwrap();
-        assert_eq!(groups.len(), 1);
-        let washes = &groups[0];
-        assert_eq!(washes["name"], json!("washes"));
-        assert_eq!(washes["defined"], json!(true));
-        assert_eq!(washes["needs"]["all_of"], json!(["wash"]));
-        assert_eq!(washes["fixtures"], json!([]));
-        assert_eq!(washes["songs"], json!(["Esaweg"]));
-        assert_eq!(washes["wants"], json!(["move", "color"]));
-        assert_eq!(washes["suggestion"]["fixtures"], json!(["M"]));
-        assert_eq!(washes["suggestion"]["tags"], json!(["wash"]));
-        assert_eq!(washes["suggestion"]["reason"]["count"], json!(1));
-        assert_eq!(washes["suggestion"]["reason"]["type"], json!("Mover"));
-        assert_eq!(
-            washes["suggestion"]["reason"]["can"],
-            json!(["move", "color"])
-        );
-        assert_eq!(washes["others"], json!([]));
-
-        assert_eq!(
-            report["focus_points_wanted"],
-            json!([{"name": "drummer", "songs": ["Esaweg"]}])
-        );
-    }
-
-    #[tokio::test]
-    async fn fit_offers_other_clusters_and_skips_groups_that_need_no_suggestion() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR), ("mover.light", TYPE_MOVER)],
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 1:3\n  \
-                 fixture \"M\" Mover @ 1:10\n  fixture \"W\" Par @ 1:20 tags [\"wash\"]\n}\n",
-            ),
-            &[
-                (
-                    "Untagged",
-                    "show \"S\" {\n    @00:00.000\n    movers: static color: \"red\", duration: 2s\n}\n",
-                ),
-                (
-                    "Tagged",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-                ),
-            ],
-            &[1],
-        );
-        let report = fit(rig.state.clone()).await;
-        let groups = report["groups"].as_array().unwrap();
-        let by_name = |n: &str| groups.iter().find(|g| g["name"] == json!(n)).unwrap();
-        // `movers` is declared nowhere in this rig: nothing to tag for.
-        assert_eq!(by_name("movers")["defined"], json!(false));
-        assert_eq!(by_name("movers")["suggestion"], json!(null));
-        // `washes` already finds W.
-        assert_eq!(by_name("washes")["fixtures"], json!(["W"]));
-        assert_eq!(by_name("washes")["suggestion"], json!(null));
-    }
-
-    #[tokio::test]
-    async fn fit_lists_other_clusters_under_others() {
-        // Three colour-capable candidates in two types: Pars win (two of them),
-        // the Mover is the alternative.
-        let rig = rig(
-            &[("wash.light", TYPE_WASH), ("mover.light", TYPE_MOVER)],
-            Some(
-                "venue \"v\" {\n  fixture \"A\" Wash @ 1:1\n  fixture \"B\" Wash @ 1:7\n  \
-                 fixture \"M\" Mover @ 1:10\n}\n",
-            ),
-            &[(
-                "Song",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
-            )],
-            &[1],
-        );
-        let report = fit(rig.state.clone()).await;
-        let washes = &report["groups"][0];
-        assert_eq!(washes["suggestion"]["fixtures"], json!(["A", "B"]));
-        assert_eq!(washes["others"][0]["type"], json!("Mover"));
-        assert_eq!(washes["others"][0]["fixtures"], json!(["M"]));
-    }
-
-    #[tokio::test]
-    async fn fit_says_which_want_nothing_meets() {
-        let rig = rig(
-            &[("wash.light", TYPE_WASH)],
-            Some("venue \"v\" {\n  fixture \"A\" Wash @ 1:1\n}\n"),
-            &[(
-                "Song",
-                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
-                 washes: move pan: 45deg, tilt: 0deg, duration: 1s\n}\n",
-            )],
-            &[1],
-        );
-        let report = fit(rig.state.clone()).await;
-        let washes = &report["groups"][0];
-        assert_eq!(washes["suggestion"], json!(null));
-        assert_eq!(washes["unmet"], json!(["move"]));
-        assert_eq!(washes["unmet_together"], json!(false));
-    }
-
-    #[tokio::test]
-    async fn fit_lists_unconfigured_universes_and_the_olad_port() {
-        let rig = rig(
-            &[("par.light", TYPE_PAR)],
-            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 4:1\n}\n"),
-            &[(
-                "Song",
-                "show \"S\" {\n    @00:00.000\n    all: static color: \"red\", duration: 2s\n}\n",
-            )],
-            &[1],
-        );
-        let report = fit(rig.state.clone()).await;
-        assert_eq!(report["output"]["unconfigured"], json!([4]));
-        // Nothing listens where olad's web server should be.
-        assert_eq!(report["output"]["reachable"], json!(false));
-        assert_eq!(report["output"]["unpatched"], json!([]));
-        assert!(report["output"]["ola_http_port"].as_u64().unwrap() > 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // POST /lighting/evaluate (the 3D preview)
-    // -----------------------------------------------------------------------
-
-    const PREVIEW_VENUE: &str = "venue \"v\" {\n  \
-        fixture \"M\" Mover @ 1:1 tags [\"wash\"] position (0, 3.5, 4) rotation (0, 0, 180)\n  \
-        fixture \"P\" Par @ 1:20\n  \
-        focus \"center\" (0, 0, 0)\n}\n";
-
-    const PREVIEW_SHOW: &str = "show \"S\" {\n    @00:00.000\n    \
-        washes: static color: \"red\", duration: 10s\n    \
-        @00:01.000\n    washes: move focus: \"center\", duration: 4s\n}\n";
-
-    async fn evaluate(
-        state: WebUiState,
-        body: serde_json::Value,
-    ) -> (StatusCode, serde_json::Value) {
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/evaluate")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (
-            status,
-            serde_json::from_str(&response_body(response).await).unwrap(),
-        )
-    }
-
-    #[tokio::test]
-    async fn evaluate_matches_evaluate_show_and_lists_untouched_fixtures() {
-        let rig = rig(
-            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
-            Some(PREVIEW_VENUE),
-            &[("Song", PREVIEW_SHOW)],
-            &[1],
-        );
-        let (status, body) = evaluate(
-            rig.state.clone(),
-            json!({"song": "Song", "times": [0.5, 3.0]}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let evaluations = body["evaluations"].as_array().unwrap();
-        assert_eq!(evaluations.len(), 2);
-
-        // The same shows evaluated directly, with the group resolved by hand.
-        let song = rig.state.player.songs().get("Song").unwrap();
-        let shows = crate::lighting::evaluate::registered_shows(&song);
-        let system = rig
-            .state
-            .player
-            .dmx_engine()
-            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
-            .unwrap();
-        let (fixtures, focus) = {
-            let guard = system.lock();
-            (
-                guard.get_current_venue_fixtures().unwrap(),
-                guard
-                    .get_current_venue()
-                    .unwrap()
-                    .focus_points()
-                    .iter()
-                    .map(|(n, p)| (n.clone(), *p))
-                    .collect::<std::collections::HashMap<_, _>>(),
-            )
-        };
-        let direct = crate::lighting::evaluate::evaluate_show(
-            shows,
-            &fixtures,
-            &focus,
-            None,
-            &[
-                std::time::Duration::from_secs_f64(0.5),
-                std::time::Duration::from_secs_f64(3.0),
-            ],
-            |mut effect| {
-                effect.target_fixtures = vec!["M".to_string()];
-                effect
-            },
-        );
-        for (got, want) in evaluations.iter().zip(&direct) {
-            let maps = crate::webui::state::stage_frame(&want.fixtures, &want.poses);
-            let (poses, cells) = (json!(maps.poses), json!(maps.cells));
-            assert_eq!(got["fixtures"], json!(maps.fixtures));
-            assert_eq!(got["strobe_rates"], json!(maps.strobe_rates));
-            // Pan and tilt are exact; the beam's direction and footprint are
-            // trigonometry, which two evaluations agree on to the last bit or
-            // two, not always the last.
-            for (name, want_pose) in poses.as_object().unwrap() {
-                let got_pose = &got["poses"][name];
-                assert_eq!(got_pose["pan"], want_pose["pan"]);
-                assert_eq!(got_pose["tilt"], want_pose["tilt"]);
-                for key in ["aim", "floor"] {
-                    let (g, w) = (got_pose[key].as_array(), want_pose[key].as_array());
-                    assert_eq!(g.map(|a| a.len()), w.map(|a| a.len()), "{name} {key}");
-                    for (g, w) in g.into_iter().flatten().zip(w.into_iter().flatten()) {
-                        assert!((g.as_f64().unwrap() - w.as_f64().unwrap()).abs() < 1e-9);
-                    }
-                }
-            }
-            assert_eq!(
-                got["poses"].as_object().unwrap().len(),
-                poses.as_object().unwrap().len()
-            );
-            assert_eq!(got["cells"], json!(cells));
-            assert_eq!(got["time"], json!(want.time.as_secs_f64()));
-        }
-        // The move is under way at 3 s: the mover has left rest.
-        assert_ne!(
-            evaluations[0]["poses"]["M"], evaluations[1]["poses"]["M"],
-            "{body}"
-        );
-        assert_eq!(evaluations[1]["fixtures"]["M"]["red"], json!(255));
-
-        let active = evaluations[1]["active_effects"].as_array().unwrap();
-        let kinds: Vec<&str> = active.iter().filter_map(|e| e["kind"].as_str()).collect();
-        assert!(
-            kinds.contains(&"Static") && kinds.contains(&"Move"),
-            "{kinds:?}"
-        );
-        assert!(active.iter().all(|e| e["groups"] == json!(["washes"])));
-        let mv = active.iter().find(|e| e["kind"] == json!("Move")).unwrap();
-        assert_eq!(mv["elapsed"], json!(2.0));
-        assert_eq!(mv["duration"], json!(4.0));
-
-        // P is in no group the show targets.
-        assert_eq!(body["untouched"], json!(["P"]));
-    }
-
-    #[tokio::test]
-    async fn evaluate_answers_unknown_and_unloadable_songs() {
-        let rig = rig(
-            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
-            Some(PREVIEW_VENUE),
-            &[
-                ("Song", PREVIEW_SHOW),
-                // No `duration`: the show does not parse, so the song does not load.
-                (
-                    "Bad",
-                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
-                ),
-            ],
-            &[1],
-        );
-        let (status, body) =
-            evaluate(rig.state.clone(), json!({"song": "Nope", "times": [0]})).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-
-        let (status, body) =
-            evaluate(rig.state.clone(), json!({"song": "Bad", "times": [0]})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert!(
-            body["error"].as_str().unwrap().contains("duration"),
-            "{body}"
-        );
-
-        let (status, _) =
-            evaluate(rig.state.clone(), json!({"song": "Song", "times": [-1.0]})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn evaluate_is_a_read_and_works_while_locked() {
-        let rig = rig(
-            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
-            Some(PREVIEW_VENUE),
-            &[("Song", PREVIEW_SHOW)],
-            &[1],
-        );
-        rig.state.player.set_locked(true);
-        let response = super::super::guarded_router(&rig.state)
-            .with_state(rig.state.clone())
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/evaluate")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"song": "Song", "times": [1.0]}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn evaluate_refuses_times_it_cannot_hold_instead_of_panicking() {
-        let rig = rig(
-            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
-            Some(PREVIEW_VENUE),
-            &[("Song", PREVIEW_SHOW)],
-            &[1],
-        );
-        // Past what a Duration holds: used to panic the handler.
-        let (status, body) =
-            evaluate(rig.state.clone(), json!({"song": "Song", "times": [1e300]})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "time out of range");
-        // Representable but longer than any song.
-        let (status, _) =
-            evaluate(rig.state.clone(), json!({"song": "Song", "times": [1e6]})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, body) =
-            evaluate(rig.state.clone(), json!({"song": "Song", "times": [2.5]})).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     // -----------------------------------------------------------------------

@@ -2542,3 +2542,841 @@ message BluetoothPhone {
     optional string name = 2;
     bool connected = 3;
 }
+
+// ---- Lighting ----
+
+// LightingService is the lighting pages' calls over a player: a song's light
+// show files, their validation and evaluation, the overview's readiness and
+// fit, the groups a cue can target, and the fixture test. It is served on the
+// gRPC port and by the web UI's gRPC-Web, behind the same lock as the other
+// services; Bluetooth does not carry it.
+service LightingService {
+    // GetLightShow reads the text of a song's light show file. The name is
+    // the file's path under the songs directory, as the song list names it
+    // (`my_song/lighting/show.light`). NOT_FOUND when there is no such file,
+    // or the name leads outside the songs directory. Open while locked.
+    rpc GetLightShow(GetLightShowRequest) returns (GetLightShowResponse);
+
+    // SaveLightShow validates and writes a song's light show file, creating
+    // it (in a folder that is there) or replacing it. The text is parsed
+    // first, against the tempo of the song the file belongs to, its
+    // includes resolved where it is written: INVALID_ARGUMENT, with every
+    // problem in the message (each `Invalid light show DSL: ...`, joined
+    // by "; "), when it does not parse. PERMISSION_DENIED for a name outside
+    // the songs directory; INVALID_ARGUMENT for one that is not a .light
+    // file or is in the venues or fixture types directory; NOT_FOUND when
+    // the folder is not there. There is no expected_revision: the file is
+    // replaced as it stands, as it always was. Refused while locked.
+    rpc SaveLightShow(SaveLightShowRequest) returns (SaveLightShowResponse);
+
+    // DeleteLightShow removes a song's light show file (a link itself, never
+    // what it leads to). NOT_FOUND when it is not there; the refusals of
+    // SaveLightShow for a name that is not a .light file, is outside the
+    // songs directory, or is in the venues or fixture types directory.
+    // Refused while locked.
+    rpc DeleteLightShow(DeleteLightShowRequest) returns (DeleteLightShowResponse);
+
+    // ValidateLightShow checks light show text without saving it. It answers
+    // normally with a list of problems; only a request that cannot be
+    // checked (a file that leads outside the songs directory) is an error.
+    // Open while locked.
+    rpc ValidateLightShow(ValidateLightShowRequest) returns (ValidateLightShowResponse);
+
+    // GetLightingReadiness reports the facts behind the Lighting overview's
+    // five checks, and the checks' verdicts on them. Open while locked.
+    rpc GetLightingReadiness(GetLightingReadinessRequest) returns (LightingReadiness);
+
+    // GetLightingFit reports the facts and suggestions behind the Fit shows
+    // page. Open while locked.
+    rpc GetLightingFit(GetLightingFitRequest) returns (LightingFit);
+
+    // EvaluateSongLighting reports what a song's shows would be doing at
+    // each asked time, offline, without touching the running engine.
+    // NOT_FOUND for a song that is not there; INVALID_ARGUMENT for a song
+    // whose lighting did not load or has none, or for times that are not
+    // non-negative seconds. Open while locked.
+    rpc EvaluateSongLighting(EvaluateSongLightingRequest) returns (LightingPreview);
+
+    // ListLightingGroups lists the logical groups a cue can target, with the
+    // fixtures each resolves to in the loaded venue. Open while locked.
+    rpc ListLightingGroups(ListLightingGroupsRequest) returns (ListLightingGroupsResponse);
+
+    // StartFixtureTest starts or updates a fixture test: the controls
+    // become the DMX a show would send for that fixture at that universe and
+    // address, laid over the engine's output for a few seconds. The refusal's
+    // reason is in the x-refusal-reason metadata ("playing", "no_dmx",
+    // "no_universes", "universe", "address", "controls", "type", "mode",
+    // "raw", "files"). Refused while locked.
+    rpc StartFixtureTest(StartFixtureTestRequest) returns (FixtureTestAnswer);
+
+    // StopFixtureTest releases the test output now. Open while locked:
+    // letting go only ever hands the lights back to the show.
+    rpc StopFixtureTest(StopFixtureTestRequest) returns (StopFixtureTestResponse);
+
+    // GetFixtureTestOptions describes what a test of a fixture type can do:
+    // its modes, the running profile's universes, and whether a test can run
+    // now. Open while locked.
+    rpc GetFixtureTestOptions(GetFixtureTestOptionsRequest) returns (FixtureTestOptions);
+}
+
+// ---- Light show files ----
+
+message GetLightShowRequest {
+    // The file's path under the songs directory.
+    string name = 1;
+}
+
+message GetLightShowResponse {
+    // The file's text.
+    string source = 1;
+}
+
+message SaveLightShowRequest {
+    // The file's path under the songs directory.
+    string name = 1;
+    // The light show's text.
+    string source = 2;
+}
+
+message SaveLightShowResponse {}
+
+message DeleteLightShowRequest {
+    // The file's path under the songs directory.
+    string name = 1;
+}
+
+message DeleteLightShowResponse {}
+
+message ValidateLightShowRequest {
+    // The light show's text.
+    string source = 1;
+    // The song the text belongs to: measure and beat timing cannot be
+    // parsed without that song's tempo map. A song that is not there is
+    // checked as if none was named.
+    optional string song = 2;
+    // The file the text is a draft of, as SaveLightShow names it, so its
+    // includes resolve where saving it would.
+    optional string file = 3;
+}
+
+message ValidateLightShowResponse {
+    bool valid = 1;
+    // What is wrong with the text, one problem each; empty when it is valid.
+    repeated string errors = 2;
+}
+
+// ---- Groups ----
+
+message ListLightingGroupsRequest {}
+
+message ListLightingGroupsResponse {
+    repeated LightingGroup groups = 1;
+    // False without a DMX engine: the names come from the config and no
+    // group lists its fixtures. Absent when they were resolved.
+    optional bool resolved = 2;
+}
+
+message LightingGroup {
+    string name = 1;
+    // The fixtures it resolves to now.
+    repeated string fixtures = 2;
+}
+
+// ---- Shared findings ----
+
+message LightingVec2 {
+    double x = 1;
+    double y = 2;
+}
+
+message LightingVec3 {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+}
+
+// LightingSeverity is how much a finding matters.
+enum LightingSeverity {
+    LIGHTING_SEVERITY_UNSPECIFIED = 0;
+    // Stops the lighting.
+    LIGHTING_SEVERITY_BLOCKED = 1;
+    // Stops a cue doing what it says.
+    LIGHTING_SEVERITY_ATTENTION = 2;
+    // Could not be checked.
+    LIGHTING_SEVERITY_UNKNOWN = 3;
+    // Listed, changes nothing.
+    LIGHTING_SEVERITY_NOTE = 4;
+}
+
+// LightingWant is what a show asks of a group's fixtures.
+enum LightingWant {
+    LIGHTING_WANT_UNSPECIFIED = 0;
+    LIGHTING_WANT_MOVE = 1;
+    LIGHTING_WANT_COLOR = 2;
+    LIGHTING_WANT_STROBE = 3;
+    LIGHTING_WANT_CELLS = 4;
+    LIGHTING_WANT_DIMMER = 5;
+}
+
+// LightingWarning is a non-fatal finding of a lint.
+message LightingWarning {
+    // A stable identifier, so callers can filter without matching prose.
+    string kind = 1;
+    string message = 2;
+    LightingSeverity severity = 3;
+}
+
+// LightingLibraryFinding is something about the fixture library a person
+// should know: two archives stating one name, or an archive that is not a
+// readable GDTF.
+message LightingLibraryFinding {
+    string kind = 1;
+    // The archive's file name.
+    string file = 2;
+    string message = 3;
+}
+
+// LightingVenueError is a venue that does not register: the fixture that
+// fails it and why.
+message LightingVenueError {
+    string venue = 1;
+    string fixture = 2;
+    string reason = 3;
+}
+
+// ---- Readiness ----
+
+message GetLightingReadinessRequest {}
+
+// LightingReadiness is the facts behind the Lighting overview's checks, and
+// the checks' verdicts on them.
+message LightingReadiness {
+    // Whether the player has a DMX engine.
+    bool dmx = 1;
+    // The current venue; absent without one.
+    ReadinessVenue venue = 2;
+    // Set when the current venue does not load.
+    LightingVenueError venue_error = 3;
+    // Fixtures patched over part of each other's addresses or past the
+    // end of their universe.
+    repeated LightingWarning patch_warnings = 4;
+    ReadinessTypes fixture_types = 5;
+    // The groups the shows target, with what each finds.
+    repeated ReadinessGroup groups = 6;
+    // Every song with lighting, its files and what lint says of them.
+    repeated ReadinessShow shows = 7;
+    ReadinessOutput output = 8;
+    // The five checks, in the order a show needs them.
+    repeated ReadinessCheck checks = 9;
+}
+
+message ReadinessVenue {
+    string name = 1;
+    uint32 fixtures = 2;
+    // How many of them the venue places on the stage.
+    uint32 placed = 3;
+    repeated string focus_points = 4;
+}
+
+message ReadinessTypes {
+    repeated string in_use = 1;
+    repeated ReadinessUnresolvedFixture unresolved = 2;
+    repeated LightingLibraryFinding library = 3;
+}
+
+// ReadinessUnresolvedFixture is a fixture whose type or mode does not
+// resolve, and why.
+message ReadinessUnresolvedFixture {
+    string fixture = 1;
+    string type = 2;
+    string reason = 3;
+}
+
+message ReadinessGroup {
+    string name = 1;
+    // How many fixtures it finds in the current venue.
+    uint32 fixtures = 2;
+    repeated string songs = 3;
+}
+
+message ReadinessShow {
+    string song = 1;
+    repeated string files = 2;
+    // Why the song's show does not load (the song does not, then).
+    optional string error = 3;
+    repeated LightingWarning warnings = 4;
+}
+
+message ReadinessOutput {
+    repeated uint32 universes = 1;
+    repeated uint32 unconfigured = 2;
+    // Absent when nothing was asked of olad.
+    ReadinessOladPatch olad = 3;
+}
+
+message ReadinessOladPatch {
+    bool reachable = 1;
+    repeated uint32 unpatched = 2;
+}
+
+enum ReadinessCheckKey {
+    READINESS_CHECK_KEY_UNSPECIFIED = 0;
+    READINESS_CHECK_KEY_FIXTURES = 1;
+    READINESS_CHECK_KEY_VENUE = 2;
+    READINESS_CHECK_KEY_GROUPS = 3;
+    READINESS_CHECK_KEY_SHOWS = 4;
+    READINESS_CHECK_KEY_OUTPUT = 5;
+}
+
+enum ReadinessCheckState {
+    READINESS_CHECK_STATE_UNSPECIFIED = 0;
+    READINESS_CHECK_STATE_READY = 1;
+    READINESS_CHECK_STATE_ATTENTION = 2;
+    READINESS_CHECK_STATE_BLOCKED = 3;
+    READINESS_CHECK_STATE_UNKNOWN = 4;
+}
+
+// ReadinessCheck is a check, its verdict, what its card says and what it
+// found.
+message ReadinessCheck {
+    ReadinessCheckKey key = 1;
+    ReadinessCheckState state = 2;
+    // The card's one-line summary, as parts shown side by side.
+    repeated ReadinessSummary summary = 3;
+    repeated ReadinessFinding findings = 4;
+}
+
+// ReadinessNothing is a summary, finding or fix that carries nothing but
+// which it is.
+message ReadinessNothing {}
+
+message ReadinessCount {
+    uint32 count = 1;
+}
+
+message ReadinessVenueSummary {
+    string venue = 1;
+    uint32 fixtures = 2;
+    uint32 unplaced = 3;
+}
+
+// ReadinessSummary is a part of a check's summary (the page's
+// `lighting.hub.summary.<kind>`).
+message ReadinessSummary {
+    oneof kind {
+        ReadinessCount blocked = 1;
+        ReadinessCount shows_blocked = 2;
+        ReadinessCount attention = 3;
+        ReadinessNothing unknown = 4;
+        ReadinessNothing no_dmx = 5;
+        ReadinessNothing needs_venue = 6;
+        ReadinessNothing shows_none = 7;
+        ReadinessCount shows_ready = 8;
+        ReadinessCount types_ready = 9;
+        ReadinessVenueSummary venue_all_placed = 10;
+        ReadinessVenueSummary venue_some_unplaced = 11;
+        ReadinessNothing groups_none = 12;
+        ReadinessCount groups_ready = 13;
+        ReadinessCount output_ready = 14;
+    }
+}
+
+// ReadinessFinding is something a check found, and where it is fixed.
+message ReadinessFinding {
+    LightingSeverity severity = 1;
+    ReadinessWhat what = 2;
+    ReadinessFix fix = 3;
+    // A song, when the finding is listed under one.
+    optional string song = 4;
+}
+
+message ReadinessShowError {
+    string song = 1;
+    string detail = 2;
+}
+
+message ReadinessDetail {
+    string detail = 1;
+}
+
+message ReadinessEmptyVenue {
+    string venue = 1;
+}
+
+message ReadinessGroupEmpty {
+    string group = 1;
+    string venue = 2;
+    string songs = 3;
+}
+
+message ReadinessUniverse {
+    uint32 universe = 1;
+}
+
+// ReadinessWhat is what a finding is (the page's
+// `lighting.hub.finding.<kind>`).
+message ReadinessWhat {
+    oneof kind {
+        ReadinessShowError show_error = 1;
+        ReadinessDetail lint = 2;
+        ReadinessNothing no_dmx = 3;
+        ReadinessUnresolvedFixture type_unresolved = 4;
+        ReadinessNothing no_venue = 5;
+        LightingVenueError venue_failed = 6;
+        ReadinessEmptyVenue empty_venue = 7;
+        ReadinessDetail patch = 8;
+        ReadinessGroupEmpty group_empty = 9;
+        ReadinessUniverse universe_unconfigured = 10;
+        ReadinessNothing olad_unreachable = 11;
+        ReadinessUniverse universe_unpatched = 12;
+    }
+}
+
+message ReadinessFixSong {
+    string song = 1;
+}
+
+message ReadinessFixFit {
+    // The group selected on the Fit shows page, when there is one.
+    optional string group = 1;
+}
+
+// ReadinessFix is where a finding is fixed (the page's
+// `lighting.hub.fix.<kind>`).
+message ReadinessFix {
+    oneof kind {
+        // The song's lighting.
+        ReadinessFixSong song = 1;
+        // The Fit shows page.
+        ReadinessFixFit fit = 2;
+        ReadinessNothing fixtures = 3;
+        ReadinessNothing venues = 4;
+        // The running profile's DMX settings.
+        ReadinessNothing config = 5;
+        // The groups page, where a venue is chosen.
+        ReadinessNothing choose_venue = 6;
+    }
+}
+
+// ---- Fit ----
+
+message GetLightingFitRequest {}
+
+// LightingFit is the facts and suggestions behind the Fit shows page.
+message LightingFit {
+    // Absent when the player has no DMX engine or no current venue.
+    FitVenue venue = 1;
+    // One entry per group any show targets, in name order.
+    repeated FitGroup groups = 2;
+    // The focus points the shows aim at that the venue lacks.
+    repeated FitFocusWanted focus_points_wanted = 3;
+    FitOutput output = 4;
+}
+
+message FitVenue {
+    string name = 1;
+    repeated FitFixture fixtures = 2;
+    repeated string focus_points = 3;
+    // Why the venue does not register, instead of an empty rig.
+    FitVenueError error = 4;
+}
+
+// FitCapability is what a fixture can do, as the pages name it.
+enum FitCapability {
+    FIT_CAPABILITY_UNSPECIFIED = 0;
+    FIT_CAPABILITY_COLOR = 1;
+    FIT_CAPABILITY_PAN_TILT = 2;
+    FIT_CAPABILITY_STROBE = 3;
+    FIT_CAPABILITY_CELLS = 4;
+    FIT_CAPABILITY_DIMMER = 5;
+    FIT_CAPABILITY_WHITE = 6;
+    FIT_CAPABILITY_ZOOM = 7;
+    FIT_CAPABILITY_FOCUS = 8;
+    FIT_CAPABILITY_GOBO = 9;
+    FIT_CAPABILITY_COLOR_WHEEL = 10;
+}
+
+message FitFixture {
+    string name = 1;
+    string type = 2;
+    repeated string tags = 3;
+    // Stage position in meters; absent when the venue does not place it.
+    LightingVec3 position = 4;
+    repeated FitCapability capabilities = 5;
+}
+
+message FitVenueError {
+    // The fixture that fails the venue, when one does.
+    optional string fixture = 1;
+    string reason = 2;
+}
+
+// FitHeight is how high a fixture hangs.
+enum FitHeight {
+    FIT_HEIGHT_UNSPECIFIED = 0;
+    // Below half a meter.
+    FIT_HEIGHT_DECK = 1;
+    // Below two and a half meters.
+    FIT_HEIGHT_LOW = 2;
+    FIT_HEIGHT_TRUSS = 3;
+}
+
+// FitDepth is how far upstage a fixture hangs.
+enum FitDepth {
+    FIT_DEPTH_UNSPECIFIED = 0;
+    FIT_DEPTH_DOWNSTAGE = 1;
+    FIT_DEPTH_MID = 2;
+    FIT_DEPTH_UPSTAGE = 3;
+}
+
+// FitNeeds is the tags a group's constraints ask of a fixture.
+message FitNeeds {
+    // Every one must be present.
+    repeated string all_of = 1;
+    // At least one must be present.
+    repeated string any_of = 2;
+    // Preferred, never required.
+    repeated string prefer = 3;
+}
+
+// FitCluster is a cluster of like fixtures: the same type, hanging in the
+// same place.
+message FitCluster {
+    repeated string fixtures = 1;
+    string type = 2;
+    // The place in words ("upstage truss"); absent when unplaced.
+    optional string where = 3;
+    optional FitHeight height = 4;
+    optional FitDepth depth = 5;
+}
+
+// FitReason is why a cluster is the suggestion.
+message FitReason {
+    uint32 count = 1;
+    string type = 2;
+    optional string where = 3;
+    optional FitHeight height = 4;
+    optional FitDepth depth = 5;
+    // What the shows ask of the group, which the cluster can do.
+    repeated LightingWant can = 6;
+}
+
+// FitSuggestion is fixtures and the tags that would put them in a group.
+message FitSuggestion {
+    repeated string fixtures = 1;
+    repeated string tags = 2;
+    FitReason reason = 3;
+}
+
+// FitGroup is a group the shows target: what it needs, finds and is asked,
+// and the suggestion that would satisfy it.
+message FitGroup {
+    string name = 1;
+    // Whether the running profile declares the group.
+    bool defined = 2;
+    FitNeeds needs = 3;
+    // The tags that would put a fixture in it.
+    repeated string tags = 4;
+    // The fixtures it finds in the current venue now.
+    repeated string fixtures = 5;
+    repeated string songs = 6;
+    repeated LightingWant wants = 7;
+    FitSuggestion suggestion = 8;
+    repeated FitCluster others = 9;
+    // With no suggestion: the wants no fixture in the venue meets.
+    repeated LightingWant unmet = 10;
+    // With no suggestion and every want met by some fixture: none meets
+    // them all at once.
+    bool unmet_together = 11;
+}
+
+message FitFocusWanted {
+    string name = 1;
+    repeated string songs = 2;
+}
+
+message FitOutput {
+    repeated uint32 unconfigured = 1;
+    repeated uint32 unpatched = 2;
+    // Whether olad's web server answered; absent when nothing was asked.
+    optional bool reachable = 3;
+    optional uint32 ola_http_port = 4;
+}
+
+// ---- Evaluation ----
+
+message EvaluateSongLightingRequest {
+    string song = 1;
+    // Song times, in seconds.
+    repeated double times = 2;
+}
+
+// LightingPreview is what a song's shows do at each asked time.
+message LightingPreview {
+    string song = 1;
+    repeated PreviewEvaluation evaluations = 2;
+    // Fixtures no cue in the shows targets: the same at every instant, so
+    // sent once.
+    repeated string untouched = 3;
+    // Why the current venue does not register, when it does not: what is
+    // evaluated is then an empty rig.
+    optional string venue_error = 4;
+}
+
+// PreviewEvaluation is the stage at one asked time.
+message PreviewEvaluation {
+    // Seconds.
+    double time = 1;
+    PreviewFrame frame = 2;
+    repeated PreviewEffect active_effects = 3;
+}
+
+message PreviewChannels {
+    // Channel values, by channel name.
+    map<string, uint32> values = 1;
+}
+
+message PreviewCells {
+    // Each cell's channels, by cell name.
+    map<string, PreviewChannels> cells = 1;
+}
+
+message PreviewPose {
+    double pan = 1;
+    double tilt = 2;
+    // The beam direction in stage space, unit length.
+    LightingVec3 aim = 3;
+    // Where the beam meets the deck; absent for a beam with no footprint.
+    LightingVec2 floor = 4;
+}
+
+// PreviewFrame is the stage values a live frame carries, by fixture name.
+message PreviewFrame {
+    map<string, PreviewChannels> fixtures = 1;
+    // Where each mover points.
+    map<string, PreviewPose> poses = 2;
+    // Per-cell values, only for fixtures a per-cell effect is driving.
+    map<string, PreviewCells> cells = 3;
+    // The rate each strobing fixture flashes at, in hertz.
+    map<string, double> strobe_rates = 4;
+}
+
+message PreviewEffectGroups {
+    repeated string names = 1;
+}
+
+// PreviewEffect is an effect running at the evaluated time.
+message PreviewEffect {
+    string id = 1;
+    // The logical groups the cue named; absent when the engine did not say.
+    PreviewEffectGroups groups = 2;
+    // The effect's kind as the engine names it: `Static`, `Move`, ...
+    string kind = 3;
+    string layer = 4;
+    // Seconds into the effect.
+    double elapsed = 5;
+    // The effect's authored length, seconds.
+    double duration = 6;
+    repeated string fixtures = 7;
+}
+
+// ---- Fixture test ----
+
+message GetFixtureTestOptionsRequest {
+    string fixture_type = 1;
+    // The fixture types directory, when the page names one (the running
+    // profile's); else the one the engine reads on this host.
+    optional string dir = 2;
+    // The venues directory, as for dir.
+    optional string venues_dir = 3;
+}
+
+// FixtureTestOptions is what the test panel needs for a fixture type.
+message FixtureTestOptions {
+    string fixture_type = 1;
+    // Whether the type comes from a GDTF, whose modes it has.
+    bool gdtf = 2;
+    repeated FixtureTestMode modes = 3;
+    // The first drivable mode.
+    optional string default_mode = 4;
+    repeated FixtureTestUniverse universes = 5;
+    FixtureTestOlad olad = 6;
+    // Whether a test can run now.
+    bool available = 7;
+    optional FixtureTestUnavailable unavailable = 8;
+    // The server's own sentence for unavailable.
+    optional string unavailable_message = 9;
+}
+
+// FixtureTestUnavailable is why a test cannot run now.
+enum FixtureTestUnavailable {
+    FIXTURE_TEST_UNAVAILABLE_UNSPECIFIED = 0;
+    FIXTURE_TEST_UNAVAILABLE_LOCKED = 1;
+    FIXTURE_TEST_UNAVAILABLE_PLAYING = 2;
+    FIXTURE_TEST_UNAVAILABLE_NO_DMX = 3;
+    FIXTURE_TEST_UNAVAILABLE_NO_UNIVERSES = 4;
+}
+
+// FixtureTestMode is a mode of the type, and what a test can do in it.
+message FixtureTestMode {
+    // Absent for a hand-written type, which has one way of being driven.
+    optional string name = 1;
+    bool drivable = 2;
+    optional string error = 3;
+    // Absent when the mode cannot be driven; so are controls.
+    optional uint32 footprint = 4;
+    FixtureTestControlSupport controls = 5;
+    repeated FixtureTestChannel channels = 6;
+}
+
+// FixtureTestDimmer is how a test sets a mode's level.
+enum FixtureTestDimmer {
+    FIXTURE_TEST_DIMMER_UNSPECIFIED = 0;
+    // A dimmer channel.
+    FIXTURE_TEST_DIMMER_CHANNEL = 1;
+    // No dimmer channel: the level scales the colour.
+    FIXTURE_TEST_DIMMER_FOLDED = 2;
+}
+
+message FixtureTestHzRange {
+    double min_hz = 1;
+    double max_hz = 2;
+}
+
+message FixtureTestDegreeRange {
+    double min = 1;
+    double max = 2;
+}
+
+// FixtureTestControlSupport is what a mode lets a test do.
+message FixtureTestControlSupport {
+    // The mode mixes colour (RGB or CMY).
+    bool color = 1;
+    // How the level is set; absent when the mode has no level at all.
+    optional FixtureTestDimmer dimmer = 2;
+    // The strobe's rate range, when the mode has a strobe channel.
+    FixtureTestHzRange strobe = 3;
+    FixtureTestDegreeRange pan = 4;
+    FixtureTestDegreeRange tilt = 5;
+    // Extra colour levels the mode has.
+    repeated string levels = 6;
+}
+
+// FixtureTestChannel is a channel of a mode, by its 1-based offset.
+message FixtureTestChannel {
+    uint32 offset = 1;
+    string name = 2;
+}
+
+message FixtureTestUniverse {
+    uint32 universe = 1;
+    optional string name = 2;
+    // Whether olad has an output patched; absent when it was not reached.
+    optional bool patched = 3;
+}
+
+message FixtureTestOlad {
+    // Absent when olad was not asked.
+    optional bool reachable = 1;
+    optional uint32 port = 2;
+}
+
+message StartFixtureTestRequest {
+    string fixture_type = 1;
+    // The mode to drive; absent for a hand-written type.
+    optional string mode = 2;
+    uint32 universe = 3;
+    // The 1-based DMX address, 1 to 512.
+    uint32 address = 4;
+    FixtureTestControls controls = 5;
+    // Raw channel values, 0 to 255, by 1-based offset or channel name.
+    map<string, uint32> raw = 6;
+    // The directories, as for GetFixtureTestOptionsRequest.
+    optional string dir = 7;
+    optional string venues_dir = 8;
+}
+
+// FixtureTestStrobe is a strobe control: a rate, or off when it has none.
+message FixtureTestStrobe {
+    optional double hertz = 1;
+}
+
+// FixtureTestControls are the controls a test sets; one left out is not
+// touched.
+message FixtureTestControls {
+    // `#rrggbb`.
+    optional string color = 1;
+    // 0 to 1.
+    optional double dimmer = 2;
+    optional FixtureTestStrobe strobe = 3;
+    // Degrees.
+    optional double pan = 4;
+    optional double tilt = 5;
+    // Further channel levels by channel name, 0 to 1.
+    map<string, double> levels = 6;
+}
+
+// FixtureTestAnswer is what a test sent, and what it should be told.
+message FixtureTestAnswer {
+    // Always true: the test is live.
+    bool active = 1;
+    uint32 universe = 2;
+    uint32 address = 3;
+    uint32 footprint = 4;
+    string fixture_type = 5;
+    optional string mode = 6;
+    // How long it holds without another send.
+    double expires_in_secs = 7;
+    repeated FixtureTestFrameChannel frame = 8;
+    repeated FixtureTestWarning warnings = 9;
+}
+
+// FixtureTestFrameChannel is one channel of the fixture as a test frame sets
+// it.
+message FixtureTestFrameChannel {
+    // 1-based offset within the fixture.
+    uint32 offset = 1;
+    // The DMX address it lands on.
+    uint32 address = 2;
+    string name = 3;
+    uint32 value = 4;
+    // Set by a raw value rather than a control.
+    bool raw = 5;
+}
+
+message FixtureTestMessage {
+    string message = 1;
+}
+
+message FixtureTestOverlap {
+    // Fixtures of the current venue the test is lit over.
+    repeated string fixtures = 1;
+    string message = 2;
+}
+
+message FixtureTestUnsupportedControl {
+    string control = 1;
+    string message = 2;
+}
+
+// FixtureTestWarning is something a test should be told.
+message FixtureTestWarning {
+    oneof kind {
+        FixtureTestOverlap venue_overlap = 1;
+        // The span runs past address 512.
+        FixtureTestMessage past_universe_end = 2;
+        // olad does not answer.
+        FixtureTestMessage olad_unreachable = 3;
+        // olad has no output patched for the universe.
+        FixtureTestMessage universe_unpatched = 4;
+        // A control the mode has no channel for.
+        FixtureTestUnsupportedControl unsupported_control = 5;
+    }
+}
+
+message StopFixtureTestRequest {}
+
+message StopFixtureTestResponse {
+    // Always false: no test is live.
+    bool active = 1;
+}

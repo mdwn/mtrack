@@ -13,9 +13,14 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { FIT } from "../mock-server/test-data";
 import { getConfigReply, savedReply } from "../support/config-rpc";
+import { fitReply } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { openWithStage, sendStage } from "../support/stage";
 
@@ -44,13 +49,8 @@ let testCounter = 0;
 async function routeFit(page: Page, change: (f: FitFacts) => void = () => {}) {
   const facts = structuredClone(FIT);
   change(facts);
-  await page.route("**/api/lighting/fit", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(facts),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getLightingFit, fitReply(facts));
   return facts;
 }
 
@@ -542,20 +542,10 @@ test.describe("Lighting: Fit shows", () => {
 
   test("a failed read is reported with a way to retry", async ({ page }) => {
     let fail = true;
-    await page.route("**/api/lighting/fit", async (route) => {
-      if (fail) {
-        await route.fulfill({
-          status: 500,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "boom" }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(FIT),
-      });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.getLightingFit, () => {
+      if (fail) throw new ConnectError("boom", Code.Internal);
+      return fitReply(FIT);
     });
     await openWithStage(page, "#/lighting/fit");
     await expect(page.getByTestId("fit-error")).toContainText("boom");
@@ -570,13 +560,10 @@ test.describe("Lighting: Fit shows", () => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (e) => pageErrors.push(e));
     let broken = true;
-    await page.route("**/api/lighting/fit", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: broken ? "text/html" : "application/json",
-        body: broken ? "<html>gateway</html>" : JSON.stringify(FIT),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.getLightingFit, () =>
+      broken ? {} : fitReply(FIT),
+    );
     await openWithStage(page, "#/lighting/fit");
     await expect(page.getByTestId("fit-error")).toContainText(
       "answer was not understood",

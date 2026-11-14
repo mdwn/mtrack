@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Song Detail - Lighting Tab", () => {
   test.beforeEach(async ({ page }) => {
@@ -53,33 +55,19 @@ test.describe("Song Detail - Lighting Tab", () => {
   });
 
   test("Validate button calls validation API", async ({ page }) => {
-    let validateCalled = false;
-    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
-    // timing, so the pattern has to admit a query string.
-    await page.route("**/api/lighting/validate*", async (route) => {
-      validateCalled = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ valid: true }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.validateLightShow, { valid: true });
 
     await page.locator(".tab-btn", { hasText: "Raw DSL" }).click();
     await page.getByRole("button", { name: "Validate" }).click();
-    expect(validateCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(LightingService.method.validateLightShow).length)
+      .toBe(1);
   });
 
   test("successful validation shows OK message", async ({ page }) => {
-    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
-    // timing, so the pattern has to admit a query string.
-    await page.route("**/api/lighting/validate*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ valid: true }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.validateLightShow, { valid: true });
 
     await page.locator(".tab-btn", { hasText: "Raw DSL" }).click();
     await page.getByRole("button", { name: "Validate" }).click();
@@ -87,17 +75,10 @@ test.describe("Song Detail - Lighting Tab", () => {
   });
 
   test("failed validation shows errors", async ({ page }) => {
-    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
-    // timing, so the pattern has to admit a query string.
-    await page.route("**/api/lighting/validate*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          valid: false,
-          errors: ["Unknown effect at line 3"],
-        }),
-      });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.validateLightShow, {
+      valid: false,
+      errors: ["Unknown effect at line 3"],
     });
 
     await page.locator(".tab-btn", { hasText: "Raw DSL" }).click();

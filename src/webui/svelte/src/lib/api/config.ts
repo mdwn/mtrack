@@ -31,7 +31,6 @@ import type {
   FixtureTypeList,
   GdtfImport,
   LightingGroup,
-  LightingGroups,
   LightingValidation,
   MetronomeSounds,
   MidiDeviceInfo,
@@ -63,7 +62,7 @@ import type {
   VenueSaved,
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
-import { configClient, playerClient } from "../grpc/client";
+import { configClient, lightingClient, playerClient } from "../grpc/client";
 import {
   mapAudioDevices,
   mapAudioProbe,
@@ -79,6 +78,7 @@ import {
   probeAudioRequest,
   startCalibrationRequest,
 } from "../grpc/config";
+import { mapFit, mapGroups, mapReadiness } from "../grpc/lighting";
 import {
   callError,
   mapPlaylistDetail,
@@ -86,7 +86,6 @@ import {
   savePlaylistRequest,
   type PlaylistSettings,
 } from "../grpc/library";
-import { readAnswer } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import {
   get,
@@ -96,7 +95,6 @@ import {
   uploadFile,
   uploadFiles,
   putText,
-  postText,
   apiError,
   versionedError,
 } from "./rest";
@@ -748,37 +746,29 @@ export async function deleteFixtureType(
 /// These are the logical groups from `dmx.lighting.groups`; venues no longer
 /// define groups of their own.
 export async function fetchLightingGroups(): Promise<LightingGroup[]> {
-  const res = await get("/lighting/groups");
-  if (!res.ok) throw await apiError(res, "Failed to fetch lighting groups");
-  const data: LightingGroups = await res.json();
-  return data.groups;
+  try {
+    return mapGroups(await lightingClient.listLightingGroups({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch lighting groups");
+  }
 }
 
 /** The Lighting overview's five checks, and the facts behind them. */
 export async function fetchLightingReadiness(): Promise<Readiness> {
-  const res = await get("/lighting/readiness");
-  if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
-  return readAnswer<Readiness>(res, "the readiness checks", [
-    "dmx",
-    "venue",
-    "fixture_types",
-    "groups",
-    "shows",
-    "output",
-    "checks",
-  ]);
+  try {
+    return mapReadiness(await lightingClient.getLightingReadiness({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch lighting readiness");
+  }
 }
 
 /** The facts and suggestions behind the Fit shows page. */
 export async function fetchLightingFit(): Promise<FitReport> {
-  const res = await get("/lighting/fit");
-  if (!res.ok) throw await apiError(res, "Failed to fetch lighting fit");
-  return readAnswer<FitReport>(res, "the fit", [
-    "venue",
-    "groups",
-    "focus_points_wanted",
-    "output",
-  ]);
+  try {
+    return mapFit(await lightingClient.getLightingFit({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch lighting fit");
+  }
 }
 
 /** How long a venue list is waited for before it is given up on (a
@@ -969,42 +959,50 @@ export async function activatePlaylist(name: string): Promise<void> {
 // ---- Lighting Show Files ----
 
 export async function fetchLightingFile(name: string): Promise<string> {
-  const res = await get(`/lighting/${encodeURIComponent(name)}`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch lighting file: ${res.status}`);
+  try {
+    return (await lightingClient.getLightShow({ name })).source;
+  } catch (e) {
+    throw callError(e, "Failed to fetch lighting file");
   }
-  return res.text();
 }
 
 export async function saveLightingFile(
   name: string,
   content: string,
 ): Promise<void> {
-  const res = await putText(`/lighting/${encodeURIComponent(name)}`, content);
-  if (!res.ok) throw await apiError(res, "Failed to save lighting file");
+  try {
+    await lightingClient.saveLightShow({ name, source: content });
+  } catch (e) {
+    throw callError(e, "Failed to save lighting file");
+  }
 }
 
 export async function deleteLightingFile(name: string): Promise<void> {
-  const res = await del(`/lighting/${encodeURIComponent(name)}`);
-  if (!res.ok) throw await apiError(res, "Failed to delete lighting file");
+  try {
+    await lightingClient.deleteLightShow({ name });
+  } catch (e) {
+    throw callError(e, "Failed to delete lighting file");
+  }
 }
 
 /** Validates `.light` DSL. Pass `song` when the source belongs to one —
  *  `@bar`/`beat` timing cannot be parsed without that song's tempo map —
  *  and `file`, the lighting file it is a draft of, so its `include`s resolve
- *  where saving it would. */
+ *  where saving it would. The problems are the answer; a call that cannot be
+ *  checked (a `file` outside the songs directory) throws. */
 export async function validateLighting(
   content: string,
   song?: string,
   file?: string,
 ): Promise<LightingValidation> {
-  const query = new URLSearchParams();
-  if (song) query.set("song", song);
-  if (file) query.set("file", file);
-  const qs = query.toString();
-  const res = await postText(
-    qs ? `/lighting/validate?${qs}` : "/lighting/validate",
-    content,
-  );
-  return res.json();
+  try {
+    const r = await lightingClient.validateLightShow({
+      source: content,
+      song: song || undefined,
+      file: file || undefined,
+    });
+    return r.valid ? { valid: true } : { valid: false, errors: [...r.errors] };
+  } catch (e) {
+    throw callError(e, "Failed to validate lighting");
+  }
 }

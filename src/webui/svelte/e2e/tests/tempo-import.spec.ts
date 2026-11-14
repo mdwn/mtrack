@@ -17,10 +17,12 @@ import { parse } from "yaml";
 import { SONGS, songConfigYaml } from "../mock-server/test-data";
 import {
   ConfigService,
+  LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { serveSongConfig } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
+import { lightShowReply } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 
 // A light show whose tempo map (128 BPM, one change at m5) differs from the
@@ -108,14 +110,9 @@ test.describe("Tempo import between timeline and light shows", () => {
     rpc.unary(ConfigService.method.saveSongConfig, {});
     savedSongs = () =>
       rpc.calls(ConfigService.method.saveSongConfig).map((c) => c.yaml);
-    await page.route("**/api/lighting/show.light", async (route) => {
-      if (route.request().method() !== "GET") return route.continue();
-      await route.fulfill({
-        status: 200,
-        contentType: "text/plain",
-        body: showBody,
-      });
-    });
+    rpc.unary(LightingService.method.getLightShow, (req) =>
+      req.name === "show.light" ? lightShowReply(showBody) : lightShowReply(""),
+    );
   });
 
   test("the song timeline imports a light show's tempo map", async ({

@@ -24,8 +24,9 @@ import type {
   PreviewEffect,
   SongInfo,
 } from "../../gen/rules/mtrack_rules";
-import { post } from "../api/rest";
-import { readAnswer } from "./answer";
+import { lightingClient } from "../grpc/client";
+import { mapPreview } from "../grpc/lighting";
+import { callError } from "../grpc/library";
 import { rules } from "../rules";
 import { sectionColor } from "../sectionColors";
 
@@ -35,22 +36,13 @@ export async function evaluatePreview(
   song: string,
   times: number[],
 ): Promise<Preview> {
-  const res = await post("/lighting/evaluate", JSON.stringify({ song, times }));
-  if (!res.ok) {
-    let message = `Failed to evaluate: ${res.status}`;
-    try {
-      const body = await res.json();
-      if (typeof body?.error === "string") message = body.error;
-    } catch {
-      // Keep the status message.
-    }
-    throw new Error(message);
+  try {
+    return mapPreview(
+      await lightingClient.evaluateSongLighting({ song, times }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to evaluate");
   }
-  return readAnswer<Preview>(res, "the preview", [
-    "evaluations",
-    "untouched",
-    "song",
-  ]);
 }
 
 export interface SectionSegment {

@@ -17,6 +17,7 @@ import type {
   AudioProbe,
   ChannelCalibration,
   FitReport,
+  LightingGroup,
   MidiDeviceInfo,
   MvrExportSummary,
   MvrInspection,
@@ -397,6 +398,12 @@ export const PLAYBACK_STATE = {
   ambient: null,
   next: null,
 } satisfies TypedWatchPush;
+
+/** The groups a cue can target in the mock rig. */
+export const LIGHTING_GROUPS: LightingGroup[] = [
+  { name: "front_wash", fixtures: ["par1", "par2"] },
+  { name: "back_wash", fixtures: ["par3"] },
+];
 
 /** The readiness of a rig where everything lines up, its facts and the
  *  player's verdicts on them. Specs that need a problem route their own copy

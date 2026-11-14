@@ -108,7 +108,7 @@ impl std::error::Error for CallError {}
 pub const FAILED_PRECONDITION: i32 = 9;
 
 /// Calls the unary method `method` of `service` (`PlayerService`,
-/// `ConfigService`) at `base_url` with `request`, and answers its response;
+/// `ConfigService`, `LightingService`) at `base_url` with `request`, and answers its response;
 /// the status as an error when the call failed.
 pub async fn call<Req: Message, Resp: Message + Default>(
     http: &reqwest::Client,

@@ -137,6 +137,23 @@ impl Client {
         crate::grpc_web::call(&self.http, &self.base_url, "ConfigService", method, request).await
     }
 
+    /// Calls a method of the lighting service over the web port's
+    /// gRPC-Web, as [`Client::config_call`] calls the editor service's.
+    pub async fn lighting_call<Req: prost::Message, Resp: prost::Message + Default>(
+        &self,
+        method: &str,
+        request: &Req,
+    ) -> Result<Resp, crate::grpc_web::CallError> {
+        crate::grpc_web::call(
+            &self.http,
+            &self.base_url,
+            "LightingService",
+            method,
+            request,
+        )
+        .await
+    }
+
     /// Fetches the player status over gRPC.
     pub async fn status(&mut self) -> Result<StatusResponse, Box<dyn std::error::Error>> {
         Ok(self.grpc().status(StatusRequest {}).await?.into_inner())
@@ -159,9 +176,9 @@ impl Client {
 
     /// POSTs JSON and returns the status alongside the parsed body.
     ///
-    /// Separate from [`Self::send_text`] because axum's `Json` extractor
-    /// rejects anything not sent as `application/json`, and because the status
-    /// is part of what these endpoints are saying.
+    /// Separate from a plain request because axum's `Json` extractor rejects
+    /// anything not sent as `application/json`, and because the status is part
+    /// of what these endpoints are saying.
     pub async fn post_json(
         &self,
         path: &str,
@@ -194,40 +211,6 @@ impl Client {
             format!("PUT {url} returned {status} with a non-JSON body: {e}: {text}")
         })?;
         Ok((status, parsed))
-    }
-
-    /// Sends a request with a raw body and returns the status and body text.
-    ///
-    /// The lighting endpoints take and return DSL text rather than JSON, and
-    /// several respond with a meaningful non-2xx, so the status is handed back
-    /// rather than treated as an error.
-    pub async fn send_text(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: String,
-    ) -> Result<(reqwest::StatusCode, String), Box<dyn std::error::Error>> {
-        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
-        let response = self
-            .http
-            .request(method, &url)
-            .header("content-type", "text/plain")
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status();
-        Ok((status, response.text().await?))
-    }
-
-    /// Fetches a path as raw text along with its status.
-    pub async fn get_text(
-        &self,
-        path: &str,
-    ) -> Result<(reqwest::StatusCode, String), Box<dyn std::error::Error>> {
-        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
-        let response = self.http.get(&url).send().await?;
-        let status = response.status();
-        Ok((status, response.text().await?))
     }
 
     /// The build, hardware and controllers as the player reports them: the

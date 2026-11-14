@@ -14,14 +14,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-  api,
-  expect,
-  FIRST_RUN_CONFIG,
-  status,
-  synthGdtf,
-  test,
-} from "./harness";
+import { lightingClientAt } from "../support/player-client";
+import { expect, FIRST_RUN_CONFIG, status, synthGdtf, test } from "./harness";
 
 // A new install's first lighting, through the UI, with a DMX engine and a
 // config that names no lighting directories: what the Lighting area makes
@@ -29,11 +23,6 @@ import {
 // the venue was "not found" until a directories setting was added by hand.
 
 test.use({ config: FIRST_RUN_CONFIG });
-
-interface Readiness {
-  venue: { name: string; fixtures: number } | null;
-  venue_error: unknown;
-}
 
 test("a GDTF, a venue, made current on Groups: the engine drives it, and again after a restart", async ({
   page,
@@ -92,8 +81,8 @@ test("a GDTF, a venue, made current on Groups: the engine drives it, and again a
         { timeout: 15_000 },
       )
       .toEqual(["rig", "ok"]);
-    const ready = await api<Readiness>(project, "/lighting/readiness");
-    expect(ready.venue_error).toBeNull();
+    const ready = await lightingClientAt(project.url).getLightingReadiness({});
+    expect(ready.venueError).toBeUndefined();
     expect(ready.venue?.name).toBe("rig");
     expect(ready.venue?.fixtures).toBe(1);
   };

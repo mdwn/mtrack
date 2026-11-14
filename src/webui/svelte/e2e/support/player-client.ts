@@ -19,6 +19,7 @@ import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import {
   ConfigService,
+  LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 
@@ -32,4 +33,10 @@ export function playerClientAt(baseUrl: string) {
  *  `baseUrl`. */
 export function configClientAt(baseUrl: string) {
   return createClient(ConfigService, createGrpcWebTransport({ baseUrl }));
+}
+
+/** A client of the lighting service of the player whose web server is at
+ *  `baseUrl`. */
+export function lightingClientAt(baseUrl: string) {
+  return createClient(LightingService, createGrpcWebTransport({ baseUrl }));
 }

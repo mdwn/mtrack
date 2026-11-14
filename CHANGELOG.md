@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reads, the device lists, the song reads, the Bluetooth status and the controller restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
+- **`LightingService`, a third gRPC service for the lighting pages**: `GetLightShow`,
+  `SaveLightShow`, `DeleteLightShow`, `ValidateLightShow`, `GetLightingReadiness`,
+  `GetLightingFit`, `EvaluateSongLighting`, `ListLightingGroups`, `StartFixtureTest`,
+  `StopFixtureTest` and `GetFixtureTestOptions` (`player.v1.LightingService`, in `player.proto`;
+  fixture types and venues follow in later releases). It is served on the gRPC port and by the web
+  UI's gRPC-Web, behind the same lock as the other services (saving and deleting a light show and
+  starting a fixture test are refused while locked; the reads, the validation, the evaluation and
+  the release of a test are open), listed in reflection and reported by the health service. It is
+  not reachable over Bluetooth. The answers are typed messages, not JSON strings: the Lighting
+  overview's readiness checks and the Fit shows page's report are messages a client can read
+  field by field. Validation answers normally with the list of problems. See
+  [gRPC](docs/src/interfaces/grpc.md).
 - **`bind_address` for the gRPC controller**: the address it listens on, every interface
   (`0.0.0.0`) by default as before. `bind_address: 127.0.0.1` keeps gRPC to the player's own
   machine; the phone app then stays on Bluetooth, since `GetNetworkInfo` names no port.
@@ -173,6 +185,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Breaking: the web API's routes for light show files, validation, evaluation, readiness, fit,
+  groups and the fixture test**: `GET`, `PUT` and `DELETE /api/lighting/<name>`,
+  `POST /api/lighting/validate`, `GET /api/lighting/readiness`, `GET /api/lighting/fit`,
+  `POST /api/lighting/evaluate`, `GET /api/lighting/groups`, `POST` and
+  `DELETE /api/lighting/fixture-test` and `GET /api/lighting/fixture-test/options` are gone; the
+  web UI calls `LightingService` for them. A script that used them should call `GetLightShow`,
+  `SaveLightShow` and `DeleteLightShow` (the text is the `source` string; a show that does not
+  parse is `INVALID_ARGUMENT` with the problems in the message, where `PUT` answered 400 with an
+  `errors` list), `ValidateLightShow` (which now answers `valid` and `errors` as a normal reply,
+  where the route answered 400 for a show that does not parse), `GetLightingReadiness`,
+  `GetLightingFit`, `EvaluateSongLighting` (was `evaluate`: the song and `times` in seconds),
+  `ListLightingGroups`, `StartFixtureTest` (its controls are typed fields, with channel levels in
+  `levels`; a refusal's reason is in the `x-refusal-reason` metadata, where the route's body had
+  `reason`), `StopFixtureTest` and `GetFixtureTestOptions`, over gRPC or gRPC-Web; for example
+  `grpcurl -plaintext -d '{"name":"my_song/lighting/show.light"}' host:43234
+  player.v1.LightingService/GetLightShow`. A locked player is `FAILED_PRECONDITION` where it was
+  HTTP 423. The routes for fixture types, venues, MVR files, GDTF import and the lighting assets
+  are unchanged. See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
   `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and

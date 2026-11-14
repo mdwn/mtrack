@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 import { setWatchOpening } from "../support/watch";
 import { STATUS } from "../mock-server/test-data";
@@ -101,9 +102,10 @@ test("the venue's stage shows what a fixture test sends, and says so", async ({
       },
     },
   });
-  await page.route(/\/api\/lighting\/fixture-test(\?.*)?$/, async (route) => {
-    if (route.request().method() === "DELETE") deletes.push("DELETE");
-    await route.fallback();
+  await mockRpc(page, {
+    onCall: (call) => {
+      if (call.method === "StopFixtureTest") deletes.push("DELETE");
+    },
   });
 
   await page.goto(`/?wsId=${wsId}#/lighting/venues/built-in`);

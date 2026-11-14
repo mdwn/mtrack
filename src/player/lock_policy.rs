@@ -147,13 +147,21 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     // toggle. SavePlaylist and DeletePlaylist are playlist writes and stay
     // locked out.
     (Grpc, "SetLock"),
-    // Web: validation, and the pure reads that happen to be POSTs (a
-    // preview evaluation and the upload inspectors, which write nothing).
-    (Web, "POST /lighting/validate"),
-    (Web, "POST /lighting/evaluate"),
+    // LightingService's reads, which include the validation and the offline
+    // evaluation (they write nothing), and the release of a fixture test,
+    // which only ever makes the lights go back to the show. Saving and
+    // deleting a light show and starting a fixture test stay locked out.
+    (Grpc, "GetLightShow"),
+    (Grpc, "ValidateLightShow"),
+    (Grpc, "GetLightingReadiness"),
+    (Grpc, "GetLightingFit"),
+    (Grpc, "EvaluateSongLighting"),
+    (Grpc, "ListLightingGroups"),
+    (Grpc, "StopFixtureTest"),
+    (Grpc, "GetFixtureTestOptions"),
+    // Web: the pure read that happens to be a POST (the MVR inspector, which
+    // writes nothing).
     (Web, "POST /lighting/mvr/inspect"),
-    // Releasing a fixture test only ever makes the lights go back to the show.
-    (Web, "DELETE /lighting/fixture-test"),
 ];
 
 /// Whether `operation`, as `surface` names it, stays open while the player
@@ -191,9 +199,13 @@ mod tests {
 
     #[test]
     fn web_gets_are_open_and_other_methods_are_listed() {
-        assert!(open_while_locked(Web, "GET /lighting/{name}"));
-        assert!(open_while_locked(Web, "POST /lighting/validate"));
-        assert!(!open_while_locked(Web, "PUT /lighting/{name}"));
+        assert!(open_while_locked(Web, "GET /lighting/venues/{name}"));
+        assert!(open_while_locked(Web, "POST /lighting/mvr/inspect"));
+        assert!(!open_while_locked(Web, "PUT /lighting/venues/{name}"));
+        // The routes that moved to LightingService are no longer listed.
+        assert!(!open_while_locked(Web, "POST /lighting/validate"));
+        assert!(!open_while_locked(Web, "POST /lighting/evaluate"));
+        assert!(!open_while_locked(Web, "DELETE /lighting/fixture-test"));
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
         assert!(!open_while_locked(Mcp, "Play"));
@@ -232,6 +244,24 @@ mod tests {
             "CreateSongInDirectory",
             "BulkImportSongs",
         ] {
+            assert!(!open_while_locked(Grpc, locked), "{locked}");
+        }
+        // LightingService: the reads, the validation, the evaluation and the
+        // release of a fixture test are open; writing a show and starting a
+        // test are not.
+        for open in [
+            "GetLightShow",
+            "ValidateLightShow",
+            "GetLightingReadiness",
+            "GetLightingFit",
+            "EvaluateSongLighting",
+            "ListLightingGroups",
+            "StopFixtureTest",
+            "GetFixtureTestOptions",
+        ] {
+            assert!(open_while_locked(Grpc, open), "{open}");
+        }
+        for locked in ["SaveLightShow", "DeleteLightShow", "StartFixtureTest"] {
             assert!(!open_while_locked(Grpc, locked), "{locked}");
         }
         // Bluetooth: the status is a read; pairing and forgetting are not.

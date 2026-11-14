@@ -13,7 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import {
+  ConfigService,
+  LightingService,
+} from "../../src/gen/player/v1/player_pb";
 import { mockRpc } from "../support/rpc";
 
 test.describe("Song Lighting Editor - File Management", () => {
@@ -52,19 +55,8 @@ test.describe("Song Lighting Editor - File Management", () => {
   test("confirming remove removes file from list without calling DELETE", async ({
     page,
   }) => {
-    let deleteCalled = false;
-    await page.route("**/api/lighting/show.light", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.deleteLightShow, {});
 
     await page.locator(".light-file-remove").click();
     const dialog = page.locator('[role="dialog"]');
@@ -74,7 +66,7 @@ test.describe("Song Lighting Editor - File Management", () => {
     // File should no longer be listed
     await expect(page.locator(".light-file-entry")).not.toBeVisible();
     // DELETE should NOT have been called yet (deferred until save)
-    expect(deleteCalled).toBe(false);
+    expect(rpc.calls(LightingService.method.deleteLightShow)).toHaveLength(0);
   });
 
   test("removing file marks editor as dirty", async ({ page }) => {
@@ -92,19 +84,8 @@ test.describe("Song Lighting Editor - File Management", () => {
   test("add DSL button opens prompt and adds file without saving to disk", async ({
     page,
   }) => {
-    let putCalled = false;
-    await page.route("**/api/lighting/*", async (route) => {
-      if (route.request().method() === "PUT") {
-        putCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.saveLightShow, {});
 
     await page.getByRole("button", { name: /\+ DSL/i }).click();
     // Should show prompt dialog
@@ -120,7 +101,7 @@ test.describe("Song Lighting Editor - File Management", () => {
       page.locator(".light-file-name", { hasText: "verse_lights.light" }),
     ).toBeVisible();
     // PUT should NOT have been called yet (deferred until save)
-    expect(putCalled).toBe(false);
+    expect(rpc.calls(LightingService.method.saveLightShow)).toHaveLength(0);
   });
 
   test("adding new file marks editor as dirty", async ({ page }) => {
@@ -145,19 +126,7 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     rpc.unary(ConfigService.method.saveSongConfig, {});
     const savedYaml = () =>
       rpc.calls(ConfigService.method.saveSongConfig).at(-1)?.yaml ?? "";
-    const putPaths: string[] = [];
-    await page.route("**/api/lighting/**", async (route) => {
-      if (route.request().method() === "PUT") {
-        putPaths.push(new URL(route.request().url()).pathname);
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    rpc.unary(LightingService.method.saveLightShow, {});
 
     await page.getByRole("button", { name: /\+ DSL/i }).click();
     const dialog = page.locator('[role="dialog"]');
@@ -171,7 +140,11 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     await expect(page.locator(".save-msg")).toBeVisible();
 
     // New file should have been PUT to disk
-    expect(putPaths.some((p) => p.includes("extra_show.light"))).toBe(true);
+    expect(
+      rpc
+        .calls(LightingService.method.saveLightShow)
+        .some((c) => c.name.includes("extra_show.light")),
+    ).toBe(true);
     // Saved YAML should contain both lighting entries
     expect(savedYaml()).toContain("lighting:");
     expect(savedYaml()).toContain("show.light");
@@ -186,19 +159,7 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     rpc.unary(ConfigService.method.saveSongConfig, {});
     const savedYaml = () =>
       rpc.calls(ConfigService.method.saveSongConfig).at(-1)?.yaml ?? "";
-    let deleteCalled = false;
-    await page.route("**/api/lighting/show.light", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    rpc.unary(LightingService.method.deleteLightShow, {});
 
     // Remove the file (deferred — no API call yet)
     await page.locator(".light-file-remove").click();
@@ -212,7 +173,11 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     await expect(page.locator(".save-msg")).toBeVisible();
 
     // DELETE should have been called during save
-    expect(deleteCalled).toBe(true);
+    expect(
+      rpc
+        .calls(LightingService.method.deleteLightShow)
+        .some((c) => c.name.includes("show.light")),
+    ).toBe(true);
     // Saved YAML should NOT contain lighting key
     expect(savedYaml()).not.toContain("lighting:");
   });
