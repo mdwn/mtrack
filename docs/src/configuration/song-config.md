@@ -58,6 +58,14 @@ lighting:
   - file: lighting/main_show.light
   - file: lighting/outro.light
 
+# (Optional) Recolour the palette slots the song's .light files declare, without editing
+# the shows. A slot is named alone, and takes any colour the lighting DSL reads: "#2040ff",
+# rgb(32, 64, 255) or a name. A slot not named keeps the show's colour. See "Palettes" in
+# the Lighting chapter.
+palette:
+  primary: "#2040ff"
+  secondary: cyan
+
 # MIDI files interpreted as DMX (the MIDI-based DMX path). Each entry names the
 # universe (as in the profile's dmx.universes), the file, and optionally the MIDI
 # channels to read lighting data from (all channels when omitted). See MIDI-Based DMX.
@@ -183,6 +191,24 @@ notification_audio:
     chorus: notifications/chorus-entering.wav
     bridge: notifications/bridge-entering.wav
 ```
+
+## Palette Overrides
+
+A `.light` file can name its colours in a [`palette { }` block](../lighting/cueing.md#palettes).
+A song's `palette:` recolours those slots for the song: each key is a slot, each value a colour
+(`"#2040ff"`, `rgb(32, 64, 255)` or a colour name; quote a hex colour, since a bare `#` starts a
+comment). It is mostly for trying a look without touching the show; a [playlist
+entry](../getting-started/playlists.md#palette-overrides) can recolour the song for one playlist.
+
+- A colour that does not read is an error naming its slot, and the song is not loaded; the web
+  UI refuses to save it.
+- A slot that none of the song's shows declares is a warning, not an error: it is logged, and
+  the Lighting overview lists it for the song (`palette-override-unknown-slot`). It changes
+  nothing.
+- A slot is named by its name alone, so it recolours that slot in every `.light` file of the
+  song that declares it.
+- The colours are decided as the song starts. Editing the song file while it plays changes
+  them from the next start.
 
 ## Directory Structure
 

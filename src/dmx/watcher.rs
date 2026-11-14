@@ -12,10 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::effects::Color;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
@@ -47,6 +48,7 @@ pub fn start_watching(
     generation: u64,
     file_paths: Vec<PathBuf>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
+    palette: Arc<HashMap<String, Color>>,
     broadcast_tx: broadcast::Sender<SocketMessage>,
 ) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
     // Canonicalize paths so they match what the OS reports in events.
@@ -158,6 +160,7 @@ pub fn start_watching(
                         &engine,
                         &file_paths,
                         fallback_tempo_map.as_ref(),
+                        &palette,
                         generation,
                     ) {
                         Ok(false) => {
@@ -196,6 +199,7 @@ pub(super) fn reload_timeline(
     engine: &Engine,
     file_paths: &[PathBuf],
     fallback_tempo_map: Option<&crate::tempo::TempoMap>,
+    palette: &HashMap<String, Color>,
     generation: u64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut all_shows = Vec::new();
@@ -224,7 +228,7 @@ pub(super) fn reload_timeline(
 
     // No end cap of its own: `reload_show` carries the running timeline's
     // over.
-    let timeline = super::engine::lighting_timeline(all_shows, Duration::ZERO, &HashMap::new())
+    let timeline = super::engine::lighting_timeline(all_shows, Duration::ZERO, palette)
         .ok_or("No shows found after re-parse")?;
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
     Ok(engine.reload_show(timeline, tempo_map, generation))
@@ -274,9 +278,46 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
         assert!(engine.current_song_timeline.lock().is_some());
+    }
+
+    #[test]
+    fn a_reload_keeps_the_colours_the_song_started_with() {
+        // A live edit of the show re-reads its file, but the palette the
+        // song started with (its override and its entry's) is the one the
+        // new timeline settles to.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            "palette { primary: \"#C01020\" }\nshow \"t\" {\n    @00:00.000\n    front_wash: static color: palette.primary, duration: 5s\n}",
+        )
+        .unwrap();
+        let engine = test_engine(None, None, Duration::ZERO);
+        let red = |engine: &Engine| {
+            let timeline = engine.current_song_timeline.lock();
+            let (_, effects) = timeline.as_ref().unwrap().cue_effects().next().unwrap();
+            match &effects[0].effect_type {
+                crate::lighting::effects::EffectType::Static { parameters, .. } => {
+                    (parameters["red"] * 255.0).round() as u8
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        reload_timeline(
+            &engine,
+            std::slice::from_ref(&dsl_path),
+            None,
+            &HashMap::new(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(red(&engine), 0xC0);
+        let palette = HashMap::from([("primary".to_string(), Color::new(0x20, 0x40, 0xFF))]);
+        reload_timeline(&engine, &[dsl_path], None, &palette, 0).unwrap();
+        assert_eq!(red(&engine), 0x20);
     }
 
     #[test]
@@ -305,7 +346,7 @@ mod test {
             .lock()
             .set_midi_dmx_store(store.clone());
 
-        reload_timeline(&engine, &[dsl_path], None, 0).unwrap();
+        reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0).unwrap();
         assert!(
             store.read().has_active_slots(),
             "the reload cleared MIDI DMX"
@@ -329,7 +370,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
         assert!(engine.current_song_timeline.lock().is_some());
     }
@@ -342,6 +383,7 @@ mod test {
             &engine,
             &[PathBuf::from("/nonexistent/show.light")],
             None,
+            &HashMap::new(),
             0,
         );
         assert!(result.is_err());
@@ -355,7 +397,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_err());
     }
 
@@ -384,7 +426,7 @@ mod test {
 
         let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
     }
 
@@ -413,7 +455,7 @@ mod test {
 
         let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_err());
     }
 
@@ -447,7 +489,7 @@ mod test {
         );
         assert!(engine.lighting_system.is_some());
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
     }
 
@@ -461,7 +503,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No shows found"));
     }
@@ -487,7 +529,7 @@ mod test {
         // Set song_time > 0 to exercise the layer_commands/stop_sequences path
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
     }
 
@@ -520,7 +562,7 @@ show "test" {
         // Set song_time past the stop sequence cue
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path], None, &HashMap::new(), 0);
         assert!(result.is_ok());
     }
 
@@ -590,7 +632,7 @@ show "test" {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path1, dsl_path2], None, 0);
+        let result = reload_timeline(&engine, &[dsl_path1, dsl_path2], None, &HashMap::new(), 0);
         assert!(result.is_ok());
     }
 
@@ -610,8 +652,15 @@ show "test" {
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
 
-        let _handle =
-            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
+        let _handle = start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path.clone()],
+            None,
+            Default::default(),
+            tx,
+        )
+        .unwrap();
 
         // Modify the file to trigger a reload event
         std::thread::sleep(Duration::from_millis(500));
@@ -677,8 +726,15 @@ show "test" {
 
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
-        let _handle =
-            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
+        let _handle = start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path.clone()],
+            None,
+            Default::default(),
+            tx,
+        )
+        .unwrap();
 
         // Only the included file changes; the show file is untouched.
         std::thread::sleep(Duration::from_millis(500));
@@ -723,8 +779,15 @@ show "test" {
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
 
-        let _handle =
-            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
+        let _handle = start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path.clone()],
+            None,
+            Default::default(),
+            tx,
+        )
+        .unwrap();
 
         // Wait for watcher to be established
         std::thread::sleep(Duration::from_millis(500));
@@ -774,13 +837,20 @@ show "test" {
         let old = engine.retire_watcher();
         // The next song starts, with a watcher of its own.
         let new = engine.retire_watcher();
-        assert!(reload_timeline(&engine, std::slice::from_ref(&next), None, new).unwrap());
+        assert!(reload_timeline(
+            &engine,
+            std::slice::from_ref(&next),
+            None,
+            &HashMap::new(),
+            new
+        )
+        .unwrap());
         let cues = engine.get_timeline_cues();
         // The last song's watcher's edit lands after.
-        assert!(!reload_timeline(&engine, &[last], None, old).unwrap());
+        assert!(!reload_timeline(&engine, &[last], None, &HashMap::new(), old).unwrap());
         assert_eq!(engine.get_timeline_cues(), cues);
         // The next song's own still reloads.
-        assert!(reload_timeline(&engine, &[next], None, new).unwrap());
+        assert!(reload_timeline(&engine, &[next], None, &HashMap::new(), new).unwrap());
     }
 
     #[test]
@@ -799,7 +869,14 @@ show "test" {
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, _rx) = broadcast::channel(16);
 
-        let result = start_watching(Arc::downgrade(&engine), 0, vec![dsl_path], None, tx);
+        let result = start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path],
+            None,
+            Default::default(),
+            tx,
+        );
         assert!(result.is_ok());
 
         // WatcherHandle drops here, stopping the watcher

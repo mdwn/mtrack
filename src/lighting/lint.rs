@@ -71,6 +71,9 @@ pub struct LintContext<'a> {
     /// The current venue's focus points. `None` when no venue is loaded —
     /// an empty set is a venue with none, which is a finding.
     pub focus_points: Option<HashSet<String>>,
+    /// The palette slots the song overrides (its `palette:`). Leave empty
+    /// for a bare source.
+    pub palette_overrides: Vec<String>,
 }
 
 impl Want {
@@ -283,12 +286,32 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     let ends = crate::lighting::timeline::effect_ends(cues.iter().copied());
     effects_past_end_of_song(&cues, &ends, ctx, &mut warnings);
     parameters_the_effect_ignores(shows, &mut warnings);
+    palette_overrides_without_a_slot(shows, ctx, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
     stomping_replace_effects(&cues, &ends, &mut warnings);
     warnings
+}
+
+/// A song's `palette:` override for a slot none of its shows declares
+/// (`palette-override-unknown-slot`). It changes nothing, and a note: a show
+/// edited since the override was written must not stop the song loading.
+fn palette_overrides_without_a_slot(
+    shows: &[LightShow],
+    ctx: &LintContext,
+    out: &mut Vec<Warning>,
+) {
+    for slot in crate::lighting::parser::unknown_slots(shows, &ctx.palette_overrides) {
+        out.push(Warning::new(
+            "palette-override-unknown-slot",
+            format!(
+                "the song's palette overrides '{slot}', which none of its shows declares, so \
+                 it changes nothing"
+            ),
+        ));
+    }
 }
 
 /// `per: cell` and `spread` (design §17.4): `per: cell` on a group with no
@@ -1177,6 +1200,35 @@ show "s" {
             found,
             vec!["cells-absent", "per-cell-no-effect", "spread-unused"]
         );
+    }
+
+    #[test]
+    fn a_palette_override_for_an_undeclared_slot_is_a_note() {
+        let source = r##"
+palette { primary: "#C01020" }
+show "s" {
+    @00:00.000
+    wash: static color: palette.primary, duration: 1s
+}
+"##;
+        let ctx = |slots: &[&str]| LintContext {
+            palette_overrides: slots.iter().map(|s| s.to_string()).collect(),
+            ..LintContext::default()
+        };
+        // Declared slots, or no overrides at all: nothing to say.
+        assert!(lint_shows(&shows(source), &ctx(&["primary"])).is_empty());
+        assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
+
+        let warnings = lint_shows(&shows(source), &ctx(&["primary", "gone", "Primary"]));
+        assert_eq!(
+            kinds(&warnings),
+            vec!["palette-override-unknown-slot"; 2],
+            "{warnings:?}"
+        );
+        assert!(warnings.iter().all(|w| w.severity == Severity::Note));
+        // Sorted, and a slot is named by its exact name.
+        assert!(warnings[0].message.contains("'Primary'"));
+        assert!(warnings[1].message.contains("'gone'"));
     }
 
     #[test]

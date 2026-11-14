@@ -2850,6 +2850,160 @@ mod test {
         Ok((dir, player))
     }
 
+    /// A player on a song "Lit" with a show of one palette slot, `primary`
+    /// (default `#C01020`), whose own override is `song_palette` (a YAML
+    /// fragment), on the playlist `playlist` laid out by `entries`, beside
+    /// `all_songs`.
+    async fn palette_player(
+        song_palette: &str,
+        entries: &str,
+    ) -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let song_dir = dir.path().join("songs").join("lit");
+        fs::create_dir_all(&song_dir)?;
+        fs::copy("assets/20-sec-long.wav", song_dir.join("track.wav"))?;
+        fs::write(
+            song_dir.join("show.light"),
+            "palette { primary: \"#C01020\" }\nshow \"s\" {\n    @0.000\n    wash: static, color: palette.primary, duration: 30s\n}\n",
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            format!("name: Lit\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\nlighting:\n- file: show.light\n{song_palette}"),
+        )?;
+        fs::write(
+            dir.path().join("playlist.yaml"),
+            format!("songs:\n{entries}"),
+        )?;
+        let groups = HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let dmx = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            Some(config::Lighting::new(None, Some(groups), None)),
+        );
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        assert!(songs.failures().is_empty(), "{:?}", songs.failures());
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&dir.path().join("playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(dmx),
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    /// The colour the playing song's static wash was settled to, as the
+    /// bytes the engine renders it: the effect's red, green and blue.
+    fn wash_bytes(player: &Player) -> Option<[u8; 3]> {
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        engine.with_song_timeline(|timeline| {
+            let (_, effects) = timeline?.cue_effects().next()?;
+            match &effects[0].effect_type {
+                crate::lighting::effects::EffectType::Static { parameters, .. } => {
+                    Some(["red", "green", "blue"].map(|c| (parameters[c] * 255.0).round() as u8))
+                }
+                other => panic!("not a static: {other:?}"),
+            }
+        })
+    }
+
+    /// A song's colours are the show's, then the song's override, then the
+    /// playlist entry's, settled as the song starts: the same song from
+    /// `all_songs` has no entry and plays the song's, and an edit to either
+    /// file while it plays recolours it from the next start.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_plays_in_the_entrys_colours_over_its_own() -> Result<(), Box<dyn Error>> {
+        let (dir, player) = palette_player(
+            "palette:\n  primary: '#2040ff'\n",
+            "- song: Lit\n  palette:\n    primary: '#0a0b0c'\n",
+        )
+        .await?;
+        let device = player.audio_device().expect("audio device");
+        let device = device.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        eventually(
+            || wash_bytes(&player) == Some([0x0a, 0x0b, 0x0c]),
+            "the entry's colour",
+        );
+
+        // The playlist is edited while the song plays: not until it next starts.
+        fs::write(
+            dir.path().join("playlist.yaml"),
+            "songs:\n- song: Lit\n  palette:\n    primary: '#ff0000'\n",
+        )?;
+        player
+            .reload_songs_from(&SongSources {
+                songs: dir.path().join("songs"),
+                playlists_dir: None,
+                legacy_playlist: Some(dir.path().join("playlist.yaml")),
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            wash_bytes(&player),
+            Some([0x0a, 0x0b, 0x0c]),
+            "held while playing"
+        );
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never restarted");
+        eventually(
+            || wash_bytes(&player) == Some([0xff, 0, 0]),
+            "the edit, on the next start",
+        );
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        // From all_songs there is no entry: the song's own colour.
+        player.switch_to_playlist("all_songs").await?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started from all_songs");
+        eventually(
+            || wash_bytes(&player) == Some([0x20, 0x40, 0xff]),
+            "the song's colour",
+        );
+        player.stop().await;
+        Ok(())
+    }
+
+    /// Without an override anywhere, the show's own colour plays; an entry
+    /// that overrides nothing the show declares changes nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_with_no_override_plays_the_shows_colour() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) =
+            palette_player("", "- song: Lit\n  palette:\n    nothing_like_it: red\n").await?;
+        let device = player.audio_device().expect("audio device");
+        let device = device.to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        eventually(
+            || wash_bytes(&player) == Some([0xC0, 0x10, 0x20]),
+            "the show's colour",
+        );
+        player.stop().await;
+        Ok(())
+    }
+
     /// The ambient show up, by its file's name, and whose it is.
     fn ambient_up(player: &Player) -> (Option<String>, Option<&'static str>) {
         let engine = player.dmx_engine().expect("DMX engine should be present");

@@ -1290,6 +1290,76 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// A song's `palette:` goes through the editor's save and read as it was
+    /// written; a colour that does not read is refused, and the file kept.
+    #[tokio::test]
+    async fn a_songs_palette_round_trips_through_the_rest_save() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Painted");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let before = "name: Painted\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        std::fs::write(song_dir.join("song.yaml"), before).unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let put = |body: String| {
+            let app = router().with_state(state.clone());
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri("/songs/Painted")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let with = |colour: &str| {
+            format!("{before}palette:\n  primary: \"{colour}\"\n  Back-Light: cyan\n")
+        };
+
+        let refused = put(with("notacolor")).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(refused).await;
+        assert!(body.contains("primary"), "{body}");
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            before,
+            "a refused save leaves the file"
+        );
+
+        assert_eq!(put(with("#2040ff")).await.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(song_dir.join("song.yaml")).unwrap();
+        assert!(written.contains("#2040ff") && written.contains("Back-Light"));
+
+        // Read back by the editor, and by the player's reload.
+        let got = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/Painted")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
+        let body = response_body(got).await;
+        assert!(
+            body.contains("#2040ff") && body.contains("Back-Light"),
+            "{body}"
+        );
+        state.player.reload_songs().await.unwrap();
+        let song = state.player.songs().get("Painted").unwrap();
+        assert_eq!(
+            song.palette()["primary"],
+            crate::lighting::effects::Color::new(0x20, 0x40, 0xff)
+        );
+    }
+
     /// #689: a save that renames a song onto a name another song holds is
     /// refused with create-song's `taken` 409, the file left as it is; one
     /// that keeps the name, or renames onto a free one, is saved.

@@ -167,9 +167,11 @@ where
 /// The shows a song registers: every show its `.light` files hold, in file
 /// order and then their order in the file, as the player has them -- the
 /// order same-time cues from different shows fire in. Empty when the song
-/// has no DSL lighting loaded.
+/// has no DSL lighting loaded. Their palette slots are the song's: the show's
+/// default, or the colour the song's own `palette:` overrides it with (not a
+/// playlist entry's, which only a play of the song from that entry has).
 pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    shows_in(song.dsl_lighting_shows())
+    crate::lighting::parser::resolve_shows(shows_in(song.dsl_lighting_shows()), song.palette())
 }
 
 /// [`registered_shows`] of a song's `.light` files, for a song still being
@@ -919,6 +921,112 @@ show "T" {
             ],
             [0x20, 0x40, 0xFF]
         );
+    }
+
+    /// A slot is the show's default, then the song's override, then the
+    /// playlist entry's, and the bytes rendered follow: a song with no entry
+    /// (every song from `all_songs`) shows the song's colour, one played from
+    /// an entry that overrides shows the entry's.
+    #[test]
+    fn a_play_renders_the_default_then_the_songs_then_the_entrys_colour() {
+        use crate::lighting::effects::Color;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("show.light"),
+            r##"
+palette {
+    primary: "#C01020"
+    secondary: "#102030"
+    accent: "#405060"
+}
+show "T" {
+    @00:00.000
+    a: static color: palette.primary, duration: 5s
+    b: static color: palette.secondary, duration: 5s
+    c: static color: palette.accent, duration: 5s
+}
+"##,
+        )
+        .unwrap();
+        let song_yaml = |palette: &str| {
+            std::fs::write(
+                dir.path().join("song.yaml"),
+                format!("name: P\nlighting:\n- file: show.light\ntracks: []\n{palette}"),
+            )
+            .unwrap();
+            let config = crate::config::Song::deserialize(&dir.path().join("song.yaml")).unwrap();
+            crate::songs::Song::new(dir.path(), &config).unwrap()
+        };
+        let fixtures = vec![
+            rgb_fixture("a", 1),
+            rgb_fixture("b", 4),
+            rgb_fixture("c", 7),
+        ];
+        let bytes = |shows: Vec<LightShow>| {
+            let eval = evaluate_show(
+                shows,
+                &fixtures,
+                &HashMap::new(),
+                None,
+                &[Duration::from_secs(1)],
+                |e| e,
+            );
+            ["a", "b", "c"].map(|f| ["red", "green", "blue"].map(|c| channel(&eval[0], f, c)))
+        };
+
+        // No override: the show's own colours.
+        let plain = song_yaml("");
+        assert_eq!(
+            bytes(registered_shows(&plain)),
+            [[0xC0, 0x10, 0x20], [0x10, 0x20, 0x30], [0x40, 0x50, 0x60]]
+        );
+
+        // The song recolours primary and secondary: what its shows give
+        // everywhere the song is not played from an entry.
+        let song = song_yaml("palette:\n  primary: '#2040ff'\n  secondary: 'rgb(1, 2, 3)'\n");
+        let song_level = [[0x20, 0x40, 0xFF], [1, 2, 3], [0x40, 0x50, 0x60]];
+        assert_eq!(bytes(registered_shows(&song)), song_level);
+        let from_all_songs = song.palette_for_play(None);
+        assert_eq!(
+            bytes(crate::lighting::parser::resolve_shows(
+                registered_shows(&song),
+                &from_all_songs
+            )),
+            song_level
+        );
+
+        // The entry recolours primary and accent, over the song's.
+        let entry = HashMap::from([
+            ("primary".to_string(), Color::new(9, 8, 7)),
+            ("accent".to_string(), Color::new(6, 5, 4)),
+            ("nothing".to_string(), Color::new(1, 1, 1)),
+        ]);
+        let played = song.palette_for_play(Some(&entry));
+        assert_eq!(
+            bytes(crate::lighting::parser::resolve_shows(
+                registered_shows(&song),
+                &played
+            )),
+            [[9, 8, 7], [1, 2, 3], [6, 5, 4]]
+        );
+
+        // The timeline a play builds settles the same colours.
+        let timeline = crate::lighting::timeline::LightingTimeline::with_palette(
+            registered_shows(&song),
+            &played,
+        );
+        let mut reds: Vec<f64> = timeline
+            .cue_effects()
+            .flat_map(|(_, effects)| effects.iter())
+            .map(|e| match &e.effect_type {
+                crate::lighting::effects::EffectType::Static { parameters, .. } => {
+                    parameters["red"]
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        reds.sort_by(f64::total_cmp);
+        assert_eq!(reds, [1.0 / 255.0, 6.0 / 255.0, 9.0 / 255.0]);
     }
 
     #[test]

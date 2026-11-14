@@ -532,6 +532,92 @@ ambient:
         assert_eq!(saved.ambient, before.ambient);
     }
 
+    /// An entry's palette overrides: reported as written, kept by a save of
+    /// the songs alone and by one that sends the settings back, replaced by
+    /// one that changes them, and refused when a colour does not read.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_entrys_palette_is_reported_kept_and_set() {
+        let project = playlist_project().await.unwrap();
+        project
+            .write(
+                "set",
+                "songs:\n- Song 1\n- song: Song 3\n  palette:\n    primary: '#2040ff'\n    Back-Light: cyan\n",
+            )
+            .await;
+        let read = get(&project, "set").await;
+        let settings = settings_of(&read);
+        assert!(settings[0].palette.is_empty());
+        assert_eq!(settings[1].palette["primary"], "#2040ff");
+        assert_eq!(settings[1].palette["Back-Light"], "cyan");
+
+        // The revision does not depend on the map's order, and moves with it.
+        assert_eq!(get(&project, "set").await.revision, read.revision);
+
+        // Names alone (an app from before palettes): kept with its song.
+        let reordered = save(&project, save_request("set", &["Song 3", "Song 1"], false))
+            .await
+            .unwrap();
+        assert_eq!(settings_of(&reordered)[0].palette, settings[1].palette);
+
+        // The settings sent back as they were read.
+        let req = SavePlaylistRequest {
+            settings: settings_of(&reordered),
+            set_settings: true,
+            expected_revision: reordered.revision.clone(),
+            check_expected: true,
+            expected: names(&["Song 3", "Song 1"]),
+            ..save_request("set", &["Song 3", "Song 1"], false)
+        };
+        let echoed = save(&project, req).await.unwrap();
+        assert_eq!(settings_of(&echoed), settings_of(&reordered));
+        let written = std::fs::read_to_string(project.file("set")).unwrap();
+        assert!(
+            written.contains("palette:") && written.contains("#2040ff"),
+            "{written}"
+        );
+
+        // Changing one slot and dropping the other replaces the map.
+        let mut changed = settings_of(&echoed);
+        changed[0].palette = [("primary".to_string(), "rgb(1, 2, 3)".to_string())].into();
+        let req = SavePlaylistRequest {
+            settings: changed.clone(),
+            set_settings: true,
+            ..save_request("set", &["Song 3", "Song 1"], false)
+        };
+        let saved = save(&project, req).await.unwrap();
+        assert_eq!(settings_of(&saved), changed);
+        assert_ne!(saved.revision, echoed.revision);
+
+        // Clearing it writes the entry as its name again.
+        let req = SavePlaylistRequest {
+            settings: vec![EntrySettings::default(); 2],
+            set_settings: true,
+            ..save_request("set", &["Song 3", "Song 1"], false)
+        };
+        save(&project, req).await.unwrap();
+        let written = std::fs::read_to_string(project.file("set")).unwrap();
+        assert!(!written.contains("palette"), "{written}");
+
+        // A colour that does not read is refused, and the file kept.
+        let bad = EntrySettings {
+            palette: [("primary".to_string(), "notacolor".to_string())].into(),
+            ..Default::default()
+        };
+        let req = SavePlaylistRequest {
+            settings: vec![bad, EntrySettings::default()],
+            set_settings: true,
+            ..save_request("set", &["Song 3", "Song 1"], false)
+        };
+        let before = std::fs::read_to_string(project.file("set")).unwrap();
+        let err = save(&project, req).await.unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("'primary'"), "{}", err.message());
+        assert_eq!(
+            std::fs::read_to_string(project.file("set")).unwrap(),
+            before
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_settings_change_since_the_read_is_refused() {
         let project = playlist_project().await.unwrap();
@@ -669,6 +755,7 @@ ambient:
                 fade_in: Some("2s".into()),
                 fade_out: Some("1s".into()),
             }),
+            ..Default::default()
         };
         let songs: Vec<String> = (0..50).map(|i| long(&format!("Song {i}"))).collect();
         let response = GetPlaylistResponse {

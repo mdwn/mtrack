@@ -56,6 +56,9 @@ pub struct PlaylistDetail {
     /// `false` for none, or settings of its own.
     #[cfg_attr(feature = "tsify", tsify(type = "(false | Ambient | null)[]"))]
     pub entry_ambient: Vec<Option<PlaylistAmbient>>,
+    /// Each entry's lighting palette overrides: a slot to its colour, as the
+    /// playlist file writes them. Empty for an entry with none.
+    pub entry_palette: Vec<BTreeMap<String, String>>,
     pub available_songs: Vec<String>,
     /// Each song's tracks, for the tracks a fade leaves out.
     pub song_tracks: BTreeMap<String, Vec<String>>,
@@ -63,7 +66,11 @@ pub struct PlaylistDetail {
 
 /// What a playlist save sets (`SavePlaylist`): the songs, and what is set
 /// beyond them; each setting left out keeps what the playlist has.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct PlaylistBody {
     pub songs: Vec<String>,
@@ -83,6 +90,12 @@ pub struct PlaylistBody {
         tsify(optional, type = "(false | Ambient | null)[]")
     )]
     pub entry_ambient: Option<Vec<Option<PlaylistAmbient>>>,
+    /// Each song's palette overrides, in the order of `songs`. Sent with the
+    /// other settings, which replace the entry's: the editor passes back what
+    /// it read.
+    #[serde(default)]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub entry_palette: Option<Vec<BTreeMap<String, String>>>,
     /// The playlist's ambient light: absent keeps it, `null` removes it
     /// (the profile's plays), `false` turns it off, a map overrides
     /// settings.

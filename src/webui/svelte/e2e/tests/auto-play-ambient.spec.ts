@@ -225,6 +225,8 @@ test.describe("Playlist editor: an entry's ambient light", () => {
         { fade_out: null, fade_in: null },
       ],
       entry_ambient: [null, false, { fade_in: "3s" }],
+      // Not edited on this page: the save passes each back with its song.
+      entry_palette: [{}, { primary: "#2040ff" }, {}],
       ambient: null,
       available_songs: [],
     });
@@ -264,6 +266,7 @@ test.describe("Playlist editor: an entry's ambient light", () => {
     expect(bodies[0].songs).toEqual(["Test Song Gamma", "Test Song Beta"]);
     expect(bodies[0].auto_play).toEqual([null, "2s"]);
     expect(bodies[0].entry_ambient).toEqual([{ fade_in: "3s" }, false]);
+    expect(bodies[0].entry_palette).toEqual([{}, { primary: "#2040ff" }]);
   });
 });
 

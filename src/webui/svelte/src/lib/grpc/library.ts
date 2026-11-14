@@ -140,6 +140,7 @@ export function mapPlaylistDetail(r: GetPlaylistResponse): PlaylistDetail {
     entry_ambient: settings.map((s) =>
       s?.ambient ? ambientConfig(s.ambient) : null,
     ),
+    entry_palette: settings.map((s) => ({ ...(s?.palette ?? {}) })),
     available_songs: [...r.availableSongs],
     song_tracks: Object.fromEntries(
       Object.entries(r.songTracks).map(([song, t]) => [song, [...t.names]]),
@@ -189,11 +190,13 @@ export function savePlaylistRequest(
     songs,
     create,
   };
-  const { auto_play, fades, entry_ambient } = settings;
-  if (auto_play || fades || entry_ambient) {
-    if (!auto_play || !fades || !entry_ambient) {
+  const { auto_play, fades, entry_ambient, entry_palette } = settings;
+  if (auto_play || fades || entry_ambient || entry_palette) {
+    // The settings replace each entry's, palette included: a save that left
+    // the palette out would clear the ones the playlist has.
+    if (!auto_play || !fades || !entry_ambient || !entry_palette) {
       throw new Error(
-        "a playlist save sets auto play, fades and entry ambient together",
+        "a playlist save sets auto play, fades, entry ambient and entry palette together",
       );
     }
     request.setSettings = true;
@@ -202,6 +205,7 @@ export function savePlaylistRequest(
       fadeIn: fadeMessage(fades[i]?.fade_in),
       autoPlay: autoPlayMessage(auto_play[i]),
       ambient: ambientMessage(entry_ambient[i]),
+      palette: { ...(entry_palette[i] ?? {}) },
     }));
   }
   // Absent keeps the playlist's ambient light; `null` removes it.
