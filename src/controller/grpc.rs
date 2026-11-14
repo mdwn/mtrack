@@ -78,7 +78,12 @@ impl Driver {
         config: config::GrpcController,
         player: Arc<Player>,
     ) -> Result<Arc<Self>, Box<dyn Error>> {
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port()).parse()?;
+        // Parsed as an `IpAddr`, so an IPv6 literal needs no brackets.
+        let ip: std::net::IpAddr = config
+            .bind_address()
+            .parse()
+            .map_err(|e| format!("invalid bind_address `{}`: {e}", config.bind_address()))?;
+        let addr = SocketAddr::new(ip, config.port());
 
         Ok(Arc::new(Driver {
             player,
@@ -116,8 +121,11 @@ impl super::Driver for Driver {
                 info!("Starting gRPC server on {addr}");
             }
             // The port first: whoever waits on `bound` may ask the player for
-            // it at once.
-            player.set_grpc_port(Some(addr.port()));
+            // it at once. Not a loopback listener's: `GetNetworkInfo` gives
+            // the port to a phone to reach over Wi-Fi, and it could not.
+            if !addr.ip().is_loopback() {
+                player.set_grpc_port(Some(addr.port()));
+            }
             bound.set(addr);
             // Cleared when this task ends or is aborted, but only if the
             // port is still this one's: a restart binds after this is gone.

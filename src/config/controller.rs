@@ -24,6 +24,10 @@ pub const DEFAULT_OSC_PORT: u16 = 43235;
 pub const DEFAULT_MCP_PORT: u16 = 43237;
 pub const DEFAULT_MCP_BIND_ADDRESS: &str = "127.0.0.1";
 
+/// The address the gRPC controller listens on unless told another: every
+/// interface.
+pub const DEFAULT_GRPC_BIND_ADDRESS: &str = "0.0.0.0";
+
 fn default_osc_play() -> String {
     "/mtrack/play".to_string()
 }
@@ -361,12 +365,36 @@ pub struct GrpcController {
     /// The port to listen on.
     #[serde(default)]
     port: Option<u16>,
+    /// The address to listen on. Defaults to every interface (`0.0.0.0`).
+    /// `127.0.0.1` keeps the server to this machine: the `mtrack` CLI run
+    /// on it still reaches the player, and a phone over Wi-Fi does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bind_address: Option<String>,
 }
 
 impl GrpcController {
     #[cfg(test)]
     pub fn new(port: u16) -> GrpcController {
-        GrpcController { port: Some(port) }
+        GrpcController {
+            port: Some(port),
+            bind_address: None,
+        }
+    }
+
+    /// A controller on `port`, listening on `bind_address`.
+    #[cfg(test)]
+    pub fn with_bind_address(port: u16, bind_address: &str) -> GrpcController {
+        GrpcController {
+            port: Some(port),
+            bind_address: Some(bind_address.to_string()),
+        }
+    }
+
+    /// Gets the address to listen on.
+    pub fn bind_address(&self) -> &str {
+        self.bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_GRPC_BIND_ADDRESS)
     }
 
     /// Gets the port to listen on.
@@ -1041,6 +1069,23 @@ mod test {
             Controller::Grpc(grpc) => assert_eq!(grpc.port(), 1234),
             _ => panic!("expected Grpc variant"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_bind_address_defaults_to_every_interface_and_is_read() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.bind_address(), "0.0.0.0");
+        // Not written back when it was not set.
+        assert!(!crate::util::to_yaml_string(&grpc)?.contains("bind_address"));
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("bind_address: 127.0.0.1", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.bind_address(), "127.0.0.1");
         Ok(())
     }
 

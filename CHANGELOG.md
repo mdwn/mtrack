@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overview's readiness checks and the Fit shows page's report are messages a client can read
   field by field. Validation answers normally with the list of problems. See
   [gRPC](docs/src/interfaces/grpc.md).
+- **`bind_address` for the gRPC controller**: the address it listens on, every interface
+  (`0.0.0.0`) by default as before. `bind_address: 127.0.0.1` keeps gRPC to the player's own
+  machine; the phone app then stays on Bluetooth, since `GetNetworkInfo` names no port.
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
   network at all. Add `- kind: ble` (optionally with a `name` to advertise, which defaults to the
   hostname) to a profile's `controllers`. Phones pair once and are trusted from then on. The
