@@ -55,15 +55,15 @@ applies the next time the song starts.
 
 ```
 palette {
-  primary: #c01020
+  primary: "#c01020"
   secondary: "orange"
-  accent: rgb(255, 240, 200)
+  accent: rgb(255,240,200)
 }
 
 show "Main" {
-  @0.000
+  @00:00.000
   front_wash: static color: palette.primary, duration: 8measures
-  back_truss: cycle colors: [palette.primary, palette.secondary], …
+  back_truss: cycle color: palette.primary, color: palette.secondary, …
   @16/1
   sequence hit(color: palette.accent)
 }
@@ -72,9 +72,13 @@ show "Main" {
 - `palette { … }` is a top-level block, beside `tempo` and `sequence`.
   Each slot takes any colour the grammar already accepts. There's at most
   one block per file.
-- `palette.<slot>` works anywhere a colour works: `color:`, a colour list,
-  a step's `color:`, and as a sequence argument (bound like any other
-  argument, so a sequence body still says `$color`).
+- `palette.<slot>` works anywhere a colour works: `color:` (a `cycle`
+  repeats it), a step's `color:`, and as a sequence argument or parameter
+  default (bound like any other argument, so a sequence body still says
+  `$color`). Hex values are quoted, because a bare `#` starts a comment.
+- An included file may carry a palette: its slots serve its own sequences
+  and merge into the including file, whose colour wins for a slot both
+  declare (P1, #760).
 - `@` is already taken by times and DMX addresses, and `$` by sequence
   arguments, so the reference is spelled out as `palette.`.
 - Referring to a slot the file doesn't declare is a parse error, with the
