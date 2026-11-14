@@ -62,6 +62,26 @@ controller listens on. The app browses for that type and lists what answers.
 Recommended: **A**. The sandboxed unit already allows `AF_INET`, `AF_INET6`
 and `AF_NETLINK`, which is what it needs.
 
+**Tried on the Pi 4 rig (2026-11-14)**, with a 40-line program using
+`mdns-sd` 0.21, run in a transient unit with the service's sandbox, beside
+the image's avahi:
+
+- It works: a question for `_mtrack._tcp` from another socket was answered
+  with the instance, the port and the TXT records.
+- **The advert must not use the host's own `.local` name.** The first run
+  named its host `mtrack-harness.local`, which avahi owns. avahi saw a
+  second claimant, logged "Host name conflict", and renamed the machine to
+  `mtrack-harness-2.local` until it was restarted. That would break
+  `http://mtrack.local:8080` on every Pi image.
+- With a host name of its own (`mtrack-harness-player.local`) there was no
+  conflict over 30 seconds and avahi kept its name.
+
+So the player's advert carries a host label nothing else claims,
+`<hostname>-mtrack.local`, with the addresses of the interfaces gRPC is
+bound to. The app never shows it: it uses the instance name and the
+addresses. D1's test on the rig repeats this check with the real build, for
+longer, and across an avahi restart.
+
 **How the app browses.** Through the platform's own browser (`NsdManager`
 on Android, Bonjour on iOS) by way of a Flutter plugin (`nsd` or `bonsoir`;
 which one is settled by trying both on the Pixel). Not a pure-Dart mDNS
@@ -177,7 +197,9 @@ leaves the app working.
   toward a permission for reaching local addresses. Whether the Pixel's
   version asks for one, and for which of browsing and connecting, is
   settled by running D2 on it.
-- **`mdns-sd` beside avahi** on the Pi image, inside the unit's sandbox.
+- **`mdns-sd` beside avahi** for longer than the half minute tried (§3.1),
+  across an avahi restart and a network change, and on macOS beside
+  Bonjour, where the same care about the host's name applies.
 - **iOS.** Nothing here has run on an iPhone; the local network prompt and
   a refusal of it are untested, as they are for Wi-Fi today.
 - **The phone's subnet.** Dart gives the phone's addresses but not the
