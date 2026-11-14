@@ -28,6 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::audio::TargetFormat;
 use crate::config;
+use crate::lighting::effects::LayerSet;
 use crate::proto::player;
 use crate::util::{filename_display, FileStamp};
 
@@ -49,6 +50,8 @@ pub struct DslLightingShow {
     file_path: PathBuf,
     /// The tempo the show inherits, to parse it again against.
     tempo_map: Option<crate::tempo::TempoMap>,
+    /// The layers the show is parsed against, again on each reparse.
+    layers: LayerSet,
     /// The latest parse, and the file's stamp when it was read.
     parsed: parking_lot::Mutex<ParsedFile>,
 }
@@ -77,6 +80,7 @@ impl Clone for DslLightingShow {
         Self {
             file_path: self.file_path.clone(),
             tempo_map: self.tempo_map.clone(),
+            layers: self.layers.clone(),
             parsed: parking_lot::Mutex::new(ParsedFile {
                 shows: parsed.shows.clone(),
                 modified: parsed.modified,
@@ -100,6 +104,7 @@ fn lighting_tempo(
 
 /// Reads and parses a DSL file.
 fn parse_dsl_file(
+    layers: &LayerSet,
     file_path: &Path,
     tempo_map: Option<&crate::tempo::TempoMap>,
 ) -> Result<crate::lighting::parser::LightShows, Box<dyn Error>> {
@@ -110,7 +115,7 @@ fn parse_dsl_file(
             e
         )
     })?;
-    crate::lighting::parser::parse_light_file(&content, Some(file_path), tempo_map).map_err(|e| {
+    crate::lighting::parser::parse_light_file(layers, &content, Some(file_path), tempo_map).map_err(|e| {
         // Prepend the file path to the error, preserving newlines in the original error
         format!(
             "Failed to parse DSL lighting show {}:\n{}",
@@ -124,6 +129,7 @@ fn parse_dsl_file(
 impl DslLightingShow {
     /// Creates a new DSL lighting show, validating that the file exists and can be parsed.
     pub fn new(
+        layers: &LayerSet,
         start_path: &Path,
         config: &config::LightingShow,
         tempo_map: Option<&crate::tempo::TempoMap>,
@@ -143,24 +149,28 @@ impl DslLightingShow {
             .into());
         }
 
-        Self::load(file_path, tempo_map)
+        Self::load(layers, file_path, tempo_map)
     }
 
     /// Reads and parses the DSL file at `file_path`.
     pub(crate) fn load(
+        layers: &LayerSet,
         file_path: PathBuf,
         tempo_map: Option<&crate::tempo::TempoMap>,
     ) -> Result<Self, Box<dyn Error>> {
         // Read before parsing: an edit landing in between is newer than the
         // time kept, and parsed again next time.
         let modified = FileStamp::of(&file_path);
-        let shows = parse_dsl_file(&file_path, tempo_map)?;
-        Ok(Self::with_shows(file_path, shows, tempo_map, modified))
+        let shows = parse_dsl_file(layers, &file_path, tempo_map)?;
+        Ok(Self::with_shows(
+            layers, file_path, shows, tempo_map, modified,
+        ))
     }
 
     /// A show already parsed from `file_path`, with the file's stamp when
     /// it was read (`None`: never parsed again).
     fn with_shows(
+        layers: &LayerSet,
         file_path: PathBuf,
         shows: crate::lighting::parser::LightShows,
         tempo_map: Option<&crate::tempo::TempoMap>,
@@ -169,6 +179,7 @@ impl DslLightingShow {
         Self {
             file_path,
             tempo_map: tempo_map.cloned(),
+            layers: layers.clone(),
             parsed: parking_lot::Mutex::new(ParsedFile {
                 shows: Arc::new(shows),
                 modified,
@@ -202,7 +213,7 @@ impl DslLightingShow {
             let modified = FileStamp::of(&self.file_path);
             if modified.is_some() && modified != parsed.modified {
                 parsed.modified = modified;
-                match parse_dsl_file(&self.file_path, self.tempo_map.as_ref()) {
+                match parse_dsl_file(&self.layers, &self.file_path, self.tempo_map.as_ref()) {
                     Ok(shows) => {
                         info!(
                             file = %self.file_path.display(),
@@ -319,6 +330,16 @@ pub struct ResolvedFade {
 impl Song {
     // Create a new song.
     pub fn new(start_path: &Path, config: &config::Song) -> Result<Song, Box<dyn Error>> {
+        Self::new_in(LayerSet::standard(), start_path, config)
+    }
+
+    /// [`Self::new`], its lighting shows parsed against the player's
+    /// `layers`: a show naming a layer the set lacks fails the song.
+    pub fn new_in(
+        layers: &LayerSet,
+        start_path: &Path,
+        config: &config::Song,
+    ) -> Result<Song, Box<dyn Error>> {
         let midi_playback = match config.midi_playback() {
             Some(midi_playback) => Some(MidiPlayback::new(start_path, midi_playback)?),
             None => None,
@@ -392,7 +413,7 @@ impl Song {
             Some(lighting_shows) => lighting_shows
                 .iter()
                 .map(|lighting_show| {
-                    DslLightingShow::new(start_path, lighting_show, lighting_tempo.as_ref())
+                    DslLightingShow::new(layers, start_path, lighting_show, lighting_tempo.as_ref())
                 })
                 .collect::<Result<Vec<DslLightingShow>, Box<dyn Error>>>()?,
             None => Vec::new(),
@@ -575,6 +596,15 @@ impl Song {
 
     /// Create a song from a directory without a configuration file
     pub fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
+        Self::initialize_in(LayerSet::standard(), song_directory)
+    }
+
+    /// [`Self::initialize`], the lighting files found parsed against the
+    /// player's `layers`.
+    pub fn initialize_in(
+        layers: &LayerSet,
+        song_directory: &PathBuf,
+    ) -> Result<Self, Box<dyn Error>> {
         // By name: a directory lists its files in no set order, and a song's
         // light shows fire same-time cues in the order its files come (#597).
         let mut song_files: Vec<_> = fs::read_dir(song_directory)?.collect::<Result<_, _>>()?;
@@ -647,7 +677,7 @@ impl Song {
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
         let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
         for path in light_paths {
-            dsl_lighting_shows.push(DslLightingShow::load(path, lighting_tempo.as_ref())?);
+            dsl_lighting_shows.push(DslLightingShow::load(layers, path, lighting_tempo.as_ref())?);
         }
 
         let song = Self {
@@ -2530,16 +2560,21 @@ pub fn configured_song_names(root: &Path) -> std::io::Result<HashSet<String>> {
 
 /// Recurse into the given path and return all valid songs found.
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
-    get_all_songs_with_defaults(path, false)
+    get_all_songs_with_defaults(path, false, LayerSet::standard())
 }
 
 /// Like [`get_all_songs`], applying the player-wide metronome default:
 /// when enabled, songs with a tempo map and no `metronome:` block get a
 /// default metronome (in memory only), and `metronome: { enabled: false }`
 /// blocks resolve to no metronome.
+///
+/// Each song's lighting shows are parsed against the player's `layers`: a
+/// song whose show names a layer the set lacks fails to load, as a show
+/// with any other error does.
 pub fn get_all_songs_with_defaults(
     path: &Path,
     default_metronome: bool,
+    layers: &LayerSet,
 ) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
@@ -2550,7 +2585,7 @@ pub fn get_all_songs_with_defaults(
             None => {}
             Some(Ok(song_config)) => match path.parent() {
                 Some(parent) => match parent.canonicalize() {
-                    Ok(canonical_parent) => match Song::new(&canonical_parent, &song_config) {
+                    Ok(canonical_parent) => match Song::new_in(layers, &canonical_parent, &song_config) {
                         Ok(mut song) => {
                             // Record the exact source yaml so MCP read/patch
                             // tools can target it regardless of layout. The
@@ -4091,7 +4126,7 @@ mod test {
     #[test]
     fn dsl_lighting_show_file_not_found() {
         let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
-        let err = super::DslLightingShow::new(Path::new("/tmp"), &config, None)
+        let err = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), Path::new("/tmp"), &config, None)
             .expect_err("expected error")
             .to_string();
         assert!(err.contains("does not exist"), "Error: {err}");
@@ -4102,7 +4137,7 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("bad.dsl"), "show {")?;
         let config = crate::config::LightingShow::new("bad.dsl".to_string());
-        let err = super::DslLightingShow::new(tempdir.path(), &config, None)
+        let err = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), tempdir.path(), &config, None)
             .expect_err("expected error")
             .to_string();
         assert!(
@@ -4117,7 +4152,7 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("valid.dsl"), "# just a comment\n")?;
         let config = crate::config::LightingShow::new("valid.dsl".to_string());
-        let show = super::DslLightingShow::new(tempdir.path(), &config, None)?;
+        let show = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), tempdir.path(), &config, None)?;
         assert_eq!(show.file_path(), tempdir.path().join("valid.dsl"));
         assert!(show.shows().is_empty());
         Ok(())
@@ -4129,7 +4164,7 @@ mod test {
         let abs_path = tempdir.path().join("absolute.dsl");
         fs::write(&abs_path, "")?;
         let config = crate::config::LightingShow::new(abs_path.to_string_lossy().to_string());
-        let show = super::DslLightingShow::new(Path::new("/some/other/path"), &config, None)?;
+        let show = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), Path::new("/some/other/path"), &config, None)?;
         assert_eq!(show.file_path(), abs_path);
         Ok(())
     }
@@ -6063,6 +6098,7 @@ pilot:
         )
         .unwrap();
         let dsls = vec![super::DslLightingShow::with_shows(
+            crate::lighting::effects::LayerSet::standard(),
             PathBuf::from("show.light"),
             shows,
             None,
@@ -6087,8 +6123,8 @@ pilot:
         )
         .unwrap();
         let two_files = vec![
-            super::DslLightingShow::with_shows(PathBuf::from("main.light"), main, None, None),
-            super::DslLightingShow::with_shows(PathBuf::from("outro.light"), outro, None, None),
+            super::DslLightingShow::with_shows(crate::lighting::effects::LayerSet::standard(), PathBuf::from("main.light"), main, None, None),
+            super::DslLightingShow::with_shows(crate::lighting::effects::LayerSet::standard(), PathBuf::from("outro.light"), outro, None, None),
         ];
         assert_eq!(super::lighting_end(&two_files), Duration::from_secs(10));
 

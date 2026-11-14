@@ -222,6 +222,13 @@ pub struct BroadcastHandles {
 }
 
 impl Engine {
+    /// The lighting layers this engine runs, bottom to top: its profile's
+    /// `dmx.lighting.layers`, else the defaults. What the shows it plays
+    /// are parsed against.
+    pub fn layers(&self) -> crate::lighting::effects::LayerSet {
+        crate::config::lighting::layer_set(self.lighting_config.as_ref())
+    }
+
     /// Creates a new DMX Engine with lighting system using dependency injection.
     pub fn new(
         config: &config::Dmx,
@@ -274,7 +281,7 @@ impl Engine {
                 None
             };
 
-        let mut ee = EffectEngine::new();
+        let mut ee = EffectEngine::with_layers(crate::config::lighting::layer_set(lighting_config));
         // A fixture patched on a universe with no output here holds
         // nothing: the wire keeps no bytes for it, and its state reads dark.
         ee.set_outputs(Some(universes.keys().copied().collect()));

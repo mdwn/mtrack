@@ -14,19 +14,21 @@
 
 use std::time::Duration;
 
-use super::super::effects::{BlendMode, EffectLayer, EffectType};
+use super::super::effects::{BlendMode, EffectLayer, EffectType, LayerSet};
 use super::super::tempo::TempoMap;
 
 /// The cue an effect is parsed in: the tempo map in force, the cue's time
 /// and the show `offset` it includes.
 #[derive(Clone)]
-pub(crate) struct ParseContext {
+pub(crate) struct ParseContext<'a> {
     pub tempo_map: Option<TempoMap>,
     pub cue_time: Duration,
     pub offset_secs: f64,
+    /// The layers an effect's `layer:` may name.
+    pub layers: &'a LayerSet,
 }
 
-impl ParseContext {
+impl ParseContext<'_> {
     /// A duration parameter's value -- `duration`, `up_time`, `hold_time`,
     /// `down_time`, on any effect -- read at the cue's place in the score:
     /// its time less the offset, on the unshifted map, which is the map

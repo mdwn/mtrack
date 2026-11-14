@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::effects::LayerSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -86,6 +87,15 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
     lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
 }
 
+/// The layers a profile's lighting section configures, or the defaults when
+/// it has none. A section whose layers are not a set (refused when the
+/// config loads) gives the defaults too.
+pub fn layer_set(lighting: Option<&Lighting>) -> LayerSet {
+    lighting
+        .and_then(|l| l.layer_set().ok())
+        .unwrap_or_else(|| LayerSet::standard().clone())
+}
+
 /// A project's fixture types and venues directories, relative to the
 /// project: a profile's configured ones, else the defaults. What the
 /// engine reads on this host is the host-matched profile's
@@ -141,6 +151,23 @@ pub struct Lighting {
     /// The show the rig plays while no song is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ambient: Option<super::ambient::Ambient>,
+
+    /// The lighting layers, bottom to top. Effects name one with
+    /// `layer:`; a higher layer is drawn over a lower. Between one and
+    /// sixteen identifiers. Left out, it is `background`, `midground` and
+    /// `foreground`, and is not written back.
+    #[serde(default = "default_layers", skip_serializing_if = "is_default_layers")]
+    layers: Vec<String>,
+}
+
+/// The layers a lighting section with none of its own has.
+fn default_layers() -> Vec<String> {
+    LayerSet::standard().names().to_vec()
+}
+
+/// Whether `layers` are the defaults, which a save leaves out.
+fn is_default_layers(layers: &[String]) -> bool {
+    layers == LayerSet::standard().names()
 }
 
 /// Directory configuration for loading fixture types and venues.
@@ -170,7 +197,26 @@ impl Lighting {
             groups,
             directories,
             ambient: None,
+            layers: default_layers(),
         }
+    }
+
+    /// This configuration with `layers` as its layers, bottom to top.
+    pub fn with_layers(mut self, layers: Vec<String>) -> Lighting {
+        self.layers = layers;
+        self
+    }
+
+    /// The configured layer names, bottom to top, as written. Use
+    /// [`Self::layer_set`] for the validated set.
+    pub fn layers(&self) -> &[String] {
+        &self.layers
+    }
+
+    /// The configured layers as a set, or why they are not one: between
+    /// one and sixteen unique identifiers.
+    pub fn layer_set(&self) -> Result<LayerSet, String> {
+        LayerSet::new(self.layers.clone())
     }
 
     /// This configuration with `ambient` as its ambient light.

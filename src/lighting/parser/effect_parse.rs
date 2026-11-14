@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use super::super::effects::{
     ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve, Easing,
-    EffectType, LayerSet, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
+    EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::grammar::Rule;
 use super::types::{Effect, EffectKind, ParseContext};
 use super::utils::{
     parse_blend_mode, parse_color_string, parse_frequency_string, parse_layer_in,
-    parse_percentage_to_f64, parse_speed_string, split_unit, unquoted,
+    parse_percentage_to_f64, parse_speed_string, split_unit, unknown_layer, unquoted,
 };
 use pest::iterators::Pair;
 
@@ -398,13 +398,13 @@ fn keyword_value<T: Clone>(
 /// in a long show can be found (#538).
 pub(crate) fn parse_effect_definition(
     pair: Pair<Rule>,
-    ctx: &ParseContext,
+    ctx: &ParseContext<'_>,
 ) -> Result<Effect, Box<dyn Error>> {
     let (line, _) = pair.line_col();
     parse_effect_line(pair, ctx).map_err(|e| format!("line {line}: {e}").into())
 }
 
-fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box<dyn Error>> {
+fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect, Box<dyn Error>> {
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
         parameters: HashMap::new(),
@@ -437,6 +437,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
             Rule::parameters => {
                 for param_pair in inner_pair.into_inner() {
                     if param_pair.as_rule() == Rule::parameter {
+                        let param_pair_span = param_pair.as_span();
                         let (key, value) = super::utils::parse_parameter(param_pair)?;
                         musical.record(&key, &value);
                         match key.as_str() {
@@ -444,14 +445,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                                 color_parameters.push(value);
                             }
                             "layer" => {
-                                let layers = LayerSet::standard();
-                                layer = Some(parse_layer_in(layers, &value).ok_or_else(|| {
-                                    format!(
-                                        "Invalid layer: '{}' (expected: {})",
-                                        value,
-                                        layers.names().join(", ")
-                                    )
-                                })?);
+                                let (_, col) = param_pair_span.start_pos().line_col();
+                                layer = Some(parse_layer_in(ctx.layers, &value).ok_or_else(
+                                    || unknown_layer(ctx.layers, &value, col),
+                                )?);
                             }
                             "blend_mode" => {
                                 blend_mode = Some(
@@ -625,7 +622,7 @@ pub(crate) fn apply_parameters_to_effect_type(
     mut effect_type: EffectType,
     parameters: &HashMap<String, String>,
     color_parameters: &[String],
-    ctx: &ParseContext,
+    ctx: &ParseContext<'_>,
 ) -> Result<(EffectType, Vec<String>), Box<dyn Error>> {
     let mut ignored: Vec<String> = Vec::new();
     // The effect reads the parameters its table names; a `static` also
@@ -915,10 +912,12 @@ pub(crate) fn apply_parameters_to_effect_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lighting::effects::LayerSet;
 
     /// Default ParseContext used by unit tests that don't need tempo/offset.
-    fn default_ctx() -> ParseContext {
+    fn default_ctx() -> ParseContext<'static> {
         ParseContext {
+            layers: LayerSet::standard(),
             tempo_map: None,
             cue_time: Duration::ZERO,
             offset_secs: 0.0,

@@ -103,10 +103,16 @@ pub(crate) fn parse_layer_in(layers: &LayerSet, value: &str) -> Option<EffectLay
     layers.parse(value)
 }
 
-/// The layer a `layer:` name denotes in the default set. The seam for a
-/// configured set: callers that have one use [`parse_layer_in`].
-pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
-    parse_layer_in(LayerSet::standard(), value)
+/// The error for a `layer:` name the player does not have: the name, where
+/// it was written, and the layers the player has, bottom to top. `column` is
+/// the 1-based column of the parameter on its line.
+pub(crate) fn unknown_layer(layers: &LayerSet, name: &str, column: usize) -> String {
+    format!(
+        "unknown layer '{}' (column {}); this player's layers, bottom to top, are: {}",
+        name,
+        column,
+        layers.names().join(", ")
+    )
 }
 
 /// Each blend mode and its keyword, as the grammar writes it: the one

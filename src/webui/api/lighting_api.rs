@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::lighting::effects::LayerSet;
 use crate::webui::wire::fixture_types::{
     BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
     GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, StrobeRange,
@@ -462,6 +461,7 @@ pub(super) async fn put_lighting_file(
     let _writing = super::songs_api::SONG_WRITES.lock().await;
     let tempo = song_tempo_for_path(&state, &verified_path);
     match save_light_show(
+        &state.player.layers(),
         &state.config_path,
         &root,
         &verified_path,
@@ -488,6 +488,7 @@ pub(super) async fn put_lighting_file(
 /// written and kept inside `root`; its directory made only then. The
 /// caller holds [`super::songs_api::SONG_WRITES`].
 pub(crate) async fn save_light_show(
+    layers: &crate::lighting::effects::LayerSet,
     config_path: &std::path::Path,
     root: &VerifiedRoot,
     path: &std::path::Path,
@@ -503,7 +504,7 @@ pub(crate) async fn save_light_show(
         .map_err(IntoResponse::into_response)?;
     let path = &light_show_to_write(root, path)?;
     if let Err(errors) =
-        config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
+        config_io::validate_light_show(layers, &body, Some(path), Some(root.as_path()), tempo)
     {
         let errors: Vec<String> = errors
             .into_iter()
@@ -642,6 +643,7 @@ pub(super) async fn validate_lighting(
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
     match config_io::validate_light_show(
+        &state.player.layers(),
         &body,
         path.as_deref(),
         Some(&state.songs_path()),
@@ -1914,6 +1916,7 @@ pub(super) async fn evaluate_lighting(
         .filter(|name| !evaluated.targeted.contains(*name))
         .cloned()
         .collect();
+    let layers = state.player.layers();
     let evaluations = evaluated
         .evaluations
         .iter()
@@ -1927,7 +1930,7 @@ pub(super) async fn evaluate_lighting(
                     id: effect.id.clone(),
                     groups: evaluated.effect_groups.get(&effect.id).cloned(),
                     kind: effect.effect_type.to_string(),
-                    layer: LayerSet::standard().display_name(effect.layer),
+                    layer: layers.display_name(effect.layer),
                     elapsed: effect.elapsed.as_secs_f64(),
                     duration: effect.duration.as_secs_f64(),
                     fixtures: effect.fixtures.clone(),

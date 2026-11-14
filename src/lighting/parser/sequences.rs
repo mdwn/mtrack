@@ -27,6 +27,8 @@ use std::rc::Rc;
 
 use pest::iterators::Pair;
 
+use crate::lighting::effects::LayerSet;
+
 use pest::Parser;
 
 use super::super::tempo::TempoMap;
@@ -68,25 +70,33 @@ pub(crate) struct SequenceLibrary {
     expanding: RefCell<Vec<String>>,
     /// How many files' definitions have been added.
     files_added: usize,
+    /// The layers the sequences' effects and layer commands may name.
+    layers: LayerSet,
 }
 
 impl SequenceLibrary {
-    /// A library with no sequences in it.
-    pub(crate) fn empty() -> Self {
+    /// A library with no sequences in it, parsing against `layers`.
+    pub(crate) fn empty(layers: &LayerSet) -> Self {
         SequenceLibrary {
             templates: HashMap::new(),
             global_tempo: None,
             instances: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
+            layers: layers.clone(),
         }
     }
 
+    /// The layers effects and layer commands are parsed against.
+    pub(crate) fn layers(&self) -> &LayerSet {
+        &self.layers
+    }
+
     /// A library for a file whose shows run under `global_tempo`.
-    pub(crate) fn new(global_tempo: &Option<TempoMap>) -> Self {
+    pub(crate) fn new(global_tempo: &Option<TempoMap>, layers: &LayerSet) -> Self {
         SequenceLibrary {
             global_tempo: global_tempo.clone(),
-            ..SequenceLibrary::empty()
+            ..SequenceLibrary::empty(layers)
         }
     }
 

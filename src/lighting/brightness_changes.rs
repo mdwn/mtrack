@@ -82,6 +82,8 @@ impl FixtureTraits {
 #[derive(Default)]
 pub struct BrightnessContext {
     pub groups: HashMap<String, Vec<FixtureTraits>>,
+    /// The player's lighting layers, by which a finding names a layer.
+    pub layers: LayerSet,
 }
 
 /// An effect as it really plays: when, on which layer, and on which fixtures.
@@ -183,10 +185,12 @@ pub fn context_for(
 pub fn project_findings(
     system: &mut crate::lighting::system::LightingSystem,
     songs: &crate::songs::Songs,
+    layers: &LayerSet,
 ) -> Vec<(String, Vec<Warning>)> {
     let mut out = Vec::new();
     for (song, shows) in crate::lighting::readiness::songs_with_lighting(songs) {
-        let ctx = context_for(system, &shows);
+        let mut ctx = context_for(system, &shows);
+        ctx.layers = layers.clone();
         let findings = brightness_changes(&shows, &ctx);
         if !findings.is_empty() {
             out.push((song.name().to_string(), findings));
@@ -240,7 +244,7 @@ pub fn brightness_changes(shows: &[LightShow], ctx: &BrightnessContext) -> Vec<W
     items.sort_by_key(|item| (item.start, item.end));
 
     let mut out = Vec::new();
-    upper_colour_and_dimmer_replace(&items, &mut out);
+    upper_colour_and_dimmer_replace(&items, ctx, &mut out);
     colour_runs_on(&items, &mut out);
     level_without_colour(&items, &mut out);
     out
@@ -286,7 +290,7 @@ fn fixture_list(names: &BTreeSet<&str>) -> String {
 
 /// Cases 1 and 2: an effect on a layer above one that dims the same
 /// fixtures at the same time.
-fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
+fn upper_colour_and_dimmer_replace(items: &[Item], ctx: &BrightnessContext, out: &mut Vec<Warning>) {
     // One finding per upper effect and lower layer.
     let mut reported: BTreeSet<(usize, EffectLayer)> = BTreeSet::new();
     for (ui, upper) in items.iter().enumerate() {
@@ -333,8 +337,8 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                             upper.show,
                             secs(from),
                             groups_of(upper),
-                            LayerSet::standard().display_name(upper.layer),
-                            LayerSet::standard().display_name(lower.layer),
+                            ctx.layers.display_name(upper.layer),
+                            ctx.layers.display_name(lower.layer),
                             fixture_list(&fixtures),
                         ),
                     ));
@@ -357,8 +361,8 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                             secs(from),
                             upper.effect.effect_type.name().to_lowercase(),
                             groups_of(upper),
-                            LayerSet::standard().display_name(upper.layer),
-                            LayerSet::standard().display_name(lower.layer),
+                            ctx.layers.display_name(upper.layer),
+                            ctx.layers.display_name(lower.layer),
                             fixture_list(&fixtures),
                         ),
                     ));

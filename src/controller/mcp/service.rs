@@ -1322,7 +1322,7 @@ impl McpServer {
     )]
     async fn lighting_dsl_reference(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![ContentBlock::text(
-            super::dsl_reference::dsl_reference(),
+            super::dsl_reference::dsl_reference(&self.player.layers()),
         )]))
     }
 
@@ -1357,6 +1357,7 @@ impl McpServer {
             None => (None, None, None),
         };
         let parsed_shows = crate::lighting::parser::parse_light_file_within(
+            &self.player.layers(),
             &args.source,
             draft_path.as_deref(),
             root.as_deref(),
@@ -1465,6 +1466,7 @@ impl McpServer {
                 let song = self.song(name)?;
                 let tempo = song_lighting_tempo(&song);
                 let shows = crate::lighting::parser::parse_light_file_within(
+                    &self.player.layers(),
                     source,
                     Some(&song.lighting_draft_path()),
                     Some(&self.include_root(&song).await),
@@ -1494,7 +1496,7 @@ impl McpServer {
                 Ok((shows, song_lighting_tempo(&song)))
             }
             (None, Some(source)) => {
-                let shows = crate::lighting::parser::parse_light_shows(source).map_err(|e| {
+                let shows = crate::lighting::parser::parse_light_shows_in(&self.player.layers(), source, None).map_err(|e| {
                     McpError::invalid_params(
                         format!(
                             "{e}\n\nIf this show uses `@bar`/`beat` timing, pass `song` \
@@ -1550,10 +1552,11 @@ impl McpServer {
         .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?
         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
+        let layers = self.player.layers();
         let results: Vec<Value> = evaluated
             .evaluations
             .iter()
-            .map(|evaluation| evaluation_json(evaluation, include_fixtures))
+            .map(|evaluation| evaluation_json(evaluation, include_fixtures, &layers))
             .collect();
 
         // A venue that does not register is said, not shown as an empty rig.
@@ -1597,6 +1600,7 @@ impl McpServer {
         .await
         .map_err(|e| McpError::internal_error(format!("analysis failed: {e}"), None))?;
 
+        let layers = self.player.layers();
         let dark_windows: Vec<Value> = analysis
             .dark_windows
             .iter()
@@ -1619,7 +1623,7 @@ impl McpServer {
             "per_layer_seconds": analysis
                 .per_layer_seconds
                 .iter()
-                .map(|(layer, secs)| (LayerSet::standard().display_name(*layer), *secs))
+                .map(|(layer, secs)| (layers.display_name(*layer), *secs))
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "warnings": warnings,
         })))
@@ -1660,8 +1664,11 @@ impl McpServer {
             })
             .await?;
 
+        let layers = self.player.layers();
+        let diff_layers = layers.clone();
         let diff = tokio::task::spawn_blocking(move || {
             crate::lighting::diff::diff_shows(
+                &diff_layers,
                 before,
                 after,
                 before_tempo.as_ref(),
@@ -1677,7 +1684,7 @@ impl McpServer {
                 "position": e.position,
                 "groups": e.groups,
                 "type": e.effect_type,
-                "layer": LayerSet::standard().display_name(e.layer),
+                "layer": layers.display_name(e.layer),
                 "duration": e.duration.as_secs_f64(),
                 "blend_mode": e.blend_mode.keyword(),
                 "parameters": e.parameters,
@@ -2943,6 +2950,7 @@ impl ServerHandler for McpServer {
 fn evaluation_json(
     evaluation: &crate::lighting::evaluate::Evaluation,
     include_fixtures: bool,
+    layers: &LayerSet,
 ) -> Value {
     let effects: Vec<Value> = evaluation
         .active_effects
@@ -2951,7 +2959,7 @@ fn evaluation_json(
             json!({
                 "id": effect.id,
                 "type": effect.effect_type,
-                "layer": LayerSet::standard().display_name(effect.layer),
+                "layer": layers.display_name(effect.layer),
                 "elapsed": effect.elapsed.as_secs_f64(),
                 "duration": effect.duration.as_secs_f64(),
                 "fixtures": effect.fixtures,
@@ -3559,7 +3567,7 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
     .await
     .map_err(|e| McpError::internal_error(format!("snapshot failed: {e}"), None))?;
 
-    let mut value = evaluation_json(&snapshot, true);
+    let mut value = evaluation_json(&snapshot, true, &player.layers());
     value["available"] = json!(true);
     Ok(value)
 }
@@ -3975,6 +3983,7 @@ impl McpServer {
         let root = self.songs_root_verified().await?;
         let shown = shown_in(root.as_path(), path);
         web(lighting_api::save_light_show(
+            &self.player.layers(),
             store.path(),
             &root,
             path,

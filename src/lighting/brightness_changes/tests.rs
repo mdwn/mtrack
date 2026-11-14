@@ -31,6 +31,7 @@ fn ctx() -> BrightnessContext {
             ("dim".to_string(), vec![fixture("d1", true)]),
             ("rgb".to_string(), vec![fixture("r1", false)]),
         ]),
+        ..Default::default()
     }
 }
 

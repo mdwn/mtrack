@@ -147,15 +147,15 @@ fn heading(kind: EffectKind) -> &'static str {
 fn every_effect_has_a_section_and_no_other() {
     let types = section(EFFECTS_MD, "## Effect Types");
     let written = types.lines().filter(|l| l.starts_with("### ")).count();
-    assert_eq!(written, vocabulary().effects.len());
-    for effect in vocabulary().effects {
+    assert_eq!(written, vocabulary(crate::lighting::effects::LayerSet::standard()).effects.len());
+    for effect in vocabulary(crate::lighting::effects::LayerSet::standard()).effects {
         assert!(types.contains(&format!("\n{}\n", heading(effect.kind))));
     }
 }
 
 #[test]
 fn each_effect_lists_the_parameters_it_reads_and_no_other() {
-    for effect in vocabulary().effects {
+    for effect in vocabulary(crate::lighting::effects::LayerSet::standard()).effects {
         let text = section(EFFECTS_MD, heading(effect.kind));
         let keyword = effect.kind.keyword();
         for param in &effect.params {
@@ -177,7 +177,7 @@ fn each_effect_lists_the_parameters_it_reads_and_no_other() {
 
 #[test]
 fn each_effect_states_its_defaults_and_no_other() {
-    for effect in vocabulary().effects {
+    for effect in vocabulary(crate::lighting::effects::LayerSet::standard()).effects {
         let text = section(EFFECTS_MD, heading(effect.kind));
         let keyword = effect.kind.keyword();
         let defaults = effect_defaults(effect.kind);
@@ -234,7 +234,7 @@ fn sorted(words: impl IntoIterator<Item = &'static str>) -> Vec<String> {
 
 #[test]
 fn the_keyword_lists_are_the_parsers() {
-    let v = vocabulary();
+    let v = vocabulary(crate::lighting::effects::LayerSet::standard());
     let words = |table: &[(CycleTransition, &'static str)]| -> Vec<&'static str> {
         table.iter().map(|(_, w)| *w).collect()
     };
@@ -278,7 +278,7 @@ fn the_keyword_lists_are_the_parsers() {
 
 #[test]
 fn the_common_parameters_are_the_parsers() {
-    let v = vocabulary();
+    let v = vocabulary(crate::lighting::effects::LayerSet::standard());
     let text = section(EFFECTS_MD, "## Common Effect Parameters");
     let mut documented: Vec<String> = bullets(text).into_iter().flat_map(|(n, _)| n).collect();
     documented.sort();

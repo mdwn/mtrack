@@ -16,7 +16,7 @@
 //! their parameters and defaults, and every keyword list are the grammar's.
 
 use crate::config::length::UNITS;
-use crate::lighting::effects::NAMED_COLORS;
+use crate::lighting::effects::{LayerSet, NAMED_COLORS};
 use crate::lighting::parser::document::EffectKind;
 use crate::lighting::parser::edit::vocabulary;
 use crate::lighting::parser::words::{
@@ -70,12 +70,12 @@ fn effect_note(kind: EffectKind) -> &'static str {
 
 /// The effects table: each effect, the parameters it reads, their
 /// defaults, and its note.
-fn effects_table() -> String {
+fn effects_table(layers: &LayerSet) -> String {
     let mut out = String::from(
         "| Effect | Parameters it reads | Defaults | Notes |\n\
          |--------|---------------------|----------|-------|\n",
     );
-    for effect in vocabulary().effects {
+    for effect in vocabulary(layers).effects {
         let params = effect
             .params
             .iter()
@@ -120,10 +120,10 @@ fn listed<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
 }
 
 /// What slot `name` holds, or `None` for no such slot.
-fn slot(name: &str) -> Option<String> {
-    let v = vocabulary();
+fn slot(name: &str, layers: &LayerSet) -> Option<String> {
+    let v = vocabulary(layers);
     Some(match name {
-        "effects" => effects_table(),
+        "effects" => effects_table(layers),
         "common_params" => listed(COMMON_PARAMS),
         "units" => listed(UNITS.iter().flat_map(|(_, plural, one)| {
             if plural == one {
@@ -164,7 +164,7 @@ fn slot(name: &str) -> Option<String> {
 }
 
 /// The reference, every slot filled.
-pub(super) fn dsl_reference() -> String {
+pub(super) fn dsl_reference(layers: &LayerSet) -> String {
     let mut out = String::with_capacity(TEMPLATE.len() * 2);
     let mut rest = TEMPLATE;
     while let Some(start) = rest.find("{{") {
@@ -174,7 +174,7 @@ pub(super) fn dsl_reference() -> String {
             .expect("every slot is closed");
         let name = &rest[start + 2..end];
         out.push_str(&rest[..start]);
-        out.push_str(&slot(name).unwrap_or_else(|| panic!("no slot named {name}")));
+        out.push_str(&slot(name, layers).unwrap_or_else(|| panic!("no slot named {name}")));
         rest = &rest[end + 2..];
     }
     out.push_str(rest);
@@ -187,14 +187,14 @@ mod tests {
 
     #[test]
     fn every_slot_is_filled() {
-        let text = dsl_reference();
+        let text = dsl_reference(LayerSet::standard());
         assert!(!text.contains("{{") && !text.contains("}}"));
     }
 
     #[test]
     fn every_effect_and_keyword_is_in_the_reference() {
-        let text = dsl_reference();
-        let v = vocabulary();
+        let text = dsl_reference(LayerSet::standard());
+        let v = vocabulary(LayerSet::standard());
         for effect in &v.effects {
             let row = text
                 .lines()
@@ -223,8 +223,8 @@ mod tests {
 
     #[test]
     fn the_word_lists_are_the_parsers() {
-        let text = dsl_reference();
-        let v = vocabulary();
+        let text = dsl_reference(LayerSet::standard());
+        let v = vocabulary(LayerSet::standard());
         let units = UNITS.iter().flat_map(|(_, plural, one)| [*plural, *one]);
         let colors = NAMED_COLORS.iter().map(|(name, _)| *name);
         let commands = v.layer_commands.iter().map(|c| c.keyword());
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn the_dimmer_states_its_defaults() {
-        let text = dsl_reference();
+        let text = dsl_reference(LayerSet::standard());
         let row = text
             .lines()
             .find(|l| l.starts_with("| `dimmer` |"))
