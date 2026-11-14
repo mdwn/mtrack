@@ -25,8 +25,6 @@ import type {
   MvrKept,
   SampleUploaded,
   SongFiles,
-  ConfigReload,
-  ConfigSaved,
   MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeEntry,
@@ -75,25 +73,38 @@ import {
   AddProfileRequestSchema,
   DeletePlaylistRequestSchema,
   DeletePlaylistResponseSchema,
+  DeleteProfileFileRequestSchema,
   GetConfigResponseSchema,
   GetPlaylistRequestSchema,
   GetPlaylistResponseSchema,
+  GetProfileFileResponseSchema,
   ListPlaylistsResponseSchema,
+  ListProfileFilesResponseSchema,
   ListSongsResponseSchema,
+  ProfileFileSavedSchema,
   RemoveProfileRequestSchema,
   SavePlaylistRequestSchema,
+  SaveProfileFileRequestSchema,
   SetLockRequestSchema,
   SetLockResponseSchema,
   SwitchToPlaylistResponseSchema,
   UpdateConfigResponseSchema,
+  UpdateMetronomeRequestSchema,
   UpdateProfileRequestSchema,
+  UpdateSamplesRequestSchema,
 } from "../../src/gen/player/v1/player_pb.js";
 import {
   errorHeaders,
   requestMessage,
   unaryBody,
 } from "../support/grpc-web.js";
-import { getConfigReply, savedReply } from "../support/config-rpc.js";
+import {
+  getConfigReply,
+  getProfileFileReply,
+  listProfileFilesReply,
+  profileFileSavedReply,
+  savedReply,
+} from "../support/config-rpc.js";
 import {
   getPlaylistReply,
   listPlaylistsReply,
@@ -128,8 +139,9 @@ class GrpcFailure extends Error {
 function grpcUnary(
   method: string,
   answer: (request: Uint8Array) => Uint8Array,
+  service = "PlayerService",
 ): void {
-  app.post(`/player.v1.PlayerService/${method}`, grpcRaw, (req, res) => {
+  app.post(`/player.v1.${service}/${method}`, grpcRaw, (req, res) => {
     try {
       const body = answer(requestMessage(new Uint8Array(req.body ?? [])));
       res
@@ -339,36 +351,82 @@ app.get("/api/devices/midi", (_req, res) => {
   res.json(MIDI_DEVICES);
 });
 
-// --- Profiles ---
+// --- Profile files, samples and the metronome: ConfigService ---
 
-/** A save's hardware reload, run at once. */
-const APPLIED: ConfigReload = { applied: true, reload: "applied" };
+// A read answers the fixture, and a write answers it as applied at once and
+// changes nothing, as the REST routes they replace did.
+grpcUnary(
+  "ListProfileFiles",
+  () =>
+    toBinary(
+      ListProfileFilesResponseSchema,
+      create(
+        ListProfileFilesResponseSchema,
+        listProfileFilesReply(PROFILE_FILES),
+      ),
+    ),
+  "ConfigService",
+);
 
-app.get("/api/profiles", (_req, res) => {
-  res.json(PROFILE_FILES);
-});
+grpcUnary(
+  "GetProfileFile",
+  () =>
+    toBinary(
+      GetProfileFileResponseSchema,
+      create(
+        GetProfileFileResponseSchema,
+        getProfileFileReply(PROFILE_FILE_DETAIL),
+      ),
+    ),
+  "ConfigService",
+);
 
-app.get("/api/profiles/:filename", (_req, res) => {
-  res.json(PROFILE_FILE_DETAIL);
-});
+grpcUnary(
+  "SaveProfileFile",
+  (request) => {
+    const { filename } = fromBinary(SaveProfileFileRequestSchema, request);
+    return toBinary(
+      ProfileFileSavedSchema,
+      create(ProfileFileSavedSchema, profileFileSavedReply({ filename })),
+    );
+  },
+  "ConfigService",
+);
 
-app.put("/api/profiles/:filename", (_req, res) => {
-  res.json({ status: "saved" });
-});
+grpcUnary(
+  "DeleteProfileFile",
+  (request) => {
+    const { filename } = fromBinary(DeleteProfileFileRequestSchema, request);
+    return toBinary(
+      ProfileFileSavedSchema,
+      create(
+        ProfileFileSavedSchema,
+        profileFileSavedReply({ status: "deleted", filename }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
-app.delete("/api/profiles/:filename", (_req, res) => {
-  res.json({ status: "deleted" });
-});
+grpcUnary(
+  "UpdateSamples",
+  (request) => {
+    fromBinary(UpdateSamplesRequestSchema, request);
+    return profileSaved("new-checksum-4");
+  },
+  "ConfigService",
+);
+
+grpcUnary(
+  "UpdateMetronome",
+  (request) => {
+    fromBinary(UpdateMetronomeRequestSchema, request);
+    return profileSaved("new-checksum-5");
+  },
+  "ConfigService",
+);
 
 // --- Samples ---
-
-app.put("/api/config/samples", (_req, res) => {
-  res.json({
-    ...CONFIG_STORE,
-    checksum: "new-checksum-4",
-    ...APPLIED,
-  } satisfies ConfigSaved);
-});
 
 app.put("/api/samples/upload/:filename", (_req, res) => {
   res.json({

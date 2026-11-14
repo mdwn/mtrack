@@ -179,8 +179,8 @@ and only created: a name that reaches a file already there (`stage.yaml` with on
 `stage.yaml.yaml`, or `stage` with only `stage.yml`) is refused, as is one whose file would
 differ only in case from a file there (`Stage` beside `stage.yaml`). The file is created with
 the filesystem refusing one already there, so a name that differs from an existing one only by
-Unicode normalization (which macOS treats as the same) is refused too, never written over. The API
-(`/api/profiles/<name>`) takes a full file name the directory lists, else a stem, which is its
+Unicode normalization (which macOS treats as the same) is refused too, never written over. The
+profile file calls of the gRPC `ConfigService` (see [gRPC](../interfaces/grpc.md#configservice)) take a full file name the directory lists, else a stem, which is its
 `.yaml`, else its `.yml`; with neither there, a full file name is created as written (`x.yml`).
 
 ## Controllers

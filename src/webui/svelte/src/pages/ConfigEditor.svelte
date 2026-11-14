@@ -392,9 +392,11 @@
         if (routeProfile !== saved) updateConfigUrl(saved, routeSection);
       }
     } catch (e: any) {
-      if (e instanceof ConflictError && selectedFilename) {
+      if (e instanceof ConflictError && selectedFilename && !isNew) {
         // The profile file changed since it was opened: reload it and leave
-        // the change to be made again.
+        // the change to be made again. (A new profile's save is a create,
+        // which has no version to have changed: it is refused because its
+        // name reaches a file, and says so, leaving the draft.)
         await selectFileProfile(selectedFilename);
         saveMsg = get(t)("lighting.groups.changedElsewhere");
       } else {

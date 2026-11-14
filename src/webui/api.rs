@@ -14,7 +14,6 @@
 
 pub(crate) mod bluetooth;
 pub(crate) mod browse;
-pub(crate) mod config_api;
 pub(crate) mod devices;
 pub(crate) mod fixture_settings;
 pub(crate) mod fixture_test;
@@ -141,15 +140,6 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/lighting/fit", get(lighting_api::get_fit))
         .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
-        .route("/config/samples", put(config_api::put_config_samples))
-        .route("/config/metronome", put(config_api::put_config_metronome))
-        .route("/profiles", get(profiles::get_profiles))
-        .route(
-            "/profiles/{filename}",
-            get(profiles::get_profile)
-                .put(profiles::put_profile)
-                .delete(profiles::delete_profile_file),
-        )
         .route("/controllers/restart", post(status::restart_controllers))
         .route("/bluetooth", get(bluetooth::get_bluetooth))
         .route("/bluetooth/pairing", post(bluetooth::post_pairing))
@@ -402,27 +392,6 @@ pub(super) mod test_helpers {
         test_state_with_playlists(playlists, "all_songs", audio, dmx_engine)
     }
 
-    /// Creates a WebUiState whose player has `playlist` active, with a mock
-    /// audio device to play it on.
-    pub fn test_state_with_playlist(
-        playlist: std::sync::Arc<crate::playlist::Playlist>,
-    ) -> (WebUiState, tempfile::TempDir) {
-        let mut playlists = std::collections::HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            crate::playlist::from_songs(playlist.registry().clone()).unwrap(),
-        );
-        playlists.insert(playlist.name().to_string(), playlist.clone());
-        test_state_with_playlists(
-            playlists,
-            playlist.name(),
-            Some(std::sync::Arc::new(crate::audio::mock::Device::get(
-                "mock-device",
-            ))),
-            None,
-        )
-    }
-
     fn test_state_with_playlists(
         playlists: std::collections::HashMap<String, std::sync::Arc<crate::playlist::Playlist>>,
         active: &str,
@@ -484,7 +453,6 @@ pub(super) mod test_helpers {
         let state = WebUiState::new(super::super::server::WebUiStateParams {
             player,
             config_path,
-            profiles_dir: None,
         });
 
         (state, dir)
@@ -502,16 +470,6 @@ pub(super) mod test_helpers {
         let path = dir.path().join("test.wav");
         crate::testutil::write_wav(path.clone(), vec![vec![0_i32; 4410]], 44100).unwrap();
         std::fs::read(&path).unwrap()
-    }
-
-    /// Helper: create a test state with a config store for mutation tests.
-    pub fn test_state_with_store() -> (WebUiState, tempfile::TempDir) {
-        let (state, dir) = test_state();
-        let path = state.config_path.clone();
-        let cfg = crate::config::Player::deserialize(&path).unwrap();
-        let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
-        state.player.set_config_store(store);
-        (state, dir)
     }
 }
 
@@ -659,7 +617,7 @@ mod test {
         }
         // Ordinary edits stay locked.
         assert_eq!(
-            send(&app, "PUT", "/api/config/samples", "{}").await,
+            send(&app, "PUT", "/api/songs/ordinary", "{}").await,
             StatusCode::LOCKED
         );
     }

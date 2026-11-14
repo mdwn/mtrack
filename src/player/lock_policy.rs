@@ -14,7 +14,9 @@
 
 //! Which operations stay open while the player is locked, on every control
 //! surface: one table, which MCP's `call_tool` gate, the gRPC service's
-//! lock guard (`controller::grpc::LockGuard`, for native gRPC and gRPC-Web)
+//! lock guard (`controller::grpc::LockGuard`, for native gRPC and gRPC-Web,
+//! on every service: an RPC is named by its method name alone, so no two
+//! services may share one, which a test in `controller::grpc` holds)
 //! and the web UI's lock middleware all ask, and one refusal,
 //! [`super::LockedError`].
 
@@ -119,6 +121,10 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "WatchStatus"),
     (Grpc, "Watch"),
     (Grpc, "GetNetworkInfo"),
+    // ConfigService's reads. Its writes (UpdateSamples, UpdateMetronome,
+    // SaveProfileFile, DeleteProfileFile) stay locked out.
+    (Grpc, "ListProfileFiles"),
+    (Grpc, "GetProfileFile"),
     // The lock itself: the phone's only way to unlock, and the web UI's
     // toggle. SavePlaylist and DeletePlaylist are playlist writes and stay
     // locked out.
@@ -180,5 +186,12 @@ mod tests {
         assert!(open_while_locked(Grpc, "WatchStatus"));
         assert!(open_while_locked(Grpc, "Watch"));
         assert!(open_while_locked(Grpc, "GetNetworkInfo"));
+        // ConfigService: its reads are open, its writes are not.
+        assert!(open_while_locked(Grpc, "ListProfileFiles"));
+        assert!(open_while_locked(Grpc, "GetProfileFile"));
+        assert!(!open_while_locked(Grpc, "SaveProfileFile"));
+        assert!(!open_while_locked(Grpc, "DeleteProfileFile"));
+        assert!(!open_while_locked(Grpc, "UpdateSamples"));
+        assert!(!open_while_locked(Grpc, "UpdateMetronome"));
     }
 }

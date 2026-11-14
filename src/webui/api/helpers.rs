@@ -91,22 +91,6 @@ pub(crate) fn validate_resource_name_to_write(
     Ok(())
 }
 
-/// Returns a configured directory path, or an error response if it is `None`.
-#[allow(clippy::result_large_err)]
-pub(crate) fn require_configured_dir(
-    dir: &Option<PathBuf>,
-    label: &str,
-    status: StatusCode,
-) -> Result<PathBuf, axum::response::Response> {
-    dir.clone().ok_or_else(|| {
-        (
-            status,
-            Json(json!({"error": format!("No {} directory configured", label)})),
-        )
-            .into_response()
-    })
-}
-
 /// The file `file` holds a resource by in `dir` (a playlist's or a
 /// profile's, as `util::yaml_file_at` found it in the listing, or the one
 /// to create), held inside `dir`: one the listing has is canonicalized and

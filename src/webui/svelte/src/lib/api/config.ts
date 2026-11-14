@@ -63,8 +63,15 @@ import type {
   VenueSaved,
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
-import { playerClient } from "../grpc/client";
-import { mapConfigSaved, mapConfigStore } from "../grpc/config";
+import { configClient, playerClient } from "../grpc/client";
+import {
+  mapConfigSaved,
+  mapConfigStore,
+  mapFileSaved,
+  mapProfileFile,
+  mapProfileFiles,
+  metronomeJson,
+} from "../grpc/config";
 import {
   callError,
   mapPlaylistDetail,
@@ -196,21 +203,25 @@ export async function deleteProfile(
 // ---- File-based Profiles API (profiles_dir) ----
 
 export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
-  const res = await get("/profiles");
-  if (!res.ok) throw new Error(`Failed to fetch profiles: ${res.status}`);
-  return res.json();
+  try {
+    return mapProfileFiles(await configClient.listProfileFiles({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch profiles");
+  }
 }
 
 export async function fetchProfileFile(filename: string): Promise<ProfileFile> {
-  const res = await get(`/profiles/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw await apiError(res, "Failed to fetch profile");
-  return res.json();
+  try {
+    return mapProfileFile(await configClient.getProfileFile({ filename }));
+  } catch (e) {
+    throw callError(e, "Failed to fetch profile");
+  }
 }
 
 /** Saves a profile file. `version` is the one the file was read at; a file
  *  that has changed since is refused with a `ConflictError`. With `create`,
- *  the save is only a create (`If-None-Match: *`): a name that reaches a
- *  file already there is refused, never merged into it. Returns the file's
+ *  the save is only a create: a name that reaches a file already there is
+ *  refused (also a `ConflictError`), never merged into it. Returns the file's
  *  new version, and what became of the hardware reload. */
 export async function saveProfileFile(
   filename: string,
@@ -218,26 +229,30 @@ export async function saveProfileFile(
   version?: string,
   create = false,
 ): Promise<{ version: string | null; reload: Partial<ConfigReload> }> {
-  const headers: Record<string, string> = {};
-  if (version) headers["If-Match"] = version;
-  if (create) headers["If-None-Match"] = "*";
-  const res = await put(
-    `/profiles/${encodeURIComponent(filename)}`,
-    JSON.stringify(profile),
-    Object.keys(headers).length ? headers : undefined,
-  );
-  if (!res.ok) throw await versionedError(res, "Failed to save profile");
-  const body: Partial<FileSaved> = await res.json().catch(() => ({}));
-  return { version: body.version ?? null, reload: body };
+  try {
+    const saved = mapFileSaved(
+      await configClient.saveProfileFile({
+        filename,
+        profileJson: JSON.stringify(profile),
+        expectedVersion: version || undefined,
+        create,
+      }),
+    );
+    return { version: saved.version ?? null, reload: saved };
+  } catch (e) {
+    throw callError(e, "Failed to save profile");
+  }
 }
 
 /** Deletes a profile file. Returns what became of the hardware reload. */
 export async function deleteProfileFile(
   filename: string,
 ): Promise<Partial<FileSaved>> {
-  const res = await del(`/profiles/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw await apiError(res, "Failed to delete profile");
-  return res.json().catch(() => ({}));
+  try {
+    return mapFileSaved(await configClient.deleteProfileFile({ filename }));
+  } catch (e) {
+    throw callError(e, "Failed to delete profile");
+  }
 }
 
 // Samples API
@@ -247,16 +262,17 @@ export async function updateSamples(
   checksum: string,
   maxSampleVoices?: number,
 ): Promise<ConfigSaved> {
-  const body = {
-    expected_checksum: checksum,
-    samples,
-    ...(maxSampleVoices !== undefined
-      ? { max_sample_voices: maxSampleVoices }
-      : {}),
-  };
-  const res = await put("/config/samples", JSON.stringify(body));
-  if (!res.ok) throw await apiError(res, "Failed to update samples");
-  return res.json();
+  try {
+    return mapConfigSaved(
+      await configClient.updateSamples({
+        samplesJson: JSON.stringify(samples),
+        maxSampleVoices,
+        expectedChecksum: checksum,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to update samples");
+  }
 }
 
 export async function updateMetronomeDefaults(
@@ -265,22 +281,16 @@ export async function updateMetronomeDefaults(
   volume: number | null,
   checksum: string,
 ): Promise<ConfigSaved> {
-  const hasSounds = sounds && Object.keys(sounds).length > 0;
-  const hasVolume = volume !== null && volume !== 1;
-  const body = {
-    expected_checksum: checksum,
-    metronome:
-      hasSounds || enabled || hasVolume
-        ? {
-            ...(enabled ? { enabled } : {}),
-            ...(hasVolume ? { volume } : {}),
-            ...(hasSounds ? { sounds } : {}),
-          }
-        : null,
-  };
-  const res = await put("/config/metronome", JSON.stringify(body));
-  if (!res.ok) throw await apiError(res, "Failed to update metronome defaults");
-  return res.json();
+  try {
+    return mapConfigSaved(
+      await configClient.updateMetronome({
+        metronomeJson: metronomeJson(sounds, enabled, volume),
+        expectedChecksum: checksum,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to update metronome defaults");
+  }
 }
 
 export async function uploadSampleFile(file: File): Promise<SampleUploaded> {

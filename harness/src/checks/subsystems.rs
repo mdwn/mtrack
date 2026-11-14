@@ -20,7 +20,10 @@
 
 use std::time::Duration;
 
-use mtrack::proto::player::v1::{GetConfigRequest, UpdateAudioRequest, UpdateProfileRequest};
+use mtrack::proto::player::v1::{
+    GetConfigRequest, GetProfileFileRequest, SaveProfileFileRequest, UpdateAudioRequest,
+    UpdateProfileRequest,
+};
 
 use crate::capabilities::Capabilities;
 use crate::client::Client;
@@ -584,7 +587,7 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
             continue;
         }
 
-        // `UpdateProfile` rather than `/profiles/{file}`: the file endpoint
+        // `UpdateProfile` rather than `SaveProfileFile`: the file call
         // writes YAML to disk and reloads, but the reload re-inits from the
         // store's in-memory config, which the file write never touched — so
         // the trigger comes straight back and the check would report a
@@ -596,13 +599,13 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
             .await?
             .into_inner()
             .checksum;
-        // `["profile"]`, not the whole body: the endpoint wraps it as
-        // {"profile": ..., "yaml": ...}. `Profile` has no deny_unknown_fields
+        // `profile_json`, not the whole answer: the call wraps it as
+        // profile, yaml and version. `Profile` has no deny_unknown_fields
         // and every field is optional, so sending the wrapper deserialises to
         // an entirely empty profile — no audio, no controllers, no trigger.
         // The check then passed because the rig had been blanked rather than
         // because the trigger key was removed.
-        let profile = client.get_json("profiles/01-e2e").await?["profile"].clone();
+        let profile = read_profile_file(&mut client, "01-e2e").await?;
         let mut without_trigger = profile.clone();
         if let Some(object) = without_trigger.as_object_mut() {
             object.remove("trigger");
@@ -628,10 +631,9 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
         // Second save: cancels the round the first one started.
-        let (status, body) = client.put_json("profiles/01-e2e", without_trigger).await?;
-        if !status.is_success() {
+        if let Err(rejected) = save_profile_file(&mut client, "01-e2e", &without_trigger).await {
             crate::outcome::record(format!(
-                "delay {delay_ms}ms: the second write was rejected ({status}: {body})"
+                "delay {delay_ms}ms: the second write was rejected ({rejected})"
             ));
             continue;
         }
@@ -650,7 +652,7 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
         // Whether the config still declares a trigger separates the defect — an
         // engine no configuration accounts for — from this check simply failing
         // to disable anything.
-        let after = client.get_json("profiles/01-e2e").await?["profile"].clone();
+        let after = read_profile_file(&mut client, "01-e2e").await?;
         let still_configured = after.get("trigger").is_some_and(|t| !t.is_null());
         check!(
             status != "connected",
@@ -680,12 +682,47 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
     Ok(())
 }
 
+/// The profile in the profiles directory's file `name`, as the editor reads
+/// it (`GetProfileFile`).
+async fn read_profile_file(
+    client: &mut Client,
+    name: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let got = client
+        .config()
+        .get_profile_file(GetProfileFileRequest {
+            filename: name.to_string(),
+        })
+        .await?
+        .into_inner();
+    Ok(serde_json::from_str(&got.profile_json)?)
+}
+
+/// Saves `profile` as the profiles directory's file `name`, as the editor
+/// does (`SaveProfileFile`, over whatever the file holds).
+async fn save_profile_file(
+    client: &mut Client,
+    name: &str,
+    profile: &serde_json::Value,
+) -> Result<(), tonic::Status> {
+    client
+        .config()
+        .save_profile_file(SaveProfileFileRequest {
+            filename: name.to_string(),
+            profile_json: profile.to_string(),
+            expected_version: None,
+            create: false,
+        })
+        .await
+        .map(|_| ())
+}
+
 /// Disabling triggers by saving the profile file must actually disable them.
 ///
 /// The other half of #380, and the half that needs no race at all. Profiles in
 /// `profiles_dir` are copied into the in-memory config by `Player::deserialize`
 /// at startup, and `reload_hardware` re-initialises from that copy. Writing the
-/// file through `PUT /api/profiles/{name}` did not touch it, so the save was
+/// file through `SaveProfileFile` did not touch it, so the save was
 /// acknowledged, the hardware reloaded, and the trigger engine was rebuilt from
 /// the profile as it was at boot — live, holding the input device, with the
 /// file on disk saying it should not exist.
@@ -713,7 +750,7 @@ pub async fn disabling_triggers_by_file_takes_effect() -> CheckOutcome {
     );
 
     // `["profile"]`, not the whole body — see the sibling check.
-    let mut profile = client.get_json("profiles/01-e2e").await?["profile"].clone();
+    let mut profile = read_profile_file(&mut client, "01-e2e").await?;
     if let Some(object) = profile.as_object_mut() {
         object.remove("trigger");
     }
@@ -723,10 +760,11 @@ pub async fn disabling_triggers_by_file_takes_effect() -> CheckOutcome {
          rather than disable its trigger: {profile}"
     );
 
-    let (status, body) = client.put_json("profiles/01-e2e", profile).await?;
+    let saved = save_profile_file(&mut client, "01-e2e", &profile).await;
     check!(
-        status.is_success(),
-        "saving the profile file was rejected ({status}: {body})"
+        saved.is_ok(),
+        "saving the profile file was rejected ({})",
+        saved.err().map(|e| e.to_string()).unwrap_or_default()
     );
 
     // The write path reloads the hardware itself; this is time for that reload

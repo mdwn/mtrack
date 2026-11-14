@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Samples Section", () => {
   test.beforeEach(async ({ page }) => {
@@ -90,22 +92,18 @@ test.describe("Samples Section", () => {
   });
 
   test("save samples calls API", async ({ page }) => {
-    let saveCalled = false;
-    await page.route("**/api/config/samples", async (route) => {
-      if (route.request().method() === "PUT") {
-        saveCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ yaml: "", checksum: "new-checksum" }),
-        });
-      } else {
-        await route.continue();
-      }
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.updateSamples, {
+      yaml: "",
+      checksum: "new-checksum",
     });
 
     await page.getByRole("button", { name: "Add Sample" }).click();
     await page.getByRole("button", { name: "Save Samples" }).click();
-    expect(saveCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.updateSamples).length)
+      .toBe(1);
+    const [call] = rpc.calls(ConfigService.method.updateSamples);
+    expect(Object.keys(JSON.parse(call.samplesJson))).toHaveLength(1);
   });
 });

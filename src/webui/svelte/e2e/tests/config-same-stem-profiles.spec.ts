@@ -24,9 +24,18 @@
 // the save made, so nothing re-selects it and clears the "Saved" notice.
 
 import { test, expect, type Page } from "@playwright/test";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
-import { getConfigReply } from "../support/config-rpc";
-import { mockRpc } from "../support/rpc";
+import { Code } from "@connectrpc/connect";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import {
+  getConfigReply,
+  getProfileFileReply,
+  listProfileFilesReply,
+  profileFileSavedReply,
+} from "../support/config-rpc";
+import { mockRpc, type RpcMock } from "../support/rpc";
 import type {
   ProfileFile,
   ProfileFileInfo,
@@ -57,40 +66,26 @@ const detail = (device: string): ProfileFile => ({
 });
 
 /** Serves a directory-based config holding `files`, and each file's
- *  profile; returns the files each GET read, in order. */
+ *  profile; returns the files each read asked for, in order, and the mock
+ *  the specs answer saves on. */
 async function serveProfiles(
   page: Page,
   files: () => ProfileFileInfo[],
-): Promise<string[]> {
+): Promise<{ reads: string[]; rpc: RpcMock }> {
   const rpc = await mockRpc(page);
   rpc.unary(
     PlayerService.method.getConfig,
     getConfigReply({ yaml: PROFILES_DIR_YAML, checksum: "dir" }),
   );
-  await page.route("**/api/profiles", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(files() satisfies ProfileFileInfo[]),
-    });
-  });
+  rpc.unary(ConfigService.method.listProfileFiles, () =>
+    listProfileFilesReply(files()),
+  );
   const reads: string[] = [];
-  await page.route("**/api/profiles/*", async (route) => {
-    const file = decodeURIComponent(
-      new URL(route.request().url()).pathname.split("/").pop() ?? "",
-    );
-    if (route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    reads.push(file);
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(detail(`dev-${file}`) satisfies ProfileFile),
-    });
+  rpc.unary(ConfigService.method.getProfileFile, (req) => {
+    reads.push(req.filename);
+    return getProfileFileReply(detail(`dev-${req.filename}`));
   });
-  return reads;
+  return { reads, rpc };
 }
 
 const THREE = [
@@ -103,7 +98,7 @@ test.describe("Profile files by full file name", () => {
   test("each row opens its own file", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    const reads = await serveProfiles(page, () => THREE);
+    const { reads } = await serveProfiles(page, () => THREE);
 
     await page.goto("/#/config");
     const rows = page.locator(".profile-file-row");
@@ -122,7 +117,7 @@ test.describe("Profile files by full file name", () => {
   });
 
   test("an old stem link opens the stem's .yaml", async ({ page }) => {
-    const reads = await serveProfiles(page, () => THREE);
+    const { reads } = await serveProfiles(page, () => THREE);
     await page.goto("/#/config/stage");
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
     await expect.poll(() => reads).toContain("stage.yaml");
@@ -133,7 +128,7 @@ test.describe("Profile files by full file name", () => {
   test("an old stem link on the groups page picks the stem's .yaml", async ({
     page,
   }) => {
-    const reads = await serveProfiles(page, () => THREE);
+    const { reads } = await serveProfiles(page, () => THREE);
     await page.goto("/#/lighting/groups?profile=stage");
     await expect(page.locator("#groups-profile")).toHaveValue("stage.yaml");
     await expect.poll(() => reads).toContain("stage.yaml");
@@ -144,20 +139,10 @@ test.describe("Profile files by full file name", () => {
     page,
   }) => {
     const listed = [info("stage.yaml", "pi-a")];
-    const reads = await serveProfiles(page, () => listed);
-    const puts: string[] = [];
-    await page.route("**/api/profiles/stage.yml", async (route) => {
-      if (route.request().method() !== "PUT") {
-        await route.fallback();
-        return;
-      }
-      puts.push(route.request().headers()["if-none-match"] ?? "");
-      listed.push(info("stage.yml", "pi-y"));
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", version: "v1" }),
-      });
+    const { reads, rpc } = await serveProfiles(page, () => listed);
+    rpc.unary(ConfigService.method.saveProfileFile, (req) => {
+      listed.push(info(req.filename, "pi-y"));
+      return profileFileSavedReply({ filename: req.filename, version: "v1" });
     });
 
     await page.goto("/#/config");
@@ -172,7 +157,9 @@ test.describe("Profile files by full file name", () => {
     expect(reads).toEqual([]);
 
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => puts).toEqual(["*"]);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.saveProfileFile))
+      .toMatchObject([{ filename: "stage.yml", create: true }]);
     await expect(page).toHaveURL((url) => url.hash === "#/config/stage.yml");
     await expect(page.locator(".save-msg")).toHaveText("Saved");
     expect(reads).toEqual([]);
@@ -181,22 +168,14 @@ test.describe("Profile files by full file name", () => {
   test("a new profile whose name reaches a file stays a draft and is refused", async ({
     page,
   }) => {
-    const reads = await serveProfiles(page, () => [info("stage.yml", "pi-a")]);
-    const puts: string[] = [];
-    await page.route("**/api/profiles/stage", async (route) => {
-      if (route.request().method() !== "PUT") {
-        await route.fallback();
-        return;
-      }
-      puts.push(route.request().headers()["if-none-match"] ?? "");
-      await route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: "a profile file `stage.yml` already exists",
-        }),
-      });
-    });
+    const { reads, rpc } = await serveProfiles(page, () => [
+      info("stage.yml", "pi-a"),
+    ]);
+    rpc.error(
+      ConfigService.method.saveProfileFile,
+      Code.Aborted,
+      "a profile file `stage.yml` already exists",
+    );
 
     await page.goto("/#/config");
     await page.getByRole("button", { name: "Add Profile" }).click();
@@ -206,7 +185,9 @@ test.describe("Profile files by full file name", () => {
     await page.locator("#profile-hostname").fill("pi-z");
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
-    await expect.poll(() => puts).toEqual(["*"]);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.saveProfileFile))
+      .toMatchObject([{ filename: "stage", create: true }]);
     await expect(page.locator(".save-error")).toContainText(
       "a profile file `stage.yml` already exists",
     );
@@ -218,7 +199,7 @@ test.describe("Profile files by full file name", () => {
   test("a file that does not parse is shown with why, and not opened", async ({
     page,
   }) => {
-    const reads = await serveProfiles(page, () => [
+    const { reads } = await serveProfiles(page, () => [
       { ...info("broken.yaml", null), error: "invalid type: sequence" },
     ]);
     await page.goto("/#/config");
@@ -231,7 +212,7 @@ test.describe("Profile files by full file name", () => {
   test("a link naming no profile file says so and opens none", async ({
     page,
   }) => {
-    const reads = await serveProfiles(page, () => THREE);
+    const { reads } = await serveProfiles(page, () => THREE);
     await page.goto("/#/config/gone.yaml");
     await expect(page.locator(".route-missing")).toHaveText(
       'Profile file "gone.yaml" not found.',
@@ -258,20 +239,10 @@ test.describe("Profile files by full file name", () => {
     page,
   }) => {
     let listed: ProfileFileInfo[] = [];
-    const reads = await serveProfiles(page, () => listed);
-    const puts: string[] = [];
-    await page.route("**/api/profiles/newhost", async (route) => {
-      if (route.request().method() !== "PUT") {
-        await route.fallback();
-        return;
-      }
-      puts.push(route.request().headers()["if-none-match"] ?? "");
+    const { reads, rpc } = await serveProfiles(page, () => listed);
+    rpc.unary(ConfigService.method.saveProfileFile, (req) => {
       listed = [info("newhost.yaml", "newhost")];
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", version: "v1" }),
-      });
+      return profileFileSavedReply({ filename: req.filename, version: "v1" });
     });
 
     await page.goto("/#/config");
@@ -283,7 +254,9 @@ test.describe("Profile files by full file name", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
     // Sent as a create: never merged into a file already there.
-    await expect.poll(() => puts).toEqual(["*"]);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.saveProfileFile))
+      .toMatchObject([{ filename: "newhost", create: true }]);
     // The listed file is selected, so the route names it ...
     await expect(page).toHaveURL((url) => url.hash === "#/config/newhost.yaml");
     // ... the notice stays, and the file is not opened again over it.

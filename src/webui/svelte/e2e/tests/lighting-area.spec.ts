@@ -13,8 +13,18 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
-import { getConfigReply, savedReply } from "../support/config-rpc";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import {
+  getConfigReply,
+  getProfileFileReply,
+  listProfileFilesReply,
+  profileFileSavedReply,
+  savedReply,
+} from "../support/config-rpc";
 import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 import { setWatchOpening } from "../support/watch";
@@ -261,65 +271,42 @@ test.describe("Lighting area: Groups", () => {
       PlayerService.method.getConfig,
       getConfigReply({ yaml, checksum: "c" }),
     );
-    await page.route("**/api/profiles", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify([
-          {
-            file: "test-host.yaml",
-            filename: "test-host",
-            addressable: true,
-            error: null,
-            hostname: "test-host",
-            has_audio: false,
-            has_midi: false,
-            has_dmx: true,
-            has_trigger: false,
-            has_controllers: false,
-          },
-        ] satisfies ProfileFileInfo[]),
-      });
-    });
+    rpc.unary(
+      ConfigService.method.listProfileFiles,
+      listProfileFilesReply([
+        {
+          file: "test-host.yaml",
+          filename: "test-host",
+          addressable: true,
+          error: null,
+          hostname: "test-host",
+          has_audio: false,
+          has_midi: false,
+          has_dmx: true,
+          has_trigger: false,
+          has_controllers: false,
+        },
+      ] satisfies ProfileFileInfo[]),
+    );
     let version = "v1";
     const puts: { ifMatch: string | undefined }[] = [];
-    await page.route("**/api/profiles/test-host.yaml", async (route) => {
-      const request = route.request();
-      if (request.method() === "PUT") {
-        const ifMatch = request.headers()["if-match"];
-        if (ifMatch !== version) {
-          await route.fulfill({
-            status: 409,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: "changed since you loaded it",
-              conflict: true,
-              version,
-            }),
-          });
-          return;
-        }
-        puts.push({ ifMatch });
-        version = "v3";
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved", version }),
-        });
-        return;
+    rpc.unary(ConfigService.method.getProfileFile, () =>
+      getProfileFileReply({
+        profile: {
+          hostname: "test-host",
+          dmx: { universes: [], lighting: {} },
+        },
+        yaml: "",
+        version,
+      }),
+    );
+    rpc.unary(ConfigService.method.saveProfileFile, (req) => {
+      if (req.expectedVersion !== version) {
+        throw new ConnectError("changed since you loaded it", Code.Aborted);
       }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          profile: {
-            hostname: "test-host",
-            dmx: { universes: [], lighting: {} },
-          },
-          yaml: "",
-          version,
-        }),
-      });
+      puts.push({ ifMatch: req.expectedVersion });
+      version = "v3";
+      return profileFileSavedReply({ filename: req.filename, version });
     });
     await page.goto("/#/lighting/groups");
     await expect(page.getByTestId("groups-rewrite-note")).toContainText(

@@ -729,6 +729,35 @@ mod tests {
         }
     }
 
+    /// `ConfigService` is the editor pages' and is not on the allowlist,
+    /// which names `PlayerService` methods: every one of its methods is
+    /// refused before any service sees it, locked or not, and none is a
+    /// name the allowlist holds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn config_service_is_not_reachable_over_bluetooth() {
+        let set = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).expect("descriptor");
+        let methods: Vec<&str> = set
+            .file
+            .iter()
+            .filter(|file| file.package() == "player.v1")
+            .flat_map(|file| &file.service)
+            .filter(|service| service.name() == "ConfigService")
+            .flat_map(|service| &service.method)
+            .map(|method| method.name())
+            .collect();
+        assert!(methods.contains(&"SaveProfileFile"), "{methods:?}");
+        let (player, dispatcher, _device) = setup().await;
+        for locked in [false, true] {
+            player.set_locked(locked);
+            for (id, method) in methods.iter().enumerate() {
+                assert!(!ALLOWED.contains(method), "{method} is allowed");
+                let response = call(&dispatcher, id as u32 + 1, method, Vec::new()).await;
+                assert_eq!(response.code, PERMISSION_DENIED, "{method}");
+                assert!(response.message.contains(method), "{}", response.message);
+            }
+        }
+    }
+
     #[test]
     fn every_allowed_method_is_a_method_of_the_service() {
         let set = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).expect("descriptor");

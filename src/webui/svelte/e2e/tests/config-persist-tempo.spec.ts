@@ -24,8 +24,15 @@
 // is specific to it: any MIDI field would do.
 
 import { test, expect, type Page } from "@playwright/test";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
-import { getConfigReply, savedReply } from "../support/config-rpc";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import {
+  getConfigReply,
+  profileFileSavedReply,
+  savedReply,
+} from "../support/config-rpc";
 import { mockRpc } from "../support/rpc";
 
 /// The MIDI fields these tests read back off the wire.
@@ -187,21 +194,11 @@ test.describe("Config editor - persist_tempo", () => {
       getConfigReply({ yaml: PROFILES_DIR_YAML, checksum: "dir-checksum" }),
     );
 
-    let fileBody: ProfilePayload | null = null;
-    await page.route("**/api/profiles/test-host.yaml", async (route) => {
-      if (route.request().method() === "PUT") {
-        fileBody = JSON.parse(route.request().postData() || "{}");
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-        return;
-      }
-      await route.continue();
-    });
+    rpc.unary(
+      ConfigService.method.saveProfileFile,
+      profileFileSavedReply({ filename: "test-host.yaml" }),
+    );
 
-    const writes = await recordConfigWrites(page);
     await openMidiSection(page, ".profile-file-row");
 
     await page.locator("#midi-device").fill("Test MIDI Device");
@@ -209,12 +206,19 @@ test.describe("Config editor - persist_tempo", () => {
     await page.locator("#midi-persist-tempo").check();
     await page.getByRole("button", { name: "Save" }).click();
 
-    await expect.poll(() => fileBody, { timeout: 10000 }).not.toBeNull();
-    // The file API takes the profile unwrapped, unlike the inline-profile
-    // endpoint which nests it under `profile`.
-    const midi = fileBody?.midi;
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.saveProfileFile).length, {
+        timeout: 10000,
+      })
+      .toBe(1);
+    const [save] = rpc.calls(ConfigService.method.saveProfileFile);
+    expect(save.filename).toBe("test-host.yaml");
+    // The file call takes the profile unwrapped, unlike the inline-profile
+    // call which names the profile's index beside it.
+    const fileBody: ProfilePayload = JSON.parse(save.profileJson);
+    const midi = fileBody.midi;
     if (!midi) {
-      throw new Error(`no midi block in ${JSON.stringify(fileBody)}`);
+      throw new Error(`no midi block in ${save.profileJson}`);
     }
     expect(midi.persist_tempo).toBe(true);
     expect(midi.beat_clock).toBe(true);
@@ -224,6 +228,5 @@ test.describe("Config editor - persist_tempo", () => {
     expect(rpc.calls(PlayerService.method.updateMidi)).toHaveLength(0);
     expect(rpc.calls(PlayerService.method.updateProfile)).toHaveLength(0);
     expect(rpc.calls(PlayerService.method.addProfile)).toHaveLength(0);
-    expect(writes).toContain("PUT /api/profiles/test-host.yaml");
   });
 });

@@ -14,10 +14,11 @@
 
 import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { PlayerService } from "../../gen/player/v1/player_pb";
+import { ConfigService, PlayerService } from "../../gen/player/v1/player_pb";
 
 const transport = createGrpcWebTransport({
   baseUrl: window.location.origin,
 });
 
 export const playerClient = createClient(PlayerService, transport);
+export const configClient = createClient(ConfigService, transport);
