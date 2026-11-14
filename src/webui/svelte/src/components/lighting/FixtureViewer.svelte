@@ -189,7 +189,7 @@
       {#if thumbnail}
         <img
           class="viewer__thumb"
-          src={`/api/lighting/assets/${thumbnail}`}
+          src={`/lighting-assets/${thumbnail}`}
           alt={$t("lighting.gdtfDetails.thumbnail", {
             values: { name: typeName },
           })}

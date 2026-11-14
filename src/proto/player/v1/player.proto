@@ -1024,7 +1024,7 @@ message GetNetworkInfoResponse {
 
 // GetLightingAssetRequest asks for one file of the lighting asset store.
 message GetLightingAssetRequest {
-    // The path under /api/lighting/assets/, as the stage layout and the rig
+    // The path under /lighting-assets/, as the stage layout and the rig
     // description give it.
     string path = 1;
     // Send the file gzipped. The chunks then join into a gzip stream.
@@ -1088,7 +1088,7 @@ message StageFixture {
     // Degrees the venue says this unit really throws; absent for its type's
     // own. A drawing hint only.
     optional float beam_angle = 6;
-    // The rig model's path under the player's /api/lighting/assets/, when
+    // The rig model's path under the player's /lighting-assets/, when
     // the type has one.
     optional string rig = 7;
     // What the fixture can do, as the web API names it: "color", "pan_tilt",
@@ -1111,7 +1111,7 @@ message StageVenue {
     string name = 1;
     // The venue's focus points, by name, in meters.
     map<string, StageVec3> focus_points = 2;
-    // The scenery file under the player's /api/lighting/assets/, when the
+    // The scenery file under the player's /lighting-assets/, when the
     // venue came from an MVR.
     optional string scenery = 3;
     // Why the scenery is missing, when the venue should have had some.
@@ -1783,7 +1783,7 @@ service PlayerService {
 
     // GetLightingAsset streams a file of the lighting asset store (the rig
     // description, models and scenery the stage layout names), as the web
-    // UI's /api/lighting/assets/ serves it, in chunks. NOT_FOUND for a path
+    // UI's /lighting-assets/ serves it, in chunks. NOT_FOUND for a path
     // that is not in the store or not a type it serves. Open while locked.
     rpc GetLightingAsset(GetLightingAssetRequest) returns (stream AssetChunk);
 

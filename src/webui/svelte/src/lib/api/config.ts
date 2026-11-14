@@ -119,7 +119,7 @@ import {
 } from "../grpc/library";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 
-export { ConflictError } from "./rest";
+export { ConflictError } from "./errors";
 
 /** Describes a device's channel count without overstating what is known. */
 export function channelsLabel(device: AudioDeviceInfo): string {

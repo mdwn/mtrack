@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The light show API's payloads (`/api/lighting`): the show files, the
+//! The light show payloads: the show files, the
 //! groups a cue can target, a show's validation, and a song's shows
 //! evaluated offline (`EvaluateSongLighting`, the 3D view's Preview
 //! mode) in the shape the live `state` message has.

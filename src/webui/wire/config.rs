@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The config API's payloads (`/api/config`): the store's YAML, and what a
+//! The config payloads: the store's YAML, and what a
 //! save made of the hardware reload.
 
 use serde::Serialize;
@@ -80,7 +80,7 @@ pub struct FileSaved {
     pub reload: ConfigReload,
 }
 
-/// `GET /api/profiles`: a profile file, and the sections it has.
+/// A profile file, and the sections it has.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ProfileFileInfo {
@@ -91,7 +91,7 @@ pub struct ProfileFileInfo {
     /// The file's stem (`stage`): display and backward compatibility only,
     /// never an address, since two files may share it. Address by `file`.
     pub filename: String,
-    /// Whether `/api/profiles/{file}` reaches this file: false for a name
+    /// Whether the web UI can address this file by `file`: false for a name
     /// that is not UTF-8 (`file` is then shown with replacement characters)
     /// or not safe in a URL path, which the web UI shows read-only.
     pub addressable: bool,
@@ -106,7 +106,7 @@ pub struct ProfileFileInfo {
     pub has_controllers: bool,
 }
 
-/// `GET /api/profiles/{name}`: a profile file, read and as written.
+/// A profile file, read and as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ProfileFile {
@@ -119,7 +119,7 @@ pub struct ProfileFile {
     pub version: String,
 }
 
-/// `PUT /api/samples/upload/{name}`: where the sample was stored.
+/// Where the sample was stored.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SampleUploaded {

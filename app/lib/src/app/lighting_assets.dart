@@ -141,7 +141,7 @@ class LightingAssets extends ChangeNotifier {
   }
 
   /// The asset at [path] (as the page asks for it, under
-  /// `api/lighting/assets/`), or null when the player does not have it.
+  /// `lighting-assets/`), or null when the player does not have it.
   /// Throws [AssetUnavailable] when it could not be had now: the link is
   /// down or went, the player is too old, or the download failed. A [path]
   /// that does not pass [checkLightingAssetPath] is not asked for, and is

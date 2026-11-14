@@ -21,7 +21,7 @@
     bulkImportSongs,
     SongNameTakenError,
   } from "../../lib/api/songs";
-  import { ApiError } from "../../lib/api/rest";
+  import { ApiError } from "../../lib/api/errors";
   import type { BrowseEntry, BulkImport } from "../../gen/rules/mtrack_rules";
   import { breadcrumbs, parentPath } from "../../lib/util/paths";
 

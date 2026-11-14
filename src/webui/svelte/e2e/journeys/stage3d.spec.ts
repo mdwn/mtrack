@@ -82,7 +82,7 @@ test.describe("3D on the venue card", () => {
     expect(scene.fixtures.B1.rig).toBeTruthy();
     expect(scene.fixtures.M.rig).not.toBe(scene.fixtures.B1.rig);
     const rig = await page.request.get(
-      `${project.url}/api/lighting/assets/${scene.fixtures.M.rig}`,
+      `${project.url}/lighting-assets/${scene.fixtures.M.rig}`,
     );
     expect(rig.ok()).toBe(true);
     if ((await viewport(page).getAttribute("data-renderer")) === "webgl") {

@@ -28,7 +28,7 @@
 
 import { Code, ConnectError } from "@connectrpc/connect";
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import { ApiError } from "../api/rest";
+import { ApiError } from "../api/errors";
 import { callError } from "./library";
 import { BadAnswerError } from "../lighting/answer";
 import {

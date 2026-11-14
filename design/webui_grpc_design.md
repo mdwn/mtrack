@@ -8,6 +8,12 @@ advantages w/r/t versioning." The light view moved first (#730). This doc
 says what "the whole thing" is, how to get there without a broken web UI on
 the way, and what was decided (§10).*
 
+> **Status, 2026-11-14: the migration is complete (step G9).** Nothing is served under `/api`;
+> every call is gRPC and the only other HTTP is the static page, `PUT /uploads/{id}`,
+> `GET /downloads/{id}` and the lighting assets. The text below is the plan as written, with one
+> deviation: the assets are at `/lighting-assets/`, not `/assets/` (which is where the built
+> page's own files are).
+
 ## 1. The end state
 
 - **Every call and every live feed is gRPC.** The web UI speaks gRPC-Web to

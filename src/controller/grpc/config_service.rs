@@ -881,7 +881,7 @@ mod tests {
 
     // ---- UpdateSamples ----
 
-    /// `PUT /api/config/samples` updated the definitions: the answer is the
+    /// Updating the sample definitions answers the
     /// config after it, with the checksum the next save presents.
     #[tokio::test(flavor = "multi_thread")]
     async fn samples_are_replaced_and_answered_with_the_config() -> Fallible {
@@ -1765,7 +1765,7 @@ mod tests {
         }
     }
 
-    /// `GET /api/devices/audio` answered a list, never a failure for a
+    /// The audio device list is a list, never a failure for a
     /// machine with no devices.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_audio_devices_are_listed() -> Fallible {
@@ -1777,7 +1777,7 @@ mod tests {
         Ok(())
     }
 
-    /// `GET /api/devices/midi` answered a list, and an empty one when the
+    /// The MIDI device list is a list, and an empty one when the
     /// MIDI subsystem is unavailable (no ALSA on CI), not an error.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_midi_devices_are_listed_or_none_when_midi_is_unavailable() -> Fallible {

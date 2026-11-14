@@ -357,7 +357,7 @@ class PlayerClient {
   );
 
   /// Fetches the lighting asset at [path] (a path under the player's
-  /// `/api/lighting/assets/`), gzipped on the link and unpacked here. The
+  /// `/lighting-assets/`), gzipped on the link and unpacked here. The
   /// download starts at once; [onProgress] is told as its chunks arrive.
   /// See [AssetDownload] for how it fails and how it is stopped.
   ///

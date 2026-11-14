@@ -71,8 +71,8 @@ function pose(p: StagePose): PoseSnapshot {
  * views have none of those, so neither does this.
  *
  * Geometry arrives as 32-bit floats (see {@link f32}). Nothing here is
- * what an edit is saved from: every save reads the venue file through the
- * REST API, which names the venues directory and holds the numbers whole.
+ * what an edit is saved from: every save reads the venue file through
+ * `GetVenue`, which names the venues directory and holds the numbers whole.
  */
 export function layoutMetadata(layout: StageLayout): StageMetadata {
   const fixtures: Record<string, FixtureMetadata> = {};

@@ -792,10 +792,11 @@ mtrack must have **write access** to the project root and its contents for manag
 to work. Read-only filesystems will allow playback but not song creation, file uploads, or
 configuration changes from the web UI.
 
-## REST API
+## The web UI's API
 
-The web UI exposes a comprehensive REST API for all management operations. Playback control
-uses gRPC-Web (PlayerService), and so do the playlists, the song list, the lock toggle and the
+The web UI has no REST API: nothing is served under `/api`. Every call it makes is gRPC-Web on
+the web port, the same services, behind the same lock, as native gRPC on the gRPC port.
+Playback control uses gRPC-Web (PlayerService), and so do the playlists, the song list, the lock toggle and the
 config store with its profiles (see [gRPC](grpc.md)), and the samples, the metronome defaults, the
 profile files, the device lists, the audio device test, the trigger calibration, the controller
 restart, and a song's config, files, waveform and tempo guess with the browsing and importing of
@@ -812,7 +813,9 @@ What is left of HTTP is bytes. A file the page sends (a track, a sample, a GDTF,
 announced with `BeginUpload`, sent as the body of `PUT /uploads/{id}` on the web server, and used
 by the call that takes it (`AddTrackFiles`, `AddSampleFile`, `ImportGdtf`, `InspectMvr`,
 `ImportMvr`); an MVR export is staged by `ExportMvr` and fetched with `GET /downloads/{id}`,
-which the browser saves; and the 3D models and thumbnails are `GET /api/lighting/assets/...`.
+which the browser saves; and the 3D models and thumbnails are `GET /lighting-assets/...`. Beside the page itself, those
+three are the only HTTP the web server answers, and none of them is checked against the lock: an
+upload or download id was issued by a call that was, and the assets are a read.
 The upload and download paths are served by the web port only, not the gRPC port (see
 [gRPC](grpc.md#files)). A reverse proxy in front of the web UI must let a request body through
 at the size of the file (for nginx, `client_max_body_size 0;` for `/uploads/`).
@@ -824,7 +827,7 @@ To check that a player is up from a script, fetch the page (`curl -sf http://hos
 the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 
 The gRPC calls that write refuse with `FAILED_PRECONDITION` when the player is in lock mode
-(and what is left of the REST API only reads). So do the announcements of files to send
+(there is no other way to write). So do the announcements of files to send
 (`BeginUpload`), except that of an MVR to inspect; the `PUT` of the bytes of an upload that was
 announced is not checked again. These always work: read calls, playback control, the lock toggle
 (`SetLock`), playlist activation (`SwitchToPlaylist`), the light show validation

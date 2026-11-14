@@ -385,7 +385,7 @@ export function mapReadiness(r: LightingReadiness): Readiness {
       fixtures: g.fixtures,
       songs: [...g.songs],
     })),
-    // A show without an error has no `error` key, as the REST answer had.
+    // A show without an error has no `error` key.
     shows: r.shows.map((s) => ({
       song: s.song,
       files: [...s.files],

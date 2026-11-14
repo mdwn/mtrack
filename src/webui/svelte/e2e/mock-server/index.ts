@@ -210,7 +210,7 @@ app.use(express.text({ type: "text/*" }));
 
 // --- The player's gRPC-Web calls that the pages make for the song list, the
 // playlists, the lock and the config store ---
-// Answered from the same fixtures the REST routes of the other pages use; a
+// Answered from fixtures; a
 // spec that needs other answers or the requests uses mockRpc
 // (e2e/support/rpc.ts), which is consulted first.
 
@@ -270,8 +270,7 @@ grpcUnary("GetPlaylist", (request) => {
   );
 });
 
-// A save, a delete and a switch change nothing here: the fixtures are fixed,
-// as the REST routes they replace were.
+// A save, a delete and a switch change nothing here: the fixtures are fixed.
 grpcUnary("SavePlaylist", (request) => {
   const { name } = fromBinary(SavePlaylistRequestSchema, request);
   return toBinary(
@@ -304,8 +303,7 @@ grpcUnary("SetLock", (request) => {
 });
 
 // The config store: a read answers the fixture, and a profile write answers
-// the fixture under a new checksum, applied at once, as the REST routes they
-// replace did.
+// the fixture under a new checksum, applied at once.
 grpcUnary("GetConfig", () =>
   toBinary(
     GetConfigResponseSchema,
@@ -359,7 +357,7 @@ grpcUnary(
 );
 
 // A create, a save, a delete and an import change nothing here: the fixtures
-// are fixed, as the REST routes they replace were.
+// are fixed.
 grpcUnary(
   "CreateSong",
   (request) => {
@@ -646,7 +644,7 @@ grpcUnary(
 // --- Profile files, samples and the metronome: ConfigService ---
 
 // A read answers the fixture, and a write answers it as applied at once and
-// changes nothing, as the REST routes they replace did.
+// changes nothing.
 grpcUnary(
   "ListProfileFiles",
   () =>
@@ -857,7 +855,7 @@ function testModeFor(
 
 // --- Lighting: LightingService ---
 // The lighting pages' facts are fixtures; a save and a delete of a light show
-// change nothing, as the REST routes they replace did not; the fixture test
+// change nothing; the fixture test
 // is stateless, derived from the type (the PB15's two modes, or a
 // hand-written type's channels). A spec that needs other answers or the
 // requests uses mockRpc (e2e/support/rpc.ts), which is consulted first.
@@ -1186,7 +1184,7 @@ const TEST_BOX_GLB = readFileSync(
 
 // The asset store (design §16.2): one rig model for tests of the 3D view;
 // anything else is a 404 like the real store.
-app.get("/api/lighting/assets/{*path}", (req, res) => {
+app.get("/lighting-assets/{*path}", (req, res) => {
   const path = (req.params as { path?: string | string[] }).path;
   const joined = Array.isArray(path) ? path.join("/") : (path ?? "");
   if (joined === "test-archive/rig-test-v1.json") {

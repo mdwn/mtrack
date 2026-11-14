@@ -80,7 +80,7 @@
 // which offers the Plot | 3D switch. The page then starts in the plot, or
 // in 3D when loaded as `stage.html?view=3d`. The 3D view asks the host for
 // the player's lighting assets (rig models, meshes, scenery) at
-// `api/lighting/assets/<path>`, relative to the page; the host answers
+// `lighting-assets/<path>`, relative to the page; the host answers
 // from wherever it has them. A file it cannot answer is drawn without:
 // a fixture as a plain box. The view takes touches: a drag turns it.
 

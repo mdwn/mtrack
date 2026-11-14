@@ -77,7 +77,7 @@ function watchRequests(page: Page): string[] {
   const asked: string[] = [];
   const ofPlayer = (url: string) => {
     const path = new URL(url).pathname;
-    return path.startsWith("/api") || path.startsWith("/player.v1");
+    return path.startsWith("/player.v1");
   };
   page.on("request", (r) => {
     if (ofPlayer(r.url())) asked.push(r.url());

@@ -12,8 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The fixture type API's payloads (`/api/lighting/fixture-types`, the GDTF
-//! pages), and the venue listing's.
+//! The fixture type payloads, and the venue listing's.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -46,7 +45,7 @@ pub struct LightingOwner {
     pub reason: Option<String>,
 }
 
-/// `GET /api/lighting/fixture-types`: every fixture type, by name, and the
+/// Every fixture type, by name, and the
 /// files that did not read.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
@@ -167,7 +166,7 @@ pub struct StrobeRange {
     pub max_hz: f64,
 }
 
-/// `GET /api/lighting/fixture-types/{name}/gdtf`: what a GDTF type's
+/// What a GDTF type's
 /// archive holds, for its page. Paths are in the asset store.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -231,7 +230,7 @@ pub struct FixtureTypeDeleted {
     pub archive_kept: bool,
 }
 
-/// `GET /api/lighting/fixture-types/{name}/settings`: what is the user's
+/// What is the user's
 /// about a GDTF fixture.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -288,7 +287,7 @@ pub struct SettingsSaved {
 }
 
 /// What a fixture type's save in the type editor answers
-/// (`PUT /api/lighting/fixture-types/<name>`): a rename (`?from=`) says the
+/// (`SaveFixtureType`): a rename says the
 /// venue lines it retyped, and whether the current venue still loads.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null))]
@@ -318,7 +317,7 @@ pub struct RenamedLines {
     pub lines: usize,
 }
 
-/// `GET /api/lighting/venues`: the venues that parsed, the files that did
+/// The venues that parsed, the files that did
 /// not, and each file's version. Without a venues directory, only the
 /// (empty) venues.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -334,7 +333,7 @@ pub struct VenueList {
     pub versions: Option<HashMap<String, String>>,
 }
 
-/// `GET /api/lighting/venues/{name}`: a venue, its file and its version.
+/// A venue, its file and its version.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueDetail {
@@ -343,7 +342,7 @@ pub struct VenueDetail {
     pub version: String,
 }
 
-/// `GET /api/lighting/venues/{name}/scene`: a venue from its files, as the
+/// A venue from its files, as the
 /// 3D view draws it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]

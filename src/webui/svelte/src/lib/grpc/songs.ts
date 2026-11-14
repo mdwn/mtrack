@@ -22,7 +22,7 @@
 // are in src/lib/api/songs.ts.
 
 import { Code, ConnectError } from "@connectrpc/connect";
-import { ApiError } from "../api/rest";
+import { ApiError } from "../api/errors";
 import {
   FileKind,
   TempoGuessSource,

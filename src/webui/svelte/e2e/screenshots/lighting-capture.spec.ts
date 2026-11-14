@@ -629,7 +629,7 @@ async function visit(page: Page, wsId: string, url: string) {
 
 async function rig(page: Page, status: StatusExtras = {}) {
   const fixtures = status.fixtures ?? FIXTURES;
-  await page.route(/\/api\/lighting\/assets\/docs-(brick|bar)\//, (route) =>
+  await page.route(/\/lighting-assets\/docs-(brick|bar)\//, (route) =>
     json(route, decoded(route).includes("docs-bar/") ? BAR_RIG : BRICK_RIG),
   );
   // What the player's stream opens with: the status of this rig.

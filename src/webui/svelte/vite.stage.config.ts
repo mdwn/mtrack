@@ -63,9 +63,7 @@ export default defineConfig({
     // The 3D view asks for the asset store relative to the page, so under
     // whatever path its host serves the page at: the phone app serves it
     // under a random prefix, and answers for the store beside it.
-    "import.meta.env.VITE_STAGE_ASSET_BASE": JSON.stringify(
-      "api/lighting/assets/",
-    ),
+    "import.meta.env.VITE_STAGE_ASSET_BASE": JSON.stringify("lighting-assets/"),
     // The stage page is not the web UI the server reports a build of.
     "import.meta.env.VITE_MTRACK_UI_BUILD": JSON.stringify(""),
   },
