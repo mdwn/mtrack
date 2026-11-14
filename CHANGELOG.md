@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The player advertises itself over mDNS**: the gRPC controller registers `_mtrack._tcp` (DNS-SD)
+  on the port it bound, so a phone on the player's network can find it without an address. The
+  instance name is the host name; the TXT records are `v` (the mtrack version) and `web` (the web
+  UI's port, when it is not bound to loopback). It is advertised on the interfaces gRPC listens on
+  only (every non-loopback address, or the one `bind_address`) and not at all when gRPC is bound
+  to loopback. Its host label is `<host name>-mtrack.local`, never the machine's own name, so avahi
+  keeps `<host name>.local`. On by default; `advertise: false` on the gRPC controller starts no
+  mDNS at all. If it cannot start, the player logs one warning and gRPC runs as before. See
+  [gRPC](docs/src/interfaces/grpc.md) and [Security](docs/src/deployment/security.md).
 - **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
   `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile`,
   `DeleteProfileFile`, `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`,

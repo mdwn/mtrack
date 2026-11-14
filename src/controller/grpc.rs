@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+mod advert;
 mod asset;
 mod config_service;
 mod config_songs;
@@ -72,6 +73,8 @@ pub struct Driver {
     addr: SocketAddr,
     /// Where the server is listening, once it is.
     bound: super::BoundAddr,
+    /// Whether to advertise the server by mDNS once it is.
+    advertise: bool,
 }
 
 impl Driver {
@@ -90,6 +93,7 @@ impl Driver {
             player,
             addr,
             bound: super::BoundAddr::new(),
+            advertise: config.advertise(),
         }))
     }
 }
@@ -103,6 +107,7 @@ impl super::Driver for Driver {
         let addr = self.addr;
         let player = self.player.clone();
         let bound = self.bound.clone();
+        let advertise = self.advertise;
 
         tokio::spawn(async move {
             let reflection_service = tonic_reflection::server::Builder::configure()
@@ -134,6 +139,15 @@ impl super::Driver for Driver {
                 player: player.clone(),
                 port: addr.port(),
             };
+            // After the bind, so the port is the real one; ended with this
+            // task, whether it finishes or is aborted by a restart. Trouble
+            // starting it is logged there and never reaches the server.
+            let _advert = advert::start(
+                advertise,
+                addr,
+                &crate::config::resolve_hostname(),
+                player.web_port(),
+            );
 
             Server::builder()
                 .add_service(reflection_service)

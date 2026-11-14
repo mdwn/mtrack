@@ -307,6 +307,13 @@ controllers:
   # player still works, and the phone app cannot connect over Wi-Fi.
   # bind_address: 0.0.0.0
 
+  # Whether to advertise the player on the network by mDNS (_mtrack._tcp), so
+  # the phone app can list it. Defaults to true. The advert names the host
+  # name, the mtrack version and the gRPC and web UI ports, on the interfaces
+  # gRPC listens on only; a controller bound to 127.0.0.1 advertises nothing.
+  # false starts no mDNS at all.
+  # advertise: true
+
 # The OSC server configuration.
 - kind: osc
 
