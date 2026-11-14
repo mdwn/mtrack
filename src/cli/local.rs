@@ -101,6 +101,69 @@ pub fn songs(path: &str, init: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Prints where the one-brightness-model lighting fix changes a project's
+/// shows (`crate::lighting::brightness_changes`), by song. Exits 0 with or
+/// without findings; fails only when the project cannot be read.
+pub fn brightness_changes(project: &str, hostname: Option<String>) -> Result<(), Box<dyn Error>> {
+    let (report, _) = brightness_changes_report(project, hostname)?;
+    print!("{report}");
+    Ok(())
+}
+
+/// [`brightness_changes`]' output and the number of findings in it.
+fn brightness_changes_report(
+    project: &str,
+    hostname: Option<String>,
+) -> Result<(String, usize), Box<dyn Error>> {
+    use crate::lighting::system::LightingSystem;
+    use std::fmt::Write;
+
+    let config_path = super::migrate::resolve_config_path(project);
+    let player_config = config::Player::deserialize(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    let host = hostname.unwrap_or_else(config::resolve_hostname);
+
+    let mut out = String::new();
+    let mut system = LightingSystem::new();
+    let lighting = player_config
+        .profiles(&host)
+        .first()
+        .and_then(|profile| profile.dmx())
+        .and_then(|dmx| dmx.lighting());
+    match lighting {
+        Some(lighting) => system
+            .load(lighting, &crate::util::project_dir_of(&config_path))
+            .map_err(|e| format!("cannot load the lighting configuration: {e}"))?,
+        None => writeln!(
+            out,
+            "No lighting configuration for host \"{host}\": fixtures are unknown, so nothing \
+             can be checked."
+        )?,
+    }
+
+    let songs = songs::get_all_songs(&player_config.songs(&config_path))?;
+    let findings = crate::lighting::brightness_changes::project_findings(&mut system, &songs);
+    let total: usize = findings.iter().map(|(_, f)| f.len()).sum();
+    for (song, warnings) in &findings {
+        writeln!(out, "{song}:")?;
+        for warning in warnings {
+            writeln!(out, "  [{}] {}", warning.kind, warning.message)?;
+        }
+    }
+    if total == 0 {
+        writeln!(out, "No brightness changes found.")?;
+    } else {
+        writeln!(
+            out,
+            "\n{total} brightness change{} in {} song{}.",
+            if total == 1 { "" } else { "s" },
+            findings.len(),
+            if findings.len() == 1 { "" } else { "s" },
+        )?;
+    }
+    Ok((out, total))
+}
+
 pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dyn Error>> {
     let songs = songs::get_all_songs(Path::new(repository_path))?;
     let playlist = Playlist::new(
@@ -1047,6 +1110,90 @@ mod tests {
         #[test]
         fn boundary_value_one() {
             assert_eq!(resolve_thread_priority(Some("1")), 1);
+        }
+    }
+
+    mod brightness_changes_tests {
+        use super::*;
+
+        /// A project with one song whose show dims on the background layer and
+        /// puts colour on the foreground, over a dimmer-channel par.
+        fn project(light: &str) -> tempfile::TempDir {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            std::fs::create_dir_all(root.join("lighting/fixture_types")).unwrap();
+            std::fs::create_dir_all(root.join("lighting/venues")).unwrap();
+            std::fs::write(
+                root.join("lighting/fixture_types/par.light"),
+                "fixture_type \"Par\" {\n  channels: 4\n  channel_map: { \"dimmer\": 1, \"red\": 2, \
+                 \"green\": 3, \"blue\": 4 }\n}\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("lighting/venues/v.light"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n}\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("mtrack.yaml"),
+                "songs: songs\nprofiles:\n  - dmx:\n      universes:\n        - universe: 1\n          \
+                 name: u\n      lighting:\n        current_venue: v\n        groups:\n          \
+                 washes:\n            name: washes\n            constraints:\n              - \
+                 AllOf: [\"wash\"]\n        directories:\n          fixture_types: \
+                 lighting/fixture_types\n          venues: lighting/venues\n",
+            )
+            .unwrap();
+            let song = root.join("songs/Song");
+            std::fs::create_dir_all(song.join("lighting")).unwrap();
+            crate::testutil::write_wav(song.join("track.wav"), vec![vec![1_i32; 100]], 44100)
+                .unwrap();
+            std::fs::write(
+                song.join("song.yaml"),
+                "kind: song\nname: Song\nlighting:\n  - file: lighting/show.light\ntracks:\n  - \
+                 name: track\n    file: track.wav\n",
+            )
+            .unwrap();
+            std::fs::write(song.join("lighting/show.light"), light).unwrap();
+            tmp
+        }
+
+        #[test]
+        fn reports_findings_by_song_with_a_summary() {
+            let tmp = project(
+                "show \"s\" {\n  @00:00.000\n  washes: dimmer start_level: 1.0, end_level: 0.5, \
+                 duration: 4s\n  @00:01.000\n  washes: static color: \"blue\", duration: 2s, \
+                 layer: foreground\n}\n",
+            );
+            let (report, total) =
+                brightness_changes_report(tmp.path().to_str().unwrap(), Some("host".into()))
+                    .unwrap();
+            assert!(total >= 1, "{report}");
+            assert!(report.starts_with("Song:\n"), "{report}");
+            assert!(
+                report.contains("[brightness_change_upper_colour] show \"s\" at 1.000s"),
+                "{report}"
+            );
+            assert!(report.contains(" in 1 song."), "{report}");
+        }
+
+        #[test]
+        fn a_project_with_nothing_to_report_says_so() {
+            let tmp = project(
+                "show \"s\" {\n  @00:00.000\n  washes: static color: \"blue\", dimmer: 50%, \
+                 duration: 2s\n}\n",
+            );
+            let (report, total) =
+                brightness_changes_report(tmp.path().to_str().unwrap(), Some("host".into()))
+                    .unwrap();
+            assert_eq!(total, 0, "{report}");
+            assert_eq!(report, "No brightness changes found.\n");
+        }
+
+        #[test]
+        fn an_unreadable_project_is_an_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("mtrack.yaml"), "songs: [").unwrap();
+            assert!(brightness_changes_report(tmp.path().to_str().unwrap(), None).is_err());
         }
     }
 

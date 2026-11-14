@@ -272,8 +272,8 @@ fn apply_static_effect(
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
     // The level goes through the fixture profile rather than being matched against a
-    // channel name, so on a fixture with no dimmer channel it lands on the RGB
-    // multiplier instead of being dropped and rendering at full.
+    // channel name: it is a level to composite with the colour, whatever the
+    // fixture's hardware, not a channel to write.
     let level = parameters.get("dimmer").copied();
 
     let fixture_states =
@@ -1646,8 +1646,7 @@ mod random_chase_tests {
         let lit: Vec<usize> = (0..FIXTURES)
             .filter(|i| {
                 states[&format!("brick{i}")]
-                    .channels
-                    .values()
+                    .all_states()
                     .any(|c| c.value > 0.5)
             })
             .collect();

@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::lighting::effects::{is_multiplier_channel, EffectInstance, EffectLayer, FixtureInfo};
+use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
 use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
@@ -352,7 +352,6 @@ fn fill_dark_fixtures<'a>(
             channels: info
                 .channels
                 .keys()
-                .filter(|name| !is_multiplier_channel(name))
                 .map(|name| (name.clone(), 0u8))
                 .collect(),
         });

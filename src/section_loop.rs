@@ -191,15 +191,13 @@ impl SectionLoopMonitor {
             } else {
                 LoopPoll::Waiting(section)
             }
+        } else if self.cached_section.take().is_some() {
+            // Had a section, now cleared — notify caller.
+            self.trigger.reset();
+            LoopPoll::SectionCleared
         } else {
-            if self.cached_section.take().is_some() {
-                // Had a section, now cleared — notify caller.
-                self.trigger.reset();
-                LoopPoll::SectionCleared
-            } else {
-                self.trigger.reset();
-                LoopPoll::NoSection
-            }
+            self.trigger.reset();
+            LoopPoll::NoSection
         }
     }
 

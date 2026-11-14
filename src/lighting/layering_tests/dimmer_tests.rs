@@ -1028,11 +1028,12 @@ fn test_chase_effect_without_dimmer_channel() {
     // Update engine to generate commands
     let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
-    // The chase routes through the chase multiplier rather than writing RGB directly
-    // (#345), so on its own it contributes no colour — it masks whatever is beneath.
+    // The chase is a level, not a colour (#345): with nothing beneath it, it
+    // shows white at its level (design 3.4, rule 7), never a colour of its own.
+    assert_eq!(commands.len(), 3);
     assert!(
-        commands.iter().all(|cmd| cmd.value == 0),
-        "chase on an RGB-only fixture should not paint colour of its own"
+        commands.iter().all(|cmd| cmd.value == commands[0].value),
+        "chase on an RGB-only fixture should be white at its level: {commands:?}"
     );
 }
 #[test]
@@ -1085,23 +1086,16 @@ fn test_chase_effect_with_dimmer_channel() {
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 4);
     assert!(dimmer_cmd.is_some(), "Should have dimmer channel command");
 
-    // Should not have RGB commands when dimmer is available
-    let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
-    let green_cmd = commands.iter().find(|cmd| cmd.channel == 2);
-    let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3);
-
-    assert!(
-        red_cmd.is_none(),
-        "Should not have red channel command when dimmer is available"
-    );
-    assert!(
-        green_cmd.is_none(),
-        "Should not have green channel command when dimmer is available"
-    );
-    assert!(
-        blue_cmd.is_none(),
-        "Should not have blue channel command when dimmer is available"
-    );
+    // The level is the dimmer's; the colour beneath it is white, at full
+    // (design 3.4, rule 7), however the chase moves the dimmer.
+    for channel in 1..=3 {
+        let cmd = commands.iter().find(|cmd| cmd.channel == channel);
+        assert_eq!(
+            cmd.map(|c| c.value),
+            Some(255),
+            "channel {channel} is full white, the dimmer carrying the level"
+        );
+    }
 }
 #[test]
 fn test_software_strobing_dimmer_only_fixture() {

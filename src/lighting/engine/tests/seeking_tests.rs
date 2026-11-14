@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::lighting::effects::*;
-use crate::lighting::engine::tests::common::create_test_fixture;
+use crate::lighting::engine::tests::common::{create_test_fixture, on_channel};
 use crate::lighting::engine::EffectEngine;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -46,8 +46,8 @@ fn test_start_effect_with_elapsed_static_effect() {
 
     // Update immediately - should get full value (static effects don't change over time)
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].value, 255);
+    assert_eq!(commands.len(), 5);
+    assert_eq!(on_channel(commands, 1).value, 255);
 }
 
 #[test]
@@ -78,12 +78,12 @@ fn test_start_effect_with_elapsed_dimmer_midpoint() {
 
     // Update immediately - should be at ~50%
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     // Should be approximately 50% (127-128)
     assert!(
-        (120..=135).contains(&commands[0].value),
+        (120..=135).contains(&on_channel(commands, 1).value),
         "Expected ~50% dimmer value, got {}",
-        commands[0].value
+        on_channel(commands, 1).value
     );
 }
 
@@ -156,7 +156,7 @@ fn test_start_effect_with_elapsed_color_cycle() {
 
     // Update immediately - with Snap, should be pure green (no transition)
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 3); // RGB channels
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
 
     // Find RGB values (channels: dimmer=1, red=2, green=3, blue=4)
     let mut red = 0;
@@ -207,12 +207,12 @@ fn test_start_effect_with_elapsed_pulse() {
 
     // Update immediately - should be near maximum
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 5);
     // Should be near 100% (allowing for small timing differences)
     assert!(
-        commands[0].value > 240,
+        on_channel(commands, 1).value > 240,
         "Pulse should be near max at 90 degrees, got {}",
-        commands[0].value
+        on_channel(commands, 1).value
     );
 }
 
@@ -245,7 +245,7 @@ fn test_start_effect_with_elapsed_rainbow() {
 
     // Update immediately - should show appropriate color for that hue
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 3); // RGB channels
+    assert_eq!(commands.len(), 4); // RGB, and the dimmer a colour alone leaves full
 
     // Find RGB values
     let mut red = 0;
@@ -350,7 +350,10 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
     // Should produce same results
     assert_eq!(commands1.len(), commands2.len());
     if !commands1.is_empty() && !commands2.is_empty() {
-        assert_eq!(commands1[0].value, commands2[0].value);
+        assert_eq!(
+            on_channel(&commands1, 1).value,
+            on_channel(commands2, 1).value
+        );
     }
 }
 
@@ -403,6 +406,6 @@ fn test_start_effect_with_elapsed_conflict_resolution() {
 
     // Update - should see foreground effect
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].value, 204); // 80% of 255
+    assert_eq!(commands.len(), 5);
+    assert_eq!(on_channel(commands, 1).value, 204); // 80% of 255
 }

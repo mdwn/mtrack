@@ -711,7 +711,8 @@ impl EffectEngine {
                             self.last_merged_states
                                 .entry(fixture_name.clone())
                                 .or_default()
-                                .set_channel(
+                                .channels
+                                .insert(
                                     channel_name.clone(),
                                     ChannelState::new(
                                         normalized_value,
@@ -760,7 +761,9 @@ impl EffectEngine {
                         .entry(fixture_name.clone())
                         .or_insert_with(FixtureState::new);
                     if !state.channels.contains_key(channel_name) {
-                        state.set_channel(
+                        // A plain channel, not an op: the bottom of the
+                        // stack the composite starts from.
+                        state.channels.insert(
                             channel_name.clone(),
                             ChannelState::new(
                                 normalized_value,
@@ -912,9 +915,7 @@ impl EffectEngine {
                     // Apply the layer intensity master to effect states if not 1.0
                     if (layer_intensity - 1.0).abs() > f64::EPSILON {
                         for fixture_state in effect_states.values_mut() {
-                            for channel_state in fixture_state.channels.values_mut() {
-                                channel_state.value *= layer_intensity;
-                            }
+                            fixture_state.scale_values(layer_intensity);
                         }
                     }
 
@@ -960,19 +961,6 @@ impl EffectEngine {
                         },
                     );
                 }
-                // Clean up per-layer multipliers for completed effects
-                let multiplier_keys: Vec<String> = MULTIPLIER_PREFIXES
-                    .iter()
-                    .map(|prefix| multiplier_key(prefix, effect.layer))
-                    .collect();
-
-                for fixture_name in &effect.target_fixtures {
-                    if let Some(current_state) = current_fixture_states.get_mut(fixture_name) {
-                        for key in &multiplier_keys {
-                            current_state.channels.remove(key);
-                        }
-                    }
-                }
             }
         }
 
@@ -983,6 +971,10 @@ impl EffectEngine {
         // where it was toward where it is asked to be, no faster than its
         // declared limit; and the pose memory records where it ends up.
         self.settle_poses(&mut current_fixture_states);
+
+        // Composite each fixture's colour and level, layer by layer, into
+        // the plain channels everything downstream reads (design 3.4).
+        self.resolve_brightness(&mut current_fixture_states);
 
         self.release_undriven_strobes(&mut current_fixture_states);
 
@@ -1036,6 +1028,49 @@ impl EffectEngine {
         Ok(self.cache.get_cached())
     }
 
+    /// Composites the colour and level the frame's effects asked for into
+    /// plain `red/green/blue/white/dimmer` channels, per fixture and per
+    /// cell. Nothing but plain channels is left in `states`.
+    fn resolve_brightness(&self, states: &mut HashMap<String, FixtureState>) {
+        let mut parents: HashSet<String> = HashSet::new();
+        for (name, state) in states.iter_mut() {
+            let Some(info) = self.fixtures.get(name) else {
+                state.drop_unresolved();
+                continue;
+            };
+            if let Some(parent) = &info.parent {
+                parents.insert(parent.clone());
+            } else if info.cells.is_empty() {
+                state.resolve(&info.channels);
+            } else {
+                parents.insert(name.clone());
+            }
+        }
+        for parent in parents {
+            let Some(info) = self.fixtures.get(&parent) else {
+                continue;
+            };
+            let mut state = states.remove(&parent);
+            let had_state = state.is_some();
+            let mut fixture_state = state.take().unwrap_or_default();
+            let mut cells: HashMap<String, FixtureState> = info
+                .cells
+                .iter()
+                .filter_map(|cell| {
+                    let sub = cell_fixture_name(&parent, &cell.name);
+                    states.remove(&sub).map(|s| (cell.name.clone(), s))
+                })
+                .collect();
+            crate::lighting::effects::resolve_fixture(&mut fixture_state, &mut cells, info);
+            for (cell, state) in cells {
+                states.insert(cell_fixture_name(&parent, &cell), state);
+            }
+            if had_state || !fixture_state.channels.is_empty() {
+                states.insert(parent, fixture_state);
+            }
+        }
+    }
+
     /// Sends strobe off to every fixture whose strobe channel was driven
     /// last frame and is not driven this one — an effect that expired, a
     /// clear, a stopped sequence, a new song. Without it the DMX universe
@@ -1051,7 +1086,7 @@ impl EffectEngine {
             if !self.fixtures.contains(name) {
                 continue;
             }
-            states.entry(name.clone()).or_default().set_channel(
+            states.entry(name.clone()).or_default().channels.insert(
                 "strobe".to_string(),
                 ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
             );
