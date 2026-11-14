@@ -42,6 +42,7 @@
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
   import { rules } from "../../../lib/rules";
+  import { resolveColor, usePalette } from "../../../lib/lighting/palette";
 
   interface Props {
     cue: Cue;
@@ -80,6 +81,9 @@
     snapResolution = "beat",
   }: Props = $props();
 
+  /** The file's palette: a `palette.<slot>` color is painted as its slot. */
+  const paletteSlots = usePalette();
+
   let positionPx = $derived(block.px);
   let cueMs = $derived(block.scoreMs);
 
@@ -109,7 +113,8 @@
     const firstEffect = visibleEffects[0];
     if (firstEffect.colors.length > 0) {
       const c = firstEffect.colors[0];
-      if (c.startsWith("#") || c.startsWith("rgb")) return c;
+      const painted = resolveColor(c, paletteSlots());
+      if (painted) return painted;
     }
     return effectTypeColor(firstEffect.type);
   });

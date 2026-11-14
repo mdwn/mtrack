@@ -69,6 +69,8 @@ export function entrySummary(
     fades?: EntryFades;
     autoPlay?: AutoPlay;
     ambient?: PlaylistAmbient;
+    /** The entry's palette overrides, slot to color. */
+    palette?: Record<string, string>;
   },
   tr: Translate,
 ): string {
@@ -88,12 +90,15 @@ export function entrySummary(
           })
         : null;
   const ambient = entry.ambient ?? null;
+  const paletteCount = Object.keys(entry.palette ?? {}).length;
   return [
     out && tr("playlists.fadeOutSummary", { values: { length: out } }),
     fadeIn && tr("playlists.fadeInSummary", { values: { length: fadeIn } }),
     gap,
     ambient === false && tr("playlists.entryAmbientOffSummary"),
     ambient && tr("playlists.entryAmbientOwnSummary"),
+    paletteCount > 0 &&
+      tr("palette.entry.summary", { values: { count: paletteCount } }),
   ]
     .filter(Boolean)
     .join(" · ");

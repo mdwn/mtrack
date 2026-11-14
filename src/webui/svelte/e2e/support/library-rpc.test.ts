@@ -73,6 +73,12 @@ describe("answers made from the page's own shapes", () => {
       entry_palette: [{ primary: "#2040ff" }, {}, {}],
       available_songs: ["A", "B", "C", "D"],
       song_tracks: { A: ["kick", "snare"], D: [] },
+      song_palettes: {
+        A: {
+          slots: [{ name: "primary", color: "#c01020" }],
+          overrides: { primary: "#2040ff" },
+        },
+      },
     };
     expect(
       mapPlaylistDetail(
@@ -108,6 +114,10 @@ describe("answers made from the page's own shapes", () => {
           loop_playback: true,
           loop_crossfade_ms: 3428,
           loop_crossfade_cut: ["click"],
+          palette: {
+            slots: [{ name: "primary", color: "#c01020" }],
+            overrides: {},
+          },
           sections: [
             { name: "verse", start_measure: 1, end_measure: 8 },
             {
@@ -137,6 +147,7 @@ describe("answers made from the page's own shapes", () => {
           loop_playback: false,
           loop_crossfade_ms: null,
           loop_crossfade_cut: [],
+          palette: { slots: [], overrides: {} },
           sections: [],
         },
       ],

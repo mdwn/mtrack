@@ -48,6 +48,8 @@
   import FilePicker from "./FilePicker.svelte";
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
+  import SlotOverrides from "../palette/SlotOverrides.svelte";
+  import type { SlotColor } from "../../lib/lighting/palette";
   import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
   import SongMetronomeEditor from "./SongMetronomeEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
@@ -99,6 +101,32 @@
   // Lighting editor state (lifted up for unified save)
   let lightingDirty = $state(false);
   let lightingEditorRef: SongLightingEditor | undefined = $state();
+  /** The palette slots the song's files declare as the editor has them,
+   *  once it has loaded them; until then, the saved song's. */
+  let liveSlots = $state<SlotColor[] | null>(null);
+  let paletteSlots = $derived<SlotColor[]>(
+    liveSlots ?? song?.palette.slots ?? [],
+  );
+  /** The song's own palette overrides, as its YAML has them. */
+  let songPalette = $derived.by((): Record<string, string> => {
+    const raw = parsedConfig?.palette;
+    if (!raw || typeof raw !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(raw).filter(
+        (e): e is [string, string] => typeof e[1] === "string",
+      ),
+    );
+  });
+
+  /** Sets the song's palette overrides; none left removes the key. */
+  function setSongPalette(next: Record<string, string>) {
+    if (!parsedConfig) return;
+    const updated = { ...parsedConfig };
+    if (Object.keys(next).length > 0) updated.palette = next;
+    else delete updated.palette;
+    parsedConfig = updated;
+    editedYaml = buildYaml();
+  }
 
   // Tab state
   type TabKey = "tracks" | "samples" | "sections" | "lighting" | "config";
@@ -445,6 +473,8 @@
   }
 
   async function load() {
+    // The slots are the song's own again once its lighting editor loads them.
+    liveSlots = null;
     loading = true;
     error = "";
     failureError = null;
@@ -1318,9 +1348,21 @@
         {/if}
       {:else if activeTab === "lighting"}
         {#if song}
+          <div class="song-palette" data-testid="song-palette">
+            <span class="section-label">{$t("palette.song.title")}</span>
+            <p class="muted hint-text">{$t("palette.song.hint")}</p>
+            <SlotOverrides
+              slots={paletteSlots}
+              overrides={songPalette}
+              baseLabel={$t("palette.song.base")}
+              idPrefix="song-palette"
+              onchange={setSongPalette}
+            />
+          </div>
           <SongLightingEditor
             bind:this={lightingEditorRef}
             bind:dirty={lightingDirty}
+            bind:declaredSlots={liveSlots}
             {song}
             songTempo={tempoConfig}
             initialCursorMs={initialTimeMs}
@@ -1723,6 +1765,16 @@
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid var(--card-border);
+  }
+  .song-palette {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    background: var(--inset-bg);
   }
   .section-header {
     display: flex;

@@ -771,6 +771,13 @@ impl Song {
         crate::lighting::parser::layer_overrides(&self.palette, entry)
     }
 
+    /// The palette slots the song's shows declare, with the default each
+    /// show gives them (before any override), in the order declared.
+    pub fn declared_palette_slots(&self) -> crate::lighting::parser::Palette {
+        let shows = crate::lighting::evaluate::shows_in(self.dsl_lighting_shows());
+        crate::lighting::parser::declared_slots(&shows)
+    }
+
     /// The slots in `overrides` that none of the song's shows declare,
     /// sorted.
     pub fn unknown_palette_slots<'a>(

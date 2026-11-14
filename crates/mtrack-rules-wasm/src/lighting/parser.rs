@@ -30,6 +30,8 @@ mod include;
 pub mod layout;
 #[path = "../../../../src/lighting/parser/palette.rs"]
 pub mod palette;
+#[path = "../../../../src/lighting/parser/palette_edit.rs"]
+pub mod palette_edit;
 #[path = "../../../../src/lighting/parser/sequences.rs"]
 mod sequences;
 #[path = "../../../../src/lighting/parser/show.rs"]

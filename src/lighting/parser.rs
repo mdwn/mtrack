@@ -28,6 +28,7 @@ pub(crate) mod grammar;
 mod include;
 pub mod layout;
 pub mod palette;
+pub mod palette_edit;
 mod sequences;
 mod show;
 mod tempo_parse;

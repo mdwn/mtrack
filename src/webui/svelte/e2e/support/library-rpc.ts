@@ -35,10 +35,15 @@ import type {
   PlaylistDetail,
   PlaylistInfo,
   SongList,
+  SongPalette,
 } from "../../src/gen/rules/mtrack_rules";
 
 function duration(ms: number) {
   return { seconds: BigInt(Math.floor(ms / 1000)), nanos: (ms % 1000) * 1e6 };
+}
+
+function songPalette(p: SongPalette) {
+  return { slots: p.slots, overrides: p.overrides };
 }
 
 export function listPlaylistsReply(
@@ -113,6 +118,12 @@ export function getPlaylistReply(
         { names },
       ]),
     ),
+    songPalettes: Object.fromEntries(
+      Object.entries(detail.song_palettes ?? {}).map(([song, p]) => [
+        song,
+        songPalette(p),
+      ]),
+    ),
   };
 }
 
@@ -138,6 +149,7 @@ export function listSongsReply(
     loopCrossfadeMs:
       s.loop_crossfade_ms !== null ? BigInt(s.loop_crossfade_ms) : undefined,
     loopCrossfadeCut: s.loop_crossfade_cut,
+    palette: songPalette(s.palette),
     sections: s.sections.map((section) => ({
       name: section.name,
       startMeasure: section.start_measure,
