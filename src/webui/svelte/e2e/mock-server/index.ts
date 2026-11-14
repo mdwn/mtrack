@@ -1031,6 +1031,7 @@ app.get("/api/lighting/groups", (_req, res) => {
       { name: "front_wash", fixtures: ["par1", "par2"] },
       { name: "back_wash", fixtures: ["par3"] },
     ],
+    layers: ["background", "midground", "foreground"],
   } satisfies LightingGroups);
 });
 
@@ -1283,7 +1284,7 @@ app.post("/test/watch-opening", (req, res) => {
 
 const server = createServer(app);
 
-const PORT = 3111;
+const PORT = Number(process.env.MOCK_PORT ?? 3111);
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Mock server listening on http://127.0.0.1:${PORT}`);
 });
