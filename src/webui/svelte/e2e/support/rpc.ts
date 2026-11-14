@@ -130,13 +130,14 @@ export class RpcMock {
 
   /** Answers `method` with a message: `answer` is the response, or a function
    *  of the decoded request that returns it. A function may throw a
-   *  `ConnectError` to fail the call instead. Answering a method again
-   *  replaces the earlier answer. */
+   *  `ConnectError` to fail the call instead, or return nothing to let that
+   *  call fall through to the mock server (as a call nothing answers does).
+   *  Answering a method again replaces the earlier answer. */
   unary<I extends DescMessage, O extends DescMessage>(
     method: DescMethodUnary<I, O>,
     answer:
       | MessageInitShape<O>
-      | ((request: MessageShape<I>) => MessageInitShape<O>),
+      | ((request: MessageShape<I>) => MessageInitShape<O> | undefined),
   ): void;
   unary(
     method: string,
@@ -151,6 +152,7 @@ export class RpcMock {
         typeof answer === "function"
           ? (answer as (r: unknown) => unknown)(request)
           : answer;
+      if (init === undefined) return undefined;
       return unaryBody(
         toBinary(desc.output, create(desc.output, init as never)),
       );
@@ -229,6 +231,8 @@ export class RpcMock {
           ),
         };
       }
+      // An answer that said nothing lets the call fall through.
+      if (answered === undefined) return undefined;
       return { body: answered as Uint8Array };
     }
     switch (this.options.otherwise) {

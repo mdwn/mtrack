@@ -32,10 +32,20 @@ import {
   ListLightingGroupsResponseSchema,
   SaveFixtureTypeRequestSchema,
   SaveFixtureTypeResponseSchema,
+  AddVenueAimPointsResponseSchema,
+  KeepMvrExportResponseSchema,
+  ListVenuesResponseSchema,
+  MvrExportSummarySchema,
   SaveFixtureTypeSettingsRequestSchema,
+  SaveVenueRequestSchema,
+  SaveVenueResponseSchema,
   ValidateLightShowResponseSchema,
+  VenueDetailSchema,
+  VenuePatchSchema,
+  VenueSceneSchema,
 } from "../../src/gen/player/v1/player_pb";
 import {
+  mapAimPoints,
   mapFit,
   mapFixtureSettings,
   mapFixtureTypeDeleted,
@@ -44,13 +54,20 @@ import {
   mapFixtureTypeList,
   mapFixtureTypeSaved,
   mapGroups,
+  mapMvrExportSummary,
   mapPreview,
   mapReadiness,
   mapSettingsSaved,
   mapTestAnswer,
   mapTestOptions,
+  mapVenueDetail,
+  mapVenueList,
+  mapVenuePatch,
+  mapVenueSaved,
+  mapVenueScene,
   saveFixtureSettingsRequest,
   saveFixtureTypeRequest,
+  saveVenueRequest,
 } from "../../src/lib/grpc/lighting";
 import type {
   FixtureSettingsData,
@@ -65,6 +82,7 @@ import type {
 } from "../../src/gen/rules/mtrack_rules";
 import { FIT, READINESS } from "../mock-server/test-data";
 import {
+  aimPointsReply,
   fitReply,
   fixtureSettingsReply,
   fixtureTypeDeletedReply,
@@ -73,10 +91,18 @@ import {
   fixtureTypeListReply,
   fixtureTypeSavedReply,
   groupsReply,
+  keptReply,
+  mvrExportSummaryReply,
   savedSettingsRequest,
   savedTypeRequest,
+  savedVenueRequest,
   settingsSavedReply,
   typeEntry,
+  venueDetailReply,
+  venueListReply,
+  venuePatchReply,
+  venueSavedReply,
+  venueSceneReply,
   lightShowReply,
   previewReply,
   readinessReply,
@@ -797,6 +823,227 @@ describe("answers made from the page's own shapes", () => {
       revision: "rev",
       dir: "t",
       venuesDir: "v",
+    });
+  });
+});
+
+describe("the venue answers made from the page's own shapes", () => {
+  const venue = {
+    name: "club",
+    fixtures: {
+      A: {
+        name: "A",
+        fixture_type: "Brick",
+        universe: 1,
+        start_channel: 1,
+        tags: ["wash"],
+        position: [1, 2, 3] as [number, number, number],
+        rotation: [0, 0, 90] as [number, number, number],
+        mode: "8: RGBS",
+        beam_angle: 45,
+      },
+      B: {
+        name: "B",
+        fixture_type: "Par",
+        universe: 2,
+        start_channel: 9,
+        tags: [],
+        position: null,
+        rotation: null,
+      },
+    },
+    focus_points: { dj: [0, 3, 1] as [number, number, number] },
+    source: { mvr: "a.mvr", origin: [0, -3.5, 0] as [number, number, number] },
+  };
+
+  it("a listing and a venue read back as they were", () => {
+    const list = {
+      venues: { club: venue },
+      owners: {
+        club: { file: "club.venue", editable: false, reason: "shared" },
+      },
+      errors: [{ file: "x.light", error: "bad" }],
+      versions: { club: "v1" },
+    };
+    expect(
+      mapVenueList(create(ListVenuesResponseSchema, venueListReply(list))),
+    ).toEqual(list);
+    const detail = { venue, dsl: "text", version: "v2" };
+    expect(
+      mapVenueDetail(create(VenueDetailSchema, venueDetailReply(detail))),
+    ).toEqual(detail);
+  });
+
+  it("a saved venue, a patch, a scene and aim points read back", () => {
+    expect(
+      mapVenueSaved(
+        create(
+          SaveVenueResponseSchema,
+          venueSavedReply({
+            name: "club",
+            reloaded: true,
+            version: "v3",
+            venue_error: { venue: "club", fixture: "A", reason: "r" },
+          }),
+        ),
+      ),
+    ).toEqual({
+      status: "saved",
+      name: "club",
+      reloaded: true,
+      version: "v3",
+      venue_error: { venue: "club", fixture: "A", reason: "r" },
+    });
+    const patch = {
+      spans: [
+        {
+          fixture: "A",
+          universe: 1,
+          address: 1,
+          footprint: 4,
+          type: "Brick",
+          mode: "8: RGBS",
+        },
+        {
+          fixture: "B",
+          universe: 1,
+          address: 3,
+          footprint: null,
+          type: "Brick",
+          mode: null,
+        },
+      ],
+      overlaps: [
+        {
+          first: "A",
+          second: "B",
+          first_gang: ["A"],
+          second_gang: ["B"],
+          universe: 1,
+          from: 3,
+          to: 4,
+        },
+      ],
+      overruns: [
+        { fixture: "C", universe: 1, address: 511, footprint: 4, last: 514 },
+      ],
+    };
+    expect(
+      mapVenuePatch(create(VenuePatchSchema, venuePatchReply(patch))),
+    ).toEqual(patch);
+    const scene = {
+      fixtures: {
+        A: {
+          tags: ["wash"],
+          type: "Brick",
+          position: [1, 2, 3] as [number, number, number],
+          rotation: null,
+          beam_angle: 45,
+          rig: "abc/rig.json",
+          mode: "8: RGBS",
+        },
+      },
+      venue: {
+        name: "club",
+        focus_points: { dj: [0, 3, 1] as [number, number, number] },
+        scenery: null,
+        scenery_error: "gone",
+      },
+    };
+    expect(
+      mapVenueScene(create(VenueSceneSchema, venueSceneReply(scene))),
+    ).toEqual(scene);
+    const aim = {
+      created: [
+        {
+          name: "A aim",
+          fixture: "A",
+          point: [1, 2, 0] as [number, number, number],
+        },
+      ],
+      reloaded: false,
+      version: "v4",
+      venue_error: null,
+    };
+    expect(
+      mapAimPoints(
+        create(AddVenueAimPointsResponseSchema, aimPointsReply(aim)),
+      ),
+    ).toEqual(aim);
+  });
+
+  it("an export's summary and a keep read back", () => {
+    const summary = {
+      file_name: "club.mvr",
+      venue: "club",
+      output: "lighting/export/club.mvr",
+      fixtures: 3,
+      focus_points: 1,
+      embedded_gdtfs: ["a.gdtf"],
+      generated_gdtfs: { "g.gdtf": "Par" },
+      positioned_fixtures: 2,
+      fixed_fixtures: [
+        { name: "A", focus: "dj" },
+        { name: "B", focus: null },
+      ],
+      warnings: ["w"],
+    };
+    expect(
+      mapMvrExportSummary(
+        create(MvrExportSummarySchema, mvrExportSummaryReply(summary)),
+      ),
+    ).toEqual(summary);
+    const kept = create(
+      KeepMvrExportResponseSchema,
+      keptReply({ kept: "lighting/export/club.mvr" }),
+    );
+    expect(kept.outcome).toEqual({
+      case: "kept",
+      value: "lighting/export/club.mvr",
+    });
+    const left = create(
+      KeepMvrExportResponseSchema,
+      keptReply({ existing: "club.mvr" }),
+    );
+    expect(left.outcome).toEqual({ case: "existing", value: "club.mvr" });
+  });
+
+  it("a venue save reads back as the page sent it", () => {
+    const body = {
+      fixtures: [
+        {
+          name: "A",
+          fixture_type: "Brick",
+          universe: 1,
+          start_channel: 1,
+          tags: ["wash"],
+          position: [1, 2, 3] as [number, number, number],
+          rotation: null,
+          mode: "8: RGBS",
+          beam_angle: null,
+        },
+      ],
+      focus_points: { dj: [0, 3, 1] as [number, number, number] },
+      source: null,
+    };
+    expect(
+      savedVenueRequest(
+        create(
+          SaveVenueRequestSchema,
+          saveVenueRequest("club", body, {
+            dir: "v",
+            from: "old",
+            version: "r1",
+          }),
+        ),
+      ),
+    ).toEqual({
+      ...body,
+      name: "club",
+      from: "old",
+      dir: "v",
+      version: "r1",
+      text: null,
     });
   });
 });

@@ -771,6 +771,15 @@ mod tests {
             "GetFixtureTypeGdtfDetails",
             "GetFixtureTypeSettings",
             "SaveFixtureTypeSettings",
+            "ListVenues",
+            "GetVenue",
+            "SaveVenue",
+            "DeleteVenue",
+            "GetVenuePatch",
+            "GetVenueScene",
+            "AddVenueAimPoints",
+            "GetMvrExportSummary",
+            "KeepMvrExport",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }

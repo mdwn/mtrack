@@ -14,11 +14,22 @@
 
 import { test, expect, type Page, type Request } from "@playwright/test";
 import { MVR_INSPECTION, MVR_EXPORT_SUMMARY } from "../mock-server/test-data";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
 import type { VenueList } from "../../src/gen/rules/mtrack_rules";
+import {
+  aimPointsReply,
+  keptReply,
+  mvrExportSummaryReply,
+  venueListReply,
+} from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 
 // MVR import (the wizard at #/lighting/import) and export (the dialog on
 // Venues), design section 11. Every test routes its own answers with
-// `page.route`, so nothing depends on state another test left behind.
+// `page.route` (the import, which stays on HTTP) or `mockRpc` (the export's
+// summary, aim points and keep), so nothing depends on state another test
+// left behind.
 
 type Inspection = typeof MVR_INSPECTION;
 
@@ -737,49 +748,29 @@ test.describe("MVR import wizard", () => {
 });
 
 test.describe("MVR export dialog", () => {
-  /** Routes the summary; `linked` says whether Brick 2 has been aimed. */
+  /** Answers the summary, the aim points and the keep; `linked` says whether
+   *  Brick 2 has been aimed. The download is still an HTTP route. */
   async function routeExport(page: Page) {
     const state = { linked: false };
-    const summaries: Request[] = [];
-    const aims: Request[] = [];
     const downloads: Request[] = [];
-    const keeps: Request[] = [];
     const kept = new Set<string>();
-    await page.route("**/api/lighting/mvr/export/keep*", async (route) => {
-      keeps.push(route.request());
-      const url = new URL(route.request().url());
-      const file = url.searchParams.get("file") ?? "x.mvr";
-      if (kept.has(file) && url.searchParams.get("overwrite") !== "true") {
-        await route.fulfill({
-          status: 409,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: `lighting/export/${file} already exists`,
-            existing: file,
-          }),
-        });
-        return;
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.keepMvrExport, (request) => {
+      const file = request.file ?? "x.mvr";
+      if (kept.has(file) && !request.overwrite) {
+        return keptReply({ existing: file });
       }
       kept.add(file);
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ kept: `lighting/export/${file}` }),
-      });
+      return keptReply({ kept: `lighting/export/${file}` });
     });
-    await page.route("**/api/lighting/mvr/export/summary*", async (route) => {
-      summaries.push(route.request());
+    rpc.unary(LightingService.method.getMvrExportSummary, () => {
       const summary = structuredClone(MVR_EXPORT_SUMMARY);
       summary.venue = "test-venue";
       if (state.linked) {
         summary.fixed_fixtures[1].focus = "Brick 2 aim";
         summary.focus_points = 2;
       }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(summary),
-      });
+      return mvrExportSummaryReply(summary);
     });
     await page.route(/\/api\/lighting\/mvr\/export\?/, async (route) => {
       downloads.push(route.request());
@@ -794,21 +785,24 @@ test.describe("MVR export dialog", () => {
         body: "PK-mock",
       });
     });
-    await page.route("**/api/lighting/venues/*/aim-points*", async (route) => {
-      aims.push(route.request());
+    rpc.unary(LightingService.method.addVenueAimPoints, () => {
       state.linked = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          created: [
-            { name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] },
-          ],
-          reloaded: true,
-        }),
+      return aimPointsReply({
+        created: [
+          { name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] },
+        ],
+        reloaded: true,
+        version: "v2",
+        venue_error: null,
       });
     });
-    return { summaries, aims, downloads, keeps };
+    return {
+      rpc,
+      summaries: () => rpc.calls(LightingService.method.getMvrExportSummary),
+      aims: () => rpc.calls(LightingService.method.addVenueAimPoints),
+      downloads,
+      keeps: () => rpc.calls(LightingService.method.keepMvrExport),
+    };
   }
 
   test("shows the summary and warns about unlinked fixed fixtures", async ({
@@ -842,36 +836,33 @@ test.describe("MVR export dialog", () => {
     await expect(page.getByTestId("mvr-export-download")).toHaveCount(0);
     await expect(page.getByTestId("mvr-export-as-is")).toBeVisible();
 
-    expect(summaries.length).toBeGreaterThan(0);
-    expect(new URL(summaries[0].url()).searchParams.get("venue")).toBe(
-      "test-venue",
-    );
+    expect(summaries().length).toBeGreaterThan(0);
+    expect(summaries()[0].venue).toBe("test-venue");
   });
 
   test("does not offer aim points for a venue whose file is not its alone", async ({
     page,
   }) => {
-    const { aims } = await routeExport(page);
+    const { aims, rpc } = await routeExport(page);
     const reason =
       'Defined in tour/all.light alongside venue "Arena"; edit that file by hand.';
-    await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
-      route.fulfill({
-        json: {
-          venues: {
-            "test-venue": {
-              name: "test-venue",
-              fixtures: {},
-              focus_points: {},
-              source: null,
-            },
+    rpc.unary(
+      LightingService.method.listVenues,
+      venueListReply({
+        venues: {
+          "test-venue": {
+            name: "test-venue",
+            fixtures: {},
+            focus_points: {},
+            source: null,
           },
-          owners: {
-            "test-venue": { file: "tour/all.light", editable: false, reason },
-          },
-          errors: [],
-          versions: { "test-venue": "v1" },
-        } satisfies VenueList,
-      }),
+        },
+        owners: {
+          "test-venue": { file: "tour/all.light", editable: false, reason },
+        },
+        errors: [],
+        versions: { "test-venue": "v1" },
+      } satisfies VenueList),
     );
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
@@ -880,7 +871,7 @@ test.describe("MVR export dialog", () => {
     await expect(page.getByTestId("mvr-export-read-only")).toHaveText(reason);
     // Exporting as it is stays on offer.
     await expect(page.getByTestId("mvr-export-as-is")).toBeVisible();
-    expect(aims).toHaveLength(0);
+    expect(aims()).toHaveLength(0);
   });
 
   test("adds an aim point per fixture, refreshes, then downloads", async ({
@@ -890,19 +881,16 @@ test.describe("MVR export dialog", () => {
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
     await expect(page.getByTestId("mvr-export-unlinked")).toBeVisible();
-    const before = summaries.length;
+    const before = summaries().length;
 
     await page.getByTestId("mvr-export-add-aim").click();
     await expect(page.getByTestId("mvr-export-added")).toContainText(
       "Added 1 aim points: Brick 2 aim",
     );
     // The action posted to the venue, and the summary was read again.
-    expect(aims).toHaveLength(1);
-    expect(aims[0].method()).toBe("POST");
-    expect(aims[0].url()).toContain(
-      "/api/lighting/venues/test-venue/aim-points",
-    );
-    await expect.poll(() => summaries.length).toBeGreaterThan(before);
+    expect(aims()).toHaveLength(1);
+    expect(aims()[0].name).toBe("test-venue");
+    await expect.poll(() => summaries().length).toBeGreaterThan(before);
     await expect(page.getByTestId("mvr-export-linked")).toHaveText("2 of 2");
     await expect(page.getByTestId("mvr-export-unlinked")).toHaveCount(0);
 
@@ -927,9 +915,8 @@ test.describe("MVR export dialog", () => {
     await expect(page.getByTestId("mvr-export-kept")).toContainText(
       "lighting/export/tour.mvr",
     );
-    expect(keeps).toHaveLength(1);
-    expect(keeps[0].method()).toBe("POST");
-    expect(new URL(keeps[0].url()).searchParams.get("file")).toBe("tour.mvr");
+    expect(keeps()).toHaveLength(1);
+    expect(keeps()[0].file).toBe("tour.mvr");
 
     // Again: the name is taken, so the dialog asks before replacing it.
     const again = page.waitForEvent("download");
@@ -940,8 +927,8 @@ test.describe("MVR export dialog", () => {
     });
     await expect(confirm).toBeVisible();
     await confirm.getByRole("button", { name: "Confirm" }).click();
-    await expect.poll(() => keeps.length).toBe(3);
-    expect(new URL(keeps[2].url()).searchParams.get("overwrite")).toBe("true");
+    await expect.poll(() => keeps().length).toBe(3);
+    expect(keeps()[2].overwrite).toBe(true);
   });
 
   test("Export as is downloads without adding aim points, keep off by default", async ({
@@ -955,12 +942,12 @@ test.describe("MVR export dialog", () => {
     await page.getByTestId("mvr-export-as-is").click();
     expect((await download).suggestedFilename()).toBe("test_venue.mvr");
 
-    expect(aims).toHaveLength(0);
+    expect(aims()).toHaveLength(0);
     expect(downloads).toHaveLength(1);
     const params = new URL(downloads[0].url()).searchParams;
     expect(params.get("layers_from_tags")).toBe("false");
     expect(params.has("keep")).toBe(false);
-    expect(keeps).toHaveLength(0);
+    expect(keeps()).toHaveLength(0);
   });
 
   test("a file name the server would refuse cannot be downloaded", async ({
@@ -985,26 +972,19 @@ test.describe("MVR export dialog", () => {
     page,
   }) => {
     let calls = 0;
-    await page.route("**/api/lighting/mvr/export/summary*", async (route) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.getMvrExportSummary, () => {
       calls++;
-      await route.fulfill(
-        calls === 1
-          ? {
-              status: 400,
-              contentType: "application/json",
-              body: JSON.stringify({
-                error: 'fixture type "brick" is not defined',
-              }),
-            }
-          : {
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                ...MVR_EXPORT_SUMMARY,
-                fixed_fixtures: [],
-              }),
-            },
-      );
+      if (calls === 1) {
+        throw new ConnectError(
+          'fixture type "brick" is not defined',
+          Code.InvalidArgument,
+        );
+      }
+      return mvrExportSummaryReply({
+        ...MVR_EXPORT_SUMMARY,
+        fixed_fixtures: [],
+      });
     });
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();

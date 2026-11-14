@@ -15,12 +15,18 @@
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
 import { LightingService } from "../../src/gen/player/v1/player_pb";
-import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import {
+  fixtureTypeListReply,
+  savedVenueRequest,
+  typeEntry,
+  venueDetailReply,
+  venueSavedReply,
+} from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The Venues plan's selection, arrange and aim tools (design §10). Every test
-// routes its own venue file, fixture types and metadata with `page.route` and
+// answers its own venue file, fixture types and metadata with `mockRpc` and
 // a per-test venue name, so nothing depends on state another test left in the
 // shared mock server.
 
@@ -110,38 +116,37 @@ function channels(ch: Record<string, number>) {
 async function routeVenue(page: Page, name: string, initial: VenueBody) {
   let current = structuredClone(initial);
   const puts: VenueBody[] = [];
-  await page.route(
-    new RegExp(`/api/lighting/venues/${name}(\\?.*)?$`),
-    async (route) => {
-      const request = route.request();
-      if (request.method() === "PUT") {
-        current = request.postDataJSON();
-        puts.push(structuredClone(current));
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          venue: {
-            name,
-            fixtures: Object.fromEntries(
-              current.fixtures.map((f) => [f.name, f]),
-            ),
-            focus_points: current.focus_points,
-            source: current.source,
-          },
-          dsl: "",
-        }),
-      });
-    },
-  );
   const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const { fixtures, focus_points, source } = savedVenueRequest(request);
+    current = {
+      fixtures: fixtures as FixtureBody[],
+      focus_points: focus_points ?? {},
+      source: source ?? null,
+    };
+    puts.push(structuredClone(current));
+    return venueSavedReply({ name });
+  });
+  rpc.unary(LightingService.method.getVenue, () =>
+    venueDetailReply({
+      venue: {
+        name,
+        fixtures: Object.fromEntries(
+          current.fixtures.map((f) => [
+            f.name,
+            {
+              ...f,
+              beam_angle: f.beam_angle ?? undefined,
+            },
+          ]),
+        ),
+        focus_points: current.focus_points,
+        source: current.source,
+      },
+      dsl: "",
+      version: "v1",
+    }),
+  );
   rpc.unary(
     LightingService.method.listFixtureTypes,
     fixtureTypeListReply({ fixture_types: FIXTURE_TYPES, errors: [] }),

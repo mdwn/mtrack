@@ -2677,6 +2677,84 @@ service LightingService {
     // plan (`venue_revisions`) or the files are not as the form had them
     // (a read-only file, a name taken). Refused while locked, plans too.
     rpc SaveFixtureTypeSettings(SaveFixtureTypeSettingsRequest) returns (FixtureTypeSettingsSaved);
+
+    // ListVenues lists the project's venues (every `.light` and `.venue` file
+    // in the venues directory and below; the first file to declare a name
+    // keeps it), each with its file and whether it may be written, the
+    // revision of the file it was read from, and the files that did not read.
+    // `dir` is project-relative and defaults to the running profile's; a
+    // directory that is not there lists nothing; one that leads outside the
+    // project (`..`, an absolute path, a link out) is INVALID_ARGUMENT or
+    // PERMISSION_DENIED. Open while locked.
+    rpc ListVenues(ListVenuesRequest) returns (ListVenuesResponse);
+
+    // GetVenue reads one venue with its file's text and revision. NOT_FOUND
+    // when no file that parses declares the name (a file that does not parse
+    // is never searched for it); INVALID_ARGUMENT for a name that is not a
+    // plain name; the directory refusals of ListVenues. Open while locked.
+    rpc GetVenue(GetVenueRequest) returns (VenueDetail);
+
+    // SaveVenue creates, updates or renames a venue, from the whole file's
+    // text (which must declare this one venue and nothing else) or from the
+    // structured venue. A new name is claimed at `<dir>/<stem>.venue`; an
+    // existing one is written only where its file is that venue's alone
+    // (FAILED_PRECONDITION naming the file and why otherwise). `from`
+    // renames: a file at the old name's canonical place moves to the new
+    // name's, any other is renamed in place. A structured venue patches the
+    // file (comments, TODO lines and layout survive); the text replaces it.
+    // INVALID_ARGUMENT, with the parser's message, for text or a venue that
+    // does not hold. ABORTED, with the file's revision in the
+    // `x-current-version` metadata, when `expected_revision` is set and is
+    // not the file's. The answer carries the new revision, whether the
+    // running engine re-read the venue, and the venue's load failure when
+    // the save left the current venue failing (the save stands). Refused
+    // while locked.
+    rpc SaveVenue(SaveVenueRequest) returns (SaveVenueResponse);
+
+    // DeleteVenue deletes a venue's file: only one that is the venue's alone
+    // (FAILED_PRECONDITION otherwise, naming the file and why). NOT_FOUND
+    // when no file has the name. Refused while locked.
+    rpc DeleteVenue(DeleteVenueRequest) returns (DeleteVenueResponse);
+
+    // GetVenuePatch reads the addresses each fixture of a venue occupies,
+    // from the files, with no DMX engine needed: each fixture's span from
+    // its mode's expansion, and the venue's overlaps and overruns. A fixture
+    // whose type or mode does not load has no footprint and is left out of
+    // the checks. NOT_FOUND for a venue the files do not declare; the
+    // directory refusals of ListVenues, for `dir` and `fixture_types_dir`.
+    // Open while locked.
+    rpc GetVenuePatch(GetVenuePatchRequest) returns (VenuePatch);
+
+    // GetVenueScene reads what the 3D view draws for a venue from the files:
+    // each fixture's type, mode, placement and rig, and the venue's focus
+    // points and scenery. NOT_FOUND for a venue the files do not declare;
+    // the refusals of GetVenuePatch. Open while locked.
+    rpc GetVenueScene(GetVenueSceneRequest) returns (VenueScene);
+
+    // AddVenueAimPoints adds a focus point `<fixture> aim` to the venue's
+    // file for each fixed fixture that has a position and that an export
+    // would not link to a focus point, where its rest beam meets the deck
+    // (or 3 m along the beam when it does not meet it within 50 m). The
+    // file is edited in place (a `.light` moves to a `.venue`), and the
+    // running engine reloads the venue if it is playing it. ABORTED, with
+    // the file's revision in the `x-current-version` metadata, when
+    // `expected_revision` is set and is not the file's. Refused while locked.
+    rpc AddVenueAimPoints(AddVenueAimPointsRequest) returns (AddVenueAimPointsResponse);
+
+    // GetMvrExportSummary says what an MVR export of a venue would hold,
+    // without writing or sending the archive: counts, GDTFs embedded and
+    // generated, warnings, and each fixed fixture with the focus point it
+    // links to. The archive itself is downloaded over HTTP.
+    // INVALID_ARGUMENT, with the reason, when the export cannot be made (an
+    // unknown venue, a type that cannot be exported); the directory refusals
+    // of ListVenues, for `venues_dir` and `fixture_types_dir`. Open while
+    // locked.
+    rpc GetMvrExportSummary(GetMvrExportSummaryRequest) returns (MvrExportSummary);
+
+    // KeepMvrExport writes the export under `lighting/export/` and says where.
+    // An existing file is left alone, and the answer names it in `existing`,
+    // unless `overwrite` is set. Refused while locked.
+    rpc KeepMvrExport(KeepMvrExportRequest) returns (KeepMvrExportResponse);
 }
 
 // ---- Light show files ----
@@ -3767,4 +3845,296 @@ message FixtureTypeSettingsSaved {
     // The venue files read, by name, with their revisions.
     map<string, string> venue_revisions = 3;
     optional LightingVenueError venue_error = 4;
+}
+
+// ---- Venues ----
+
+message ListVenuesRequest {
+    // The venues directory, project-relative; the profile's when unset.
+    optional string dir = 1;
+}
+
+message ListVenuesResponse {
+    // By venue name.
+    map<string, LightingVenue> venues = 1;
+    // Each venue's file and whether it may be written, by venue name.
+    map<string, FixtureFileOwner> owners = 2;
+    // The files that did not read.
+    repeated LightingFileProblem errors = 3;
+    // The revision of each venue's file, by venue name.
+    map<string, string> revisions = 4;
+}
+
+// LightingVenue is a venue as its file declares it.
+message LightingVenue {
+    string name = 1;
+    // By fixture name.
+    map<string, LightingFixture> fixtures = 2;
+    // Named stage points shows can aim at, in meters.
+    map<string, LightingVec3> focus_points = 3;
+    // The MVR the venue was seeded from, if any.
+    optional LightingVenueSource source = 4;
+}
+
+// LightingFixture is a fixture of a venue.
+message LightingFixture {
+    string name = 1;
+    string fixture_type = 2;
+    uint32 universe = 3;
+    uint32 start_channel = 4;
+    repeated string tags = 5;
+    // Where it hangs, in stage coordinates (meters).
+    optional LightingVec3 position = 6;
+    // How it is mounted: degrees about the stage X, Y and Z axes.
+    optional LightingVec3 rotation = 7;
+    // The GDTF mode it is patched in; unset is its type's default.
+    optional string mode = 8;
+    // What the unit really throws, in degrees (a drawing hint); unset is
+    // its type's own.
+    optional double beam_angle = 9;
+}
+
+// LightingVenueSource is where a venue was seeded from: provenance, not a
+// reference.
+message LightingVenueSource {
+    // The MVR archive, relative to the project directory.
+    string mvr = 1;
+    // The MVR-space point (meters) that became the stage origin.
+    LightingVec3 origin = 2;
+}
+
+message GetVenueRequest {
+    string name = 1;
+    optional string dir = 2;
+}
+
+// VenueDetail is a venue, its file and its revision.
+message VenueDetail {
+    LightingVenue venue = 1;
+    // The file as written.
+    string dsl = 2;
+    // The file's revision, sent back as expected_revision.
+    string revision = 3;
+}
+
+message SaveVenueRequest {
+    string name = 1;
+    // A rename's old name.
+    optional string from = 2;
+    optional string dir = 3;
+    // The revision the venue was read at; a file at another is refused
+    // (ABORTED). Unset or empty is not checked.
+    optional string expected_revision = 4;
+    // The body; neither is the empty text, which does not parse.
+    oneof body {
+        // The whole file's text.
+        string dsl = 5;
+        // The structured venue.
+        LightingVenueForm form = 6;
+    }
+}
+
+// LightingVenueForm is a venue as an editor holds it: its fixtures as rows
+// (so a name listed twice is a refusal, not a silent merge), its focus
+// points and its provenance. The venue's name is the request's.
+message LightingVenueForm {
+    repeated LightingFixture fixtures = 1;
+    map<string, LightingVec3> focus_points = 2;
+    optional LightingVenueSource source = 3;
+}
+
+message SaveVenueResponse {
+    string name = 1;
+    // Whether it was the running engine's venue, and so re-read.
+    bool reloaded = 2;
+    // The file's new revision.
+    string revision = 3;
+    // The venue's load failure, when the save left the current venue failing.
+    optional LightingVenueError venue_error = 4;
+}
+
+message DeleteVenueRequest {
+    string name = 1;
+    optional string dir = 2;
+}
+
+message DeleteVenueResponse {
+    string name = 1;
+}
+
+message GetVenuePatchRequest {
+    string name = 1;
+    optional string dir = 2;
+    // The fixture types directory the fixtures' types are read from.
+    optional string fixture_types_dir = 3;
+}
+
+// VenuePatch is the addresses a venue's fixtures occupy and the findings on
+// them.
+message VenuePatch {
+    // By patch order.
+    repeated PatchedFixture spans = 1;
+    repeated PatchOverlap overlaps = 2;
+    repeated PatchOverrun overruns = 3;
+}
+
+message PatchedFixture {
+    string fixture = 1;
+    uint32 universe = 2;
+    uint32 address = 3;
+    // Unset when its type or mode does not load.
+    optional uint32 footprint = 4;
+    string fixture_type = 5;
+    // The mode the fixture line names; unset is its type's default.
+    optional string mode = 6;
+}
+
+// PatchOverlap is two fixtures (or gangs of fixtures) on the same
+// addresses: each writes over the other.
+message PatchOverlap {
+    // The first member of the gang that starts first.
+    string first = 1;
+    // The first member of the other gang.
+    string second = 2;
+    // Every fixture of the first gang, sorted.
+    repeated string first_gang = 3;
+    repeated string second_gang = 4;
+    uint32 universe = 5;
+    // The first and last shared address, inclusive.
+    uint32 from = 6;
+    uint32 to = 7;
+}
+
+// PatchOverrun is a fixture that runs past the end of its universe.
+message PatchOverrun {
+    string fixture = 1;
+    uint32 universe = 2;
+    uint32 address = 3;
+    uint32 footprint = 4;
+    // The last address it would need, past 512.
+    uint32 last = 5;
+}
+
+message GetVenueSceneRequest {
+    string name = 1;
+    optional string dir = 2;
+    optional string fixture_types_dir = 3;
+}
+
+// VenueScene is a venue from its files as the 3D view draws it.
+message VenueScene {
+    // By fixture name.
+    map<string, VenueSceneFixture> fixtures = 1;
+    VenueSceneStage venue = 2;
+}
+
+// VenueSceneFixture is where and how a fixture hangs, as the venue says.
+message VenueSceneFixture {
+    repeated string tags = 1;
+    string fixture_type = 2;
+    optional LightingVec3 position = 3;
+    optional LightingVec3 rotation = 4;
+    // Degrees the venue says this unit really throws; unset is its type's.
+    optional double beam_angle = 5;
+    // The rig model's path in the asset store, when the type has one.
+    optional string rig = 6;
+    optional string mode = 7;
+}
+
+// VenueSceneStage is the venue's points and scenery.
+message VenueSceneStage {
+    string name = 1;
+    map<string, LightingVec3> focus_points = 2;
+    // The scenery file in the asset store, when the venue came from an MVR.
+    optional string scenery = 3;
+    // Why the scenery is missing, when the venue should have had some.
+    optional string scenery_error = 4;
+}
+
+message AddVenueAimPointsRequest {
+    string name = 1;
+    optional string venues_dir = 2;
+    optional string fixture_types_dir = 3;
+    // The revision the venue's file was read at; a file at another is
+    // refused (ABORTED). Unset or empty is not checked.
+    optional string expected_revision = 4;
+}
+
+message AddVenueAimPointsResponse {
+    repeated VenueAimPoint created = 1;
+    // Whether the running engine re-read the venue.
+    bool reloaded = 2;
+    // The venue file's revision after the change.
+    string revision = 3;
+    // The current venue no longer loads after the change.
+    optional LightingVenueError venue_error = 4;
+}
+
+// VenueAimPoint is a focus point made where a fixed fixture's rest beam
+// meets the deck.
+message VenueAimPoint {
+    string name = 1;
+    string fixture = 2;
+    LightingVec3 point = 3;
+}
+
+message GetMvrExportSummaryRequest {
+    string venue = 1;
+    // One layer per first tag.
+    bool layers_from_tags = 2;
+    // The archive's file name (bare, `.mvr`); `<venue>.mvr` when unset or
+    // blank.
+    optional string file = 3;
+    optional string venues_dir = 4;
+    optional string fixture_types_dir = 5;
+}
+
+// MvrExportSummary is what an export would hold, and the name a download
+// would carry.
+message MvrExportSummary {
+    // The name the download would carry.
+    string file_name = 1;
+    string venue = 2;
+    // The `.mvr`, project-relative.
+    string output = 3;
+    uint32 fixtures = 4;
+    uint32 focus_points = 5;
+    // GDTF archives embedded from the library, by entry name.
+    repeated string embedded_gdtfs = 6;
+    // GDTF archives generated for native fixture types: entry name to
+    // fixture type.
+    map<string, string> generated_gdtfs = 7;
+    // Fixtures with a position.
+    uint32 positioned_fixtures = 8;
+    // The fixed fixtures that have a position, each with the focus point it
+    // is aimed at, if any.
+    repeated MvrFixedFixture fixed_fixtures = 9;
+    // What was skipped or approximated.
+    repeated string warnings = 10;
+}
+
+message MvrFixedFixture {
+    string name = 1;
+    // The focus point its rest beam passes within a degree of, if any.
+    optional string focus = 2;
+}
+
+message KeepMvrExportRequest {
+    string venue = 1;
+    bool layers_from_tags = 2;
+    optional string file = 3;
+    // Replace a file already in `lighting/export/`.
+    bool overwrite = 4;
+    optional string venues_dir = 5;
+    optional string fixture_types_dir = 6;
+}
+
+message KeepMvrExportResponse {
+    oneof outcome {
+        // The kept copy, project-relative.
+        string kept = 1;
+        // The file already in `lighting/export/` that was left alone, because
+        // `overwrite` was not set.
+        string existing = 2;
+    }
 }

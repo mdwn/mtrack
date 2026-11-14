@@ -13,6 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { venueListReply } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Venues Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -26,24 +29,28 @@ test.describe("Venues Management", () => {
     // parse error, and the loader used to abort the whole directory on the
     // first one — so a single stale file emptied the list with nothing to say
     // why, and re-saving through this very UI was the migration route.
-    await page.route("**/api/lighting/venues*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          venues: {
-            "test-venue": { name: "test-venue", fixtures: {} },
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.listVenues,
+      venueListReply({
+        venues: {
+          "test-venue": {
+            name: "test-venue",
+            fixtures: {},
+            focus_points: {},
+            source: null,
           },
-          errors: [
-            {
-              file: "legacy.light",
-              error:
-                "venue group `wash` is no longer supported. Tag the fixtures instead",
-            },
-          ],
-        }),
-      });
-    });
+        },
+        owners: {},
+        errors: [
+          {
+            file: "legacy.light",
+            error:
+              "venue group `wash` is no longer supported. Tag the fixtures instead",
+          },
+        ],
+      }),
+    );
     // Re-fetch through the panel's own Refresh rather than reloading the page,
     // which would discard the navigation `beforeEach` performed.
     await page.getByRole("button", { name: "Refresh" }).first().click();
@@ -100,13 +107,12 @@ test.describe("Venues Management", () => {
     );
   });
 
-  test("saving venue calls PUT API", async ({ page }) => {
+  test("saving venue calls SaveVenue", async ({ page }) => {
     await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
 
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/venues/") && req.method() === "PUT",
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("/player.v1.LightingService/SaveVenue"),
     );
     await page
       .locator(".editor-form")

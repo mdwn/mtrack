@@ -40,12 +40,21 @@ import {
   type FitGroupSchema,
   type FixtureTestAnswerSchema,
   type FixtureTestOptionsSchema,
+  type AddVenueAimPointsResponseSchema,
   type DeleteFixtureTypeResponseSchema,
   type FixtureTypeGdtfDetailsSchema,
   type FixtureTypeInfoSchema,
   type FixtureTypeSettingsSavedSchema,
   type FixtureTypeSettingsSchema,
+  type KeepMvrExportResponseSchema,
   type ListFixtureTypesResponseSchema,
+  type ListVenuesResponseSchema,
+  type MvrExportSummarySchema,
+  type SaveVenueRequest,
+  type SaveVenueResponseSchema,
+  type VenueDetailSchema,
+  type VenuePatchSchema,
+  type VenueSceneSchema,
   type SaveFixtureTypeRequest,
   type SaveFixtureTypeResponseSchema,
   type SaveFixtureTypeSettingsRequest,
@@ -61,7 +70,9 @@ import {
   type ReadinessWhatSchema,
   type ValidateLightShowResponseSchema,
 } from "../../src/gen/player/v1/player_pb";
+import type { VenueBody } from "../../src/lib/grpc/lighting";
 import type {
+  AimPoints,
   Capability,
   Check,
   CheckKey,
@@ -82,6 +93,7 @@ import type {
   Height,
   LightingGroup,
   LightingValidation,
+  MvrExportSummary,
   Preview,
   Readiness,
   Rename,
@@ -94,7 +106,13 @@ import type {
   TestOptions,
   TestUnavailable,
   Vec3,
+  Venue,
+  VenueDetail,
   VenueError,
+  VenueList,
+  VenuePatch,
+  VenueSaved,
+  VenueScene,
   Want,
   Warning,
 } from "../../src/gen/rules/mtrack_rules";
@@ -866,5 +884,249 @@ export function savedSettingsRequest(
     revision: r.expectedRevision ?? null,
     dir: r.dir ?? null,
     venuesDir: r.venuesDir ?? null,
+  };
+}
+
+// ---- Venues ----
+
+type VenueInit = NonNullable<
+  MessageInitShape<typeof VenueDetailSchema>["venue"]
+>;
+
+/** A venue as the page holds it, a `null` mode or beam angle for none (what
+ *  a save sends) allowed beside an absent one. */
+export type VenueLike = Omit<Venue, "fixtures"> & {
+  fixtures: Record<
+    string,
+    Omit<
+      Venue["fixtures"][string],
+      "mode" | "beam_angle" | "position" | "rotation"
+    > & {
+      mode?: string | null;
+      beam_angle?: number | null;
+      position?: Vec3 | null;
+      rotation?: Vec3 | null;
+    }
+  >;
+};
+
+function venueMessage(v: VenueLike): VenueInit {
+  return {
+    name: v.name,
+    fixtures: Object.fromEntries(
+      Object.entries(v.fixtures).map(([name, f]) => [
+        name,
+        {
+          name: f.name,
+          fixtureType: f.fixture_type,
+          universe: f.universe,
+          startChannel: f.start_channel,
+          tags: f.tags,
+          position: f.position ? vec3(f.position) : undefined,
+          rotation: f.rotation ? vec3(f.rotation) : undefined,
+          mode: f.mode ?? undefined,
+          beamAngle: f.beam_angle ?? undefined,
+        },
+      ]),
+    ),
+    focusPoints: Object.fromEntries(
+      Object.entries(v.focus_points).map(([name, p]) => [name, vec3(p)]),
+    ),
+    source: v.source
+      ? { mvr: v.source.mvr, origin: vec3(v.source.origin) }
+      : undefined,
+  };
+}
+
+/** The venues of a directory, with their files and revisions (the page's
+ *  `versions`) and the files that did not read. */
+export function venueListReply(
+  list: Omit<VenueList, "venues"> & { venues: Record<string, VenueLike> },
+): MessageInitShape<typeof ListVenuesResponseSchema> {
+  return {
+    venues: Object.fromEntries(
+      Object.entries(list.venues).map(([name, v]) => [name, venueMessage(v)]),
+    ),
+    owners: Object.fromEntries(
+      Object.entries(list.owners).map(([name, o]) => [
+        name,
+        { file: o.file, editable: o.editable, reason: o.reason ?? undefined },
+      ]),
+    ),
+    errors: list.errors ?? [],
+    revisions: list.versions ?? {},
+  };
+}
+
+/** A venue with its file's text and revision. */
+export function venueDetailReply(
+  d: Omit<VenueDetail, "venue"> & { venue: VenueLike },
+): MessageInitShape<typeof VenueDetailSchema> {
+  return { venue: venueMessage(d.venue), dsl: d.dsl, revision: d.version };
+}
+
+/** A venue saved. */
+export function venueSavedReply(
+  s: Partial<Pick<VenueSaved, "reloaded" | "version" | "venue_error">> &
+    Pick<VenueSaved, "name">,
+): MessageInitShape<typeof SaveVenueResponseSchema> {
+  return {
+    name: s.name,
+    reloaded: s.reloaded ?? false,
+    revision: s.version ?? "mock-v2",
+    venueError: s.venue_error ?? undefined,
+  };
+}
+
+/** The addresses a venue's fixtures occupy. */
+export function venuePatchReply(
+  p: VenuePatch,
+): MessageInitShape<typeof VenuePatchSchema> {
+  return {
+    spans: p.spans.map((s) => ({
+      fixture: s.fixture,
+      universe: s.universe,
+      address: s.address,
+      footprint: s.footprint ?? undefined,
+      fixtureType: s.type,
+      mode: s.mode ?? undefined,
+    })),
+    overlaps: p.overlaps.map((o) => ({
+      first: o.first,
+      second: o.second,
+      firstGang: o.first_gang,
+      secondGang: o.second_gang,
+      universe: o.universe,
+      from: o.from,
+      to: o.to,
+    })),
+    overruns: p.overruns,
+  };
+}
+
+/** What the 3D view draws for a venue from its files. */
+export function venueSceneReply(
+  s: VenueScene,
+): MessageInitShape<typeof VenueSceneSchema> {
+  return {
+    fixtures: Object.fromEntries(
+      Object.entries(s.fixtures).map(([name, f]) => [
+        name,
+        {
+          tags: f.tags,
+          fixtureType: f.type,
+          position: f.position ? vec3(f.position) : undefined,
+          rotation: f.rotation ? vec3(f.rotation) : undefined,
+          beamAngle: f.beam_angle ?? undefined,
+          rig: f.rig ?? undefined,
+          mode: f.mode ?? undefined,
+        },
+      ]),
+    ),
+    venue: {
+      name: s.venue.name,
+      focusPoints: Object.fromEntries(
+        Object.entries(s.venue.focus_points).map(([name, p]) => [
+          name,
+          vec3(p),
+        ]),
+      ),
+      scenery: s.venue.scenery ?? undefined,
+      sceneryError: s.venue.scenery_error ?? undefined,
+    },
+  };
+}
+
+/** The focus points an aim point addition made. */
+export function aimPointsReply(
+  a: AimPoints,
+): MessageInitShape<typeof AddVenueAimPointsResponseSchema> {
+  return {
+    created: a.created.map((c) => ({
+      name: c.name,
+      fixture: c.fixture,
+      point: vec3(c.point),
+    })),
+    reloaded: a.reloaded,
+    revision: a.version,
+    venueError: a.venue_error ?? undefined,
+  };
+}
+
+/** What an MVR export would hold. */
+export function mvrExportSummaryReply(
+  s: MvrExportSummary,
+): MessageInitShape<typeof MvrExportSummarySchema> {
+  return {
+    fileName: s.file_name,
+    venue: s.venue,
+    output: s.output,
+    fixtures: s.fixtures,
+    focusPoints: s.focus_points,
+    embeddedGdtfs: s.embedded_gdtfs,
+    generatedGdtfs: s.generated_gdtfs,
+    positionedFixtures: s.positioned_fixtures,
+    fixedFixtures: s.fixed_fixtures.map((f) => ({
+      name: f.name,
+      focus: f.focus ?? undefined,
+    })),
+    warnings: s.warnings,
+  };
+}
+
+/** A kept copy of an export (`kept` the project path), or the file that
+ *  was left alone (`existing`). */
+export function keptReply(
+  outcome: { kept: string } | { existing: string },
+): MessageInitShape<typeof KeepMvrExportResponseSchema> {
+  return {
+    outcome:
+      "kept" in outcome
+        ? { case: "kept", value: outcome.kept }
+        : { case: "existing", value: outcome.existing },
+  };
+}
+
+/** What a `SaveVenue` call sent, as the page's old `PUT` carried it: the
+ *  venue's fixtures as rows, its focus points and its provenance. */
+export function savedVenueRequest(r: SaveVenueRequest): VenueBody & {
+  name: string;
+  from: string | null;
+  dir: string | null;
+  version: string | null;
+  text: string | null;
+} {
+  const point = (p: { x: number; y: number; z: number }): Vec3 => [
+    p.x,
+    p.y,
+    p.z,
+  ];
+  const form = r.body.case === "form" ? r.body.value : null;
+  return {
+    name: r.name,
+    from: r.from ?? null,
+    dir: r.dir ?? null,
+    version: r.expectedRevision ?? null,
+    text: r.body.case === "dsl" ? r.body.value : null,
+    fixtures: (form?.fixtures ?? []).map((f) => ({
+      name: f.name,
+      fixture_type: f.fixtureType,
+      universe: f.universe,
+      start_channel: f.startChannel,
+      tags: [...f.tags],
+      position: f.position ? point(f.position) : null,
+      rotation: f.rotation ? point(f.rotation) : null,
+      mode: f.mode ?? null,
+      beam_angle: f.beamAngle ?? null,
+    })),
+    focus_points: Object.fromEntries(
+      Object.entries(form?.focusPoints ?? {}).map(([n, p]) => [n, point(p)]),
+    ),
+    source: form?.source
+      ? {
+          mvr: form.source.mvr,
+          origin: form.source.origin ? point(form.source.origin) : [0, 0, 0],
+        }
+      : null,
   };
 }

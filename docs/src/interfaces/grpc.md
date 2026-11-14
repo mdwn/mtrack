@@ -170,8 +170,9 @@ gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and rep
 service, and is not reachable over Bluetooth. The web UI's lighting pages and a song's lighting
 editor call it for a song's light show files, their validation and evaluation, the Lighting
 overview's readiness checks and the Fit shows page, the groups a cue can target, the fixture test,
-and the fixture types with their GDTF details and settings. Venues and MVR files are still the web
-API's.
+the fixture types with their GDTF details and settings, and the venues with the MVR export's
+summary and keep. The MVR import, inspector and download, the GDTF import and the lighting assets
+are still the web API's.
 
 | RPC | Description |
 |---|---|
@@ -205,6 +206,27 @@ a link.
 | `GetFixtureTypeSettings` | A GDTF fixture's own settings: its name, movement limits and strobe curve, the GDTF's strobe table, and the `revision` they are at (`unrecorded` for a fixture with no record yet). `NOT_FOUND` for a native type. Open while locked. |
 | `SaveFixtureTypeSettings` | Plans (`write` false) or saves a GDTF fixture's settings and, for a new name (`new_name`), the rename's rewrite of every venue line that names the type. `expected_revision` is the revision the settings were read at and `venue_revisions` the venue files' revisions from the plan: a record or venue file that has changed since is `ABORTED` (the record's current revision in `x-current-version`); so is every other conflict (a file that is not the type's alone, a name already taken), which makes a client read the settings again. Refused while locked, a plan too. |
 
+The venue calls take a name and, optionally, the directories to work in, with the same meaning and
+the same checks as the fixture type calls: `dir` (the venues directory; `venues_dir` on the calls
+that also act on another directory) and `fixture_types_dir` are project-relative and default to this
+host's profile. A name is a plain file name (the words `lock`, `validate` and `activate` are kept
+for the web API's own routes and are refused as names), and a directory that leaves the project is
+refused as above.
+
+| RPC | Description |
+|---|---|
+| `ListVenues` | Every venue of the directory and below (`venues`, by name), each with its file and whether it is `editable` (`owners`), the `revisions` of the files they were read from, and the files that did not read (`errors`). A name two files declare is reported against both. A directory that is not there lists nothing. Open while locked. |
+| `GetVenue` | One venue with the text of its file (`dsl`) and the file's `revision`. `NOT_FOUND` when no file that parses declares the name. Open while locked. |
+| `SaveVenue` | Creates, updates or renames a venue from the file's whole text (`dsl`, which must declare this one venue and nothing else) or from the structured venue (`form`: fixtures as rows, focus points, provenance), which patches an existing file so its comments, its TODO lines and its layout survive. A new name is a `.venue` file; an existing one is written where its file is, and only if that file is the venue's alone (`FAILED_PRECONDITION` naming the file and why otherwise); a `.light` that gains a mode, a position or a focus point becomes a `.venue`. `from` renames. A text or a venue that does not hold is `INVALID_ARGUMENT` with the reason. `expected_revision`, the revision the venue was read at, makes a file that has changed since `ABORTED`, with its current revision in `x-current-version`. The answer has the new `revision`, whether the running engine re-read the venue (`reloaded`), and the venue's load failure (`venue_error`) when the save left the current venue failing: the save stands. Refused while locked. |
+| `DeleteVenue` | Deletes the venue's file when it is the venue's alone (`FAILED_PRECONDITION` otherwise). `NOT_FOUND` when no file has the name. Refused while locked. |
+| `GetVenuePatch` | The addresses each fixture of a venue occupies, read from the files with no DMX engine: each fixture's span (its `footprint` is unset when its type or mode does not load, never guessed), and the venue's `overlaps` and `overruns`. `NOT_FOUND` for a venue the files do not declare. Open while locked. |
+| `GetVenueScene` | What the 3D view draws for a venue from its files: each fixture's type, mode, placement and rig path, and the venue's focus points and scenery. `NOT_FOUND` for a venue the files do not declare. Open while locked. |
+| `AddVenueAimPoints` | Adds a focus point `<fixture> aim` to the venue's file for each fixed fixture with a position that an MVR export would not link to a focus point, where its rest beam meets the deck. The file is edited in place and the engine reloads the venue if it is playing it. `expected_revision` and `x-current-version` as for `SaveVenue`. Refused while locked. |
+| `GetMvrExportSummary` | What an MVR export of a venue would hold, without writing or sending the archive: counts, the GDTFs embedded and generated, warnings, every positioned fixed fixture with the focus point it links to, and the `file_name` a download would carry. `INVALID_ARGUMENT` with the reason when it cannot be made. Open while locked. |
+| `KeepMvrExport` | Writes the export to `lighting/export/` and answers where (`kept`). A file of that name already there is left alone and named (`existing`) unless `overwrite` is set. Refused while locked. |
+
+The export's archive itself, and the MVR import, are HTTP.
+
 ## Lock mode
 
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
@@ -213,7 +235,8 @@ and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
 `DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
 `DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `SetBluetoothPairing` and
 `ForgetBluetoothDevice`, and `LightingService`'s `SaveLightShow`, `DeleteLightShow`,
-`StartFixtureTest`, `SaveFixtureType`, `DeleteFixtureType` and `SaveFixtureTypeSettings`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`StartFixtureTest`, `SaveFixtureType`, `DeleteFixtureType`, `SaveFixtureTypeSettings`, `SaveVenue`, `DeleteVenue`,
+`AddVenueAimPoints` and `KeepMvrExport`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are

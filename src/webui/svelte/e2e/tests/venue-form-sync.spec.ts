@@ -15,17 +15,22 @@
 import { test, expect, type Page } from "@playwright/test";
 import { LightingService } from "../../src/gen/player/v1/player_pb";
 import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
+import { Code, ConnectError } from "@connectrpc/connect";
 import {
   fixtureTypeGdtfReply,
   fixtureTypeListReply,
+  savedVenueRequest,
   typeEntry as entryOf,
+  venueDetailReply,
+  venueListReply,
+  venueSavedReply,
 } from "../support/lighting-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
 
 // The venue form: a save shows on the page at once, and each GDTF row
 // chooses its own mode. Every test serves its own venue directory from a
-// closure (page.route), so the shared mock is never written.
+// closure (mockRpc), so the shared mock is never written.
 
 interface Fixture {
   name: string;
@@ -60,50 +65,44 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
   const venues: Record<string, Fixture[]> = structuredClone(initial);
   let version = 1;
   const puts: { name: string; fixtures: Fixture[] }[] = [];
-  const json = (body: unknown) => ({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify(body),
-  });
   const venueJson = (name: string) => ({
     name,
     fixtures: Object.fromEntries(venues[name].map((f) => [f.name, f])),
     focus_points: {},
     source: null,
   });
-  await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
-    route.fulfill(
-      json({
-        venues: Object.fromEntries(
-          Object.keys(venues).map((n) => [n, venueJson(n)]),
-        ),
-        versions: Object.fromEntries(
-          Object.keys(venues).map((n) => [n, `v${version}`]),
-        ),
-        errors: [],
-      }),
-    ),
-  );
-  await page.route(/\/api\/lighting\/venues\/[^/?]+(\?.*)?$/, (route) => {
-    const name = decodeURIComponent(
-      new URL(route.request().url()).pathname.split("/").pop()!,
-    );
-    if (route.request().method() === "PUT") {
-      const body = route.request().postDataJSON();
-      venues[name] = body.fixtures;
-      puts.push({ name, fixtures: body.fixtures });
-      version++;
-      return route.fulfill(
-        json({ status: "saved", version: `v${version}`, venue_error: null }),
-      );
-    }
-    if (route.request().method() !== "GET") return route.fallback();
-    if (!venues[name]) return route.fulfill({ status: 404, body: "{}" });
-    return route.fulfill(
-      json({ venue: venueJson(name), dsl: "", version: `v${version}` }),
-    );
-  });
   const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.listVenues, () =>
+    venueListReply({
+      venues: Object.fromEntries(
+        Object.keys(venues).map((n) => [n, venueJson(n)]),
+      ),
+      owners: {},
+      versions: Object.fromEntries(
+        Object.keys(venues).map((n) => [n, `v${version}`]),
+      ),
+      errors: [],
+    }),
+  );
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const name = request.name;
+    const body = savedVenueRequest(request);
+    venues[name] = body.fixtures as Fixture[];
+    puts.push({ name, fixtures: body.fixtures as Fixture[] });
+    version++;
+    return venueSavedReply({ name, version: `v${version}` });
+  });
+  rpc.unary(LightingService.method.getVenue, (request) => {
+    const name = request.name;
+    if (!venues[name]) {
+      throw new ConnectError(`Venue not found: ${name}`, Code.NotFound);
+    }
+    return venueDetailReply({
+      venue: venueJson(name),
+      dsl: "",
+      version: `v${version}`,
+    });
+  });
   rpc.unary(
     LightingService.method.listFixtureTypes,
     fixtureTypeListReply({

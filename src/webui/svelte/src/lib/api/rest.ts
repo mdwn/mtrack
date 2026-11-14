@@ -112,8 +112,8 @@ export class ApiError extends Error {
   }
 }
 
-/** A save refused because the file changed since the client read it (HTTP 409
- *  with `conflict: true`). Carries the file's current version. */
+/** A save refused because the file changed since the client read it (gRPC
+ *  `ABORTED`). Carries the file's current version. */
 export class ConflictError extends Error {
   version: string | null;
   constructor(message: string, version: string | null = null) {
@@ -121,25 +121,6 @@ export class ConflictError extends Error {
     this.name = "ConflictError";
     this.version = version;
   }
-}
-
-/** Like `apiError`, but a stale-version refusal comes back as a
- *  `ConflictError` so the caller can reload and ask for the change again. */
-export async function versionedError(
-  res: Response,
-  fallback: string,
-): Promise<Error> {
-  if (res.status === 409) {
-    const body: { error?: string; conflict?: boolean; version?: string } =
-      await res
-        .clone()
-        .json()
-        .catch(() => ({}));
-    if (body.conflict) {
-      return new ConflictError(body.error || fallback, body.version ?? null);
-    }
-  }
-  return apiError(res, fallback);
 }
 
 export async function putText(path: string, body: string): Promise<Response> {

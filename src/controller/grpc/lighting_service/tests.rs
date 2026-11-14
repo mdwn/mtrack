@@ -18,10 +18,14 @@
 mod facts;
 mod fixture;
 mod json;
+mod mvr;
 mod settings;
 mod type_paths;
 mod type_writes;
 mod types;
+mod venue_paths;
+mod venue_writes;
+mod venues;
 
 use std::path::PathBuf;
 use std::sync::Arc;

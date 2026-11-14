@@ -29,17 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StopFixtureTest` and `GetFixtureTestOptions`, and the fixture types: `ListFixtureTypes`,
   `GetFixtureType`, `SaveFixtureType`, `DeleteFixtureType`, `GetFixtureTypeGdtfDetails` (a GDTF
   fixture's modes, the venue fixtures using it and the paths of its rig model and thumbnail; not
-  the archive), `GetFixtureTypeSettings` and `SaveFixtureTypeSettings` (`player.v1.LightingService`,
-  in `player.proto`; venues follow in a later release). It is served on the gRPC port and by the web
-  UI's gRPC-Web, behind the same lock as the other services (saving and deleting a light show or a
-  fixture type, saving or planning a fixture's settings, and starting a fixture test are refused
-  while locked; the reads, the validation, the evaluation and the release of a test are open),
-  listed in reflection and reported by the health service. It is not reachable over Bluetooth. The
+  the archive), `GetFixtureTypeSettings` and `SaveFixtureTypeSettings`, and the venues:
+  `ListVenues`, `GetVenue`, `SaveVenue`, `DeleteVenue`, `GetVenuePatch`, `GetVenueScene`,
+  `AddVenueAimPoints`, `GetMvrExportSummary` and `KeepMvrExport` (`player.v1.LightingService`, in
+  `player.proto`; the MVR import and download and the GDTF import follow in a later release). It is
+  served on the gRPC port and by the web UI's gRPC-Web, behind the same lock as the other services
+  (saving and deleting a light show, a fixture type or a venue, saving or planning a fixture's
+  settings, adding aim points, keeping an MVR export and starting a fixture test are refused while
+  locked; the reads, the validation, the evaluation and the release of a test are open), listed in
+  reflection and reported by the health service. It is not reachable over Bluetooth. The
   answers are typed messages, not JSON strings: the Lighting overview's readiness checks and the Fit
   shows page's report are messages a client can read field by field. Validation answers normally
   with the list of problems. A fixture type is saved from the file's text or from the channel-map
   form; a settings save that finds the record changed since it was read (`expected_revision`) is
-  `ABORTED` with the revision it is at in the `x-current-version` metadata. See
+  `ABORTED` with the revision it is at in the `x-current-version` metadata, and so is a venue save
+  or an aim point addition that finds the venue's file changed. A venue is saved from the file's
+  text or from its fixtures as rows, which patches the file and keeps its comments. See
   [gRPC](docs/src/interfaces/grpc.md).
 - **`bind_address` for the gRPC controller**: the address it listens on, every interface
   (`0.0.0.0`) by default as before. `bind_address: 127.0.0.1` keeps gRPC to the player's own
@@ -207,7 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reason`), `StopFixtureTest` and `GetFixtureTestOptions`, over gRPC or gRPC-Web; for example
   `grpcurl -plaintext -d '{"name":"my_song/lighting/show.light"}' host:43234
   player.v1.LightingService/GetLightShow`. A locked player is `FAILED_PRECONDITION` where it was
-  HTTP 423. The routes for venues, MVR files, GDTF import and the lighting assets are unchanged.
+  HTTP 423. The routes for MVR files, GDTF import and the lighting assets are unchanged.
   See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: the web API's routes for fixture types and their settings**: `GET`, `PUT` and
   `DELETE /api/lighting/fixture-types/<name>`, `GET /api/lighting/fixture-types`,
@@ -226,6 +231,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel-map save no longer accepts offsets that are not whole numbers or are negative, which the
   typed message cannot say. For example `grpcurl -plaintext -d '{"name":"Par"}' host:43234
   player.v1.LightingService/GetFixtureType`.
+- **Breaking: the web API's routes for venues and the MVR export's summary and keep**:
+  `GET /api/lighting/venues`, `GET`, `PUT` and `DELETE /api/lighting/venues/<name>`,
+  `GET /api/lighting/venues/<name>/patch`, `GET /api/lighting/venues/<name>/scene`,
+  `POST /api/lighting/venues/<name>/aim-points`, `GET /api/lighting/mvr/export/summary` and
+  `POST /api/lighting/mvr/export/keep` are gone; the web UI calls `LightingService` for them. A
+  script that used them should call `ListVenues`, `GetVenue`, `SaveVenue` (the file's text as
+  `dsl`, or the fixtures as rows in `form`; the old JSON body is `form`, with `tags`, `position`,
+  `rotation`, `mode` and `beam_angle` on each row, and `from` is the old query of a rename),
+  `DeleteVenue`, `GetVenuePatch` (`fixture_types_dir` is the old query), `GetVenueScene`,
+  `AddVenueAimPoints`, `GetMvrExportSummary` and `KeepMvrExport`. The old `If-Match` is
+  `expected_revision` and the old `version` is `revision`; a file that has changed since is
+  `ABORTED` with its current revision in `x-current-version`, where the route answered 409 with
+  `conflict`. `dir`, `venues_dir` and `fixture_types_dir` are request fields with the old meaning
+  and the same checks. A refusal is a status with the message the route's `error` carried (a file
+  that is not its venue's alone is `FAILED_PRECONDITION`, a text or a venue that does not hold
+  `INVALID_ARGUMENT`); the extra fields of the old 409 body (`read_only`, `file`, `others`) are in
+  the message only. A keep that finds the file already there is no longer an error: the answer
+  names it as `existing` instead of `kept`. A venue's fixtures are rows with numbers, so a figure
+  that is not a number, or a mode that is not a string, can no longer be sent; an empty list of
+  fixtures is a venue with none, where a body without `fixtures` was refused. The listing answers
+  empty `errors` and `revisions` for a directory that is not there, where the route left them out.
+  For example `grpcurl -plaintext -d '{"name":"house"}' host:43234
+  player.v1.LightingService/GetVenue`. The MVR inspector, import and download, and the GDTF
+  import, are unchanged.
 - **Breaking: ten web API routes nothing in mtrack called**: `GET /api/config`, `PUT /api/config`,
   `GET /api/config/parsed`, `POST /api/config/validate`, `PUT /api/config/audio`,
   `PUT /api/config/midi`, `PUT /api/config/dmx`, `PUT /api/config/controllers`, `GET /api/lock` and

@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { api, expect, synthGdtf, test } from "./harness";
+import { expect, synthGdtf, test, venueList, venueOf } from "./harness";
 import { card } from "../support/locators";
 import { lightingClientAt } from "../support/player-client";
 
@@ -60,12 +60,9 @@ test.describe("Project files in subdirectories", () => {
     await lighting.getFixtureType({ name: "Par" });
     await lighting.getFixtureTypeGdtfDetails({ name: "Brick" });
 
-    const venues = await api<{ venues: Record<string, unknown> }>(
-      project,
-      "/lighting/venues",
-    );
+    const venues = await venueList(project);
     expect(Object.keys(venues.venues)).toEqual(["house"]);
-    await api(project, "/lighting/venues/house");
+    await venueOf(project, "house");
 
     await lighting.saveFixtureType({
       name: "Par",

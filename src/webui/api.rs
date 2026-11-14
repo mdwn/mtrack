@@ -44,7 +44,7 @@ use crate::songs as songs_crate;
 /// True when a request may proceed while the player is locked: every GET,
 /// and the routes [`lock_policy::OPEN_WHILE_LOCKED`] lists, by method and
 /// the route's own pattern (never the request path: a venue named `lock`
-/// matches `/lighting/venues/{name}`, not the lock toggle).
+/// matches `/songs/{name}/tracks/{filename}`, not the lock toggle).
 fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
     let pattern = pattern.unwrap_or_default();
     let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
@@ -111,30 +111,9 @@ pub fn router() -> Router<WebUiState> {
     // All other routes use the default body limit.
     Router::new()
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
-        .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
-        .route("/lighting/mvr/export/keep", post(mvr_api::keep_export))
-        .route(
-            "/lighting/venues/{name}/aim-points",
-            post(mvr_api::add_aim_points),
-        )
-        .route(
-            "/lighting/venues/{name}/patch",
-            get(lighting_api::get_venue_patch),
-        )
-        .route(
-            "/lighting/venues/{name}/scene",
-            get(lighting_api::get_venue_scene),
-        )
         .route(
             "/lighting/assets/{*path}",
             get(lighting_api::get_lighting_asset),
-        )
-        .route("/lighting/venues", get(lighting_api::get_venues))
-        .route(
-            "/lighting/venues/{name}",
-            get(lighting_api::get_venue)
-                .put(lighting_api::put_venue)
-                .delete(lighting_api::delete_venue),
         )
         .merge(upload_routes)
         .merge(gdtf_routes)
@@ -524,19 +503,13 @@ mod test {
         state.player.set_locked(true);
         let app = locked_app(&state);
 
-        // A venue named `lock` used to ride the `/lock` suffix exemption.
-        let status = send(
-            &app,
-            "PUT",
-            "/api/lighting/venues/lock",
-            r#"{"fixtures":[]}"#,
-        )
-        .await;
+        // A song named `lock` once rode the `/lock` suffix exemption.
+        let status = send(&app, "PUT", "/api/songs/lock/tracks/kick.wav", "RIFF").await;
         assert_eq!(status, StatusCode::LOCKED);
-        assert!(!dir.path().join("lighting/venues/lock.light").exists());
+        assert!(!dir.path().join("songs/lock").exists());
         // Ordinary edits stay locked.
         assert_eq!(
-            send(&app, "PUT", "/api/lighting/venues/ordinary", "{}").await,
+            send(&app, "PUT", "/api/samples/upload/kick.wav", "RIFF").await,
             StatusCode::LOCKED
         );
     }

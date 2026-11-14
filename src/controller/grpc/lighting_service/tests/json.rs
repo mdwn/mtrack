@@ -598,3 +598,174 @@ pub(in super::super) fn settings_saved(s: &proto::FixtureTypeSettingsSaved) -> V
         "venue_error": s.venue_error.as_ref().map(venue_error),
     })
 }
+
+// ---- Venues ----
+
+fn point(v: &proto::LightingVec3) -> Value {
+    json!([v.x, v.y, v.z])
+}
+
+fn venue_fixture(f: &proto::LightingFixture) -> Value {
+    let mut fixture = json!({
+        "name": f.name,
+        "fixture_type": f.fixture_type,
+        "universe": f.universe,
+        "start_channel": f.start_channel,
+        "tags": f.tags,
+        "position": f.position.as_ref().map(point),
+        "rotation": f.rotation.as_ref().map(point),
+    });
+    // Serialized only when present, as the venue always was.
+    if let Some(mode) = &f.mode {
+        fixture["mode"] = json!(mode);
+    }
+    if let Some(angle) = f.beam_angle {
+        fixture["beam_angle"] = json!(angle);
+    }
+    fixture
+}
+
+/// A venue as the web UI's `Venue` type had it.
+pub(in super::super) fn venue(v: &proto::LightingVenue) -> Value {
+    json!({
+        "name": v.name,
+        "fixtures": v.fixtures.iter()
+            .map(|(name, f)| (name.clone(), venue_fixture(f)))
+            .collect::<serde_json::Map<_, _>>(),
+        "focus_points": v.focus_points.iter()
+            .map(|(name, p)| (name.clone(), point(p)))
+            .collect::<serde_json::Map<_, _>>(),
+        "source": v.source.as_ref().map(|s| json!({
+            "mvr": s.mvr,
+            "origin": s.origin.as_ref().map(point),
+        })),
+    })
+}
+
+/// What `GET /api/lighting/venues` sent.
+pub(in super::super) fn venue_list(l: &proto::ListVenuesResponse) -> Value {
+    json!({
+        "venues": l.venues.iter()
+            .map(|(name, v)| (name.clone(), venue(v)))
+            .collect::<serde_json::Map<_, _>>(),
+        "owners": l.owners.iter()
+            .map(|(name, o)| (name.clone(), json!({
+                "file": o.file, "editable": o.editable, "reason": o.reason,
+            })))
+            .collect::<serde_json::Map<_, _>>(),
+        "errors": l.errors.iter()
+            .map(|e| json!({"file": e.file, "error": e.error}))
+            .collect::<Vec<_>>(),
+        "versions": l.revisions.iter()
+            .map(|(name, v)| (name.clone(), json!(v)))
+            .collect::<serde_json::Map<_, _>>(),
+    })
+}
+
+/// What `GET /api/lighting/venues/{name}` sent.
+pub(in super::super) fn venue_detail(d: &proto::VenueDetail) -> Value {
+    json!({
+        "venue": venue(d.venue.as_ref().unwrap()),
+        "dsl": d.dsl,
+        "version": d.revision,
+    })
+}
+
+/// What `PUT /api/lighting/venues/{name}` sent.
+pub(in super::super) fn venue_saved(s: &proto::SaveVenueResponse) -> Value {
+    json!({
+        "status": "saved",
+        "name": s.name,
+        "reloaded": s.reloaded,
+        "version": s.revision,
+        "venue_error": s.venue_error.as_ref().map(venue_error),
+    })
+}
+
+/// What `GET /api/lighting/venues/{name}/patch` sent.
+pub(in super::super) fn venue_patch(p: &proto::VenuePatch) -> Value {
+    json!({
+        "spans": p.spans.iter().map(|s| json!({
+            "fixture": s.fixture,
+            "universe": s.universe,
+            "address": s.address,
+            "footprint": s.footprint,
+            "type": s.fixture_type,
+            "mode": s.mode,
+        })).collect::<Vec<_>>(),
+        "overlaps": p.overlaps.iter().map(|o| json!({
+            "first": o.first,
+            "second": o.second,
+            "first_gang": o.first_gang,
+            "second_gang": o.second_gang,
+            "universe": o.universe,
+            "from": o.from,
+            "to": o.to,
+        })).collect::<Vec<_>>(),
+        "overruns": p.overruns.iter().map(|o| json!({
+            "fixture": o.fixture,
+            "universe": o.universe,
+            "address": o.address,
+            "footprint": o.footprint,
+            "last": o.last,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// What `GET /api/lighting/venues/{name}/scene` sent.
+pub(in super::super) fn venue_scene(s: &proto::VenueScene) -> Value {
+    let stage = s.venue.as_ref().unwrap();
+    json!({
+        "fixtures": s.fixtures.iter().map(|(name, f)| (name.clone(), json!({
+            "tags": f.tags,
+            "type": f.fixture_type,
+            "position": f.position.as_ref().map(point),
+            "rotation": f.rotation.as_ref().map(point),
+            "beam_angle": f.beam_angle,
+            "rig": f.rig,
+            "mode": f.mode,
+        }))).collect::<serde_json::Map<_, _>>(),
+        "venue": {
+            "name": stage.name,
+            "focus_points": stage.focus_points.iter()
+                .map(|(name, p)| (name.clone(), point(p)))
+                .collect::<serde_json::Map<_, _>>(),
+            "scenery": stage.scenery,
+            "scenery_error": stage.scenery_error,
+        },
+    })
+}
+
+/// What `POST /api/lighting/venues/{name}/aim-points` sent.
+pub(in super::super) fn aim_points(a: &proto::AddVenueAimPointsResponse) -> Value {
+    json!({
+        "created": a.created.iter().map(|c| json!({
+            "name": c.name,
+            "fixture": c.fixture,
+            "point": c.point.as_ref().map(point),
+        })).collect::<Vec<_>>(),
+        "reloaded": a.reloaded,
+        "version": a.revision,
+        "venue_error": a.venue_error.as_ref().map(venue_error),
+    })
+}
+
+/// What `GET /api/lighting/mvr/export/summary` sent.
+pub(in super::super) fn export_summary(s: &proto::MvrExportSummary) -> Value {
+    json!({
+        "file_name": s.file_name,
+        "venue": s.venue,
+        "output": s.output,
+        "fixtures": s.fixtures,
+        "focus_points": s.focus_points,
+        "embedded_gdtfs": s.embedded_gdtfs,
+        "generated_gdtfs": s.generated_gdtfs.iter()
+            .map(|(k, v)| (k.clone(), json!(v)))
+            .collect::<serde_json::Map<_, _>>(),
+        "positioned_fixtures": s.positioned_fixtures,
+        "fixed_fixtures": s.fixed_fixtures.iter()
+            .map(|f| json!({"name": f.name, "focus": f.focus}))
+            .collect::<Vec<_>>(),
+        "warnings": s.warnings,
+    })
+}

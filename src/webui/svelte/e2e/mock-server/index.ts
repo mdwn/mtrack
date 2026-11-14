@@ -12,10 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { saveVenue } from "../../src/lib/api/config";
+import type { VenueBody } from "../../src/lib/grpc/lighting";
 import type {
-  AimPoints,
-  MvrKept,
   SampleUploaded,
   MvrImportAnswer,
   FixtureSettingsData,
@@ -27,6 +25,7 @@ import type {
   VenueDetail,
   VenueList,
   VenueScene,
+  AimPoints,
   TestMode,
 } from "../../src/gen/rules/mtrack_rules";
 import express from "express";
@@ -172,14 +171,22 @@ import {
   fixtureTypeInfoReply,
   fixtureTypeListReply,
   fixtureTypeSavedReply,
+  aimPointsReply,
   groupsReply,
+  keptReply,
   lightShowReply,
+  mvrExportSummaryReply,
   previewReply,
   readinessReply,
+  savedVenueRequest,
   settingsSavedReply,
   testAnswerReply,
   testOptionsReply,
   validationReply,
+  venueDetailReply,
+  venueListReply,
+  venueSavedReply,
+  venueSceneReply,
 } from "../support/lighting-rpc.js";
 import { StageStream, type StageMessage } from "../support/stage-stream.js";
 import { watchFrame, type WatchPush } from "../support/watch-stream.js";
@@ -988,9 +995,9 @@ app.post("/api/lighting/mvr/import", (_req, res) => {
   } satisfies MvrImportAnswer);
 });
 
-app.get("/api/lighting/mvr/export/summary", (_req, res) => {
-  res.json(MVR_EXPORT_SUMMARY);
-});
+lightingUnary(LightingService.method.getMvrExportSummary, () =>
+  mvrExportSummaryReply(MVR_EXPORT_SUMMARY),
+);
 
 app.get("/api/lighting/mvr/export", (req, res) => {
   const file = (req.query.file as string) || "kellys.mvr";
@@ -999,30 +1006,26 @@ app.get("/api/lighting/mvr/export", (req, res) => {
   res.send(Buffer.from("PK-mock-mvr"));
 });
 
-// Keeping a copy is its own POST; the first keep of a name succeeds and a
-// second is a 409 until `overwrite=true`, like the real server.
+// Keeping a copy: the first keep of a name succeeds and a second leaves the
+// file alone and names it until `overwrite`, like the real server.
 const keptExports = new Set<string>();
-app.post("/api/lighting/mvr/export/keep", (req, res) => {
-  const file = (req.query.file as string) || "kellys.mvr";
-  if (keptExports.has(file) && req.query.overwrite !== "true") {
-    res.status(409).json({
-      error: `lighting/export/${file} already exists`,
-      existing: file,
-    });
-    return;
+lightingUnary(LightingService.method.keepMvrExport, (req) => {
+  const file = req.file || "kellys.mvr";
+  if (keptExports.has(file) && !req.overwrite) {
+    return keptReply({ existing: file });
   }
   keptExports.add(file);
-  res.json({ kept: `lighting/export/${file}` } satisfies MvrKept);
+  return keptReply({ kept: `lighting/export/${file}` });
 });
 
-app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
-  res.json({
+lightingUnary(LightingService.method.addVenueAimPoints, () =>
+  aimPointsReply({
     created: [{ name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] }],
     reloaded: false,
     version: "mock-v2",
     venue_error: null,
-  } satisfies AimPoints);
-});
+  } satisfies AimPoints),
+);
 
 // The one mesh the mock store serves, read once at startup (the server
 // runs from the package root, see playwright.config.ts).
@@ -1053,8 +1056,8 @@ app.get("/api/lighting/assets/{*path}", (req, res) => {
   res.status(404).json({ error: "Asset not found" });
 });
 
-app.get("/api/lighting/venues", (_req, res) => {
-  res.json({
+lightingUnary(LightingService.method.listVenues, () =>
+  venueListReply({
     venues: {
       "test-venue": {
         name: "test-venue",
@@ -1078,13 +1081,11 @@ app.get("/api/lighting/venues", (_req, res) => {
     },
     errors: [],
     versions: { "test-venue": "mock-v1" },
-  } satisfies VenueList);
-});
+  } satisfies VenueList),
+);
 
 // Venue saves are remembered per name so a second edit sees the first,
 // the way the real server's file does.
-/** A venue save's body, as the page sends it. */
-type VenueBody = Parameters<typeof saveVenue>[1];
 const savedVenues = new Map<string, VenueBody>();
 const MOCK_VENUE: VenueBody = {
   fixtures: [
@@ -1102,8 +1103,8 @@ const MOCK_VENUE: VenueBody = {
   source: null,
 };
 
-app.get("/api/lighting/venues/:name", (req, res) => {
-  const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
+lightingUnary(LightingService.method.getVenue, (req) => {
+  const body = savedVenues.get(req.name) ?? MOCK_VENUE;
   const fixtures: Venue["fixtures"] = {};
   for (const f of body.fixtures)
     fixtures[f.name] = {
@@ -1111,9 +1112,9 @@ app.get("/api/lighting/venues/:name", (req, res) => {
       mode: f.mode ?? undefined,
       beam_angle: f.beam_angle ?? undefined,
     };
-  res.json({
+  return venueDetailReply({
     venue: {
-      name: req.params.name,
+      name: req.name,
       fixtures,
       focus_points: body.focus_points ?? {},
       source: body.source ?? null,
@@ -1126,12 +1127,11 @@ app.get("/api/lighting/venues/:name", (req, res) => {
 // What the 3D view draws for a venue that is not the current one: the
 // venue's file in the metadata's shape. No rigs here (every fixture draws
 // generically); "nowhere" is a venue the server does not have.
-app.get("/api/lighting/venues/:name/scene", (req, res) => {
-  if (req.params.name === "nowhere") {
-    res.status(404).json({ error: "Venue not found" });
-    return;
+lightingUnary(LightingService.method.getVenueScene, (req) => {
+  if (req.name === "nowhere") {
+    throw new GrpcFailure(Code.NotFound, "Venue not found");
   }
-  const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
+  const body = savedVenues.get(req.name) ?? MOCK_VENUE;
   const fixtures: VenueScene["fixtures"] = {};
   for (const f of body.fixtures) {
     fixtures[f.name] = {
@@ -1144,10 +1144,10 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
       rig: null,
     };
   }
-  res.json({
+  return venueSceneReply({
     fixtures,
     venue: {
-      name: req.params.name,
+      name: req.name,
       focus_points: body.focus_points ?? {},
       scenery: null,
       scenery_error: null,
@@ -1159,10 +1159,15 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
 // read each other's save. A single global slot made the stage-view geometry
 // tests race whenever two of them ran at once.
 const lastVenuePuts = new Map<string, unknown>();
-app.put("/api/lighting/venues/:name", (req, res) => {
-  lastVenuePuts.set(req.params.name, req.body);
-  savedVenues.set(req.params.name, req.body as VenueBody);
-  res.json({ status: "saved" });
+lightingUnary(LightingService.method.saveVenue, (req) => {
+  const { name, from, dir, version, text, ...body } = savedVenueRequest(req);
+  void from;
+  void dir;
+  void version;
+  void text;
+  lastVenuePuts.set(req.name, body);
+  savedVenues.set(req.name, body);
+  return venueSavedReply({ name });
 });
 // GET /test/last-venue-put?name=<venue> — what that venue's last save sent,
 // for tests of the stage view's geometry editing.
@@ -1175,9 +1180,9 @@ app.get("/test/last-venue-put", (req, res) => {
   res.json({ name, body: lastVenuePuts.get(name) });
 });
 
-app.delete("/api/lighting/venues/:name", (_req, res) => {
-  res.json({ status: "deleted" });
-});
+lightingUnary(LightingService.method.deleteVenue, (req) => ({
+  name: req.name,
+}));
 
 // --- Browse ---
 

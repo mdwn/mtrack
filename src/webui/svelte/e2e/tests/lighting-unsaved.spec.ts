@@ -14,13 +14,14 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { venueSavedReply } from "../support/lighting-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
 
 // Leaving a Lighting form with unsaved edits asks first, through the app's
 // guard: staying keeps the edits and the address, leaving discards them, a
 // clean form leaves without asking, and a save clears the question. Saves
-// are caught with page.route, so the shared mock is untouched.
+// are caught with mockRpc, so the shared mock is untouched.
 
 const sectionLink = (page: Page, name: string) =>
   page.locator(".lighting__tabs").getByRole("link", { name });
@@ -138,16 +139,11 @@ test.describe("The venue form", () => {
   });
 
   test("a save then leaves without asking", async ({ page }) => {
-    const puts: unknown[] = [];
-    await page.route(/\/api\/lighting\/venues\/test-venue(\?.*)?$/, (r) => {
-      if (r.request().method() !== "PUT") return r.fallback();
-      puts.push(r.request().postDataJSON());
-      return r.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", venue_error: null }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    const puts = () => rpc.calls(LightingService.method.saveVenue);
+    rpc.unary(LightingService.method.saveVenue, (request) =>
+      venueSavedReply({ name: request.name }),
+    );
     await page.goto("/#/lighting/venues/test-venue?edit");
     const tag = page
       .getByTestId("venue-fixture-row")
@@ -159,7 +155,7 @@ test.describe("The venue form", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save", exact: true })
       .click();
-    await expect.poll(() => puts.length).toBe(1);
+    await expect.poll(() => puts().length).toBe(1);
     await expect(page.locator(".editor-form")).toHaveCount(0);
     await sectionLink(page, "Fixture types").click();
     await expect(page).toHaveURL(/#\/lighting\/fixtures$/);

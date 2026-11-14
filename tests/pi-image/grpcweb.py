@@ -25,11 +25,22 @@ neither does the runner.
     grpcweb.py request save-fixture-type NAME DSL
                                         the body for LightingService/SaveFixtureType:
                                         a fixture type of that name from that text
+    grpcweb.py request save-venue NAME FIXTURE TYPE UNIVERSE ADDRESS
+                                        the body for LightingService/SaveVenue:
+                                        a venue of that name holding one
+                                        fixture of that type at that patch
+    grpcweb.py request venue-patch NAME the body for LightingService/GetVenuePatch
     grpcweb.py status < answer          the first hardware event, as JSON
     grpcweb.py ok < answer              exit 0 if the call's grpc-status is 0
     grpcweb.py saved-fixture-type < answer
                                         the name a SaveFixtureType answer says it
                                         saved; fails if the call was refused
+    grpcweb.py saved-venue < answer     the name a SaveVenue answer says it
+                                        saved; fails if the call was refused
+    grpcweb.py venue-footprint < answer the footprint of the first fixture of a
+                                        GetVenuePatch answer (empty when its
+                                        type or mode did not load); fails if
+                                        the call was refused
 
 Field numbers are those of src/proto/player/v1/player.proto.
 """
@@ -65,6 +76,34 @@ def string_field(number: int, text: str) -> bytes:
 def save_fixture_type(name: str, dsl: str) -> str:
     """SaveFixtureTypeRequest { name: 1, body: oneof { dsl: 6 } }."""
     return frame(string_field(1, name) + string_field(6, dsl))
+
+
+def varint_field(number: int, value: int) -> bytes:
+    """A varint field: its key (wire type 0), then the number."""
+    return varint_bytes(number << 3) + varint_bytes(value)
+
+
+def message_field(number: int, message: bytes) -> bytes:
+    """A message field: its key (wire type 2), its length, its bytes."""
+    return varint_bytes(number << 3 | 2) + varint_bytes(len(message)) + message
+
+
+def save_venue(name: str, fixture: str, fixture_type: str, universe: int, address: int) -> str:
+    """SaveVenueRequest { name: 1, body: oneof { form: 6 } } with a
+    LightingVenueForm { fixtures: 1 } of one LightingFixture { name: 1,
+    fixture_type: 2, universe: 3, start_channel: 4 }."""
+    row = (
+        string_field(1, fixture)
+        + string_field(2, fixture_type)
+        + varint_field(3, universe)
+        + varint_field(4, address)
+    )
+    return frame(string_field(1, name) + message_field(6, message_field(1, row)))
+
+
+def venue_patch(name: str) -> str:
+    """GetVenuePatchRequest { name: 1 }."""
+    return frame(string_field(1, name))
 
 
 REQUESTS = {
@@ -169,6 +208,34 @@ def saved_fixture_type(body: bytes) -> str:
     raise ValueError("no answer in the body")
 
 
+def saved_venue(body: bytes) -> str:
+    """The name in a SaveVenueResponse (field 1), of a call that was not
+    refused."""
+    if not call_ok(body):
+        raise ValueError("the call was refused")
+    for trailers, message in frames(body):
+        if not trailers:
+            return fields(message).get(1, b"").decode()
+    raise ValueError("no answer in the body")
+
+
+def venue_footprint(body: bytes) -> str:
+    """The footprint (field 4 of a PatchedFixture) of the first span (field 1
+    of a VenuePatch) of a call that was not refused; empty for a fixture whose
+    type or mode did not load, which has none."""
+    if not call_ok(body):
+        raise ValueError("the call was refused")
+    for trailers, message in frames(body):
+        if trailers:
+            continue
+        span = fields(message).get(1)
+        if span is None:
+            raise ValueError("the venue has no fixture")
+        footprint = fields(span).get(4)
+        return "" if footprint is None else str(footprint)
+    raise ValueError("no answer in the body")
+
+
 def main() -> int:
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "request" and args[1] in REQUESTS:
@@ -176,6 +243,18 @@ def main() -> int:
         return 0
     if len(args) == 4 and args[:2] == ["request", "save-fixture-type"]:
         print(save_fixture_type(args[2], args[3]))
+        return 0
+    if len(args) == 7 and args[:2] == ["request", "save-venue"]:
+        print(save_venue(args[2], args[3], args[4], int(args[5]), int(args[6])))
+        return 0
+    if len(args) == 3 and args[:2] == ["request", "venue-patch"]:
+        print(venue_patch(args[2]))
+        return 0
+    if args == ["saved-venue"]:
+        print(saved_venue(unbase64(sys.stdin.read())))
+        return 0
+    if args == ["venue-footprint"]:
+        print(venue_footprint(unbase64(sys.stdin.read())))
         return 0
     if args == ["saved-fixture-type"]:
         print(saved_fixture_type(unbase64(sys.stdin.read())))

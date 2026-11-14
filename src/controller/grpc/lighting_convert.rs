@@ -897,3 +897,251 @@ pub(super) fn settings_saved(s: &types_wire::SettingsSaved) -> proto::FixtureTyp
         venue_error: s.venue_error.as_ref().map(venue_error),
     }
 }
+
+// ---- Venues ----
+
+fn lighting_fixture(f: &crate::lighting::types::Fixture) -> proto::LightingFixture {
+    proto::LightingFixture {
+        name: f.name().to_string(),
+        fixture_type: f.fixture_type().to_string(),
+        universe: u32::from(f.universe()),
+        start_channel: u32::from(f.start_channel()),
+        tags: f.tags().to_vec(),
+        position: f.position().map(vec3),
+        rotation: f.rotation().map(vec3),
+        mode: f.mode().map(String::from),
+        beam_angle: f.beam_angle(),
+    }
+}
+
+pub(super) fn lighting_venue(v: &crate::lighting::types::Venue) -> proto::LightingVenue {
+    proto::LightingVenue {
+        name: v.name().to_string(),
+        fixtures: v
+            .fixtures()
+            .iter()
+            .map(|(name, fixture)| (name.clone(), lighting_fixture(fixture)))
+            .collect(),
+        focus_points: v
+            .focus_points()
+            .iter()
+            .map(|(name, point)| (name.clone(), vec3(*point)))
+            .collect(),
+        source: v.source().map(|s| proto::LightingVenueSource {
+            mvr: s.mvr.clone(),
+            origin: Some(vec3(s.origin)),
+        }),
+    }
+}
+
+pub(super) fn venue_list(l: &types_wire::VenueList) -> proto::ListVenuesResponse {
+    proto::ListVenuesResponse {
+        venues: l
+            .venues
+            .iter()
+            .map(|(name, venue)| (name.clone(), lighting_venue(venue)))
+            .collect(),
+        owners: l
+            .owners
+            .iter()
+            .map(|(name, owner)| (name.clone(), file_owner(owner)))
+            .collect(),
+        errors: l
+            .errors
+            .iter()
+            .flatten()
+            .map(|e| proto::LightingFileProblem {
+                file: e.file.clone(),
+                error: e.error.clone(),
+            })
+            .collect(),
+        revisions: l
+            .versions
+            .iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    }
+}
+
+pub(super) fn venue_detail(d: &types_wire::VenueDetail) -> proto::VenueDetail {
+    proto::VenueDetail {
+        venue: Some(lighting_venue(&d.venue)),
+        dsl: d.dsl.clone(),
+        revision: d.version.clone(),
+    }
+}
+
+pub(super) fn venue_saved(s: &crate::webui::wire::venue::VenueSaved) -> proto::SaveVenueResponse {
+    proto::SaveVenueResponse {
+        name: s.name.clone(),
+        reloaded: s.reloaded,
+        revision: s.version.clone(),
+        venue_error: s.venue_error.as_ref().map(venue_error),
+    }
+}
+
+pub(super) fn venue_patch(p: &crate::webui::wire::venue::VenuePatch) -> proto::VenuePatch {
+    proto::VenuePatch {
+        spans: p
+            .spans
+            .iter()
+            .map(|s| proto::PatchedFixture {
+                fixture: s.fixture.clone(),
+                universe: u32::from(s.universe),
+                address: u32::from(s.address),
+                footprint: s.footprint.map(u32::from),
+                fixture_type: s.fixture_type.clone(),
+                mode: s.mode.clone(),
+            })
+            .collect(),
+        overlaps: p
+            .overlaps
+            .iter()
+            .map(|o| proto::PatchOverlap {
+                first: o.first.clone(),
+                second: o.second.clone(),
+                first_gang: o.first_gang.clone(),
+                second_gang: o.second_gang.clone(),
+                universe: u32::from(o.universe),
+                from: o.from,
+                to: o.to,
+            })
+            .collect(),
+        overruns: p
+            .overruns
+            .iter()
+            .map(|o| proto::PatchOverrun {
+                fixture: o.fixture.clone(),
+                universe: u32::from(o.universe),
+                address: u32::from(o.address),
+                footprint: u32::from(o.footprint),
+                last: o.last,
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn venue_scene(s: &types_wire::VenueScene) -> proto::VenueScene {
+    proto::VenueScene {
+        fixtures: s
+            .fixtures
+            .iter()
+            .map(|(name, f)| {
+                (
+                    name.clone(),
+                    proto::VenueSceneFixture {
+                        tags: f.placement.tags.clone(),
+                        fixture_type: f.placement.fixture_type.clone(),
+                        position: f.placement.position.map(vec3),
+                        rotation: f.placement.rotation.map(vec3),
+                        beam_angle: f.placement.beam_angle,
+                        rig: f.placement.rig.clone(),
+                        mode: f.mode.clone(),
+                    },
+                )
+            })
+            .collect(),
+        venue: Some(proto::VenueSceneStage {
+            name: s.venue.name.clone(),
+            focus_points: s
+                .venue
+                .focus_points
+                .iter()
+                .map(|(name, point)| (name.clone(), vec3(*point)))
+                .collect(),
+            scenery: s.venue.scenery.clone(),
+            scenery_error: s.venue.scenery_error.clone(),
+        }),
+    }
+}
+
+pub(super) fn aim_points(
+    a: &crate::webui::wire::mvr::AimPoints,
+) -> proto::AddVenueAimPointsResponse {
+    proto::AddVenueAimPointsResponse {
+        created: a
+            .created
+            .iter()
+            .map(|c| proto::VenueAimPoint {
+                name: c.name.clone(),
+                fixture: c.fixture.clone(),
+                point: Some(vec3(c.point)),
+            })
+            .collect(),
+        reloaded: a.reloaded,
+        revision: a.version.clone(),
+        venue_error: a.venue_error.as_ref().map(venue_error),
+    }
+}
+
+pub(super) fn mvr_export_summary(
+    s: &crate::webui::wire::mvr::MvrExportSummary,
+) -> proto::MvrExportSummary {
+    let e = &s.export;
+    proto::MvrExportSummary {
+        file_name: s.file_name.clone(),
+        venue: e.venue.clone(),
+        output: e.output.clone(),
+        fixtures: count(e.fixtures),
+        focus_points: count(e.focus_points),
+        embedded_gdtfs: e.embedded_gdtfs.clone(),
+        generated_gdtfs: e
+            .generated_gdtfs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        positioned_fixtures: count(e.positioned_fixtures),
+        fixed_fixtures: e
+            .fixed_fixtures
+            .iter()
+            .map(|f| proto::MvrFixedFixture {
+                name: f.name.clone(),
+                focus: f.focus.clone(),
+            })
+            .collect(),
+        warnings: e.warnings.clone(),
+    }
+}
+
+// ---- Venue requests ----
+
+fn point(v: &proto::LightingVec3) -> [f64; 3] {
+    [v.x, v.y, v.z]
+}
+
+/// The structured venue a save asks for, as the plain function reads it.
+pub(super) fn venue_form(
+    v: &proto::LightingVenueForm,
+) -> crate::webui::api::lighting_api::VenueForm {
+    use crate::webui::api::lighting_api::{FormFixture, VenueForm};
+    VenueForm {
+        fixtures: v
+            .fixtures
+            .iter()
+            .map(|f| FormFixture {
+                name: f.name.clone(),
+                fixture_type: f.fixture_type.clone(),
+                universe: f.universe,
+                start_channel: f.start_channel,
+                tags: f.tags.clone(),
+                position: f.position.as_ref().map(point),
+                rotation: f.rotation.as_ref().map(point),
+                mode: f.mode.clone(),
+                beam_angle: f.beam_angle,
+            })
+            .collect(),
+        focus_points: v
+            .focus_points
+            .iter()
+            .map(|(name, p)| (name.clone(), point(p)))
+            .collect(),
+        source: v
+            .source
+            .as_ref()
+            .map(|s| crate::lighting::types::VenueSource {
+                mvr: s.mvr.clone(),
+                origin: s.origin.as_ref().map(point).unwrap_or([0.0; 3]),
+            }),
+    }
+}

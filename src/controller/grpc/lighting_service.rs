@@ -29,22 +29,29 @@ use super::config_service::CURRENT_VERSION_KEY;
 use super::lighting_convert as convert;
 use crate::player::Player;
 use crate::proto::player::v1::{
-    self as proto, lighting_service_server::LightingService, DeleteFixtureTypeRequest,
-    DeleteFixtureTypeResponse, DeleteLightShowRequest, DeleteLightShowResponse,
+    self as proto, lighting_service_server::LightingService, AddVenueAimPointsRequest,
+    AddVenueAimPointsResponse, DeleteFixtureTypeRequest, DeleteFixtureTypeResponse,
+    DeleteLightShowRequest, DeleteLightShowResponse, DeleteVenueRequest, DeleteVenueResponse,
     EvaluateSongLightingRequest, FixtureTestAnswer, FixtureTestOptions, FixtureTypeGdtfDetails,
     FixtureTypeInfo, FixtureTypeSettings, FixtureTypeSettingsSaved, GetFixtureTestOptionsRequest,
     GetFixtureTypeGdtfDetailsRequest, GetFixtureTypeRequest, GetFixtureTypeSettingsRequest,
     GetLightShowRequest, GetLightShowResponse, GetLightingFitRequest, GetLightingReadinessRequest,
-    LightingFit, LightingPreview, LightingReadiness, ListFixtureTypesRequest,
-    ListFixtureTypesResponse, ListLightingGroupsRequest, ListLightingGroupsResponse,
+    GetMvrExportSummaryRequest, GetVenuePatchRequest, GetVenueRequest, GetVenueSceneRequest,
+    KeepMvrExportRequest, KeepMvrExportResponse, LightingFit, LightingPreview, LightingReadiness,
+    ListFixtureTypesRequest, ListFixtureTypesResponse, ListLightingGroupsRequest,
+    ListLightingGroupsResponse, ListVenuesRequest, ListVenuesResponse, MvrExportSummary,
     SaveFixtureTypeRequest, SaveFixtureTypeResponse, SaveFixtureTypeSettingsRequest,
-    SaveLightShowRequest, SaveLightShowResponse, StartFixtureTestRequest, StopFixtureTestRequest,
-    StopFixtureTestResponse, ValidateLightShowRequest, ValidateLightShowResponse,
+    SaveLightShowRequest, SaveLightShowResponse, SaveVenueRequest, SaveVenueResponse,
+    StartFixtureTestRequest, StopFixtureTestRequest, StopFixtureTestResponse,
+    ValidateLightShowRequest, ValidateLightShowResponse, VenueDetail, VenuePatch, VenueScene,
 };
 use crate::webui::api::fixture_settings;
 use crate::webui::api::fixture_test::{self, ControlInput, TestDirs, TestInput};
-use crate::webui::api::lighting_api::{self, ChannelMap, TypeBody, TypeSaveAsk};
+use crate::webui::api::lighting_api::{
+    self, ChannelMap, TypeBody, TypeSaveAsk, VenueBody, VenueSaveAsk,
+};
 use crate::webui::api::lighting_writes::Answer;
+use crate::webui::api::mvr_api::{self, ExportAsk, Kept};
 use crate::webui::api::songs_api;
 use crate::webui::wire::fixture_types::SettingsRequest;
 
@@ -112,6 +119,25 @@ pub(super) fn answer_status(answer: Answer) -> Status {
 /// is at in [`CURRENT_VERSION_KEY`].
 fn settings_status(answer: Answer) -> Status {
     if answer.status != StatusCode::CONFLICT {
+        return answer_status(answer);
+    }
+    let mut status = Status::aborted(answer.message());
+    if let Some(version) = answer.body["version"]
+        .as_str()
+        .and_then(|v| v.parse::<MetadataValue<_>>().ok())
+    {
+        status.metadata_mut().insert(CURRENT_VERSION_KEY, version);
+    }
+    status
+}
+
+/// A refused venue save (or aim point addition) as a status: a save made
+/// against a revision that is no longer the file's is `ABORTED`, carrying the
+/// revision the file is at in [`CURRENT_VERSION_KEY`], as the web API's 409
+/// with `conflict` was; every other refusal (the file is not the venue's
+/// alone, a name is taken) is as [`answer_status`] has it.
+fn venue_status(answer: Answer) -> Status {
+    if answer.body["conflict"] != serde_json::Value::Bool(true) {
         return answer_status(answer);
     }
     let mut status = Status::aborted(answer.message());
@@ -457,6 +483,158 @@ impl LightingService for LightingServer {
         .await
         .map_err(settings_status)?;
         Ok(Response::new(convert::settings_saved(&saved)))
+    }
+
+    async fn list_venues(
+        &self,
+        request: Request<ListVenuesRequest>,
+    ) -> Result<Response<ListVenuesResponse>, Status> {
+        let req = request.into_inner();
+        let list = lighting_api::list_venues(&self.config_path()?, req.dir.as_deref())
+            .await
+            .map_err(answer_status)?;
+        Ok(Response::new(convert::venue_list(&list)))
+    }
+
+    async fn get_venue(
+        &self,
+        request: Request<GetVenueRequest>,
+    ) -> Result<Response<VenueDetail>, Status> {
+        let req = request.into_inner();
+        let detail = lighting_api::read_venue(&self.config_path()?, &req.name, req.dir.as_deref())
+            .await
+            .map_err(answer_status)?;
+        Ok(Response::new(convert::venue_detail(&detail)))
+    }
+
+    async fn save_venue(
+        &self,
+        request: Request<SaveVenueRequest>,
+    ) -> Result<Response<SaveVenueResponse>, Status> {
+        use proto::save_venue_request::Body;
+        let req = request.into_inner();
+        let body = match &req.body {
+            Some(Body::Form(form)) => VenueBody::Form(convert::venue_form(form)),
+            Some(Body::Dsl(text)) => VenueBody::Text(text.clone()),
+            None => VenueBody::Text(String::new()),
+        };
+        let saved = lighting_api::put_venue(
+            &self.player,
+            &self.config_path()?,
+            VenueSaveAsk {
+                name: &req.name,
+                from: req.from.as_deref(),
+                dir: req.dir.as_deref(),
+                expected: req.expected_revision.filter(|v| !v.is_empty()),
+                body,
+            },
+        )
+        .await
+        .map_err(venue_status)?;
+        Ok(Response::new(convert::venue_saved(&saved)))
+    }
+
+    async fn delete_venue(
+        &self,
+        request: Request<DeleteVenueRequest>,
+    ) -> Result<Response<DeleteVenueResponse>, Status> {
+        let req = request.into_inner();
+        lighting_api::delete_venue(&self.config_path()?, &req.name, req.dir.as_deref())
+            .await
+            .map_err(answer_status)?;
+        Ok(Response::new(DeleteVenueResponse { name: req.name }))
+    }
+
+    async fn get_venue_patch(
+        &self,
+        request: Request<GetVenuePatchRequest>,
+    ) -> Result<Response<VenuePatch>, Status> {
+        let req = request.into_inner();
+        let patch = lighting_api::get_venue_patch(
+            &self.config_path()?,
+            &req.name,
+            req.dir.as_deref(),
+            req.fixture_types_dir.as_deref(),
+        )
+        .await
+        .map_err(answer_status)?;
+        Ok(Response::new(convert::venue_patch(&patch)))
+    }
+
+    async fn get_venue_scene(
+        &self,
+        request: Request<GetVenueSceneRequest>,
+    ) -> Result<Response<VenueScene>, Status> {
+        let req = request.into_inner();
+        let scene = lighting_api::get_venue_scene(
+            &self.config_path()?,
+            &req.name,
+            req.dir.as_deref(),
+            req.fixture_types_dir.as_deref(),
+        )
+        .await
+        .map_err(answer_status)?;
+        Ok(Response::new(convert::venue_scene(&scene)))
+    }
+
+    async fn add_venue_aim_points(
+        &self,
+        request: Request<AddVenueAimPointsRequest>,
+    ) -> Result<Response<AddVenueAimPointsResponse>, Status> {
+        let req = request.into_inner();
+        let added = mvr_api::add_aim_points(
+            &self.player,
+            &self.config_path()?,
+            &req.name,
+            req.venues_dir.as_deref(),
+            req.fixture_types_dir.as_deref(),
+            req.expected_revision.filter(|v| !v.is_empty()),
+        )
+        .await
+        .map_err(venue_status)?;
+        Ok(Response::new(convert::aim_points(&added)))
+    }
+
+    async fn get_mvr_export_summary(
+        &self,
+        request: Request<GetMvrExportSummaryRequest>,
+    ) -> Result<Response<MvrExportSummary>, Status> {
+        let req = request.into_inner();
+        let ask = ExportAsk {
+            venue: req.venue,
+            layers_from_tags: req.layers_from_tags,
+            file: req.file,
+            venues_dir: req.venues_dir,
+            fixture_types_dir: req.fixture_types_dir,
+        };
+        let summary = mvr_api::export_summary(&self.config_path()?, &ask)
+            .await
+            .map_err(answer_status)?;
+        Ok(Response::new(convert::mvr_export_summary(&summary)))
+    }
+
+    async fn keep_mvr_export(
+        &self,
+        request: Request<KeepMvrExportRequest>,
+    ) -> Result<Response<KeepMvrExportResponse>, Status> {
+        use proto::keep_mvr_export_response::Outcome;
+        let req = request.into_inner();
+        let ask = ExportAsk {
+            venue: req.venue,
+            layers_from_tags: req.layers_from_tags,
+            file: req.file,
+            venues_dir: req.venues_dir,
+            fixture_types_dir: req.fixture_types_dir,
+        };
+        let kept = mvr_api::keep_export(&self.config_path()?, &ask, req.overwrite)
+            .await
+            .map_err(answer_status)?;
+        Ok(Response::new(KeepMvrExportResponse {
+            outcome: Some(match kept {
+                Kept::Kept(kept) => Outcome::Kept(kept.kept),
+                Kept::Exists(existing) => Outcome::Existing(existing),
+            }),
+        }))
     }
 }
 

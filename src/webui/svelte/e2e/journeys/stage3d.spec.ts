@@ -13,7 +13,7 @@
 //
 
 import { type Page } from "@playwright/test";
-import { api, expect, synthGdtf, test } from "./harness";
+import { expect, synthGdtf, test, venueScene } from "./harness";
 
 // The venue card's 3D view against the real binary: Plot | 3D in place; a
 // venue that is not the current one drawn from its file with each
@@ -77,9 +77,7 @@ test.describe("3D on the venue card", () => {
     await expect(page.getByTestId("stage3d-mode-preview")).toHaveCount(0);
 
     // Each fixture carries its own (archive, mode) rig, and the store has it.
-    const scene = await api<{
-      fixtures: Record<string, { rig: string | null; mode: string | null }>;
-    }>(project, "/lighting/venues/club/scene");
+    const scene = await venueScene(project, "club");
     expect(scene.fixtures.M.mode).toBe("Mover 16bit");
     expect(scene.fixtures.B1.rig).toBeTruthy();
     expect(scene.fixtures.M.rig).not.toBe(scene.fixtures.B1.rig);
@@ -155,10 +153,8 @@ test.describe("3D on the venue card", () => {
     // Each save answered: the engine has reloaded the venue by then, which
     // a fresh page reads the angle back from.
     const saved = () =>
-      page.waitForResponse(
-        (res) =>
-          res.url().includes("/api/lighting/venues/house") &&
-          res.request().method() === "PUT",
+      page.waitForResponse((res) =>
+        res.url().includes("/player.v1.LightingService/SaveVenue"),
       );
     const set = {
       click: async () => {
