@@ -13,6 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { Code } from "@connectrpc/connect";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Song Deletion", () => {
   test.beforeEach(async ({ page }) => {
@@ -29,19 +32,8 @@ test.describe("Song Deletion", () => {
   });
 
   test("delete calls API", async ({ page }) => {
-    let deleteCalled = false;
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.deleteSong, (req) => ({ name: req.name }));
 
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
@@ -52,17 +44,13 @@ test.describe("Song Deletion", () => {
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Confirm" }).click();
 
-    expect(deleteCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(ConfigService.method.deleteSong).map((c) => c.name))
+      .toEqual(["Test Song Alpha"]);
   });
 
   test("cancelling delete dialog does not call API", async ({ page }) => {
-    let deleteCalled = false;
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-      }
-      await route.continue();
-    });
+    const rpc = await mockRpc(page);
 
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
@@ -72,7 +60,29 @@ test.describe("Song Deletion", () => {
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
 
-    expect(deleteCalled).toBe(false);
+    expect(rpc.calls(ConfigService.method.deleteSong)).toHaveLength(0);
+  });
+
+  test("a delete the player refuses is shown", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    rpc.error(
+      ConfigService.method.deleteSong,
+      Code.FailedPrecondition,
+      "Cannot delete a song that is currently playing",
+    );
+
+    const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
+    await songRow.hover();
+    await songRow.locator(".song-row__delete").click();
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: "Confirm" })
+      .click();
+
+    await expect(page.locator('[role="dialog"]')).toContainText(
+      "Cannot delete a song that is currently playing",
+    );
   });
 });

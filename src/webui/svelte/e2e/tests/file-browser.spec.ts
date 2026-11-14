@@ -13,48 +13,47 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { browseReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 
 test.describe("File Browser", () => {
   // The file browser appears as a modal when browsing for files.
   // We can trigger it from the song browser's "Import from Filesystem" button.
   test.beforeEach(async ({ page }) => {
     // Mock browse API to return test entries
-    await page.route("**/api/browse**", async (route) => {
-      const url = new URL(route.request().url());
-      const path = url.searchParams.get("path") || "/songs";
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          path,
-          root: "/songs",
-          entries: [
-            {
-              name: "subfolder",
-              path: `${path}/subfolder`,
-              type: "directory",
-              is_dir: true,
-            },
-            {
-              name: "track1.wav",
-              path: `${path}/track1.wav`,
-              type: "audio",
-              is_dir: false,
-            },
-            {
-              name: "track2.flac",
-              path: `${path}/track2.flac`,
-              type: "audio",
-              is_dir: false,
-            },
-            {
-              name: "show.light",
-              path: `${path}/show.light`,
-              type: "lighting",
-              is_dir: false,
-            },
-          ],
-        }),
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.browseDirectory, (req) => {
+      const path = req.path || "/songs";
+      return browseReply({
+        path,
+        root: "/songs",
+        entries: [
+          {
+            name: "subfolder",
+            path: `${path}/subfolder`,
+            type: "directory",
+            is_dir: true,
+          },
+          {
+            name: "track1.wav",
+            path: `${path}/track1.wav`,
+            type: "audio",
+            is_dir: false,
+          },
+          {
+            name: "track2.flac",
+            path: `${path}/track2.flac`,
+            type: "audio",
+            is_dir: false,
+          },
+          {
+            name: "show.light",
+            path: `${path}/show.light`,
+            type: "lighting",
+            is_dir: false,
+          },
+        ],
       });
     });
 

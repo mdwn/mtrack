@@ -32,6 +32,7 @@ import {
   type NextUp as NextUpMessage,
   type Playback as PlaybackMessage,
   type SubsystemStatus as SubsystemStatusMessage,
+  type Waveform as WaveformMessage,
   type WatchEvent,
 } from "../../gen/player/v1/player_pb";
 import type {
@@ -120,6 +121,15 @@ function ambient(a: AmbientStatus): AmbientState {
     source: (a.source ?? null) as AmbientSource | null,
     show: a.show ?? null,
     state: a.state,
+  };
+}
+
+/** A waveform message (the `Watch` event's, and `GetSongWaveform`'s answer)
+ *  in the shape the song pages hold. */
+export function mapWaveform(w: WaveformMessage): Waveform {
+  return {
+    song_name: w.songName,
+    tracks: w.tracks.map((t) => ({ name: t.name, peaks: [...t.peaks] })),
   };
 }
 
@@ -291,16 +301,7 @@ export function mapWatchEvent(event: WatchEvent): WatchMessage | null {
         })),
       };
     case "waveform":
-      return {
-        type: "waveform",
-        waveform: {
-          song_name: e.value.songName,
-          tracks: e.value.tracks.map((t) => ({
-            name: t.name,
-            peaks: [...t.peaks],
-          })),
-        },
-      };
+      return { type: "waveform", waveform: mapWaveform(e.value) };
     case "configChanged":
       return { type: "config_changed" };
     case "reload":

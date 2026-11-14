@@ -93,20 +93,6 @@ impl WebUiState {
     pub fn songs_path(&self) -> PathBuf {
         canonicalize_or_keep(self.song_sources().songs)
     }
-
-    /// Canonicalized path to the playlists directory, from the player's
-    /// song sources.
-    pub fn playlists_dir(&self) -> Option<PathBuf> {
-        self.song_sources().playlists_dir.map(canonicalize_or_keep)
-    }
-
-    /// Canonicalized path to the legacy playlist file, if one is
-    /// configured, from the player's song sources.
-    pub fn legacy_playlist_path(&self) -> Option<PathBuf> {
-        self.song_sources()
-            .legacy_playlist
-            .map(canonicalize_or_keep)
-    }
 }
 
 /// Canonicalizes a path, falling back to the original if canonicalization fails
@@ -616,7 +602,8 @@ mod test {
     /// player is locked, a read reaches its handler (which has no profiles
     /// directory to read), and the REST routes it replaced (the sample and
     /// metronome saves, the profile files, the device lists, the audio probe,
-    /// the calibration and the controller restart) are gone.
+    /// the calibration, the controller restart and the song config, file,
+    /// waveform, tempo, browse and import calls) are gone.
     #[tokio::test]
     async fn config_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -711,6 +698,17 @@ mod test {
             ("POST", "/api/calibrate/stop"),
             ("DELETE", "/api/calibrate"),
             ("POST", "/api/controllers/restart"),
+            ("GET", "/api/songs/Song A"),
+            ("POST", "/api/songs/Song A"),
+            ("PUT", "/api/songs/Song A"),
+            ("DELETE", "/api/songs/Song A"),
+            ("GET", "/api/songs/Song A/waveform"),
+            ("GET", "/api/songs/Song A/tempo-guess"),
+            ("GET", "/api/songs/Song A/files"),
+            ("POST", "/api/songs/Song A/import"),
+            ("GET", "/api/browse"),
+            ("POST", "/api/browse/create-song"),
+            ("POST", "/api/browse/bulk-import"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

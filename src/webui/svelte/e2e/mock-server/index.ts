@@ -16,14 +16,11 @@ import type { saveVenue } from "../../src/lib/api/config";
 import type {
   FixtureTypeSaved,
   AimPoints,
-  Browse,
-  BulkImport,
   FixtureTypeDeleted,
   LightingGroups,
   LightingValidation,
   MvrKept,
   SampleUploaded,
-  SongFiles,
   MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeEntry,
@@ -63,6 +60,9 @@ import {
   TEST_RIG,
   TEST_SCENERY,
   WAVEFORM_DATA,
+  songConfigYaml,
+  songWaveform,
+  SONG_FILES,
   LOG_LINES,
   MVR_INSPECTION,
   MVR_EXPORT_SUMMARY,
@@ -71,21 +71,39 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code } from "@connectrpc/connect";
 import {
   AddProfileRequestSchema,
+  BrowseDirectoryRequestSchema,
+  BrowseDirectoryResponseSchema,
+  BulkImportSongsRequestSchema,
+  BulkImportSongsResponseSchema,
   CalibrationNoiseFloorSchema,
   CalibrationResultSchema,
   CancelCalibrationResponseSchema,
   CaptureCalibrationResponseSchema,
+  CreateSongInDirectoryRequestSchema,
+  CreateSongInDirectoryResponseSchema,
+  CreateSongRequestSchema,
+  CreateSongResponseSchema,
   DeletePlaylistRequestSchema,
   DeletePlaylistResponseSchema,
   DeleteProfileFileRequestSchema,
+  DeleteSongRequestSchema,
+  DeleteSongResponseSchema,
   GetConfigResponseSchema,
   GetPlaylistRequestSchema,
   GetPlaylistResponseSchema,
   GetProfileFileResponseSchema,
+  GetSongConfigRequestSchema,
+  GetSongConfigResponseSchema,
+  GetSongWaveformRequestSchema,
+  GuessSongTempoRequestSchema,
+  ImportSongFileRequestSchema,
+  ImportSongFileResponseSchema,
   ListAudioDevicesResponseSchema,
   ListMidiDevicesResponseSchema,
   ListPlaylistsResponseSchema,
   ListProfileFilesResponseSchema,
+  ListSongFilesRequestSchema,
+  ListSongFilesResponseSchema,
   ListSongsResponseSchema,
   ProbeAudioDeviceRequestSchema,
   ProbeAudioDeviceResponseSchema,
@@ -94,6 +112,8 @@ import {
   RestartControllersResponseSchema,
   SavePlaylistRequestSchema,
   SaveProfileFileRequestSchema,
+  SaveSongConfigRequestSchema,
+  SaveSongConfigResponseSchema,
   SetLockRequestSchema,
   SetLockResponseSchema,
   SwitchToPlaylistResponseSchema,
@@ -101,6 +121,7 @@ import {
   UpdateMetronomeRequestSchema,
   UpdateProfileRequestSchema,
   UpdateSamplesRequestSchema,
+  WaveformSchema,
 } from "../../src/gen/player/v1/player_pb.js";
 import {
   errorHeaders,
@@ -108,8 +129,15 @@ import {
   unaryBody,
 } from "../support/grpc-web.js";
 import {
+  browseReply,
+  bulkImportReply,
   calibrationReply,
+  createInDirectoryReply,
+  createSongReply,
   getConfigReply,
+  getSongConfigReply,
+  importSongFileReply,
+  listSongFilesReply,
   getProfileFileReply,
   listAudioDevicesReply,
   listMidiDevicesReply,
@@ -119,6 +147,7 @@ import {
   profileFileSavedReply,
   restartControllersReply,
   savedReply,
+  waveformReply,
 } from "../support/config-rpc.js";
 import {
   getPlaylistReply,
@@ -264,74 +293,95 @@ grpcUnary("RemoveProfile", (request) => {
 
 // --- Songs ---
 
-app.get("/api/songs/:name", (req, res) => {
-  const song = SONGS.songs.find((s) => s.name === req.params.name);
-  if (!song)
-    return res
-      .status(404)
-      .json({ error: `unable to find song ${req.params.name}` });
-  let yaml = `name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`;
-  if (song.has_midi) {
-    yaml += `midi_playback:\n  file: song.mid\n  exclude_midi_channels:\n    - 10\n`;
-  }
-  if (song.loop_playback) {
-    yaml += `loop_playback: true\n`;
-  }
-  if (song.sections && song.sections.length > 0) {
-    yaml += `sections:\n`;
-    for (const s of song.sections) {
-      yaml += `  - name: ${s.name}\n    start_measure: ${s.start_measure}\n    end_measure: ${s.end_measure}\n`;
-      // Beat offsets are what make a boundary sub-measure accurate. Omitting
-      // them here made the section editor's clamping paths unreachable from a
-      // test, since a boundary can only invert when the beats are in play.
-      if (s.start_beat !== undefined) {
-        yaml += `    start_beat: ${s.start_beat}\n`;
-      }
-      if (s.end_beat !== undefined) {
-        yaml += `    end_beat: ${s.end_beat}\n`;
-      }
-    }
-  }
-  if (song.lighting_files && song.lighting_files.length > 0) {
-    yaml += `lighting:\n`;
-    for (const f of song.lighting_files) {
-      yaml += `  - file: ${f}\n`;
-    }
-  }
-  res.type("text/yaml").send(yaml);
-});
+grpcUnary(
+  "GetSongConfig",
+  (request) => {
+    const { name } = fromBinary(GetSongConfigRequestSchema, request);
+    const song = SONGS.songs.find((s) => s.name === name);
+    if (!song)
+      throw new GrpcFailure(Code.NotFound, `unable to find song ${name}`);
+    return toBinary(
+      GetSongConfigResponseSchema,
+      create(
+        GetSongConfigResponseSchema,
+        getSongConfigReply(songConfigYaml(song)),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
-app.post("/api/songs/:name", (_req, res) => {
-  res.json({ status: "created" });
-});
+// A create, a save, a delete and an import change nothing here: the fixtures
+// are fixed, as the REST routes they replace were.
+grpcUnary(
+  "CreateSong",
+  (request) => {
+    const { name } = fromBinary(CreateSongRequestSchema, request);
+    return toBinary(
+      CreateSongResponseSchema,
+      create(CreateSongResponseSchema, createSongReply(name)),
+    );
+  },
+  "ConfigService",
+);
 
-app.put("/api/songs/:name", (_req, res) => {
-  res.json({ status: "updated" });
-});
+grpcUnary(
+  "SaveSongConfig",
+  (request) => {
+    fromBinary(SaveSongConfigRequestSchema, request);
+    return toBinary(
+      SaveSongConfigResponseSchema,
+      create(SaveSongConfigResponseSchema, {}),
+    );
+  },
+  "ConfigService",
+);
 
-app.delete("/api/songs/:name", (_req, res) => {
-  res.json({ status: "deleted" });
-});
+grpcUnary(
+  "DeleteSong",
+  (request) => {
+    const { name } = fromBinary(DeleteSongRequestSchema, request);
+    return toBinary(
+      DeleteSongResponseSchema,
+      create(DeleteSongResponseSchema, { name }),
+    );
+  },
+  "ConfigService",
+);
 
-app.get("/api/songs/:name/waveform", (req, res) => {
-  res.json({
-    song_name: req.params.name,
-    tracks: [
-      { name: "kick", peaks: [0.5, 0.8, 0.3, 0.9, 0.2] },
-      { name: "snare", peaks: [0.1, 0.4, 0.7, 0.2, 0.6] },
-    ],
-  });
-});
+grpcUnary(
+  "GetSongWaveform",
+  (request) => {
+    const { name } = fromBinary(GetSongWaveformRequestSchema, request);
+    return toBinary(
+      WaveformSchema,
+      create(WaveformSchema, waveformReply(songWaveform(name))),
+    );
+  },
+  "ConfigService",
+);
 
-app.get("/api/songs/:name/files", (_req, res) => {
-  res.json({
-    files: [
-      { name: "kick.wav", type: "audio" },
-      { name: "snare.wav", type: "audio" },
-      { name: "bass.wav", type: "audio" },
-    ],
-  } satisfies SongFiles);
-});
+// No song here has a MIDI file or a beat grid to guess from.
+grpcUnary(
+  "GuessSongTempo",
+  (request) => {
+    fromBinary(GuessSongTempoRequestSchema, request);
+    throw new GrpcFailure(Code.NotFound, "Song has no MIDI file or beat grid");
+  },
+  "ConfigService",
+);
+
+grpcUnary(
+  "ListSongFiles",
+  (request) => {
+    fromBinary(ListSongFilesRequestSchema, request);
+    return toBinary(
+      ListSongFilesResponseSchema,
+      create(ListSongFilesResponseSchema, listSongFilesReply(SONG_FILES)),
+    );
+  },
+  "ConfigService",
+);
 
 app.put("/api/songs/:name/tracks/:filename", (_req, res) => {
   res.json({ status: "uploaded" });
@@ -341,9 +391,26 @@ app.post("/api/songs/:name/tracks", (_req, res) => {
   res.json({ status: "uploaded" });
 });
 
-app.post("/api/songs/:name/import", (_req, res) => {
-  res.json({ status: "imported" });
-});
+grpcUnary(
+  "ImportSongFile",
+  (request) => {
+    const { name, path, filename } = fromBinary(
+      ImportSongFileRequestSchema,
+      request,
+    );
+    return toBinary(
+      ImportSongFileResponseSchema,
+      create(
+        ImportSongFileResponseSchema,
+        importSongFileReply({
+          file: filename ?? path.split("/").pop() ?? path,
+          song: name,
+        }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
 // --- Devices, the audio probe and the controller restart: ConfigService ---
 
@@ -1172,17 +1239,56 @@ app.delete("/api/lighting/:name", (_req, res) => {
 
 // --- Browse ---
 
-app.get("/api/browse", (_req, res) => {
-  res.json({ path: "/songs", root: "/songs", entries: [] } satisfies Browse);
-});
+grpcUnary(
+  "BrowseDirectory",
+  (request) => {
+    fromBinary(BrowseDirectoryRequestSchema, request);
+    return toBinary(
+      BrowseDirectoryResponseSchema,
+      create(
+        BrowseDirectoryResponseSchema,
+        browseReply({ path: "/songs", root: "/songs", entries: [] }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
-app.post("/api/browse/create-song", (_req, res) => {
-  res.json({ status: "created" });
-});
+grpcUnary(
+  "CreateSongInDirectory",
+  (request) => {
+    const { path, name } = fromBinary(
+      CreateSongInDirectoryRequestSchema,
+      request,
+    );
+    return toBinary(
+      CreateSongInDirectoryResponseSchema,
+      create(
+        CreateSongInDirectoryResponseSchema,
+        createInDirectoryReply({
+          path: `${path}/song.yaml`,
+          song: name ?? path.split("/").pop() ?? path,
+        }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
-app.post("/api/browse/bulk-import", (_req, res) => {
-  res.json({ created: [], skipped: [], failed: [] } satisfies BulkImport);
-});
+grpcUnary(
+  "BulkImportSongs",
+  (request) => {
+    fromBinary(BulkImportSongsRequestSchema, request);
+    return toBinary(
+      BulkImportSongsResponseSchema,
+      create(
+        BulkImportSongsResponseSchema,
+        bulkImportReply({ created: [], skipped: [], failed: [] }),
+      ),
+    );
+  },
+  "ConfigService",
+);
 
 // --- Calibration: ConfigService ---
 

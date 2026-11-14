@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Song Detail - Tracks Tab", () => {
   test.beforeEach(async ({ page }) => {
@@ -75,13 +77,14 @@ test.describe("Song Detail - Config Tab", () => {
     await editor.click();
     await editor.pressSequentially("\n# test");
 
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/songs/Test%20Song%20Alpha") &&
-        req.method() === "PUT",
-    );
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.saveSongConfig, {});
     await page.getByRole("button", { name: "Save" }).click();
-    await requestPromise;
+    await expect
+      .poll(() =>
+        rpc.calls(ConfigService.method.saveSongConfig).map((c) => c.name),
+      )
+      .toEqual(["Test Song Alpha"]);
   });
 });
 

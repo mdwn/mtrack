@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { sendWatchRetrying } from "../support/watch";
 import { PLAYBACK_STATE, SONGS } from "../mock-server/test-data";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { serveSongConfig } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
 
@@ -234,10 +235,8 @@ const HINTS = [
 ];
 
 async function openTimeline(page: Page, yaml: string, wsId?: string) {
-  await page.route(`**/api/songs/${SONG_ENC}`, async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({ status: 200, contentType: "text/yaml", body: yaml });
-  });
+  const rpc = await mockRpc(page);
+  serveSongConfig(rpc, SONG, yaml);
   const data = structuredClone(SONGS);
   for (const song of data.songs) {
     if (song.name === SONG) {
@@ -246,7 +245,6 @@ async function openTimeline(page: Page, yaml: string, wsId?: string) {
       song.duration_display = "0:34";
     }
   }
-  const rpc = await mockRpc(page);
   rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
   await page.goto(
     wsId

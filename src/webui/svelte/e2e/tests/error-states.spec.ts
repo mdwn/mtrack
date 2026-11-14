@@ -118,7 +118,9 @@ test.describe("Error States", () => {
     );
 
     await page.goto("/#/songs/NonExistentSong");
-    // Should show some kind of error or empty state
-    await expect(page.getByText(/failed to fetch song/i)).toBeVisible();
+    // The player's own answer is what the page says.
+    await expect(
+      page.getByText(/unable to find song NonExistentSong/i),
+    ).toBeVisible();
   });
 });

@@ -757,6 +757,17 @@ mod tests {
             "StopCalibration",
             "CancelCalibration",
             "RestartControllers",
+            "GetSongConfig",
+            "CreateSong",
+            "SaveSongConfig",
+            "DeleteSong",
+            "GetSongWaveform",
+            "GuessSongTempo",
+            "ListSongFiles",
+            "ImportSongFile",
+            "BrowseDirectory",
+            "CreateSongInDirectory",
+            "BulkImportSongs",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }

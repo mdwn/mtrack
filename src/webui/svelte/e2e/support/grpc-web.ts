@@ -63,12 +63,15 @@ export function unaryBody(message: Uint8Array): Uint8Array {
 
 /** The headers of a call that failed with `code` (a gRPC status code, 1 to
  *  16) and `message`: the status is in the headers and the body is empty. The
- *  message is percent encoded, as `grpc-message` is. */
+ *  message is percent encoded, as `grpc-message` is. `metadata` is the
+ *  status's own metadata (`x-current-version`), sent as headers. */
 export function errorHeaders(
   code: number,
   message: string,
+  metadata?: HeadersInit,
 ): Record<string, string> {
   return {
+    ...Object.fromEntries(new Headers(metadata)),
     "content-type": "application/grpc-web+proto",
     "grpc-status": String(code),
     "grpc-message": encodeURIComponent(message),

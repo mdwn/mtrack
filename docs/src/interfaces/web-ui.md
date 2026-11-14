@@ -797,8 +797,9 @@ configuration changes from the web UI.
 The web UI exposes a comprehensive REST API for all management operations. Playback control
 uses gRPC-Web (PlayerService), and so do the playlists, the song list, the lock toggle and the
 config store with its profiles (see [gRPC](grpc.md)), and the samples, the metronome defaults, the
-profile files, the device lists, the audio device test, the trigger calibration and the controller
-restart, which are `ConfigService` calls; and so does everything the page watches: the `Watch` stream
+profile files, the device lists, the audio device test, the trigger calibration, the controller
+restart, and a song's config, files, waveform and tempo guess with the browsing and importing of
+songs, which are `ConfigService` calls; and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no

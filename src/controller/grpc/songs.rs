@@ -982,8 +982,8 @@ pub(super) async fn update(
                     .await
                     .map_err(|e| Status::internal(format!("checking the song failed: {e}")))??;
             }
-            if let Err(response) = songs_api::save_song(player, &root, &name, updated).await {
-                return Err(super::playlists::status_of(response).await);
+            if let Err(e) = songs_api::save_song(player, &root, &name, updated).await {
+                return Err(super::playlists::status_of_answer(e.into()));
             }
             player.reload_songs().await.map_err(|e| {
                 Status::internal(format!(

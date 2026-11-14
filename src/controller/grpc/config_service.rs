@@ -394,6 +394,105 @@ impl ConfigService for ConfigServer {
                 .collect(),
         }))
     }
+
+    async fn get_song_config(
+        &self,
+        request: Request<proto::GetSongConfigRequest>,
+    ) -> Result<Response<proto::GetSongConfigResponse>, Status> {
+        super::config_songs::get_config(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn create_song(
+        &self,
+        request: Request<proto::CreateSongRequest>,
+    ) -> Result<Response<proto::CreateSongResponse>, Status> {
+        super::config_songs::create(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn save_song_config(
+        &self,
+        request: Request<proto::SaveSongConfigRequest>,
+    ) -> Result<Response<proto::SaveSongConfigResponse>, Status> {
+        super::config_songs::save(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn delete_song(
+        &self,
+        request: Request<proto::DeleteSongRequest>,
+    ) -> Result<Response<proto::DeleteSongResponse>, Status> {
+        super::config_songs::delete(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_song_waveform(
+        &self,
+        request: Request<proto::GetSongWaveformRequest>,
+    ) -> Result<Response<proto::Waveform>, Status> {
+        super::config_songs::waveform(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn guess_song_tempo(
+        &self,
+        request: Request<proto::GuessSongTempoRequest>,
+    ) -> Result<Response<proto::GuessSongTempoResponse>, Status> {
+        super::config_songs::guess_tempo(&self.player, request.into_inner()).map(Response::new)
+    }
+
+    async fn list_song_files(
+        &self,
+        request: Request<proto::ListSongFilesRequest>,
+    ) -> Result<Response<proto::ListSongFilesResponse>, Status> {
+        super::config_songs::list_files(&self.player, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn import_song_file(
+        &self,
+        request: Request<proto::ImportSongFileRequest>,
+    ) -> Result<Response<proto::ImportSongFileResponse>, Status> {
+        let store = self.store()?;
+        super::config_songs::import_file(&self.player, store.path(), request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn browse_directory(
+        &self,
+        request: Request<proto::BrowseDirectoryRequest>,
+    ) -> Result<Response<proto::BrowseDirectoryResponse>, Status> {
+        let store = self.store()?;
+        super::config_songs::browse_directory(store.path(), request.into_inner()).map(Response::new)
+    }
+
+    async fn create_song_in_directory(
+        &self,
+        request: Request<proto::CreateSongInDirectoryRequest>,
+    ) -> Result<Response<proto::CreateSongInDirectoryResponse>, Status> {
+        let store = self.store()?;
+        super::config_songs::create_in_directory(&self.player, store.path(), request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn bulk_import_songs(
+        &self,
+        request: Request<proto::BulkImportSongsRequest>,
+    ) -> Result<Response<proto::BulkImportSongsResponse>, Status> {
+        let store = self.store()?;
+        super::config_songs::bulk_import(&self.player, store.path(), request.into_inner())
+            .await
+            .map(Response::new)
+    }
 }
 
 /// A refusal of a device, calibration or restart call as a status: a request

@@ -13,40 +13,45 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { Code } from "@connectrpc/connect";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import {
+  browseReply,
+  bulkImportReply,
+  createInDirectoryReply,
+} from "../support/config-rpc";
+import { mockRpc, type RpcMock } from "../support/rpc";
 
 test.describe("Song Import Flow", () => {
+  let rpc: RpcMock;
   test.beforeEach(async ({ page }) => {
     // Mock browse API to return directories with songs
-    await page.route("**/api/browse**", async (route) => {
-      const url = new URL(route.request().url());
-      const path = url.searchParams.get("path") || "/songs";
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          path,
-          root: "/songs",
-          entries: [
-            {
-              name: "New Song Folder",
-              path: `${path}/New Song Folder`,
-              type: "directory",
-              is_dir: true,
-            },
-            {
-              name: "Another Song",
-              path: `${path}/Another Song`,
-              type: "directory",
-              is_dir: true,
-            },
-            {
-              name: "kick.wav",
-              path: `${path}/kick.wav`,
-              type: "audio",
-              is_dir: false,
-            },
-          ],
-        }),
+    rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.browseDirectory, (req) => {
+      const path = req.path || "/songs";
+      return browseReply({
+        path,
+        root: "/songs",
+        entries: [
+          {
+            name: "New Song Folder",
+            path: `${path}/New Song Folder`,
+            type: "directory",
+            is_dir: true,
+          },
+          {
+            name: "Another Song",
+            path: `${path}/Another Song`,
+            type: "directory",
+            is_dir: true,
+          },
+          {
+            name: "kick.wav",
+            path: `${path}/kick.wav`,
+            type: "audio",
+            is_dir: false,
+          },
+        ],
       });
     });
 
@@ -72,17 +77,14 @@ test.describe("Song Import Flow", () => {
   });
 
   test("bulk import calls API and shows results", async ({ page }) => {
-    await page.route("**/api/browse/bulk-import", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          created: ["New Song Folder", "Another Song"],
-          skipped: [],
-          failed: [],
-        }),
-      });
-    });
+    rpc.unary(
+      ConfigService.method.bulkImportSongs,
+      bulkImportReply({
+        created: ["New Song Folder", "Another Song"],
+        skipped: [],
+        failed: [],
+      }),
+    );
 
     await page.getByRole("button", { name: /import from filesystem/i }).click();
     await expect(page.locator(".browser")).toBeVisible();
@@ -102,13 +104,10 @@ test.describe("Song Import Flow", () => {
   });
 
   test("create song in directory calls API", async ({ page }) => {
-    await page.route("**/api/browse/create-song", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "created" }),
-      });
-    });
+    rpc.unary(
+      ConfigService.method.createSongInDirectory,
+      createInDirectoryReply({ song: "New Song Folder" }),
+    );
 
     // Try the New Song button which may open a browser or prompt
     const newSongBtn = page.getByRole("button", { name: /new song/i });
@@ -123,23 +122,34 @@ test.describe("Song Import Flow", () => {
   });
 
   // #674: a name another song has already, as the pre-filled folder name
-  // may be, is refused with a 409 that says which.
+  // may be, is refused as already existing, with the name it is.
   test("a taken song name shows the server's refusal", async ({ page }) => {
-    await page.route("**/api/browse/create-song", async (route) => {
-      await route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: 'a song named "songs" already exists; choose another name',
-          taken: "songs",
-        }),
-      });
-    });
+    rpc.error(
+      ConfigService.method.createSongInDirectory,
+      Code.AlreadyExists,
+      'a song named "songs" already exists; choose another name',
+      { "x-taken-name-bin": btoa("songs") },
+    );
     await page.getByRole("button", { name: /import from filesystem/i }).click();
     await page.getByRole("button", { name: "Use This Directory" }).click();
     await page.getByRole("button", { name: "Create Song" }).click();
     await expect(page.locator(".error-msg")).toHaveText(
       'A song named "songs" already exists; choose another name',
     );
+    expect(rpc.calls(ConfigService.method.createSongInDirectory)).toEqual([
+      expect.objectContaining({ path: "/songs", name: "songs" }),
+    ]);
+  });
+
+  test("a folder that has a config shows that it does", async ({ page }) => {
+    rpc.error(
+      ConfigService.method.createSongInDirectory,
+      Code.AlreadyExists,
+      "a song config already exists in this directory",
+    );
+    await page.getByRole("button", { name: /import from filesystem/i }).click();
+    await page.getByRole("button", { name: "Use This Directory" }).click();
+    await page.getByRole("button", { name: "Create Song" }).click();
+    await expect(page.locator(".error-msg")).toContainText("already exists");
   });
 });

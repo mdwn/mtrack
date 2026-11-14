@@ -29,9 +29,11 @@ import type {
   Readiness,
   RigModel,
   SceneryModel,
+  SongFile,
   SongList,
   Status,
   StoreSnapshot,
+  Waveform,
 } from "../../src/gen/rules/mtrack_rules";
 import type {
   StageMetadataMessage,
@@ -937,3 +939,55 @@ export const MVR_EXPORT_SUMMARY: MvrExportSummary = {
   ],
   warnings: [],
 };
+
+/** A song's config file as the mock serves it, made from the song list's
+ *  fixture. */
+export function songConfigYaml(song: (typeof SONGS.songs)[number]): string {
+  let yaml = `name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`;
+  if (song.has_midi) {
+    yaml += `midi_playback:\n  file: song.mid\n  exclude_midi_channels:\n    - 10\n`;
+  }
+  if (song.loop_playback) {
+    yaml += `loop_playback: true\n`;
+  }
+  if (song.sections && song.sections.length > 0) {
+    yaml += `sections:\n`;
+    for (const s of song.sections) {
+      yaml += `  - name: ${s.name}\n    start_measure: ${s.start_measure}\n    end_measure: ${s.end_measure}\n`;
+      // Beat offsets are what make a boundary sub-measure accurate. Omitting
+      // them here made the section editor's clamping paths unreachable from a
+      // test, since a boundary can only invert when the beats are in play.
+      if (s.start_beat !== undefined) {
+        yaml += `    start_beat: ${s.start_beat}\n`;
+      }
+      if (s.end_beat !== undefined) {
+        yaml += `    end_beat: ${s.end_beat}\n`;
+      }
+    }
+  }
+  if (song.lighting_files && song.lighting_files.length > 0) {
+    yaml += `lighting:\n`;
+    for (const f of song.lighting_files) {
+      yaml += `  - file: ${f}\n`;
+    }
+  }
+  return yaml;
+}
+
+/** A song's waveform as the mock serves it. */
+export function songWaveform(name: string): Waveform {
+  return {
+    song_name: name,
+    tracks: [
+      { name: "kick", peaks: [0.5, 0.8, 0.3, 0.9, 0.2] },
+      { name: "snare", peaks: [0.1, 0.4, 0.7, 0.2, 0.6] },
+    ],
+  };
+}
+
+/** The files in any song's folder, as the mock serves them. */
+export const SONG_FILES: SongFile[] = [
+  { name: "kick.wav", type: "audio" },
+  { name: "snare.wav", type: "audio" },
+  { name: "bass.wav", type: "audio" },
+];

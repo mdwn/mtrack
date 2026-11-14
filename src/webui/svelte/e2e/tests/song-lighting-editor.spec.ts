@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Song Lighting Editor - File Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -139,20 +141,11 @@ test.describe("Song Lighting Editor - Save Integration", () => {
 
   test("save writes new files to disk and updates YAML", async ({ page }) => {
     // Set up intercepts before performing actions
-    let savedYaml = "";
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.saveSongConfig, {});
+    const savedYaml = () =>
+      rpc.calls(ConfigService.method.saveSongConfig).at(-1)?.yaml ?? "";
     const putPaths: string[] = [];
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "PUT") {
-        savedYaml = route.request().postData() ?? "";
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "updated" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
     await page.route("**/api/lighting/**", async (route) => {
       if (route.request().method() === "PUT") {
         putPaths.push(new URL(route.request().url()).pathname);
@@ -180,29 +173,20 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     // New file should have been PUT to disk
     expect(putPaths.some((p) => p.includes("extra_show.light"))).toBe(true);
     // Saved YAML should contain both lighting entries
-    expect(savedYaml).toContain("lighting:");
-    expect(savedYaml).toContain("show.light");
-    expect(savedYaml).toContain("extra_show.light");
+    expect(savedYaml()).toContain("lighting:");
+    expect(savedYaml()).toContain("show.light");
+    expect(savedYaml()).toContain("extra_show.light");
   });
 
   test("save deletes removed files from disk and cleans up YAML", async ({
     page,
   }) => {
     // Set up intercepts before performing actions
-    let savedYaml = "";
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.saveSongConfig, {});
+    const savedYaml = () =>
+      rpc.calls(ConfigService.method.saveSongConfig).at(-1)?.yaml ?? "";
     let deleteCalled = false;
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "PUT") {
-        savedYaml = route.request().postData() ?? "";
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "updated" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
     await page.route("**/api/lighting/show.light", async (route) => {
       if (route.request().method() === "DELETE") {
         deleteCalled = true;
@@ -230,7 +214,7 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     // DELETE should have been called during save
     expect(deleteCalled).toBe(true);
     // Saved YAML should NOT contain lighting key
-    expect(savedYaml).not.toContain("lighting:");
+    expect(savedYaml()).not.toContain("lighting:");
   });
 });
 

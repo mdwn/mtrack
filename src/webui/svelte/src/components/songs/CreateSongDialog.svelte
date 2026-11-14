@@ -16,6 +16,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { createSong } from "../../lib/api/songs";
+  import { ApiError } from "../../lib/api/rest";
 
   interface Props {
     oncreated: (name: string) => void;
@@ -39,18 +40,13 @@
     error = "";
     try {
       const yaml = `name: "${songName}"\ntracks: []\n`;
-      const res = await createSong(trimmed, yaml);
-      if (res.status === 409) {
+      await createSong(trimmed, yaml);
+      oncreated(songName);
+    } catch (e) {
+      if (e instanceof ApiError && e.kind === "exists") {
         error = get(t)("songs.create.alreadyExists");
         return;
       }
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        error = data?.error ?? `Failed to create song (${res.status})`;
-        return;
-      }
-      oncreated(songName);
-    } catch (e) {
       error = e instanceof Error ? e.message : get(t)("songs.create.failed");
     } finally {
       saving = false;

@@ -18,7 +18,11 @@
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import { serveSongConfig } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
 
@@ -78,17 +82,9 @@ async function routes(
   yaml = SONG_YAML,
   patchSong?: (song: (typeof SONGS)["songs"][number]) => void,
 ) {
-  await page.route(`**/api/songs/${ENC}`, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.fulfill({ status: 200, body: "{}" });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "text/yaml",
-      body: yaml,
-    });
-  });
+  const rpc = await mockRpc(page);
+  serveSongConfig(rpc, SONG, yaml);
+  rpc.unary(ConfigService.method.saveSongConfig, {});
   const data = structuredClone(SONGS) as typeof SONGS;
   for (const s of data.songs) {
     if (s.name === SONG) {
@@ -98,7 +94,6 @@ async function routes(
       patchSong?.(s);
     }
   }
-  const rpc = await mockRpc(page);
   rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
 }
 

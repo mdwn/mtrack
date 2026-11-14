@@ -641,13 +641,7 @@
       // new name (#680), where the next save or delete goes.
       let savedName: string | null = null;
       if (configDirty) {
-        const res = await updateSong(songName, editedYaml);
-        if (!res.ok) {
-          const data = await res.json().catch(() => null);
-          saveMsg =
-            data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
-          return;
-        }
+        await updateSong(songName, editedYaml);
         savedName = declaredName(editedYaml);
         rawYaml = editedYaml;
       }

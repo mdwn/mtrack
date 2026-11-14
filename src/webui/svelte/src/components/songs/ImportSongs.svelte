@@ -19,7 +19,9 @@
     browseDirectory,
     createSongInDirectory,
     bulkImportSongs,
+    SongNameTakenError,
   } from "../../lib/api/songs";
+  import { ApiError } from "../../lib/api/rest";
   import type { BrowseEntry, BulkImport } from "../../gen/rules/mtrack_rules";
   import { breadcrumbs, parentPath } from "../../lib/util/paths";
 
@@ -103,24 +105,21 @@
     creating = true;
     createError = "";
     try {
-      const res = await createSongInDirectory(songDir, songName.trim());
-      if (res.status === 409) {
-        // A name another song has already (#674), else a config there.
-        const data = await res.json().catch(() => null);
-        createError =
-          typeof data?.taken === "string"
-            ? get(t)("songs.import.nameTaken", { values: { name: data.taken } })
-            : get(t)("songs.import.songExists");
-        return;
-      }
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        createError =
-          data?.error ?? data?.errors?.[0] ?? `Failed (${res.status})`;
-        return;
-      }
+      await createSongInDirectory(songDir, songName.trim());
       onimported();
     } catch (e) {
+      if (e instanceof SongNameTakenError) {
+        // A name another song has already (#674).
+        createError = get(t)("songs.import.nameTaken", {
+          values: { name: e.taken },
+        });
+        return;
+      }
+      if (e instanceof ApiError && e.kind === "exists") {
+        // A config there already.
+        createError = get(t)("songs.import.songExists");
+        return;
+      }
       createError =
         e instanceof Error ? e.message : get(t)("songs.create.failed");
     } finally {

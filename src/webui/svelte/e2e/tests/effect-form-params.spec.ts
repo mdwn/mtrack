@@ -141,13 +141,6 @@ test("an edited effect switched to another type keeps its parameters", async ({
       await route.continue();
     }
   });
-  await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-    if (route.request().method() === "PUT") {
-      await route.fulfill({ status: 200, body: "{}" });
-    } else {
-      await route.continue();
-    }
-  });
   await openFirstCue(page);
   const duration = page
     .locator(".param", { hasText: "Duration" })

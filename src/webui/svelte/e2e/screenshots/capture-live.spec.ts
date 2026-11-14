@@ -21,12 +21,13 @@
 // Picks songs/playlists dynamically from the player's ListSongs and ListPlaylists so
 // the spec doesn't bake in operator-specific names.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { mapPlaylistList, mapSongList } from "../../src/lib/grpc/library";
-import { playerClientAt } from "../support/player-client";
+import { configClientAt, playerClientAt } from "../support/player-client";
+import { FileKind } from "../../src/gen/player/v1/player_pb";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,17 +60,14 @@ interface PlaylistSummary {
   reserved?: boolean;
 }
 
-async function fetchJson<T>(page: Page, urlPath: string): Promise<T> {
-  const res = await page.request.get(urlPath);
-  if (!res.ok()) {
-    throw new Error(`GET ${urlPath} → ${res.status()}`);
-  }
-  return (await res.json()) as T;
-}
-
 /** The player's gRPC service, on the server the shots are of. */
 function player() {
   return playerClientAt(process.env.MTRACK_URL ?? "http://localhost:8080");
+}
+
+/** The editor service of the same server. */
+function config() {
+  return configClientAt(process.env.MTRACK_URL ?? "http://localhost:8080");
 }
 
 async function pickSong(
@@ -189,7 +187,7 @@ test("bulk-import-result", async ({ page }) => {
   // Override the parent path with MTRACK_IMPORT_PATH if the auto-pick
   // doesn't produce a representative result.
   const importPath =
-    process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent(page));
+    process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent());
 
   // Bulk import is a config change, and a live player starts locked
   // (the server answers 423 while locked). Unlock for the shot, and
@@ -225,30 +223,16 @@ test("bulk-import-result", async ({ page }) => {
   }
 });
 
-interface BrowseEntry {
-  name: string;
-  path: string;
-  type: string;
-}
-
-interface BrowseResponse {
-  entries: BrowseEntry[];
-  path: string;
-}
-
 // Find the first directory (under /) whose children are themselves
 // directories — that's typically a parent-of-songs (artist/album/song
 // layout). Falls back to "/" if nothing better is found.
-async function pickImportParent(page: Page): Promise<string> {
-  const root = await fetchJson<BrowseResponse>(page, "/api/browse?path=/");
+async function pickImportParent(): Promise<string> {
+  const root = await config().browseDirectory({ path: "/" });
   for (const entry of root.entries) {
-    if (entry.type !== "directory") continue;
-    const child = await fetchJson<BrowseResponse>(
-      page,
-      `/api/browse?path=${encodeURIComponent(entry.path)}`,
-    );
+    if (entry.kind !== FileKind.DIRECTORY) continue;
+    const child = await config().browseDirectory({ path: entry.path });
     const subdirCount = child.entries.filter(
-      (e) => e.type === "directory",
+      (e) => e.kind === FileKind.DIRECTORY,
     ).length;
     if (subdirCount >= 3) {
       return entry.path;

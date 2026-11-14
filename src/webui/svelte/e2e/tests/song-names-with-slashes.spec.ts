@@ -14,9 +14,14 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import { getSongConfigReply } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
-import { mockRpc } from "../support/rpc";
+import { mockRpc, type RpcMock } from "../support/rpc";
 
 import type { SongList } from "../../src/gen/rules/mtrack_rules";
 
@@ -31,7 +36,7 @@ const SLASH_SONGS: Record<string, string[]> = {
   "SongB/tracks": ["guitar", "vocals"],
 };
 
-async function routeSlashSongs(page: Page) {
+async function routeSlashSongs(page: Page): Promise<RpcMock> {
   const list = {
     songs: Object.entries(SLASH_SONGS).map(([name, tracks]) => ({
       ...SONGS.songs[0],
@@ -47,29 +52,26 @@ async function routeSlashSongs(page: Page) {
   } satisfies SongList;
   const rpc = await mockRpc(page);
   rpc.unary(PlayerService.method.listSongs, listSongsReply(list));
-  await page.route(
-    (url) =>
-      Object.keys(SLASH_SONGS).some(
-        (name) => url.pathname === `/api/songs/${encodeURIComponent(name)}`,
-      ),
-    (route) => {
-      const encoded = new URL(route.request().url()).pathname.split("/").pop();
-      const name = decodeURIComponent(encoded ?? "");
-      const tracks = SLASH_SONGS[name]
-        .map((track) => `  - name: ${track}\n    file: ${track}.wav\n`)
-        .join("");
-      return route.fulfill({
-        status: 200,
-        contentType: "text/yaml",
-        body: `name: ${name}\ntracks:\n${tracks}`,
-      });
-    },
-  );
+  // The name is the call's own field, whole: no address to encode it into.
+  rpc.unary(ConfigService.method.getSongConfig, (req) => {
+    const tracks = SLASH_SONGS[req.name];
+    if (!tracks) {
+      throw new ConnectError(`unable to find song ${req.name}`, Code.NotFound);
+    }
+    return getSongConfigReply(
+      `name: ${req.name}\ntracks:\n` +
+        tracks
+          .map((track) => `  - name: ${track}\n    file: ${track}.wav\n`)
+          .join(""),
+    );
+  });
+  return rpc;
 }
 
 test.describe("Song names with a slash", () => {
+  let rpc: RpcMock;
   test.beforeEach(async ({ page }) => {
-    await routeSlashSongs(page);
+    rpc = await routeSlashSongs(page);
   });
 
   for (const [name, tracks] of Object.entries(SLASH_SONGS)) {
@@ -83,6 +85,10 @@ test.describe("Song names with a slash", () => {
         tracks.length,
       );
       await expect(page).toHaveTitle(new RegExp(`^Songs - ${name} - `));
+      // The config is asked for by the whole name.
+      expect(
+        rpc.calls(ConfigService.method.getSongConfig).map((c) => c.name),
+      ).toContain(name);
     });
 
     test(`${name}'s tabs stay on ${name}`, async ({ page }) => {

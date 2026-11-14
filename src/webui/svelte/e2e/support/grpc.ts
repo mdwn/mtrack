@@ -23,6 +23,9 @@ import { ConnectError, Code } from "@connectrpc/connect";
 import {
   AUDIO_DEVICES,
   CONFIG_STORE,
+  SONG_FILES,
+  songConfigYaml,
+  songWaveform,
   MIDI_DEVICES,
   PROFILE_FILE_DETAIL,
   PROFILE_FILES,
@@ -33,9 +36,12 @@ import {
 import {
   getConfigReply,
   getProfileFileReply,
+  getSongConfigReply,
   listAudioDevicesReply,
   listMidiDevicesReply,
   listProfileFilesReply,
+  listSongFilesReply,
+  waveformReply,
 } from "./config-rpc";
 import {
   getPlaylistReply,
@@ -47,7 +53,8 @@ import { mockRpc, type GrpcReply } from "./rpc";
 export type { GrpcReply };
 
 /** The calls a page makes to read the song library, the playlists, the
- *  config, the profile files and the device lists. A spec that stubs the transport controls still needs the pages to
+ *  config, the profile files, the device lists and a song's config, waveform
+ *  and files. A spec that stubs the transport controls still needs the pages to
  *  have their songs, playlists and config, so these are answered as the mock
  *  server answers them, and are not the calls `onCall` counts. */
 const LIBRARY_READS = new Set<string>([
@@ -59,6 +66,9 @@ const LIBRARY_READS = new Set<string>([
   ConfigService.method.getProfileFile.name,
   ConfigService.method.listAudioDevices.name,
   ConfigService.method.listMidiDevices.name,
+  ConfigService.method.getSongConfig.name,
+  ConfigService.method.getSongWaveform.name,
+  ConfigService.method.listSongFiles.name,
 ]);
 
 /** Answers every PlayerService and ConfigService call but the streams (`WatchStage`) with
@@ -94,6 +104,17 @@ export async function stubPlayerService(
     ConfigService.method.listMidiDevices,
     listMidiDevicesReply(MIDI_DEVICES),
   );
+  rpc.unary(ConfigService.method.getSongConfig, (req) => {
+    const song = SONGS.songs.find((s) => s.name === req.name);
+    if (!song) {
+      throw new ConnectError(`unable to find song ${req.name}`, Code.NotFound);
+    }
+    return getSongConfigReply(songConfigYaml(song));
+  });
+  rpc.unary(ConfigService.method.getSongWaveform, (req) =>
+    waveformReply(songWaveform(req.name)),
+  );
+  rpc.unary(ConfigService.method.listSongFiles, listSongFilesReply(SONG_FILES));
   rpc.unary(PlayerService.method.getPlaylist, (req) => {
     const detail = PLAYLIST_DETAILS[req.name];
     if (!detail) throw new ConnectError("Playlist not found", Code.NotFound);

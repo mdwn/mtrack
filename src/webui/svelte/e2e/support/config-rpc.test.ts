@@ -17,12 +17,26 @@
 import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import {
+  BrowseDirectoryResponseSchema,
+  BulkImportSongsResponseSchema,
   GetConfigResponseSchema,
   GetProfileFileResponseSchema,
+  GetSongConfigResponseSchema,
+  GuessSongTempoResponseSchema,
   ListProfileFilesResponseSchema,
+  ListSongFilesResponseSchema,
   ProfileFileSavedSchema,
   UpdateConfigResponseSchema,
+  WaveformSchema,
 } from "../../src/gen/player/v1/player_pb";
+import {
+  mapBrowse,
+  mapBulkImport,
+  mapSongConfig,
+  mapSongFiles,
+  mapTempoGuess,
+} from "../../src/lib/grpc/songs";
+import { mapWaveform } from "../../src/lib/grpc/watch";
 import {
   mapConfigSaved,
   mapConfigStore,
@@ -31,11 +45,17 @@ import {
   mapProfileFiles,
 } from "../../src/lib/grpc/config";
 import {
+  browseReply,
+  bulkImportReply,
   getConfigReply,
   getProfileFileReply,
+  getSongConfigReply,
   listProfileFilesReply,
+  listSongFilesReply,
   profileFileSavedReply,
   savedReply,
+  tempoGuessReply,
+  waveformReply,
 } from "./config-rpc";
 
 describe("answers made from the page's own shapes", () => {
@@ -152,5 +172,100 @@ describe("answers made from the profile files' own shapes", () => {
         ),
       ),
     ).toEqual({ status: "deleted", filename: "a", ...reload });
+  });
+
+  it("a tempo guess reads back as it was", () => {
+    const guess = {
+      source: "midi" as const,
+      tempo: {
+        start_seconds: 0.25,
+        bpm: 120,
+        time_signature: [4, 4] as [number, number],
+        alignment_rms_ms: 3.5,
+        changes: [
+          {
+            measure: 5,
+            beat: 2,
+            bpm: 140,
+            time_signature: [6, 8] as [number, number],
+            transition_beats: 4,
+          },
+        ],
+      },
+      config: {
+        bpm: 120,
+        time_signature: "4/4",
+        start: 0.25,
+        changes: [
+          {
+            measure: 5,
+            beat: 2,
+            bpm: 140,
+            time_signature: "6/8",
+            transition: { measures: 2 },
+          },
+        ],
+      },
+    };
+    expect(
+      mapTempoGuess(
+        create(GuessSongTempoResponseSchema, tempoGuessReply(guess)),
+      ),
+    ).toEqual(guess);
+  });
+
+  it("a folder, a file list, a bulk import and a waveform read back as they were", () => {
+    const browse = {
+      path: "/songs",
+      root: "/p",
+      entries: [
+        {
+          name: "A",
+          path: "/songs/A",
+          type: "directory" as const,
+          is_dir: true,
+        },
+        {
+          name: "a.mid",
+          path: "/songs/a.mid",
+          type: "midi" as const,
+          is_dir: false,
+        },
+      ],
+    };
+    expect(
+      mapBrowse(create(BrowseDirectoryResponseSchema, browseReply(browse))),
+    ).toEqual(browse);
+    const files = [
+      { name: "a.wav", type: "audio" as const },
+      { name: "b.light", type: "lighting" as const },
+    ];
+    expect(
+      mapSongFiles(
+        create(ListSongFilesResponseSchema, listSongFilesReply(files)),
+      ),
+    ).toEqual(files);
+    const imported = {
+      created: ["A"],
+      skipped: ["B"],
+      failed: [{ name: "C", error: "x" }],
+    };
+    expect(
+      mapBulkImport(
+        create(BulkImportSongsResponseSchema, bulkImportReply(imported)),
+      ),
+    ).toEqual(imported);
+    const waveform = {
+      song_name: "S",
+      tracks: [{ name: "kick", peaks: [0.5, 1] }],
+    };
+    expect(
+      mapWaveform(create(WaveformSchema, waveformReply(waveform))),
+    ).toEqual(waveform);
+    expect(
+      mapSongConfig(
+        create(GetSongConfigResponseSchema, getSongConfigReply("y")),
+      ),
+    ).toBe("y");
   });
 });

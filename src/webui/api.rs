@@ -111,26 +111,6 @@ pub fn router() -> Router<WebUiState> {
     // All other routes use the default body limit.
     Router::new()
         .route(
-            "/songs/{name}",
-            get(songs_api::get_song)
-                .post(songs_api::post_song)
-                .put(songs_api::put_song)
-                .delete(songs_api::delete_song),
-        )
-        .route("/songs/{name}/waveform", get(songs_api::get_song_waveform))
-        .route(
-            "/songs/{name}/tempo-guess",
-            get(songs_api::get_song_tempo_guess),
-        )
-        .route("/songs/{name}/files", get(songs_api::get_song_files))
-        .route("/songs/{name}/import", post(songs_api::import_file_to_song))
-        .route("/browse", get(browse::browse_directory))
-        .route(
-            "/browse/create-song",
-            post(browse::create_song_in_directory),
-        )
-        .route("/browse/bulk-import", post(browse::bulk_import))
-        .route(
             "/lighting/{name}",
             get(lighting_api::get_lighting_file)
                 .put(lighting_api::put_lighting_file)
@@ -304,7 +284,7 @@ async fn upload_sample_file(
 }
 
 #[cfg(test)]
-pub(super) mod test_helpers {
+pub(crate) mod test_helpers {
     use super::*;
     use http_body_util::BodyExt;
 
@@ -597,7 +577,7 @@ mod test {
         .await;
         assert_eq!(status, StatusCode::LOCKED);
         assert!(!dir.path().join("lighting/venues/lock.light").exists());
-        for uri in ["/api/lighting/fixture-types/lock", "/api/songs/activate"] {
+        for uri in ["/api/lighting/fixture-types/lock", "/api/lighting/activate"] {
             assert_eq!(
                 send(&app, "PUT", uri, "{}").await,
                 StatusCode::LOCKED,
@@ -606,7 +586,7 @@ mod test {
         }
         // Ordinary edits stay locked.
         assert_eq!(
-            send(&app, "PUT", "/api/songs/ordinary", "{}").await,
+            send(&app, "PUT", "/api/lighting/ordinary", "{}").await,
             StatusCode::LOCKED
         );
     }

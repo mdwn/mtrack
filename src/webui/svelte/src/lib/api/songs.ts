@@ -12,18 +12,28 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import { Code, ConnectError } from "@connectrpc/connect";
 import type {
   Browse,
   BulkImport,
   SongFile,
-  SongFiles,
   SongList,
   TempoGuess,
   Waveform,
 } from "../../gen/rules/mtrack_rules";
-import { playerClient } from "../grpc/client";
+import { configClient, playerClient } from "../grpc/client";
 import { callError, mapSongList } from "../grpc/library";
-import { get, post, postYaml, putYaml, uploadFile, uploadFiles } from "./rest";
+import {
+  mapBrowse,
+  mapBulkImport,
+  mapSongConfig,
+  mapSongFiles,
+  mapTempoGuess,
+  songCallError,
+} from "../grpc/songs";
+export { SongNameTakenError } from "../grpc/songs";
+import { mapWaveform } from "../grpc/watch";
+import { uploadFile, uploadFiles } from "./rest";
 
 /** Every song in the library, with what the song pages show, and those that
  *  failed to load. */
@@ -35,24 +45,34 @@ export async function fetchSongs(): Promise<SongList> {
   }
 }
 
+/** A song's config file, as written. */
 export async function fetchSongConfig(name: string): Promise<string> {
-  const res = await get(`/songs/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error(`Failed to fetch song: ${res.status}`);
-  return res.text();
+  try {
+    return mapSongConfig(await configClient.getSongConfig({ name }));
+  } catch (e) {
+    throw songCallError(e, "Failed to fetch song");
+  }
 }
 
-export async function createSong(
-  name: string,
-  yaml: string,
-): Promise<Response> {
-  return postYaml(`/songs/${encodeURIComponent(name)}`, yaml);
+/** Creates a song of `yaml` in the folder `name` (a nested song's has "/").
+ *  A song that exists already, or a name another song holds, is refused with
+ *  an error of `kind` "exists" (the latter a {@link SongNameTakenError}). */
+export async function createSong(name: string, yaml: string): Promise<void> {
+  try {
+    await configClient.createSong({ name, yaml });
+  } catch (e) {
+    throw songCallError(e, "Failed to create song");
+  }
 }
 
-export async function updateSong(
-  name: string,
-  yaml: string,
-): Promise<Response> {
-  return putYaml(`/songs/${encodeURIComponent(name)}`, yaml);
+/** Saves a song's config. A config that is not valid is refused with every
+ *  problem in the message. */
+export async function updateSong(name: string, yaml: string): Promise<void> {
+  try {
+    await configClient.saveSongConfig({ name, yaml });
+  } catch (e) {
+    throw songCallError(e, "Save failed");
+  }
 }
 
 export async function uploadTrack(
@@ -72,19 +92,31 @@ export async function uploadTracks(
   return uploadFiles(`/songs/${encodeURIComponent(songName)}/tracks`, files);
 }
 
+/** Copies a file of the project into a song. Answers the name the song has:
+ *  a new one's may not be the one asked for, when that is taken. */
 export async function importFileToSong(
   songName: string,
   sourcePath: string,
   filename?: string,
-): Promise<Response> {
-  return post(
-    `/songs/${encodeURIComponent(songName)}/import`,
-    JSON.stringify({ path: sourcePath, filename }),
-  );
+): Promise<string> {
+  try {
+    const imported = await configClient.importSongFile({
+      name: songName,
+      path: sourcePath,
+      filename,
+    });
+    return imported.song;
+  } catch (e) {
+    throw songCallError(e, "Import failed");
+  }
 }
 
-export async function deleteSong(name: string): Promise<Response> {
-  return fetch(`/api/songs/${encodeURIComponent(name)}`, { method: "DELETE" });
+export async function deleteSong(name: string): Promise<void> {
+  try {
+    await configClient.deleteSong({ name });
+  } catch (e) {
+    throw songCallError(e, "Delete failed");
+  }
 }
 
 // The song.yaml `tempo:` and `metronome:` blocks, and the beat grid: the
@@ -103,56 +135,72 @@ export type {
   Subdivision as SubdivisionValue,
 } from "../../gen/rules/mtrack_rules";
 
+/** A tempo map suggested for a song, or none when there is none to make: the
+ *  song has neither a MIDI file nor a beat grid (not found), or failed to load
+ *  (invalid), whose load error the song view already shows. Neither tempo
+ *  editor has anywhere to say more, so both leave the tempo as it is. */
 export async function fetchTempoGuess(
   name: string,
 ): Promise<TempoGuess | null> {
-  const res = await get(`/songs/${encodeURIComponent(name)}/tempo-guess`);
-  // No guess: none to make (404), or a song that failed to load (400),
-  // whose load error the song view already shows. Neither tempo editor has
-  // anywhere to say more, so both leave the tempo as it is.
-  if (res.status === 404 || res.status === 400) return null;
-  if (!res.ok) throw new Error(`Failed to fetch tempo guess: ${res.status}`);
-  return res.json();
+  try {
+    return mapTempoGuess(await configClient.guessSongTempo({ name }));
+  } catch (e) {
+    if (
+      e instanceof ConnectError &&
+      (e.code === Code.NotFound || e.code === Code.InvalidArgument)
+    ) {
+      return null;
+    }
+    throw songCallError(e, "Failed to fetch tempo guess");
+  }
 }
 
 export async function fetchWaveform(name: string): Promise<Waveform> {
-  const res = await get(`/songs/${encodeURIComponent(name)}/waveform`);
-  if (!res.ok) throw new Error(`Failed to fetch waveform: ${res.status}`);
-  return res.json();
+  try {
+    return mapWaveform(await configClient.getSongWaveform({ name }));
+  } catch (e) {
+    throw songCallError(e, "Failed to fetch waveform");
+  }
 }
 
 export async function fetchSongFiles(name: string): Promise<SongFile[]> {
-  const res = await get(`/songs/${encodeURIComponent(name)}/files`);
-  if (!res.ok) throw new Error(`Failed to fetch song files: ${res.status}`);
-  const data: SongFiles = await res.json();
-  return data.files;
+  try {
+    return mapSongFiles(await configClient.listSongFiles({ name }));
+  } catch (e) {
+    throw songCallError(e, "Failed to fetch song files");
+  }
 }
 
 export async function browseDirectory(path?: string): Promise<Browse> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : "";
-  const res = await get(`/browse${query}`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error ?? `Failed to browse: ${res.status}`);
+  try {
+    return mapBrowse(await configClient.browseDirectory({ path: path ?? "" }));
+  } catch (e) {
+    throw songCallError(e, "Failed to browse");
   }
-  return res.json();
 }
 
+/** Makes a song of a folder of the project; answers its name. A folder that
+ *  has a config, or a name another song holds, is refused with an error of
+ *  `kind` "exists" (the latter a {@link SongNameTakenError}). */
 export async function createSongInDirectory(
   dirPath: string,
   name?: string,
-): Promise<Response> {
-  return post("/browse/create-song", JSON.stringify({ path: dirPath, name }));
+): Promise<string> {
+  try {
+    const created = await configClient.createSongInDirectory({
+      path: dirPath,
+      name,
+    });
+    return created.song;
+  } catch (e) {
+    throw songCallError(e, "Failed to create song");
+  }
 }
 
 export async function bulkImportSongs(dirPath: string): Promise<BulkImport> {
-  const res = await post(
-    "/browse/bulk-import",
-    JSON.stringify({ path: dirPath }),
-  );
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error ?? `Bulk import failed: ${res.status}`);
+  try {
+    return mapBulkImport(await configClient.bulkImportSongs({ path: dirPath }));
+  } catch (e) {
+    throw songCallError(e, "Bulk import failed");
   }
-  return res.json();
 }

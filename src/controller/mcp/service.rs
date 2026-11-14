@@ -1235,7 +1235,7 @@ impl McpServer {
         } else {
             songs_api::create_song(&self.player, root, &args.name, args.yaml.clone()).await
         };
-        let yaml_path = web(written).await?;
+        let yaml_path = song_web(written)?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
         self.reload_player_songs().await?;
@@ -2358,11 +2358,10 @@ impl McpServer {
             Some(updated) => {
                 // Saved as the song editor saves it: never a song.yaml that
                 // would not load back.
-                web(
+                song_web(
                     songs_api::save_song(&self.player, songs_root.as_path(), &args.song, updated)
                         .await,
-                )
-                .await?;
+                )?;
                 true
             }
             None if referenced => {
@@ -2624,8 +2623,9 @@ impl McpServer {
         // Saved as the song editor saves it: never a song.yaml that would
         // not load back.
         let songs_root = self.songs_root_verified().await?;
-        web(songs_api::save_song(&self.player, songs_root.as_path(), song.name(), updated).await)
-            .await?;
+        song_web(
+            songs_api::save_song(&self.player, songs_root.as_path(), song.name(), updated).await,
+        )?;
 
         Ok(Registration {
             registered: true,
@@ -2656,14 +2656,15 @@ impl McpServer {
         )?;
         // Saved as the song editor saves it.
         let songs_root = self.songs_root_verified().await?;
-        let path = web(songs_api::save_song(
-            &self.player,
-            songs_root.as_path(),
-            &args.name,
-            updated.clone(),
-        )
-        .await)
-        .await?;
+        let path = song_web(
+            songs_api::save_song(
+                &self.player,
+                songs_root.as_path(),
+                &args.name,
+                updated.clone(),
+            )
+            .await,
+        )?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -4408,6 +4409,11 @@ async fn web<T>(result: Result<T, axum::response::Response>) -> Result<T, McpErr
         Ok(value) => Ok(value),
         Err(response) => Err(response_err(response).await),
     }
+}
+
+/// A song writer's refusal as the tool's ([`answer_err`]).
+fn song_web<T>(result: Result<T, songs_api::SongError>) -> Result<T, McpError> {
+    result.map_err(|e| answer_err(e.into()))
 }
 
 /// `path` as the web API names it: relative to `root`, with `/`.

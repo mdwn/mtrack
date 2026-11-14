@@ -142,22 +142,6 @@ export async function versionedError(
   return apiError(res, fallback);
 }
 
-export async function putYaml(path: string, body: string): Promise<Response> {
-  return fetch(`${BASE}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "text/yaml" },
-    body,
-  });
-}
-
-export async function postYaml(path: string, body: string): Promise<Response> {
-  return fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "text/yaml" },
-    body,
-  });
-}
-
 export async function putText(path: string, body: string): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "PUT",
