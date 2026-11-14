@@ -171,6 +171,8 @@ class PlaylistEdit extends ChangeNotifier {
   String? _refusal;
   List<String>? _lightShows;
   bool _loadingLightShows = false;
+  Map<String, player.SongPalette>? _songPalettes;
+  bool _loadingSongPalettes = false;
   int _nextId = 0;
   bool _saving = false;
   EditProblem _problem = EditProblem.none;
@@ -367,6 +369,43 @@ class PlaylistEdit extends ChangeNotifier {
       }
     } finally {
       _loadingLightShows = false;
+      _changed();
+    }
+  }
+
+  /// The lighting palette of each song of the playlist (as read, so a song
+  /// added since is not in it, nor any song of a new playlist), by the song's name, for the entries' colours; null until fetched, or when it could not be. A song
+  /// with no palette is not in it.
+  Map<String, player.SongPalette>? get songPalettes => _songPalettes;
+
+  /// Fetches [songPalettes], once. A failure leaves them null, and the
+  /// entries' sheets without their colours. A player from before palettes
+  /// answers none.
+  Future<void> loadSongPalettes() async {
+    final client = _client();
+    if (isNew) {
+      // Not on the player yet, so there is nothing to read.
+      _songPalettes ??= const {};
+      return;
+    }
+    if (_songPalettes != null ||
+        _loadingSongPalettes ||
+        client == null ||
+        !_isReady()) {
+      return;
+    }
+    _loadingSongPalettes = true;
+    try {
+      final response = await client.getPlaylistWithPalettes(name);
+      if (!_disposed) {
+        _songPalettes = Map.unmodifiable(response.songPalettes);
+      }
+    } on Object catch (e) {
+      if (!_disposed) {
+        _lostIfUnanswered(client, e);
+      }
+    } finally {
+      _loadingSongPalettes = false;
       _changed();
     }
   }

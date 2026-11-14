@@ -196,6 +196,16 @@ class PlayerClient {
     player.GetPlaylistResponse.fromBuffer,
   );
 
+  /// The playlist [name] as [getPlaylist] has it, with the lighting palette
+  /// of each of its songs (`songPalettes`). Not the whole library, which is
+  /// too large for Bluetooth.
+  Future<player.GetPlaylistResponse> getPlaylistWithPalettes(String name) =>
+      call(
+        'GetPlaylist',
+        player.GetPlaylistRequest(name: name, withPalettes: true),
+        player.GetPlaylistResponse.fromBuffer,
+      );
+
   /// Sets the songs of the playlist [name] to [songs], in order. With
   /// [expected], the save is refused when the playlist on the player is no
   /// longer those songs, and with [expectedRevision] as well (the revision

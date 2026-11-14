@@ -197,4 +197,86 @@ void main() {
       }
     });
   });
+
+  group('palette overrides', () {
+    final song = pp.SongPalette(
+      slots: [
+        pp.PaletteSlot(name: 'wash', color: '#0000ff'),
+        pp.PaletteSlot(name: 'accent', color: '#ff0000'),
+      ],
+      overrides: {'accent': '#00ff00', 'gone': '#123456'}.entries,
+    );
+
+    test('colours are read as the player writes them', () {
+      expect(normalizeColour('#FF8800'), '#ff8800');
+      expect(normalizeColour(' ff8800 '), '#ff8800');
+      expect(normalizeColour('#f80'), '#ff8800');
+      expect(normalizeColour('#ff88'), isNull);
+      expect(normalizeColour('red'), isNull);
+      expect(normalizeColour(''), isNull);
+    });
+
+    test('a slot starts from the song override, else the show', () {
+      expect(baseColour(song, 'wash'), '#0000ff');
+      expect(baseColour(song, 'accent'), '#00ff00');
+      expect(baseColour(song, 'gone'), isNull);
+      expect(songOverrides(song, 'accent'), isTrue);
+      expect(songOverrides(song, 'wash'), isFalse);
+      expect(songOverrides(song, 'gone'), isFalse);
+    });
+
+    test('slots the song does not declare are found', () {
+      expect(unknownSlots(song, {'wash': '#fff', 'x': '#000', 'a': '#000'}), [
+        'a',
+        'x',
+      ]);
+      expect(unknownSlots(null, {'x': '#000'}), ['x']);
+      expect(unknownSlots(song, {}), isEmpty);
+    });
+
+    test('untouched, the palette goes as it was read', () {
+      final none = pp.EntrySettings(autoPlay: pp.AutoPlay());
+      expect(withPaletteSlots(none, {}), none);
+      expect(withPaletteSlots(none, {}).hasPalette(), isFalse);
+      final had = pp.EntrySettings(
+        palette: pp.PaletteOverrides(slots: {'wash': '#ff0000'}.entries),
+      );
+      final same = withPaletteSlots(had, {'wash': '#ff0000'});
+      expect(same, had);
+      expect(same.palette.slots, {'wash': '#ff0000'});
+      // Present but empty, as read, stays present.
+      final empty = pp.EntrySettings(palette: pp.PaletteOverrides());
+      expect(withPaletteSlots(empty, {}).hasPalette(), isTrue);
+    });
+
+    test('changed, it is present with the new slots, or empty to clear', () {
+      final none = pp.EntrySettings();
+      final set = withPaletteSlots(none, {'wash': '#ff0000'});
+      expect(set.hasPalette(), isTrue);
+      expect(set.palette.slots, {'wash': '#ff0000'});
+      final cleared = withPaletteSlots(set, {});
+      expect(cleared.hasPalette(), isTrue);
+      expect(cleared.palette.slots, isEmpty);
+      // The rest of the entry is kept.
+      final timed = pp.EntrySettings(autoPlay: pp.AutoPlay(gap: '2s'));
+      expect(withPaletteSlots(timed, {'a': '#000000'}).autoPlay.gap, '2s');
+    });
+
+    test('the entry summary counts the colours', () {
+      expect(
+        entrySummary(
+          pp.EntrySettings(
+            palette: pp.PaletteOverrides(
+              slots: {'a': '#000000', 'b': '#ffffff'}.entries,
+            ),
+          ),
+        ),
+        '2 colours',
+      );
+      expect(
+        entrySummary(pp.EntrySettings(palette: pp.PaletteOverrides())),
+        '',
+      );
+    });
+  });
 }
