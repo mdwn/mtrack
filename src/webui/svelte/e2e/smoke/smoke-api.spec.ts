@@ -86,12 +86,11 @@ test.describe("Smoke: REST API", () => {
     expect(body.playlists.map((p) => p.name)).toEqual(body.names);
   });
 
-  test("GET /api/config/store returns config", async ({ request }) => {
-    const response = await request.get("/api/config/store");
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+  test("GetConfig returns the config and its checksum", async ({ baseURL }) => {
+    const body = await playerClientAt(baseURL!).getConfig({});
 
-    // Should return config content.
-    expect(body).toBeDefined();
+    // Should return config content, and the checksum a save presents.
+    expect(body.yaml).toContain("songs");
+    expect(body.checksum).not.toBe("");
   });
 });

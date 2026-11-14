@@ -13,8 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
-import { Code } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { CONFIG_STORE } from "../mock-server/test-data";
+import { getConfigReply } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
 
@@ -44,13 +46,12 @@ test.describe("Error States", () => {
   });
 
   test("config page shows error on API failure", async ({ page }) => {
-    await page.route("**/api/config/store", async (route) => {
-      await route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Internal server error" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.error(
+      PlayerService.method.getConfig,
+      Code.Internal,
+      "The config store is unavailable",
+    );
 
     await page.goto("/#/config");
     // Config editor shows error state with retry button
@@ -60,17 +61,13 @@ test.describe("Error States", () => {
 
   test("config error retry button refetches", async ({ page }) => {
     let callCount = 0;
-    await page.route("**/api/config/store", async (route) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(PlayerService.method.getConfig, () => {
       callCount++;
       if (callCount === 1) {
-        await route.fulfill({
-          status: 500,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "Temporary error" }),
-        });
-      } else {
-        await route.continue();
+        throw new ConnectError("Temporary error", Code.Internal);
       }
+      return getConfigReply(CONFIG_STORE);
     });
 
     await page.goto("/#/config");

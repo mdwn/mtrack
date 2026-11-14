@@ -13,7 +13,10 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { FIT } from "../mock-server/test-data";
+import { getConfigReply, savedReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import { openWithStage, sendStage } from "../support/stage";
 
 // Every test routes its own fit facts, venue file and profile with
@@ -447,28 +450,15 @@ test.describe("Lighting: Fit shows", () => {
     page,
   }) => {
     await routeFit(page);
-    await page.route("**/api/config/store", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml: PROFILE_YAML, checksum: "fit" }),
-      });
-    });
-    const writes: {
-      expected_checksum: string;
-      profile: {
-        hostname: string;
-        dmx: { universes: { universe: number; name: string }[] };
-      };
-    }[] = [];
-    await page.route("**/api/config/profiles/0", async (route) => {
-      writes.push(route.request().postDataJSON());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml: PROFILE_YAML, checksum: "fit-2" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      PlayerService.method.getConfig,
+      getConfigReply({ yaml: PROFILE_YAML, checksum: "fit" }),
+    );
+    rpc.unary(
+      PlayerService.method.updateProfile,
+      savedReply({ yaml: PROFILE_YAML, checksum: "fit-2" }),
+    );
     await page.goto("/#/lighting/fit");
 
     await expect(page.getByTestId("fit-universe-11")).toContainText(
@@ -479,10 +469,16 @@ test.describe("Lighting: Fit shows", () => {
       "Added universe 11 to test-host.",
     );
 
-    expect(writes).toHaveLength(1);
-    expect(writes[0].expected_checksum).toBe("fit");
-    expect(writes[0].profile.hostname).toBe("test-host");
-    expect(writes[0].profile.dmx.universes).toEqual([
+    const calls = rpc.calls(PlayerService.method.updateProfile);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].index).toBe(0);
+    expect(calls[0].expectedChecksum).toBe("fit");
+    const written: {
+      hostname: string;
+      dmx: { universes: { universe: number; name: string }[] };
+    } = JSON.parse(calls[0].profileJson);
+    expect(written.hostname).toBe("test-host");
+    expect(written.dmx.universes).toEqual([
       { universe: 1, name: "u1" },
       { universe: 11, name: "u11" },
     ]);

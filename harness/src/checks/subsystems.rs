@@ -20,7 +20,7 @@
 
 use std::time::Duration;
 
-use mtrack::proto::player::v1::{GetConfigRequest, UpdateAudioRequest};
+use mtrack::proto::player::v1::{GetConfigRequest, UpdateAudioRequest, UpdateProfileRequest};
 
 use crate::capabilities::Capabilities;
 use crate::client::Client;
@@ -574,7 +574,7 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
             .songs(crate::checks::standard_songs())
             .build()?;
         let server = Server::start(&project).await?;
-        let client = Client::connect(&server).await?;
+        let mut client = Client::connect(&server).await?;
 
         // The engine has to be up before there is anything to strand.
         if client.subsystem_status("trigger").await? != "connected" {
@@ -584,17 +584,21 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
             continue;
         }
 
-        // `/config/profiles/{index}` rather than `/profiles/{file}`: the file
-        // endpoint writes YAML to disk and reloads, but the reload re-inits
-        // from the store's in-memory config, which the file write never
-        // touched — so the trigger comes straight back and the check would
-        // report a legitimate engine as a stray one. This endpoint updates the
-        // store and then reloads.
-        let store = client.get_json("config/store").await?;
-        let checksum = store["checksum"].as_str().unwrap_or_default().to_string();
+        // `UpdateProfile` rather than `/profiles/{file}`: the file endpoint
+        // writes YAML to disk and reloads, but the reload re-inits from the
+        // store's in-memory config, which the file write never touched — so
+        // the trigger comes straight back and the check would report a
+        // legitimate engine as a stray one. This call updates the store and
+        // then reloads.
+        let checksum = client
+            .grpc()
+            .get_config(GetConfigRequest {})
+            .await?
+            .into_inner()
+            .checksum;
         // `["profile"]`, not the whole body: the endpoint wraps it as
         // {"profile": ..., "yaml": ...}. `Profile` has no deny_unknown_fields
-        // and every field is optional, so PUTting the wrapper deserialises to
+        // and every field is optional, so sending the wrapper deserialises to
         // an entirely empty profile — no audio, no controllers, no trigger.
         // The check then passed because the rig had been blanked rather than
         // because the trigger key was removed.
@@ -606,15 +610,17 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
 
         // First save: unchanged content, but the write path reloads regardless,
         // so this starts a round that will be opening devices.
-        let (status, body) = client
-            .put_json(
-                "config/profiles/0",
-                serde_json::json!({"profile": profile, "expected_checksum": checksum}),
-            )
-            .await?;
-        if !status.is_success() {
+        if let Err(rejected) = client
+            .grpc()
+            .update_profile(UpdateProfileRequest {
+                index: 0,
+                profile_json: profile.to_string(),
+                expected_checksum: checksum,
+            })
+            .await
+        {
             crate::outcome::record(format!(
-                "delay {delay_ms}ms: the first write was rejected ({status}: {body})"
+                "delay {delay_ms}ms: the first write was rejected ({rejected})"
             ));
             continue;
         }

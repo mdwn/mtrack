@@ -17,7 +17,8 @@
 
 use serde::Serialize;
 
-/// `GET /api/config/store`: the config as written, and its checksum.
+/// The config as written, and its checksum (`GetConfig`'s answer, and what a
+/// save answers beside the reload).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StoreSnapshot {

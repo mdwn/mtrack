@@ -640,6 +640,12 @@ fn snapshot_to_update_response(
         checksum: snapshot.checksum,
         applied: outcome.applied(),
         message: outcome.message().unwrap_or_default(),
+        reload: outcome.kind().to_string(),
+        songs_error: outcome.songs_error.clone(),
+        awaits_reload: outcome.awaits,
+        awaits_process: outcome
+            .awaits
+            .map(|_| crate::player::process_id().to_string()),
     }))
 }
 
@@ -2101,6 +2107,269 @@ mod test {
         Ok(())
     }
 
+    /// A server over a config store made from `songs: assets/songs`, and
+    /// the store.
+    async fn served_config_store() -> Result<
+        (
+            super::PlayerServer,
+            Arc<config::ConfigStore>,
+            tempfile::TempDir,
+        ),
+        Box<dyn Error>,
+    > {
+        let (player, _client, _device) = setup_grpc().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: assets/songs\n")?;
+        let store = Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path,
+        ));
+        player.set_config_store(store.clone());
+        let server = super::PlayerServer::with_config_store(player, store.clone());
+        Ok((server, store, dir))
+    }
+
+    /// The config as written and its checksum: the checksum a save presents.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_config_answers_the_yaml_and_its_checksum() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{player_service_server::PlayerService, GetConfigRequest};
+
+        let (server, store, _dir) = served_config_store().await?;
+        let reply = server
+            .get_config(tonic::Request::new(GetConfigRequest {}))
+            .await?
+            .into_inner();
+        assert!(reply.yaml.contains("songs"), "{}", reply.yaml);
+        assert!(!reply.checksum.is_empty());
+        assert_eq!((reply.yaml, reply.checksum), store.read_yaml().await?);
+        Ok(())
+    }
+
+    /// A profile is added, updated and removed by index, each against the
+    /// checksum the last answer gave, and each answer is the config after it
+    /// with what became of the hardware reload.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_profile_is_added_updated_and_removed_by_index() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{
+            player_service_server::PlayerService, AddProfileRequest, RemoveProfileRequest,
+            UpdateProfileRequest,
+        };
+
+        let (server, store, _dir) = served_config_store().await?;
+        let (_, checksum) = store.read_yaml().await?;
+
+        let added = server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: r#"{"hostname": "original"}"#.to_string(),
+                expected_checksum: checksum.clone(),
+            }))
+            .await?
+            .into_inner();
+        assert!(added.yaml.contains("original"), "{}", added.yaml);
+        assert_ne!(added.checksum, checksum);
+        assert_eq!(
+            (added.yaml.clone(), added.checksum.clone()),
+            store.read_yaml().await?
+        );
+        assert!(added.applied);
+        assert_eq!(added.reload, "applied");
+        assert_eq!(added.awaits_reload, None);
+        assert_eq!(added.songs_error, None);
+
+        let updated = server
+            .update_profile(tonic::Request::new(UpdateProfileRequest {
+                index: 0,
+                profile_json: r#"{"hostname": "updated"}"#.to_string(),
+                expected_checksum: added.checksum.clone(),
+            }))
+            .await?
+            .into_inner();
+        assert!(updated.yaml.contains("updated"), "{}", updated.yaml);
+        assert!(!updated.yaml.contains("original"), "{}", updated.yaml);
+        assert_eq!(updated.yaml, store.read_yaml().await?.0);
+
+        let removed = server
+            .remove_profile(tonic::Request::new(RemoveProfileRequest {
+                index: 0,
+                expected_checksum: updated.checksum.clone(),
+            }))
+            .await?
+            .into_inner();
+        assert!(!removed.yaml.contains("updated"), "{}", removed.yaml);
+        assert!(!removed.checksum.is_empty());
+        assert_eq!(removed.checksum, store.read_yaml().await?.1);
+        Ok(())
+    }
+
+    /// A profile write against a checksum that is not the config's is
+    /// refused, and the config is left as it was: someone else changed it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_profile_write_against_a_stale_checksum_is_refused() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{
+            player_service_server::PlayerService, AddProfileRequest, RemoveProfileRequest,
+            UpdateProfileRequest,
+        };
+
+        let (server, store, _dir) = served_config_store().await?;
+        let (_, checksum) = store.read_yaml().await?;
+        server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: r#"{"hostname": "kept"}"#.to_string(),
+                expected_checksum: checksum.clone(),
+            }))
+            .await?;
+        let before = store.read_yaml().await?;
+
+        let stale = |status: tonic::Status, rpc: &str| {
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition, "{rpc}");
+        };
+        stale(
+            server
+                .add_profile(tonic::Request::new(AddProfileRequest {
+                    profile_json: r#"{"hostname": "other"}"#.to_string(),
+                    expected_checksum: "wrong-checksum".to_string(),
+                }))
+                .await
+                .expect_err("AddProfile"),
+            "AddProfile",
+        );
+        stale(
+            server
+                .update_profile(tonic::Request::new(UpdateProfileRequest {
+                    index: 0,
+                    profile_json: r#"{"hostname": "other"}"#.to_string(),
+                    expected_checksum: "wrong-checksum".to_string(),
+                }))
+                .await
+                .expect_err("UpdateProfile"),
+            "UpdateProfile",
+        );
+        stale(
+            server
+                .remove_profile(tonic::Request::new(RemoveProfileRequest {
+                    index: 0,
+                    expected_checksum: "wrong-checksum".to_string(),
+                }))
+                .await
+                .expect_err("RemoveProfile"),
+            "RemoveProfile",
+        );
+        // An empty checksum, as a caller that sent none, is as stale.
+        stale(
+            server
+                .remove_profile(tonic::Request::new(RemoveProfileRequest {
+                    index: 0,
+                    expected_checksum: String::new(),
+                }))
+                .await
+                .expect_err("RemoveProfile without a checksum"),
+            "RemoveProfile without a checksum",
+        );
+        assert_eq!(store.read_yaml().await?, before);
+        Ok(())
+    }
+
+    /// A profile that is not valid, or an index that is not there, is the
+    /// caller's to fix, and nothing is saved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_profile_write_that_is_not_valid_is_an_invalid_argument() -> Result<(), Box<dyn Error>>
+    {
+        use crate::proto::player::v1::{
+            player_service_server::PlayerService, AddProfileRequest, RemoveProfileRequest,
+            UpdateProfileRequest,
+        };
+
+        let (server, store, _dir) = served_config_store().await?;
+        let before = store.read_yaml().await?;
+
+        let missing = server
+            .update_profile(tonic::Request::new(UpdateProfileRequest {
+                index: 999,
+                profile_json: r#"{"hostname": "test"}"#.to_string(),
+                expected_checksum: before.1.clone(),
+            }))
+            .await
+            .expect_err("a profile that is not there");
+        assert_eq!(missing.code(), tonic::Code::InvalidArgument);
+        assert!(missing.message().contains("index"), "{missing}");
+
+        let missing = server
+            .remove_profile(tonic::Request::new(RemoveProfileRequest {
+                index: 999,
+                expected_checksum: before.1.clone(),
+            }))
+            .await
+            .expect_err("a profile that is not there");
+        assert_eq!(missing.code(), tonic::Code::InvalidArgument);
+
+        let not_json = server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: "not json".to_string(),
+                expected_checksum: before.1.clone(),
+            }))
+            .await
+            .expect_err("a profile that is not JSON");
+        assert_eq!(not_json.code(), tonic::Code::InvalidArgument);
+
+        // A mapping to channel 0 (channels count from 1) fails the
+        // profile's own validation.
+        let invalid = server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: r#"{"audio": {"device": "d", "track_mappings": {"kick": [0]}}}"#
+                    .to_string(),
+                expected_checksum: before.1.clone(),
+            }))
+            .await
+            .expect_err("a profile that does not validate");
+        assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+
+        assert_eq!(store.read_yaml().await?, before);
+        Ok(())
+    }
+
+    /// A reply says which reload it was, the generation a deferred one waits
+    /// for and the process that counts it, and a song reload that failed
+    /// beside it: what the web UI's notice is made of.
+    #[test]
+    fn a_config_update_reply_says_which_reload_it_was() {
+        use crate::player::{ConfigApply, ConfigChange};
+        let snapshot = || config::store::ConfigSnapshot {
+            config: config::Player::default(),
+            yaml: "songs: songs\n".to_string(),
+            checksum: "abc".to_string(),
+        };
+        let reply = |change: ConfigChange| {
+            super::snapshot_to_update_response(snapshot(), change)
+                .unwrap()
+                .into_inner()
+        };
+
+        let applied = reply(ConfigApply::Applied.into());
+        assert_eq!(applied.reload, "applied");
+        assert_eq!(applied.songs_error, None);
+        assert_eq!(applied.awaits_reload, None);
+        assert_eq!(applied.awaits_process, None);
+
+        let mut deferred = ConfigChange::from(ConfigApply::Deferred);
+        deferred.awaits = Some(3);
+        deferred.songs_error = Some("no songs".to_string());
+        let deferred = reply(deferred);
+        assert_eq!(deferred.reload, "deferred");
+        assert!(!deferred.applied);
+        assert_eq!(deferred.awaits_reload, Some(3));
+        assert_eq!(
+            deferred.awaits_process,
+            Some(crate::player::process_id().to_string())
+        );
+        assert_eq!(deferred.songs_error.as_deref(), Some("no songs"));
+
+        assert_eq!(
+            reply(ConfigApply::Failed("x".into()).into()).reload,
+            "failed"
+        );
+    }
+
     /// A config change deferred under a song answered as one applied: the
     /// reply says whether the hardware reload ran, and why not when not.
     #[tokio::test(flavor = "multi_thread")]
@@ -2142,6 +2411,14 @@ mod test {
             "a change under a song said it was applied"
         );
         assert!(deferred.message.contains("idle"), "{}", deferred.message);
+        assert_eq!(deferred.reload, "deferred");
+        // The generation the save waits for, for a client to clear its
+        // notice by, and the process that counts it.
+        assert_eq!(deferred.awaits_reload, Some(1), "{deferred:?}");
+        assert_eq!(
+            deferred.awaits_process,
+            Some(crate::player::process_id().to_string())
+        );
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
@@ -2152,6 +2429,7 @@ mod test {
             .await?
             .into_inner();
         assert!(applied.applied);
+        assert_eq!(applied.reload, "applied");
         assert!(applied.message.is_empty(), "{}", applied.message);
         Ok(())
     }

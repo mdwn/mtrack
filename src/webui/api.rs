@@ -141,14 +141,8 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/lighting/fit", get(lighting_api::get_fit))
         .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
-        .route("/config/store", get(config_api::get_config_store))
         .route("/config/samples", put(config_api::put_config_samples))
         .route("/config/metronome", put(config_api::put_config_metronome))
-        .route("/config/profiles", post(config_api::post_config_profile))
-        .route(
-            "/config/profiles/{index}",
-            put(config_api::put_config_profile).delete(config_api::delete_config_profile),
-        )
         .route("/profiles", get(profiles::get_profiles))
         .route(
             "/profiles/{filename}",

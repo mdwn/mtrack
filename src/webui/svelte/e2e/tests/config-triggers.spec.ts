@@ -13,6 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { getConfigReply } from "../support/config-rpc";
+import { profileWrite } from "../support/profile-writes";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Profile Editor - Triggers Section", () => {
   test.beforeEach(async ({ page }) => {
@@ -62,11 +66,9 @@ test.describe("Profile Editor - Triggers Section", () => {
     await page.locator('[id^="trigger-midi-"][id$="-value"]').fill("64");
     await page.locator('[id^="trigger-midi-"][id$="-value"]').blur();
 
-    const saved = page.waitForRequest(
-      (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
-    );
+    const rpc = await mockRpc(page);
     await page.getByRole("button", { name: "Save" }).click();
-    const body = (await saved).postDataJSON();
+    const body = await profileWrite(rpc);
     expect(body.profile.trigger.inputs[0]).toEqual({
       kind: "midi",
       event: { type: "control_change", channel: 10, controller: 5, value: 64 },
@@ -168,10 +170,11 @@ test.describe("Profile Editor - Triggers Section", () => {
 test("a program change trigger keeps its kind when its channel is edited", async ({
   page,
 }) => {
-  await page.route("**/api/config/store", (route) =>
-    route.fulfill({
-      json: {
-        yaml: `profiles:
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({
+      yaml: `profiles:
   - hostname: test-host
     trigger:
       inputs:
@@ -180,8 +183,7 @@ test("a program change trigger keeps its kind when its channel is edited", async
           sample: kick
 samples: {}
 `,
-        checksum: "abc123def456",
-      },
+      checksum: "abc123def456",
     }),
   );
   await page.goto("/#/config");
@@ -194,11 +196,8 @@ samples: {}
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("4");
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
-  const saved = page.waitForRequest(
-    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
-  );
   await page.getByRole("button", { name: "Save" }).click();
-  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+  expect((await profileWrite(rpc)).profile.trigger.inputs[0].event).toEqual({
     type: "program_change",
     channel: 4,
     program: 7,
@@ -206,6 +205,7 @@ samples: {}
 });
 
 test("a MIDI field is held to the range the player reads", async ({ page }) => {
+  const rpc = await mockRpc(page);
   await page.goto("/#/config");
   await page.locator(".profile-row", { hasText: "test-host" }).click();
   await page.locator(".tab", { hasText: "Triggers" }).click();
@@ -219,11 +219,8 @@ test("a MIDI field is held to the range the player reads", async ({ page }) => {
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("0");
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
-  const saved = page.waitForRequest(
-    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
-  );
   await page.getByRole("button", { name: "Save" }).click();
-  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+  expect((await profileWrite(rpc)).profile.trigger.inputs[0].event).toEqual({
     type: "control_change",
     channel: 1,
     controller: 0,
@@ -232,10 +229,11 @@ test("a MIDI field is held to the range the player reads", async ({ page }) => {
 });
 
 test("a MIDI event's misspelt key is kept, not drawn", async ({ page }) => {
-  await page.route("**/api/config/store", (route) =>
-    route.fulfill({
-      json: {
-        yaml: `profiles:
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({
+      yaml: `profiles:
   - hostname: test-host
     trigger:
       inputs:
@@ -244,8 +242,7 @@ test("a MIDI event's misspelt key is kept, not drawn", async ({ page }) => {
           sample: kick
 samples: {}
 `,
-        checksum: "abc123def456",
-      },
+      checksum: "abc123def456",
     }),
   );
   await page.goto("/#/config");
@@ -258,11 +255,8 @@ samples: {}
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("2");
   await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
-  const saved = page.waitForRequest(
-    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
-  );
   await page.getByRole("button", { name: "Save" }).click();
-  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+  expect((await profileWrite(rpc)).profile.trigger.inputs[0].event).toEqual({
     type: "note_on",
     channel: 2,
     key: 1,

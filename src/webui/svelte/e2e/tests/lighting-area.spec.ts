@@ -13,6 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { getConfigReply, savedReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 import { setWatchOpening } from "../support/watch";
 import type { ProfileFileInfo } from "../../src/gen/rules/mtrack_rules";
@@ -40,13 +43,12 @@ profiles:
 `;
 
 async function routeTwoProfiles(page: Page) {
-  await page.route("**/api/config/store", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ yaml: TWO_PROFILES_YAML, checksum: "two" }),
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ yaml: TWO_PROFILES_YAML, checksum: "two" }),
+  );
+  return rpc;
 }
 
 test.describe("Lighting area: routes and navigation", () => {
@@ -178,25 +180,11 @@ test.describe("Lighting area: Groups", () => {
   test("saving writes the selected inline profile by index", async ({
     page,
   }) => {
-    await routeTwoProfiles(page);
-    let put: {
-      url: string;
-      body: {
-        expected_checksum: string;
-        profile: { dmx: { lighting: { current_venue: string } } };
-      };
-    } | null = null;
-    await page.route("**/api/config/profiles/*", async (route) => {
-      put = {
-        url: route.request().url(),
-        body: route.request().postDataJSON(),
-      };
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml: TWO_PROFILES_YAML, checksum: "after" }),
-      });
-    });
+    const rpc = await routeTwoProfiles(page);
+    rpc.unary(
+      PlayerService.method.updateProfile,
+      savedReply({ yaml: TWO_PROFILES_YAML, checksum: "after" }),
+    );
     await page.goto("/#/lighting/groups");
     await expect(page.locator(".group-card")).toHaveCount(1);
     const save = page.getByRole("button", { name: "Save", exact: true });
@@ -205,9 +193,13 @@ test.describe("Lighting area: Groups", () => {
     await expect(save).toBeEnabled();
     await save.click();
     await expect(page.getByText("Saved", { exact: true })).toBeVisible();
-    expect(put!.url).toMatch(/\/config\/profiles\/1$/);
-    expect(put!.body.expected_checksum).toBe("two");
-    expect(put!.body.profile.dmx.lighting.current_venue).toBe("test-venue");
+    const puts = rpc.calls(PlayerService.method.updateProfile);
+    expect(puts).toHaveLength(1);
+    expect(puts[0].index).toBe(1);
+    expect(puts[0].expectedChecksum).toBe("two");
+    expect(JSON.parse(puts[0].profileJson).dmx.lighting.current_venue).toBe(
+      "test-venue",
+    );
   });
 
   test("unsaved edits are guarded when leaving the page", async ({ page }) => {
@@ -264,13 +256,11 @@ test.describe("Lighting area: Groups", () => {
     page,
   }) => {
     const yaml = "songs: songs\nprofiles_dir: profiles\n";
-    await page.route("**/api/config/store", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ yaml, checksum: "c" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      PlayerService.method.getConfig,
+      getConfigReply({ yaml, checksum: "c" }),
+    );
     await page.route("**/api/profiles", async (route) => {
       await route.fulfill({
         status: 200,

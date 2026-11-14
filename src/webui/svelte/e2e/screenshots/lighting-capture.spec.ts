@@ -27,7 +27,10 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
-import { FIT, STATUS } from "../mock-server/test-data";
+import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { CONFIG_STORE, FIT, STATUS } from "../mock-server/test-data";
+import { getConfigReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 import type {
   GdtfMode,
   Readiness,
@@ -615,14 +618,11 @@ async function rig(page: Page, status: StatusExtras = {}) {
   body.hardware.test_output = status.test_output ?? null;
   if (status.build_time) body.build.build_time = status.build_time[0];
   rigged.set(page, { type: "hardware", ...body } as WatchPush);
-  await page.route("**/api/config/store", async (route) => {
-    const res = await route.fetch();
-    const data = await res.json();
-    await route.fulfill({
-      response: res,
-      json: { ...data, yaml: CONFIG_YAML },
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    PlayerService.method.getConfig,
+    getConfigReply({ ...CONFIG_STORE, yaml: CONFIG_YAML }),
+  );
   await page.route("**/api/lighting/readiness*", (route) =>
     json(route, READINESS),
   );

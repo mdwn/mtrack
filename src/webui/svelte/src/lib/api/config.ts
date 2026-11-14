@@ -64,6 +64,7 @@ import type {
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
 import { playerClient } from "../grpc/client";
+import { mapConfigSaved, mapConfigStore } from "../grpc/config";
 import {
   callError,
   mapPlaylistDetail,
@@ -102,9 +103,11 @@ export async function setLocked(locked: boolean): Promise<void> {
 }
 
 export async function fetchConfigStore(): Promise<StoreSnapshot> {
-  const res = await get("/config/store");
-  if (!res.ok) throw new Error(`Failed to fetch config store: ${res.status}`);
-  return res.json();
+  try {
+    return mapConfigStore(await playerClient.getConfig({}));
+  } catch (e) {
+    throw callError(e, "Failed to fetch config store");
+  }
 }
 
 export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
@@ -144,12 +147,16 @@ export async function addProfile(
   profile: ProfileDraft,
   checksum: string,
 ): Promise<ConfigSaved> {
-  const res = await post(
-    "/config/profiles",
-    JSON.stringify({ expected_checksum: checksum, profile }),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to add profile");
-  return res.json();
+  try {
+    return mapConfigSaved(
+      await playerClient.addProfile({
+        profileJson: JSON.stringify(profile),
+        expectedChecksum: checksum,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to add profile");
+  }
 }
 
 export async function updateProfile(
@@ -157,23 +164,33 @@ export async function updateProfile(
   profile: ProfileDraft,
   checksum: string,
 ): Promise<ConfigSaved> {
-  const res = await put(
-    `/config/profiles/${index}`,
-    JSON.stringify({ expected_checksum: checksum, profile }),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to update profile");
-  return res.json();
+  try {
+    return mapConfigSaved(
+      await playerClient.updateProfile({
+        index,
+        profileJson: JSON.stringify(profile),
+        expectedChecksum: checksum,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to update profile");
+  }
 }
 
 export async function deleteProfile(
   index: number,
   checksum: string,
 ): Promise<ConfigSaved> {
-  const res = await del(
-    `/config/profiles/${index}?expected_checksum=${encodeURIComponent(checksum)}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to delete profile");
-  return res.json();
+  try {
+    return mapConfigSaved(
+      await playerClient.removeProfile({
+        index,
+        expectedChecksum: checksum,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to delete profile");
+  }
 }
 
 // ---- File-based Profiles API (profiles_dir) ----

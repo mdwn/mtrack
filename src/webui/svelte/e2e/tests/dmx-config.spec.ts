@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { profileWrite } from "../support/profile-writes";
+import { mockRpc } from "../support/rpc";
 
 test.describe("DMX Configuration", () => {
   test.beforeEach(async ({ page }) => {
@@ -71,11 +73,9 @@ test.describe("DMX Configuration", () => {
     await page.locator(".universe-row").first().locator(".btn-danger").click();
     await expect(page.locator(".universe-row")).toHaveCount(0);
 
-    const saved = page.waitForRequest(
-      (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
-    );
+    const rpc = await mockRpc(page);
     await page.getByRole("button", { name: "Save" }).click();
-    expect((await saved).postDataJSON().profile.dmx.universes).toEqual([]);
+    expect((await profileWrite(rpc)).profile.dmx.universes).toEqual([]);
     await expect(page.locator(".save-msg")).toContainText("Saved");
   });
 
