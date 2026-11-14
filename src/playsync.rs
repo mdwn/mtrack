@@ -146,6 +146,11 @@ pub struct LoopControl {
     /// notes, lights and beat clock follow them, so none can decide a
     /// moment before or after the others.
     pub section_jumps: Arc<SectionJumpLog>,
+    /// The lighting palette the song plays in, decided as it starts and
+    /// not changed while it plays: the slots overridden by the song, and by
+    /// the playlist entry it plays from. Any slot not named is the show's
+    /// default.
+    pub palette: Arc<std::collections::HashMap<String, crate::lighting::effects::Color>>,
 }
 
 /// A playback's section loop jumps, in order, as they are committed to. Each
@@ -404,6 +409,7 @@ impl LoopControl {
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             section_jumps: Arc::new(SectionJumpLog::default()),
+            palette: Arc::default(),
         }
     }
 }

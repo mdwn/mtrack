@@ -250,6 +250,35 @@ player runs, from the dashboard or a controller; see
 In the web UI's playlist editor, **Ambient light** picks the profile's, none, or the playlist's
 own; its own shows the show and timing fields, each left empty to keep the profile's.
 
+## Palette overrides
+
+A show's [palette](../lighting/cueing.md#palettes) names its colours in slots. An entry can
+recolour them for this song in this playlist only, with a `palette:` beside its other settings:
+
+```yaml
+songs:
+- song: Red Song
+  palette:
+    primary: "#2040ff"
+    secondary: cyan
+- Another Red Song
+```
+
+- Each key is a slot and each value a colour: `"#2040ff"`, `rgb(32, 64, 255)` or a colour name.
+  A slot not named keeps its colour, whether the show's or the song's own.
+- **Order.** A slot is the show's default, then the song's own `palette:` over it, then the
+  entry's over that. The later wins, slot by slot.
+- A colour that does not read is an error naming the song and the slot: the playlist is not
+  loaded, and a save of it is refused.
+- A slot that none of the song's shows declares is a warning, not an error: it is logged when
+  the playlist loads, and changes nothing, so editing a show does not stop a playlist loading.
+- The colours are decided as the song starts and do not change while it plays; editing the
+  playlist or the song while it plays recolours it from the next start. The `all_songs` playlist
+  has no entry settings, so a song there plays in its own colours.
+- In gRPC, an entry's `settings.palette` is this map. `SavePlaylist` with `set_settings`
+  keeps an entry's palette when its settings carry none (a client that does not know palettes
+  loses none), replaces it when they carry one, and clears it when they carry one with no slots.
+
 ## See also
 
 Playlists can also be switched from outside the web UI:

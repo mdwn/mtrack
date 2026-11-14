@@ -46,7 +46,10 @@ pub use fixture_venue::{
     ItemKind, Listed,
 };
 pub use include::{IncludeReader, Sources};
-pub use palette::{declared_slots, resolve_shows, ColorRef, Palette};
+pub use palette::{
+    declared_slots, layer_overrides, parse_overrides, resolve_shows, unknown_slots, ColorRef,
+    Palette,
+};
 pub use show::{parse_light_file_with, parse_light_shows, parse_light_shows_with_tempo};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};
 

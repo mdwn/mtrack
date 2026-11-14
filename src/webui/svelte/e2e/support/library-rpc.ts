@@ -100,6 +100,9 @@ export function getPlaylistReply(
         fadeIn: fade(detail.fades?.[i]?.fade_in),
         autoPlay: autoPlay(detail.auto_play?.[i]),
         ambient: ambient(detail.entry_ambient?.[i]),
+        palette: detail.entry_palette?.[i]
+          ? { slots: detail.entry_palette[i] }
+          : undefined,
       },
     })),
     ambient: ambient(detail.ambient),

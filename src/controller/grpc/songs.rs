@@ -1193,6 +1193,24 @@ notification_audio:
     }
 
     #[test]
+    fn a_settings_edit_keeps_the_songs_palette() {
+        let text = format!("{FULL}palette:\n  primary: '#2040ff'\n  Back-Light: cyan\n");
+        let song = parse(&text).unwrap();
+        assert_eq!(song.palette().len(), 2);
+        let req = UpdateSongSettingsRequest {
+            looping: Some(SongLooping {
+                loop_playback: true,
+                crossfade: "6s".into(),
+                cut: vec![],
+            }),
+            ..Default::default()
+        };
+        let out = apply(&text, &song, &req, &[]).unwrap();
+        assert_eq!(parse(&out).unwrap().palette(), song.palette());
+        assert_same_but(&text, &out, &["loop_crossfade", "loop_crossfade_cut"]);
+    }
+
+    #[test]
     fn a_looping_change_keeps_everything_else() {
         let req = UpdateSongSettingsRequest {
             looping: Some(SongLooping {

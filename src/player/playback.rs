@@ -176,6 +176,11 @@ impl Player {
                 return Ok(None);
             }
         };
+        // The song's colours are settled here, once, and travel with the
+        // playback: its own palette overrides, then those of the playlist
+        // entry it plays from, which is none for a song off the list. An
+        // edit to either file takes effect from the next start.
+        let palette = Arc::new(song.palette_for_play(playlist.palette_of(playlist.entry())));
         if let Err(e) = super::seek::check_start_position(&song, start_time, "play from") {
             // A kept position the song can no longer play from (a reload
             // shortened it) goes, or every Play after would fail on it. Only
@@ -277,6 +282,7 @@ impl Player {
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
+                    palette,
                     section_jumps: {
                         let log = Arc::new(crate::playsync::SectionJumpLog::default());
                         log.set_timeline(clock.clone(), start_time);

@@ -74,6 +74,7 @@ export function playlistBody(
       fade_in: fade(s.fadeIn),
     }));
     body.entry_ambient = req.settings.map((s) => ambient(s.ambient));
+    body.entry_palette = req.settings.map((s) => ({ ...s.palette?.slots }));
   }
   if (req.setAmbient) body.ambient = ambient(req.ambient);
   return body;
