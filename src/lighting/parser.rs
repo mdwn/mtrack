@@ -27,6 +27,7 @@ pub(crate) mod fixture_venue; // Make accessible for tests
 pub(crate) mod grammar;
 mod include;
 pub mod layout;
+pub mod palette;
 mod sequences;
 mod show;
 mod tempo_parse;
@@ -45,6 +46,7 @@ pub use fixture_venue::{
     ItemKind, Listed,
 };
 pub use include::{IncludeReader, Sources};
+pub use palette::{declared_slots, resolve_shows, ColorRef, Palette};
 pub use show::{parse_light_file_with, parse_light_shows, parse_light_shows_with_tempo};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};
 

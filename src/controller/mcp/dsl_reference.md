@@ -1,7 +1,7 @@
 # mtrack lighting DSL — quick reference
 
 `.light` files describe four kinds of content: **fixture types**, **venues**,
-**light shows**, and **sequences**. A single file can contain any combination.
+**light shows**, and **sequences** (plus an optional **palette** of named colours). A single file can contain any combination.
 Comments use `#` or `//` to end of line. Whitespace is insignificant.
 
 When generating a show for a song, you usually only write a `show "..." { … }`
@@ -61,7 +61,8 @@ Every effect also reads {{common_params}}.
 - `color`: a named color ({{named_colors}}, quoted), a hex string (`#FF8800`
   or `"#FF8800"`), or `rgb(255, 128, 0)`. Only {{color_effects}} read it —
   a `chase` or `strobe` gates whatever is beneath it, so put the color on the
-  bed.
+  bed. A color may also be a palette slot, `palette.primary` (see
+  [Palette](#palette)).
 - Levels (`dimmer`, `intensity`, `red`, `green`, `blue`, `white`,
   `base_level`, `start_level`, …): floats `0.0`–`1.0`, or a percentage like
   `60%`.
@@ -196,6 +197,45 @@ loop {
     all_lights: static color: "black", duration: 250ms
 } repeats: 8
 ```
+
+### Palette
+
+A `palette { … }` block at file scope names the colours a show is built from:
+each slot has a default colour, and effects say `palette.<slot>` wherever they
+would write a colour. Write one when a show uses the same few colours in many
+places, so the look can be changed in one place.
+
+```
+palette {
+    primary: "#C01020"
+    secondary: "orange"
+    accent: rgb(255, 240, 200)
+}
+
+sequence "hit"(color: palette.accent) {
+    @1/1
+    front_wash: static color: $color, dimmer: 100%, duration: 1beat
+}
+
+show "Main" {
+    @1/1
+    front_wash: static color: palette.primary, dimmer: 100%, duration: 8measures
+    back_truss: cycle color: palette.primary, color: palette.secondary, duration: 8measures
+    @9/1
+    sequence "hit"(color: palette.secondary)
+}
+```
+
+- Slots are separated by a line break or a comma; each value is any colour a
+  `color:` takes. A file has at most one `palette` block, and a slot is declared
+  once in it.
+- `palette.<slot>` is accepted for `color:` (on `static` and each colour of a
+  `cycle`) and as a sequence argument or default (`sequence "hit"(color:
+  palette.accent)`); the sequence body still says `$color`.
+- A slot the file does not declare is a parse error naming the slot and its
+  position. Every slot has a default, so a show always plays on its own.
+- The colours are settled once, before the song plays; nothing changes while it
+  runs. An included file may carry a `palette` for its own sequences.
 
 ### Tempo and beat-based timing
 

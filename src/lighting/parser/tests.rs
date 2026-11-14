@@ -28,6 +28,8 @@ mod layout_tests;
 #[cfg(test)]
 mod measure_offset_tests;
 #[cfg(test)]
+mod palette_tests;
+#[cfg(test)]
 mod parameters_tests;
 #[cfg(test)]
 mod sequence_params_tests;

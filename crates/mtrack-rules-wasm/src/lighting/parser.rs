@@ -28,6 +28,8 @@ mod error;
 mod include;
 #[path = "../../../../src/lighting/parser/layout.rs"]
 pub mod layout;
+#[path = "../../../../src/lighting/parser/palette.rs"]
+pub mod palette;
 #[path = "../../../../src/lighting/parser/sequences.rs"]
 mod sequences;
 #[path = "../../../../src/lighting/parser/show.rs"]
@@ -52,6 +54,7 @@ pub(crate) mod grammar {
 }
 
 pub use include::{IncludeReader, Sources};
+pub use palette::{declared_slots, resolve_shows, ColorRef, Palette};
 pub(crate) use show::file_items;
 pub use show::{parse_light_file_with, parse_light_shows, parse_light_shows_with_tempo};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};
