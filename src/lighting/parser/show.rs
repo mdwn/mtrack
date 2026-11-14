@@ -987,6 +987,7 @@ fn place_inline_loop(
     offset_secs: f64,
     cues: &mut Vec<Cue>,
     base: Option<usize>,
+    outer: &SequenceLibrary,
 ) -> Result<(), Box<dyn Error>> {
     let mut repeats = 1;
     if let Some(count) = pair
@@ -1001,8 +1002,9 @@ fn place_inline_loop(
     }
 
     // The body's cues are timed from 0, relative to the loop's start; no
-    // sequences are available in an inline loop.
-    let library = SequenceLibrary::empty();
+    // sequences are available in an inline loop, but the file's palette
+    // slots are.
+    let library = outer.without_sequences();
     let block = parse_cue_block(pair.into_inner(), tempo_map, &library)?;
     let origin = block.origin();
     let body = Sequence {
@@ -1204,6 +1206,7 @@ fn parse_cue(
             applied_offset_secs,
             &mut cues,
             base_index,
+            library,
         )?;
     }
     let references = sequence_ref_pairs

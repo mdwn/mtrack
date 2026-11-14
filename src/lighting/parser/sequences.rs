@@ -99,6 +99,15 @@ impl SequenceLibrary {
         self.palette.clone()
     }
 
+    /// A library with no sequences in it but this one's palette slots: the
+    /// body of an inline loop may name the file's slots but no sequence.
+    pub(crate) fn without_sequences(&self) -> Self {
+        SequenceLibrary {
+            palette: self.palette.clone(),
+            ..SequenceLibrary::empty()
+        }
+    }
+
     /// A library for a file whose shows run under `global_tempo`.
     pub(crate) fn new(global_tempo: &Option<TempoMap>) -> Self {
         SequenceLibrary {
