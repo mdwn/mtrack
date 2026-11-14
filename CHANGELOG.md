@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a few seconds and takes the address the player has now. Neither phone asks for anything new: Android
   only declares multicast (a normal permission, no prompt) for the lookup, and iOS lists
   `_mtrack._tcp` for the local network prompt it already shows. Not yet run on a phone.
+- **Scan this network, in the phone app**: beside **Enter an address**, a button that looks for
+  players on a network that drops mDNS. It tries the 254 addresses of the phone's own Wi-Fi
+  network, a few dozen at a time, and asks each one that answers who it is; whatever is a player joins
+  the list, named by its host name, and is remembered by its address like a typed one. Only on the
+  button, only on the Wi-Fi (not mobile data or a VPN), only on a private address, and only the
+  phone's own /24; on any other network it says the phone is not on a network it can scan. It ends by
+  itself within seconds, and when a player is chosen. No new permission. Not yet run on a phone.
 - **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
   `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile`,
   `DeleteProfileFile`, `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`,

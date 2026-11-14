@@ -298,7 +298,7 @@ void main() {
 
   group('the buttons', () {
     appTest(
-      'keep "Enter an address" in a row, with no scan button yet',
+      'keep "Enter an address" in a row, with no scan button when the app cannot scan',
       (h) async {
         expect(
           find.ancestor(
