@@ -36,6 +36,7 @@ import { PLAYBACK_STATE, SONGS } from "../mock-server/test-data";
 import { PlayerService } from "../../src/gen/player/v1/player_pb";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
+import { stubPlaylist } from "../support/playlists";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -260,6 +261,37 @@ for (const theme of THEMES) {
   test.describe(`${theme} theme`, () => {
     test.beforeEach(async ({ page }) => {
       await useTheme(page, theme);
+    });
+
+    test("the palette strip's warning badge and notes are legible", async ({
+      page,
+    }) => {
+      await stubPlaylist(page, "setlist", {
+        name: "setlist",
+        songs: ["Test Song Alpha"],
+        available_songs: [],
+        song_tracks: {},
+        song_palettes: {
+          "Test Song Alpha": {
+            slots: [{ name: "primary", color: "#c01020" }],
+            overrides: {},
+          },
+        },
+        entry_palette: [{ ghost: "#123456" }],
+      });
+      await page.goto("/#/playlists/setlist");
+      await expect(page.getByTestId("palette-strip")).toBeVisible();
+      for (const selector of [
+        '[data-testid="entry-palette-warn"]',
+        ".legend",
+        ".strip h4",
+      ]) {
+        const measured = await probe(page, selector);
+        expect(measured.text, selector).toBeGreaterThanOrEqual(TEXT_MIN);
+      }
+      // The warning is outlined, and the outline is a mark that must be seen.
+      const badge = await probe(page, '[data-testid="entry-palette-warn"]');
+      expect(badge.border).toBeGreaterThanOrEqual(MARK_MIN);
     });
 
     test("the live pilot cue is the most legible label on the card", async ({

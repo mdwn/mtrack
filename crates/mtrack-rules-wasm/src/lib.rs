@@ -213,6 +213,7 @@ pub mod songs {
 pub mod webui {
     pub mod wire {
         pub use crate::wire_messages as messages;
+        pub use crate::wire_songs as songs;
     }
 }
 
@@ -244,6 +245,7 @@ pub use lighting::parser::document::{
 };
 pub use lighting::parser::edit::{EffectEdit, EffectView};
 pub use lighting::parser::layout::Layout;
+pub use lighting::parser::palette_edit::{PaletteEdit, PaletteEditResult};
 use lighting::parser::Sources;
 pub use metronome_config::{MetronomeConfig, Subdivision};
 pub use patch::{PatchOverlap, PatchOverrun, PatchSpan};
@@ -351,6 +353,7 @@ type TempoSectionJs = <TempoSection as Tsify>::JsType;
 type CueEffectJs = <CueEffect as Tsify>::JsType;
 type EffectParamsJs = <EffectParams as Tsify>::JsType;
 type EffectEditJs = <EffectEdit as Tsify>::JsType;
+type PaletteEditJs = <PaletteEdit as Tsify>::JsType;
 type SequenceRefJs = <SequenceRef as Tsify>::JsType;
 type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
 type ChannelValuesJs = <ChannelValues as Tsify>::JsType;
@@ -856,6 +859,29 @@ pub fn effect_edit(effect: CueEffectJs, edit: EffectEditJs) -> Option<CueEffect>
     Some(effect.edited(&edit))
 }
 
+/// A file's palette with an edit made (`Document::palette_edited`): a slot
+/// added, recoloured, renamed (every reference to it in the file with it)
+/// or removed (refused, with the uses listed, while something refers to
+/// it). A value that is not a document or an edit is refused as `unknown`.
+#[wasm_bindgen]
+pub fn palette_edit(document: DocumentJs, edit: PaletteEditJs) -> PaletteEditResult {
+    let refused = |slot: &str| PaletteEditResult {
+        document: None,
+        error: Some(lighting::parser::palette_edit::PaletteEditError {
+            code: lighting::parser::palette_edit::PaletteEditCode::Unknown,
+            slot: slot.to_string(),
+            uses: Vec::new(),
+        }),
+    };
+    let Some(document) = read::<Document>(JsValue::from(document)) else {
+        return refused("");
+    };
+    let Some(edit) = read::<PaletteEdit>(JsValue::from(edit)) else {
+        return refused("");
+    };
+    document.palette_edited(&edit)
+}
+
 /// An effect's parameters as its form shows them (`EffectParams::view`).
 #[wasm_bindgen]
 pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
@@ -875,6 +901,19 @@ pub fn vocabulary() -> lighting::parser::edit::Vocabulary {
 pub fn color_hex(text: &str) -> Option<String> {
     let c = lighting::parser::utils::parse_color_string(text)?;
     Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+}
+
+/// A text value as the DSL writes it (`edit::quoted`): in quotes, unless it
+/// is a `$param` or a `palette.slot`, which stay bare.
+#[wasm_bindgen]
+pub fn quote_value(text: &str) -> String {
+    lighting::parser::edit::quoted(text)
+}
+
+/// A written text value without its quotes (`utils::unquoted`).
+#[wasm_bindgen]
+pub fn unquote_value(text: &str) -> String {
+    lighting::parser::utils::unquoted(text.trim()).to_string()
 }
 
 /// The name a fixture type's DSL declares (`edit::declared_fixture_type`):

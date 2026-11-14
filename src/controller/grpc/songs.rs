@@ -36,9 +36,9 @@ use yaml_rust2::{Yaml, YamlEmitter, YamlLoader};
 use crate::config;
 use crate::player::{Player, SongSources};
 use crate::proto::player::v1::{
-    BeatGrid, GetSongResponse, ListSongsResponse, SampleVelocity, Section as ProtoSection,
-    SongFile, SongListing, SongLooping, SongOverview, SongSample, SongSamples, SongTrack,
-    SongTracks, SongTrigger, UpdateSongSettingsRequest,
+    BeatGrid, GetSongResponse, ListSongsResponse, PaletteSlot, SampleVelocity,
+    Section as ProtoSection, SongFile, SongListing, SongLooping, SongOverview, SongPalette,
+    SongSample, SongSamples, SongTrack, SongTracks, SongTrigger, UpdateSongSettingsRequest,
 };
 use crate::webui::api::songs_api::{self, SONG_WRITES};
 use crate::webui::wire::songs::FileKind;
@@ -58,6 +58,28 @@ pub(super) enum Detail {
     Brief,
     /// What the web UI's song pages show, a failure in full.
     Full,
+}
+
+/// A song's lighting palette as the web UI's editors show it: the slots its
+/// shows declare with their defaults, and the song's own overrides. `None`
+/// for a song with neither.
+pub(super) fn song_palette(song: &crate::songs::Song) -> Option<SongPalette> {
+    let hex =
+        |color: &crate::lighting::effects::Color| crate::lighting::parser::palette::hex(color);
+    let slots: Vec<PaletteSlot> = song
+        .declared_palette_slots()
+        .iter()
+        .map(|(name, color)| PaletteSlot {
+            name: name.clone(),
+            color: hex(color),
+        })
+        .collect();
+    let overrides: std::collections::HashMap<String, String> = song
+        .palette()
+        .iter()
+        .map(|(slot, color)| (slot.clone(), hex(color)))
+        .collect();
+    (!slots.is_empty() || !overrides.is_empty()).then_some(SongPalette { slots, overrides })
 }
 
 /// The page of the library from `start`: as many songs, loaded and failed,
@@ -114,6 +136,7 @@ pub(super) fn list(
                 row.has_tempo_map = song.tempo_map().is_some();
                 row.loop_crossfade_ms = song.loop_crossfade().map(|d| d.as_millis() as u64);
                 row.loop_crossfade_cut = song.loop_crossfade_cut().to_vec();
+                row.palette = song_palette(song);
                 row.sections = song
                     .summary()
                     .sections
@@ -1731,6 +1754,92 @@ notification_audio:
                 .into_inner();
             assert!(all.songs.is_empty());
             assert_eq!(all.total, 0);
+        }
+
+        /// The palette the editors show: the slots a song's shows declare
+        /// with their defaults, and the song's own overrides, as `#rrggbb`;
+        /// detailed lists carry it, brief ones and paletteless songs do not,
+        /// and the playlist editor's read gets the same per song.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_song_lists_its_palette_slots_and_overrides() {
+            use crate::proto::player::v1::{GetPlaylistRequest, ListSongsResponse, PaletteSlot};
+            let project = project().await;
+            let dir = song_dir(&project, "Painted");
+            std::fs::create_dir_all(&dir).unwrap();
+            crate::testutil::write_wav(dir.join("click.wav"), vec![vec![0_i32; 8000]], 8000)
+                .unwrap();
+            std::fs::write(
+                dir.join("a.light"),
+                "palette {\n    primary: \"#c01020\"\n    accent: \"orange\"\n}\n\nshow \"A\" {\n    @00:00.000\n    f: static color: palette.primary, duration: 2s\n}\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("b.light"),
+                "palette {\n    primary: \"#000001\"\n    glow: \"white\"\n}\n\nshow \"B\" {\n    @00:00.000\n    f: static color: palette.glow, duration: 2s\n}\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("song.yaml"),
+                "name: Painted\ntracks:\n- name: click\n  file: click.wav\nlighting:\n- file: a.light\n- file: b.light\npalette:\n  primary: cyan\n  ghost: '#111111'\n",
+            )
+            .unwrap();
+            project.player.reload_songs().await.unwrap();
+
+            let list = |detailed: bool| {
+                let project = &project;
+                async move {
+                    server(project)
+                        .list_songs(Request::new(ListSongsRequest { start: 0, detailed }))
+                        .await
+                        .unwrap()
+                        .into_inner()
+                }
+            };
+            let slot = |name: &str, color: &str| PaletteSlot {
+                name: name.into(),
+                color: color.into(),
+            };
+            let detailed = list(true).await;
+            let find = |all: &ListSongsResponse, name: &str| {
+                all.songs.iter().find(|s| s.name == name).cloned().unwrap()
+            };
+            let painted = find(&detailed, "Painted").palette.unwrap();
+            // Declared in the order the files give them, the first show to
+            // declare a slot setting its default; overrides apart, even for
+            // a slot no show declares.
+            assert_eq!(
+                painted.slots,
+                [
+                    slot("primary", "#C01020"),
+                    slot("accent", "#FFA500"),
+                    slot("glow", "#FFFFFF"),
+                ]
+            );
+            assert_eq!(painted.overrides["primary"], "#00FFFF");
+            assert_eq!(painted.overrides["ghost"], "#111111");
+            // A song with no palette says nothing; so does a brief list.
+            assert_eq!(find(&detailed, "Full").palette, None);
+            assert_eq!(find(&list(false).await, "Painted").palette, None);
+
+            // The playlist editor's read: the same, per song, with the library.
+            project.write("set", "songs:\n- Painted\n- Full\n").await;
+            let ask = |with_library: bool| {
+                let project = &project;
+                async move {
+                    server(project)
+                        .get_playlist(Request::new(GetPlaylistRequest {
+                            name: "set".into(),
+                            with_library,
+                        }))
+                        .await
+                        .unwrap()
+                        .into_inner()
+                }
+            };
+            assert!(ask(false).await.song_palettes.is_empty());
+            let palettes = ask(true).await.song_palettes;
+            assert_eq!(palettes["Painted"], painted);
+            assert!(!palettes.contains_key("Full"), "none is left out");
         }
 
         #[tokio::test(flavor = "multi_thread")]

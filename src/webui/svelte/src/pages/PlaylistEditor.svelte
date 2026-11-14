@@ -34,6 +34,13 @@
   import { entrySummary } from "../lib/playlistEntry";
   import FadeFields from "../components/playlists/FadeFields.svelte";
   import AmbientFields from "../components/playlists/AmbientFields.svelte";
+  import PaletteStrip from "../components/palette/PaletteStrip.svelte";
+  import SlotOverrides from "../components/palette/SlotOverrides.svelte";
+  import {
+    resolvePlaylist,
+    songColors,
+    unknownOverrides,
+  } from "../lib/palette/resolve";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -63,8 +70,7 @@
   /** Each song's ambient light, kept in step with `editSongs`: null for the
    *  playlist's, false for none, or its own. */
   let editEntryAmbient = $state<PlaylistAmbient[]>([]);
-  /** Each song's palette overrides, kept in step with `editSongs`. Not
-   *  edited here: read and passed back as they are, so a save keeps them. */
+  /** Each song's palette overrides, kept in step with `editSongs`. */
   let editEntryPalette = $state<Record<string, string>[]>([]);
   /** The slot whose transitions panel is open. */
   let openTransitions = $state<number | null>(null);
@@ -95,6 +101,26 @@
         )
       : [],
   );
+
+  /** Every entry with the colors it plays in: the show's, the song's, then
+   *  the entry's own. */
+  let strip = $derived(
+    resolvePlaylist(editSongs, detail?.song_palettes ?? {}, editEntryPalette),
+  );
+  /** Whether any song has a palette to show: with none the strip and the
+   *  color settings have nothing to say. */
+  let hasPalettes = $derived(
+    strip.some(
+      (e) => e.palette.slots.length > 0 || e.palette.unknown.length > 0,
+    ),
+  );
+
+  function setEntryPalette(index: number, overrides: Record<string, string>) {
+    editEntryPalette = editEntryPalette.map((p, i) =>
+      i === index ? overrides : p,
+    );
+    dirty = true;
+  }
 
   async function loadPlaylists() {
     try {
@@ -333,6 +359,7 @@
         fades: editFades[i],
         autoPlay: editAutoPlay[i],
         ambient: editEntryAmbient[i],
+        palette: editEntryPalette[i],
       },
       tr,
     );
@@ -573,6 +600,15 @@
         />
       </div>
 
+      {#if hasPalettes}
+        <div class="palette-strip-wrap">
+          <PaletteStrip
+            entries={strip}
+            onselect={(i) => (openTransitions = editSlotIds[i])}
+          />
+        </div>
+      {/if}
+
       <div class="song-columns">
         <div class="song-col">
           <h4>
@@ -615,6 +651,14 @@
                     >
                   </div>
                   <span class="song-name">{song}</span>
+                  {#if unknownOverrides(detail.song_palettes?.[song], editEntryPalette[i] ?? {}).length > 0}
+                    <span
+                      class="warn-badge"
+                      data-testid="entry-palette-warn"
+                      title={$t("palette.unknownSlotHint")}
+                      >{$t("palette.unknownSlot")}</span
+                    >
+                  {/if}
                   <label
                     class="auto-play"
                     title={$t("playlists.autoPlayTooltip")}
@@ -734,6 +778,25 @@
                           onchange={(value) => setFade(i, "fade_out", value)}
                         />
                       </section>
+                      {#if (detail.song_palettes?.[song]?.slots.length ?? 0) > 0 || Object.keys(editEntryPalette[i] ?? {}).length > 0}
+                        <section
+                          class="transitions-group"
+                          data-testid="transitions-palette"
+                        >
+                          <h5>{$t("palette.entry.title")}</h5>
+                          <span class="field-hint"
+                            >{$t("palette.entry.hint")}</span
+                          >
+                          <SlotOverrides
+                            slots={songColors(detail.song_palettes?.[song])}
+                            overrides={editEntryPalette[i] ?? {}}
+                            baseLabel={$t("palette.entry.base")}
+                            idPrefix={`transitions-${editSlotIds[i]}-palette`}
+                            disabled={$playbackStore.locked}
+                            onchange={(value) => setEntryPalette(i, value)}
+                          />
+                        </section>
+                      {/if}
                     </div>
                   {/if}
                 </li>
@@ -816,6 +879,21 @@
     font-size: 12px;
     color: var(--nc-fg-3);
     white-space: nowrap;
+  }
+  .warn-badge {
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--nc-amber-fg);
+    border: 1px solid var(--nc-amber-fg);
+    white-space: nowrap;
+  }
+  .palette-strip-wrap {
+    padding-top: 16px;
   }
   .auto-play-gap {
     max-width: 120px;

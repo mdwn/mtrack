@@ -1104,6 +1104,11 @@ impl PlayerService for PlayerServer {
             let library = self.player.songs();
             for song in library.sorted_list() {
                 response.available_songs.push(song.name().to_string());
+                if let Some(palette) = songs::song_palette(&song) {
+                    response
+                        .song_palettes
+                        .insert(song.name().to_string(), palette);
+                }
                 response.song_tracks.insert(
                     song.name().to_string(),
                     TrackNames {
@@ -1300,6 +1305,7 @@ fn playlist_response(playlist: &crate::playlist::Playlist) -> Result<GetPlaylist
         revision: settings.revision,
         available_songs: Vec::new(),
         song_tracks: std::collections::HashMap::new(),
+        song_palettes: std::collections::HashMap::new(),
     })
 }
 

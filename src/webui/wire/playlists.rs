@@ -62,6 +62,10 @@ pub struct PlaylistDetail {
     pub available_songs: Vec<String>,
     /// Each song's tracks, for the tracks a fade leaves out.
     pub song_tracks: BTreeMap<String, Vec<String>>,
+    /// Each song's lighting palette, by name: the slots its shows declare
+    /// with their defaults, and the song's own overrides. A song with
+    /// neither is left out.
+    pub song_palettes: BTreeMap<String, crate::webui::wire::songs::SongPalette>,
 }
 
 /// What a playlist save sets (`SavePlaylist`): the songs, and what is set

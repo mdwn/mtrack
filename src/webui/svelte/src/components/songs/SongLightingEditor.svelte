@@ -47,6 +47,14 @@
     TrackPeaks,
   } from "../../gen/rules/mtrack_rules";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
+  import PalettePanel from "../lighting/PalettePanel.svelte";
+  import {
+    mergeSlots,
+    ownSlots,
+    providePalette,
+    provideSequenceParams,
+    type SlotColor,
+  } from "../../lib/lighting/palette";
   import { configToSection } from "../../lib/tempoConvert";
   import LightingSummary from "../lighting/LightingSummary.svelte";
   import { isPhone } from "../../lib/util/media";
@@ -85,6 +93,10 @@
     songTempo?: import("../../lib/api/songs").TempoConfig | null;
     /** Where to put the timeline's cursor when it opens, in milliseconds. */
     initialCursorMs?: number | null;
+    /** The palette slots the song's files declare (their own and those of
+     *  the files they include), with their defaults, as edited: what the
+     *  song's palette overrides are offered against. */
+    declaredSlots?: SlotColor[] | null;
   }
 
   let {
@@ -96,6 +108,9 @@
     onremovelightfile,
     songTempo = null,
     initialCursorMs = null,
+    // Written for the parent that binds it; never read back here.
+    // eslint-disable-next-line no-useless-assignment
+    declaredSlots = $bindable(),
   }: Props = $props();
 
   let error = $state("");
@@ -121,6 +136,34 @@
   let venueGroupsError = $state("");
   let pendingDeletes = $state<string[]>([]);
   let sequenceNames = $derived(mergedLightFile.sequences.map((s) => s.name));
+
+  /** The palette slots the song's files declare: each file's own block,
+   *  and those of the files they include (which merge into the includer).
+   *  The first to declare a slot sets its color. */
+  let paletteSlots = $derived.by(() => {
+    const own = lightFiles
+      .filter((lf) => !lf.parseError)
+      .map((lf) => ownSlots(lf.parsed));
+    const included = includeSources.map((inc) =>
+      inc.source === undefined
+        ? []
+        : ownSlots(rules.document(inc.source, inc.path).document ?? emptyFile),
+    );
+    return mergeSlots(...own, ...included);
+  });
+  const emptyFile: LightFile = { sequences: [], shows: [] };
+  providePalette(() => paletteSlots);
+  provideSequenceParams(() =>
+    Object.fromEntries(
+      mergedLightFile.sequences.map((s) => [s.name, s.params ?? []]),
+    ),
+  );
+  /** Whether the files are loaded: until they are, the slots are not
+   *  the song's to report. */
+  let filesLoaded = $state(false);
+  $effect(() => {
+    if (filesLoaded) declaredSlots = paletteSlots;
+  });
   let uploading = $state(false);
   let showMidiDmxModal = $state(false);
   let showFileBrowser = $state(false);
@@ -438,6 +481,12 @@
       }
 
       rebuildMergedLightFile();
+      // The included files' palettes are slots the including file's effects
+      // may use.
+      if (lightFiles.some((lf) => lf.parsed.includes?.length)) {
+        void loadIncludes();
+      }
+      filesLoaded = true;
 
       rawFileIndex = 0;
       rawContent = loaded.length > 0 ? loaded[0].raw : "";
@@ -489,6 +538,8 @@
 
       loaded.parsed = {
         ...(loaded.parsed.includes ? { includes: loaded.parsed.includes } : {}),
+        // The timeline holds no palette: the file keeps its own.
+        ...(loaded.parsed.palette ? { palette: loaded.parsed.palette } : {}),
         tempo: lf.tempo,
         shows: lf.shows.slice(showOffset, showOffset + origShowCount),
         sequences: lf.sequences.slice(seqOffset, seqOffset + origSeqCount),
@@ -542,6 +593,17 @@
         }
       }
     }
+  }
+
+  /** A palette edit the player accepted: the file as edited replaces the
+   *  loaded one, and the timeline is drawn from it again. */
+  function onPaletteChange(index: number, edited: LightFile) {
+    const loaded = lightFiles[index];
+    if (!loaded || loaded.parseError) return;
+    loaded.parsed = edited;
+    rebuildMergedLightFile();
+    dirty = true;
+    onchange?.();
   }
 
   /** Folds what is typed in the Raw tab into its file, so a save writes
@@ -883,6 +945,25 @@
           {shownLayout.error}
         </div>
       {/if}
+      <details class="palette-card" data-testid="palette-card">
+        <summary>
+          {$t("palette.title")}
+          <span class="palette-count" data-testid="palette-count"
+            >{paletteSlots.length}</span
+          >
+        </summary>
+        <p class="palette-hint">{$t("palette.hint")}</p>
+        {#each lightFiles as lf, i (lf.path)}
+          {#if !lf.parseError}
+            <PalettePanel
+              file={lf.parsed}
+              fileName={lightFiles.length > 1 ? lf.path : undefined}
+              idPrefix={`palette-${i}`}
+              onchange={(edited) => onPaletteChange(i, edited)}
+            />
+          {/if}
+        {/each}
+      </details>
       <TimelineEditor
         lightFile={mergedLightFile}
         layout={shownLayout}
@@ -1028,6 +1109,32 @@
 {/if}
 
 <style>
+  .palette-card {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    background: var(--inset-bg);
+  }
+  .palette-card summary {
+    cursor: pointer;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--nc-fg-2);
+  }
+  .palette-count {
+    margin-left: 6px;
+    font-family: var(--nc-font-mono);
+    color: var(--nc-fg-1);
+  }
+  .palette-hint {
+    margin: 8px 0;
+    font-size: 13px;
+    color: var(--nc-fg-2);
+  }
   .lighting-section {
     display: flex;
     flex-direction: column;

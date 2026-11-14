@@ -16,6 +16,8 @@
 //! list (`SongList`, which it maps `ListSongs` messages into:
 //! src/lib/grpc/library.ts).
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::audio::beat_grid::BeatGrid;
@@ -58,6 +60,28 @@ pub struct SongInfo {
     pub loop_crossfade_ms: Option<u64>,
     pub loop_crossfade_cut: Vec<String>,
     pub sections: Vec<Section>,
+    /// The lighting palette slots its shows declare, and its own overrides.
+    pub palette: SongPalette,
+}
+
+/// A song's lighting palette (`SongPalette`): what its shows declare, and
+/// the colours the song itself overrides.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(hashmap_as_object))]
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+pub struct SongPalette {
+    /// The slots its shows declare, in order, each with its default.
+    pub slots: Vec<SlotColor>,
+    /// The song's overrides, slot to `#rrggbb`; may name a slot no show of
+    /// the song declares.
+    pub overrides: BTreeMap<String, String>,
+}
+
+/// A palette slot and its default colour as `#rrggbb`.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SlotColor {
+    pub name: String,
+    pub color: String,
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
