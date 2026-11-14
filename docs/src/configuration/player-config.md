@@ -256,6 +256,8 @@ dmx:
   # hold fixture types and venues. See the Lighting chapter.
   lighting:
     current_venue: main_stage
+    # Layers, bottom to top; the defaults are background, midground and foreground.
+    layers: [background, midground, foreground]
     directories:
       fixture_types: lighting/fixture_types
       venues: lighting/venues

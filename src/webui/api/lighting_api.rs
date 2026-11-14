@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::lighting::effects::LayerSet;
 use crate::webui::wire::fixture_types::{
     BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
     GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, StrobeRange,
@@ -462,6 +461,7 @@ pub(super) async fn put_lighting_file(
     let _writing = super::songs_api::SONG_WRITES.lock().await;
     let tempo = song_tempo_for_path(&state, &verified_path);
     match save_light_show(
+        &state.player.layers(),
         &state.config_path,
         &root,
         &verified_path,
@@ -488,6 +488,7 @@ pub(super) async fn put_lighting_file(
 /// written and kept inside `root`; its directory made only then. The
 /// caller holds [`super::songs_api::SONG_WRITES`].
 pub(crate) async fn save_light_show(
+    layers: &crate::lighting::effects::LayerSet,
     config_path: &std::path::Path,
     root: &VerifiedRoot,
     path: &std::path::Path,
@@ -503,7 +504,7 @@ pub(crate) async fn save_light_show(
         .map_err(IntoResponse::into_response)?;
     let path = &light_show_to_write(root, path)?;
     if let Err(errors) =
-        config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
+        config_io::validate_light_show(layers, &body, Some(path), Some(root.as_path()), tempo)
     {
         let errors: Vec<String> = errors
             .into_iter()
@@ -642,6 +643,7 @@ pub(super) async fn validate_lighting(
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
     match config_io::validate_light_show(
+        &state.player.layers(),
         &body,
         path.as_deref(),
         Some(&state.songs_path()),
@@ -1737,7 +1739,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
         // case for editing a show. The groups are declared in the player config,
         // not by the engine, so the names are still knowable; only the fixtures
         // each resolves to are not.
-        return groups_from_config(&state.config_path).await;
+        return groups_from_config(&state).await;
     };
 
     // The lighting system's mutex is shared with the effects loop thread, and
@@ -1763,6 +1765,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
     match groups {
         Ok(groups) => Json(LightingGroups {
             groups,
+            layers: state.player.layers().names().to_vec(),
             resolved: None,
         })
         .into_response(),
@@ -1914,6 +1917,7 @@ pub(super) async fn evaluate_lighting(
         .filter(|name| !evaluated.targeted.contains(*name))
         .cloned()
         .collect();
+    let layers = state.player.layers();
     let evaluations = evaluated
         .evaluations
         .iter()
@@ -1927,7 +1931,7 @@ pub(super) async fn evaluate_lighting(
                     id: effect.id.clone(),
                     groups: evaluated.effect_groups.get(&effect.id).cloned(),
                     kind: effect.effect_type.to_string(),
-                    layer: LayerSet::standard().display_name(effect.layer),
+                    layer: layers.display_name(effect.layer),
                     elapsed: effect.elapsed.as_secs_f64(),
                     duration: effect.duration.as_secs_f64(),
                     fixtures: effect.fixtures.clone(),
@@ -2134,9 +2138,9 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
 /// player config when no engine is running to resolve them against.
-async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
+async fn groups_from_config(state: &WebUiState) -> axum::response::Response {
     // codeql[rust/path-injection] config_path is set at startup, not user input.
-    let path = config_path.to_path_buf();
+    let path = state.config_path.clone();
     // A parse failure is reported, not swallowed. `.ok()` here answered
     // "no groups" for a config that does not load at all — the same silent
     // empty list this fallback exists to remove, one layer down, and the reason
@@ -2189,6 +2193,7 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         .collect();
     Json(LightingGroups {
         groups,
+        layers: state.player.layers().names().to_vec(),
         resolved: Some(false),
     })
     .into_response()

@@ -131,7 +131,14 @@ effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "
 
 parameters = { parameter ~ ("," ~ parameter)* }
 
-parameter = { parameter_name ~ ":" ~ parameter_value }
+parameter = { layer_entry | parameter_name ~ ":" ~ parameter_value }
+
+// `layer: <name>`: any identifier, checked against the player's layers
+// after parsing. Matched by its key rather than as one more value kind, so
+// a name that begins like a keyword (`addons`, `snap_lights`) is read whole
+// instead of stopping at the keyword. Silent: the pair holds `parameter_name`
+// and the value, as for any other parameter.
+layer_entry = _{ &("layer" ~ ":") ~ parameter_name ~ ":" ~ (param_ref | layer_parameter) }
 
 // Prefer identifiers for names; allow quoted names when needed
 parameter_name = { identifier | string }
@@ -146,7 +153,6 @@ parameter_value = {
     loop_parameter |
     step_parameter |
     transition_parameter |
-    layer_parameter |
     blend_mode_parameter |
     color_parameter |
     number_value |
@@ -211,7 +217,9 @@ step_param = { parameter_name ~ ":" ~ parameter_value }
 
 transition_parameter = { "snap" | "fade" | "crossfade" | "hue" }
 
-layer_parameter = { "background" | "midground" | "foreground" }
+// A layer's name: an identifier. Which names exist is the player's
+// configuration, not the grammar's.
+layer_parameter = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
 blend_mode_parameter = { "replace" | "multiply" | "add" | "overlay" | "screen" }
 

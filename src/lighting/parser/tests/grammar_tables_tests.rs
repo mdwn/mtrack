@@ -18,7 +18,6 @@
 use pest::Parser;
 
 use crate::config::length::UNITS;
-use crate::lighting::effects::LayerSet;
 use crate::lighting::effects::NAMED_COLORS;
 use crate::lighting::fixture_data::StrobeCurve;
 use crate::lighting::parser::effect_parse::{
@@ -148,20 +147,6 @@ fn the_grammar_names_exactly_the_transitions() {
         Rule::transition_parameter,
         "transition_parameter",
         &words(&CYCLE_TRANSITIONS),
-        bare,
-    );
-}
-
-#[test]
-fn the_grammar_names_exactly_the_layers() {
-    assert_rule_is(
-        Rule::layer_parameter,
-        "layer_parameter",
-        &LayerSet::standard()
-            .names()
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
         bare,
     );
 }

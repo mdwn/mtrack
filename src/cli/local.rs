@@ -143,8 +143,11 @@ fn brightness_changes_report(
         )?,
     }
 
-    let songs = songs::get_all_songs(&player_config.songs(&config_path))?;
-    let findings = crate::lighting::brightness_changes::project_findings(&mut system, &songs);
+    let layers = crate::config::lighting::layer_set(lighting);
+    let songs =
+        songs::get_all_songs_with_defaults(&player_config.songs(&config_path), false, &layers)?;
+    let findings =
+        crate::lighting::brightness_changes::project_findings(&mut system, &songs, &layers);
     let total: usize = findings.iter().map(|(_, f)| f.len()).sum();
     for (song, warnings) in &findings {
         writeln!(out, "{song}:")?;
@@ -270,7 +273,8 @@ pub async fn start(
     }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
-    let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;
+    let layers = player_config.layer_set();
+    let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome, &layers)?;
 
     // Where songs and playlists are read from, by the one resolver the
     // player uses again as the config changes: the playlists directory from
@@ -386,7 +390,15 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
     // Verified standalone, so there is no song to inherit a tempo from: a show
     // that relies on its song's tempo cannot be checked here, and will report
     // that it needs a tempo section.
-    let shows = match parse_light_file(&content, Some(path), None) {
+    // The layers this host's profile configures, when a config is given
+    // (the shows are checked against them), else the defaults.
+    let layers = config_path
+        .map(Path::new)
+        .filter(|p| p.exists())
+        .and_then(|p| config::Player::deserialize(p).ok())
+        .map(|c| c.layer_set())
+        .unwrap_or_default();
+    let shows = match parse_light_file(&layers, &content, Some(path), None) {
         Ok(shows) => shows,
         Err(e) => {
             eprintln!("❌ Syntax error in light show:");
@@ -541,7 +553,7 @@ pub fn verify(
     let config_path = Path::new(config);
     let player_config = config::Player::deserialize(config_path)?;
     let songs_path = crate::util::resolved_dir(&player_config.songs(config_path));
-    let songs = songs::get_all_songs(&songs_path)?;
+    let songs = songs::get_all_songs_with_defaults(&songs_path, false, &player_config.layer_set())?;
 
     if songs.is_empty() {
         println!("No songs found in {}.", songs_path.display());

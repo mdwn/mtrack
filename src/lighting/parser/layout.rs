@@ -236,13 +236,14 @@ pub fn passes_by(pass_ends: &[f64], until_ms: f64) -> u32 {
 /// timeline reaches to `until` at least (the song's length), and past the
 /// latest written end by a tail.
 pub fn layout(
+    layers: &LayerSet,
     source: &str,
     path: Option<&Path>,
     external: Option<&TempoMap>,
     reader: &dyn IncludeReader,
     until: Duration,
 ) -> Layout {
-    let parsed = match parse_file_with(source, path, None, external, reader) {
+    let parsed = match parse_file_with(source, path, None, external, reader, layers) {
         Ok(parsed) => parsed,
         Err(error) => {
             return Layout {
@@ -263,7 +264,7 @@ pub fn layout(
     let shows = parsed
         .shows
         .values()
-        .map(|show| show_layout(show, horizon))
+        .map(|show| show_layout(show, horizon, layers))
         .collect();
 
     let sequences = parsed
@@ -284,7 +285,7 @@ pub fn layout(
                 let steps = offset_steps(&cues);
                 SequenceLayout {
                     name,
-                    cues: cue_layouts(&cues, horizon, &tempo_map),
+                    cues: cue_layouts(&cues, horizon, &tempo_map, layers),
                     tempo: tempo_map
                         .filter(|_| own_tempo)
                         .map(|map| TempoLayout::new(&map, horizon, &steps)),
@@ -349,11 +350,11 @@ fn shifted(steps: &[(Duration, Duration)], at: Duration) -> Duration {
     at.saturating_add(shift)
 }
 
-fn show_layout(show: &ParsedShow, horizon: Duration) -> ShowLayout {
+fn show_layout(show: &ParsedShow, horizon: Duration, layers: &LayerSet) -> ShowLayout {
     let steps = offset_steps(&show.cues);
     ShowLayout {
         name: show.name.clone(),
-        cues: cue_layouts(&show.cues, horizon, &show.tempo_map),
+        cues: cue_layouts(&show.cues, horizon, &show.tempo_map, layers),
         tempo: show
             .tempo_map
             .as_ref()
@@ -407,10 +408,11 @@ fn cue_layouts(
     cues: &[ParsedCue],
     horizon: Duration,
     tempo_map: &Option<TempoMap>,
+    layers: &LayerSet,
 ) -> Vec<CueLayout> {
     cues.iter()
         .enumerate()
-        .map(|(index, cue)| cue_layout(index, cue, horizon, tempo_map))
+        .map(|(index, cue)| cue_layout(index, cue, horizon, tempo_map, layers))
         .collect()
 }
 
@@ -419,6 +421,7 @@ fn cue_layout(
     cue: &ParsedCue,
     horizon: Duration,
     tempo_map: &Option<TempoMap>,
+    layers: &LayerSet,
 ) -> CueLayout {
     let offset = duration_from_secs_saturating(cue.offset_secs);
     let effects = cue
@@ -433,7 +436,7 @@ fn cue_layout(
                 .enumerate()
                 .map(move |(i, effect)| EffectLayout {
                     kind: EffectKind::of(&effect.effect_type),
-                    layer: LayerSet::standard().display_name(effect.layer.unwrap_or(DEFAULT_LAYER)),
+                    layer: layers.display_name(effect.layer.unwrap_or(DEFAULT_LAYER)),
                     groups: effect.groups.clone(),
                     start_ms: ms(placed.time),
                     end_ms: ms(placed.time.saturating_add(effect.total_duration())),
@@ -575,7 +578,14 @@ mod tests {
     use crate::lighting::parser::Sources;
 
     fn lay(source: &str) -> Layout {
-        layout(source, None, None, &Sources::none(), Duration::ZERO)
+        layout(
+            LayerSet::standard(),
+            source,
+            None,
+            None,
+            &Sources::none(),
+            Duration::ZERO,
+        )
     }
 
     fn close(got: f64, want: f64, what: &str) {
@@ -645,6 +655,7 @@ mod tests {
     fn the_tempo_lane_follows_ramps_and_metres() {
         let source = "tempo {\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 180, transition: 8 },\n        @4/1 { time_signature: 3/4 },\n        @6/3 { time_signature: 2/4 }\n    ]\n}\nshow \"S\" {\n    @1/1\n    all: static, color: \"red\", duration: 1s\n}\n";
         let laid = layout(
+            LayerSet::standard(),
             source,
             None,
             None,
@@ -690,7 +701,14 @@ mod tests {
     fn the_beat_lines_are_the_click_grids_beats() {
         // A 6/8 bar is six beats on the click grid, not three quarters.
         let source = "tempo {\n    bpm: 120\n    time_signature: 6/8\n}\nshow \"S\" {\n    @1/1\n    all: static, color: \"red\", duration: 1s\n}\n";
-        let laid = layout(source, None, None, &Sources::none(), Duration::from_secs(3));
+        let laid = layout(
+            LayerSet::standard(),
+            source,
+            None,
+            None,
+            &Sources::none(),
+            Duration::from_secs(3),
+        );
         let bar: Vec<(u32, f64)> = laid
             .tempo
             .expect("tempo")
@@ -743,6 +761,7 @@ mod tests {
             "{TEMPO}sequence \"s\" {{\n    @1/1\n    a: static, color: \"red\", duration: 1beat\n}}\nshow \"S\" {{\n    @1/1\n    sequence \"s\", loop: loop\n}}\n"
         );
         let laid = layout(
+            LayerSet::standard(),
             &source,
             None,
             None,

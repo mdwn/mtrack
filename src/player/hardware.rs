@@ -1019,8 +1019,24 @@ impl Player {
         // the same (a scan error) leaves the player, and every surface's song
         // paths, as they were, and the reply carries it beside the
         // hardware's outcome.
+        //
+        // A change to the lighting layers is taken up the same way: the
+        // songs' light shows hold their layers as positions in the set, so
+        // they are parsed again against the new one. (The DMX engine takes
+        // the set up when the hardware reload below rebuilds it.)
+        let new_layers = match self.config_store() {
+            Some(store) => Some(store.read_config().await.layer_set()),
+            None => None,
+        };
+        let layers_changed = new_layers
+            .as_ref()
+            .is_some_and(|new| new != self.layers().as_ref());
+        if let Some(new) = new_layers.filter(|_| layers_changed) {
+            info!("The lighting layers changed: reloading the songs");
+            self.set_layers(new);
+        }
         let songs_error = match self.resolve_song_sources().await {
-            Some(sources) if Some(&sources) != self.song_sources().as_ref() => {
+            Some(sources) if layers_changed || Some(&sources) != self.song_sources().as_ref() => {
                 info!("The songs or playlists moved: reloading them");
                 // A config changed outside the whole-config save (a hand
                 // edit, read in by a profile save) has had no check: the

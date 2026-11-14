@@ -13,6 +13,7 @@
 //
 mod hardware;
 mod hardware_status;
+mod layers;
 pub mod lock_policy;
 mod navigation;
 mod play_declined;
@@ -25,6 +26,7 @@ pub use hardware_status::{
     AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
     SubsystemStatus, TestOutputStatus,
 };
+pub use layers::{layer_loss_message, LayerLoss};
 pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
 pub use status::{
     AmbientStatus, DmxRead, LightingStatus, PlayerStatus, AMBIENT_UNREAD, STATUS_DMX_READ_TIMEOUT,
@@ -325,6 +327,10 @@ pub struct Player {
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
     default_metronome: Arc<std::sync::atomic::AtomicBool>,
+    /// The lighting layers of the config the player runs, bottom to top:
+    /// what its songs' light shows are parsed against. A change to them
+    /// reloads the songs (see [`Player::apply_config_change`]).
+    layers: Arc<parking_lot::RwLock<Arc<crate::lighting::effects::LayerSet>>>,
     /// Cancellation token for the current hardware init round. On reload,
     /// the old token is cancelled and a new one is created.
     init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
@@ -602,6 +608,8 @@ impl Player {
             base_path,
         )?);
 
+        player.set_layers(config.layer_set());
+
         // Mark as not ready — async init will set to true when complete.
         // Use send_modify() because send() is a no-op when no receivers exist yet.
         player.init_done_tx.send_modify(|v| *v = false);
@@ -730,6 +738,9 @@ impl Player {
             gains_revision: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             lighting_reads: Arc::default(),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            layers: Arc::new(parking_lot::RwLock::new(Arc::new(
+                crate::lighting::effects::LayerSet::default(),
+            ))),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1057,6 +1068,18 @@ impl Player {
     pub fn set_default_metronome(&self, enabled: bool) {
         self.default_metronome
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The lighting layers the player runs, bottom to top: the host-matched
+    /// profile's `dmx.lighting.layers`, else the defaults.
+    pub fn layers(&self) -> Arc<crate::lighting::effects::LayerSet> {
+        self.layers.read().clone()
+    }
+
+    /// Sets the lighting layers songs are parsed against. Takes effect on
+    /// the next song (re)load.
+    pub fn set_layers(&self, layers: crate::lighting::effects::LayerSet) {
+        *self.layers.write() = Arc::new(layers);
     }
 
     /// Returns the player-wide "metronome on by default" flag.

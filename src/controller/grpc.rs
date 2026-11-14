@@ -551,7 +551,7 @@ impl StageWatch {
                     .as_ref()
                     .and_then(|handles| handles.lighting_system.as_ref()),
             );
-            stage::stage_layout(&metadata, &snapshot)
+            stage::stage_layout(&metadata, &snapshot, player.layers().names())
         })
         .await
         .map_err(|e| Status::internal(format!("the stage layout could not be read: {e}")))
@@ -925,6 +925,15 @@ impl PlayerService for PlayerServer {
             .profile_from_update(req.index as usize, body)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let losses = self
+            .player
+            .layer_losses_at(req.index as usize, &profile)
+            .await;
+        if !losses.is_empty() {
+            return Err(Status::failed_precondition(
+                crate::player::layer_loss_message(&losses),
+            ));
+        }
         let snapshot = store
             .update_profile(req.index as usize, profile, &req.expected_checksum)
             .await

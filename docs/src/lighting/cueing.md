@@ -429,7 +429,9 @@ time, and a cue may hold several.
 | `reset_measures` | Removes the shift for the cues that follow. |
 
 `layer:` is required on `freeze`, `unfreeze` and `master`; only `clear` may omit it, and then it
-means every layer. Layers are `background`, `midground` and `foreground`.
+means every layer. They take the names of the player's [layers](configuration.md#layers):
+`background`, `midground` and `foreground` unless the player configures others (the commands above
+use those). A command naming a layer the player does not have fails the show's load.
 
 `clear` is an immediate cut, not a fade. There is no command that fades a layer out: every
 effect has a finite duration, so put the fade on the effect itself with `down_time` and let it

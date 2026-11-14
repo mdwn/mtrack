@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 
 use pest::Parser;
 
+use crate::lighting::effects::LayerSet;
+
 pub mod document;
 pub mod edit;
 mod effect_parse;
@@ -45,7 +47,9 @@ pub use fixture_venue::{
     ItemKind, Listed,
 };
 pub use include::{IncludeReader, Sources};
-pub use show::{parse_light_file_with, parse_light_shows, parse_light_shows_with_tempo};
+pub use show::{
+    parse_light_file_with, parse_light_shows, parse_light_shows_in, parse_light_shows_with_tempo,
+};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};
 
 use grammar::{LightingParser, Rule};
@@ -68,27 +72,30 @@ impl IncludeReader for DiskReader {
     }
 }
 
-/// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does.
-/// `path` is where the content lives, which its `include`s resolve against;
-/// content with an `include` and no path is an error.
+/// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does,
+/// against the player's `layers`: a show naming a layer the set lacks is an
+/// error. `path` is where the content lives, which its `include`s resolve
+/// against; content with an `include` and no path is an error.
 pub fn parse_light_file(
+    layers: &LayerSet,
     content: &str,
     path: Option<&Path>,
     external: Option<&crate::tempo::TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file_within(content, path, None, external)
+    parse_light_file_within(layers, content, path, None, external)
 }
 
 /// Parses a `.light` file as `parse_light_file` does, its `include`s
 /// confined to `root` when one is given: for source from somewhere that may
 /// not read the whole disk, such as the web UI or an MCP client.
 pub fn parse_light_file_within(
+    layers: &LayerSet,
     content: &str,
     path: Option<&Path>,
     root: Option<&Path>,
     external: Option<&crate::tempo::TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file_with(content, path, root, external, &DiskReader)
+    parse_light_file_with(content, path, root, external, &DiskReader, layers)
 }
 
 /// Every file `path` includes, directly or through another included file,

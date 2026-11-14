@@ -890,6 +890,13 @@ impl Player {
         super::lighting::ProjectDirs::of(self.host_lighting())
     }
 
+    /// The lighting layers on this host: the host-matched profile's, else
+    /// the defaults (bottom to top: `background`, `midground`,
+    /// `foreground`). The one set the parser, the songs and the engine use.
+    pub fn layer_set(&self) -> crate::lighting::effects::LayerSet {
+        super::lighting::layer_set(self.host_lighting())
+    }
+
     /// The lighting directories the config at `config_path` gives this host
     /// ([`Self::lighting_dirs`]): the one reader the web UI's server side,
     /// MCP and the CLI ask. The defaults when there is no config file; an
@@ -1167,6 +1174,72 @@ profiles:
         );
         assert!(profiles[2].midi().is_none());
         assert!(profiles[2].dmx().is_none());
+    }
+
+    #[test]
+    fn the_hosts_profile_gives_the_layers_and_the_default_has_three() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    dmx:
+      universes: []
+      lighting:
+        layers: [floor, mid, top, flash]
+  - dmx:
+      universes: []
+      lighting:
+        current_venue: b
+"#,
+        );
+        let of = |host: &str| super::super::lighting::layer_set(player.lighting_for_host(host));
+        assert_eq!(of("pi-a").names(), ["floor", "mid", "top", "flash"]);
+        assert_eq!(
+            of("pi-b").names(),
+            ["background", "midground", "foreground"]
+        );
+    }
+
+    #[test]
+    fn layers_that_are_not_a_set_fail_the_config_load() {
+        for (layers, want) in [
+            ("[]", "at least one"),
+            ("[a, a]", "duplicate layer name 'a'"),
+            ("[\"not ok\"]", "not an identifier"),
+        ] {
+            let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+            temp.write_all(
+                format!(
+                    "songs: songs\nprofiles:\n  - dmx:\n      universes: []\n      lighting:\n        layers: {layers}\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let error = Player::deserialize(temp.path())
+                .err()
+                .expect("refused")
+                .to_string();
+            assert!(error.contains("dmx lighting layers"), "{error}");
+            assert!(error.contains(want), "{layers}: {error}");
+        }
+        let many = (0..17)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(
+            format!(
+                "songs: songs\nprofiles:\n  - dmx:\n      universes: []\n      lighting:\n        layers: [{many}]\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let error = Player::deserialize(temp.path())
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(error.contains("at most 16"), "{error}");
     }
 
     #[test]

@@ -206,9 +206,13 @@ pub(super) fn reload_timeline(
         // Parse with the same tempo this timeline will run under. Using the
         // tempo-less entry point here meant a show inheriting the song's tempo
         // failed every live edit, and the timeline silently never swapped.
-        let shows =
-            crate::lighting::parser::parse_light_file(&content, Some(path), fallback_tempo_map)
-                .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
+        let shows = crate::lighting::parser::parse_light_file(
+            &engine.layers(),
+            &content,
+            Some(path),
+            fallback_tempo_map,
+        )
+        .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
 
         // Validate if lighting config is available
         if let Some(lc) = engine.lighting_config.as_ref() {

@@ -69,10 +69,12 @@ fn capability_name(capability: &crate::lighting::fit::Capability) -> String {
 /// a pose, one under test), sorted by name. A fixture only in the snapshot
 /// has channels and no placement; one only in the metadata has no channels.
 /// Each takes its channel names, sorted, and its pose from the snapshot.
-/// The layout's `id` is the stream's to give: it is 0 here.
+/// The layout's `id` is the stream's to give: it is 0 here. `layers` are the
+/// player's lighting layers, bottom to top.
 pub(crate) fn stage_layout(
     metadata: &wire::StageMetadata,
     snapshot: &StateSnapshot,
+    layers: &[String],
 ) -> StageLayout {
     // By name, the last of a name winning, as the JSON's maps have it.
     let channels: HashMap<&str, &HashMap<String, u8>> = snapshot
@@ -130,6 +132,7 @@ pub(crate) fn stage_layout(
 
     StageLayout {
         id: 0,
+        layers: layers.to_vec(),
         fixtures,
         venue: metadata.venue.as_ref().map(|venue| StageVenue {
             name: venue.name.clone(),
@@ -396,7 +399,7 @@ mod test {
 
     #[test]
     fn the_layout_lists_every_fixture_by_name_with_its_channels_sorted() {
-        let layout = stage_layout(&metadata(), &snapshot());
+        let layout = stage_layout(&metadata(), &snapshot(), &[]);
         let names: Vec<&str> = layout.fixtures.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["bar", "head", "spare", "stray"]);
         assert_eq!(layout.fixtures[0].channels, ["dimmer", "red"]);
@@ -412,8 +415,18 @@ mod test {
     }
 
     #[test]
+    fn the_layout_carries_the_players_layers() {
+        let layers = ["floor".to_string(), "mid".to_string(), "top".to_string()];
+        let layout = stage_layout(&metadata(), &snapshot(), &layers);
+        assert_eq!(layout.layers, ["floor", "mid", "top"]);
+        // And over the wire: field 4, a repeated string.
+        let decoded = StageLayout::decode(layout.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.layers, ["floor", "mid", "top"]);
+    }
+
+    #[test]
     fn the_layout_carries_the_fixtures_and_the_venue() {
-        let layout = stage_layout(&metadata(), &snapshot());
+        let layout = stage_layout(&metadata(), &snapshot(), &[]);
         let head = &layout.fixtures[1];
         assert_eq!(head.r#type, "Head");
         assert_eq!(head.tags, ["back", "mover"]);
@@ -452,7 +465,7 @@ mod test {
         assert_eq!(venue.scenery_error, None);
 
         assert_eq!(
-            stage_layout(&empty(), &StateSnapshot::default()).venue,
+            stage_layout(&empty(), &StateSnapshot::default(), &[]).venue,
             None
         );
     }
@@ -460,7 +473,7 @@ mod test {
     #[test]
     fn a_frames_bytes_line_up_with_the_layouts_channel_names() {
         let snapshot = snapshot();
-        let layout = stage_layout(&metadata(), &snapshot);
+        let layout = stage_layout(&metadata(), &snapshot, &[]);
         let frame = stage_frame(&snapshot, &layout);
         // bar: dimmer, red; head: dimmer, pan, tilt; spare: none; stray: dimmer.
         assert_eq!(frame.channels, [255, 10, 1, 2, 3, 77]);
@@ -471,7 +484,7 @@ mod test {
     #[test]
     fn a_frame_names_the_layout_it_is_read_against() {
         let snapshot = snapshot();
-        let mut layout = stage_layout(&metadata(), &snapshot);
+        let mut layout = stage_layout(&metadata(), &snapshot, &[]);
         assert_eq!(layout.id, 0, "the stream numbers its layouts");
         layout.id = 7;
         assert_eq!(stage_frame(&snapshot, &layout).layout, 7);
@@ -493,7 +506,7 @@ mod test {
             ],
             ..Default::default()
         };
-        let layout = stage_layout(&empty(), &snapshot);
+        let layout = stage_layout(&empty(), &snapshot, &[]);
         assert!(
             stage_frame(&snapshot, &layout).poses.is_empty(),
             "nothing has moved since the layout"
@@ -528,7 +541,7 @@ mod test {
     #[test]
     fn a_frame_carries_strobes_cells_effects_and_fixtures_under_test() {
         let mut snapshot = snapshot();
-        let layout = stage_layout(&metadata(), &snapshot);
+        let layout = stage_layout(&metadata(), &snapshot, &[]);
         let frame = stage_frame(&snapshot, &layout);
         assert_eq!(
             frame.strobes,
@@ -576,7 +589,7 @@ mod test {
     #[test]
     fn a_snapshot_fits_a_layout_until_its_fixtures_or_channels_change() {
         let snapshot = snapshot();
-        let layout = stage_layout(&metadata(), &snapshot);
+        let layout = stage_layout(&metadata(), &snapshot, &[]);
         assert!(fits(&snapshot, &layout));
 
         // Values, strobes, effects and poses moving change nothing.
@@ -619,7 +632,7 @@ mod test {
         let mut tested = snapshot.clone();
         tested.under_test.push("unknown".to_string());
         assert!(!fits(&tested, &layout), "a test on a fixture not listed");
-        assert!(fits(&tested, &stage_layout(&metadata(), &tested)));
+        assert!(fits(&tested, &stage_layout(&metadata(), &tested, &[])));
     }
 
     /// What a client makes of a layout and a frame, in the shape the
@@ -710,7 +723,7 @@ mod test {
     fn the_stream_and_the_previews_frames_say_the_same_thing() {
         let metadata = metadata();
         let first = snapshot();
-        let layout = stage_layout(&metadata, &first);
+        let layout = stage_layout(&metadata, &first, &[]);
         // Over the wire and back: what a client holds.
         let layout = StageLayout::decode(layout.encode_to_vec().as_slice()).unwrap();
         let through = |snapshot: &StateSnapshot| {
@@ -851,9 +864,9 @@ mod test {
         let mut grown = first.clone();
         grown.fixtures.push(fixture("extra", &[("dimmer", 9)]));
 
-        let mut one = stage_layout(&metadata, &first);
+        let mut one = stage_layout(&metadata, &first, &[]);
         one.id = 1;
-        let mut two = stage_layout(&metadata, &grown);
+        let mut two = stage_layout(&metadata, &grown, &[]);
         two.id = 2;
 
         in_key_order(json!({
@@ -958,7 +971,7 @@ mod test {
                 .collect(),
             ..Default::default()
         };
-        let mut layout = stage_layout(&empty(), &snapshot);
+        let mut layout = stage_layout(&empty(), &snapshot, &[]);
         // As the stream sends it: a layout always has an id.
         layout.id = 1;
         let frame = stage_frame(&snapshot, &layout);
@@ -984,7 +997,7 @@ mod test {
             poses: vec![pointing("head", 10.0, Some([1.0, 2.0]))],
             ..Default::default()
         };
-        let layout = stage_layout(&empty(), &snapshot);
+        let layout = stage_layout(&empty(), &snapshot, &[]);
         let still = stage_frame(&snapshot, &layout).encoded_len();
         snapshot.poses = vec![pointing("head", 20.0, Some([1.5, 2.0]))];
         let moving = stage_frame(&snapshot, &layout).encoded_len();

@@ -76,6 +76,9 @@ profiles:
           name: light-show
       lighting:
         current_venue: main_stage
+        # The lighting layers, bottom to top (see Lighting Configuration, Layers); these are
+        # the defaults, and a profile that leaves them out gets them.
+        layers: [background, midground, foreground]
         # The show the rig plays between songs (see Lighting Configuration).
         ambient:
           show: lighting/ambient.light
