@@ -13,32 +13,36 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import type { StrobeCurve } from "../../src/gen/rules/mtrack_rules";
+import {
+  fixtureSettingsReply,
+  savedSettingsRequest,
+} from "../support/lighting-rpc";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 // The strobe curve on the fixture page's settings: shown only for a fixture
 // whose GDTF has a strobe rate, automatic (as the GDTF declares) until set,
 // with the table's own option only when the file has a table.
 
-const SETTINGS = /\/api\/lighting\/fixture-types\/pixelbrick\/settings(\?|$)/;
-
-/** Answers the settings GET with `strobe` (and a stated curve). */
+/** Answers the settings read with `strobe` (and a stated curve). */
 async function settingsWith(
   page: Page,
-  strobe: { steps: number; automatic: string } | null,
-  curve: string | null = null,
+  strobe: { steps: number; automatic: StrobeCurve } | null,
+  curve: StrobeCurve | null = null,
 ) {
-  await page.route(SETTINGS, async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({
-      json: {
-        name: "pixelbrick",
-        movement: { max_pan_speed: null, max_tilt_speed: null },
-        strobe_curve: curve,
-        strobe,
-        version: "mock-v1",
-      },
-    });
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.getFixtureTypeSettings,
+    fixtureSettingsReply({
+      name: "pixelbrick",
+      movement: { max_pan_speed: null, max_tilt_speed: null },
+      strobe_curve: curve,
+      strobe,
+      version: "mock-v1",
+    }),
+  );
 }
 
 async function openPixelbrick(page: Page) {
@@ -56,11 +60,11 @@ const options = (page: Page) =>
 test("an endpoints-only strobe: automatic is linear in Hz, period can be set and saved", async ({
   page,
 }) => {
-  const posts: Record<string, unknown>[] = [];
-  page.on("request", (req) => {
-    if (req.method() === "POST" && SETTINGS.test(req.url()))
-      posts.push(req.postDataJSON());
-  });
+  const rpc = await mockRpc(page);
+  const posts = () =>
+    rpc
+      .calls(LightingService.method.saveFixtureTypeSettings)
+      .map(savedSettingsRequest);
   await openPixelbrick(page);
   await expect(select(page)).toHaveValue("");
   expect(await options(page)).toEqual([
@@ -75,7 +79,7 @@ test("an endpoints-only strobe: automatic is linear in Hz, period can be set and
   await select(page).selectOption("period");
   await page.getByTestId("ft-set-save").click();
   await expect(page.getByTestId("ft-set-msg")).toContainText("Saved");
-  expect(posts.map((p) => [p.write, p.strobe_curve])).toEqual([
+  expect(posts().map((p) => [p.write, p.strobe_curve])).toEqual([
     [false, "period"],
     [true, "period"],
   ]);

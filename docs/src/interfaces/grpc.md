@@ -169,8 +169,9 @@ send `expected_checksum` like the other config writes (a stale one is `FAILED_PR
 gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
 service, and is not reachable over Bluetooth. The web UI's lighting pages and a song's lighting
 editor call it for a song's light show files, their validation and evaluation, the Lighting
-overview's readiness checks and the Fit shows page, the groups a cue can target, and the fixture
-test. Fixture types, venues and MVR files are still the web API's.
+overview's readiness checks and the Fit shows page, the groups a cue can target, the fixture test,
+and the fixture types with their GDTF details and settings. Venues and MVR files are still the web
+API's.
 
 | RPC | Description |
 |---|---|
@@ -186,7 +187,23 @@ test. Fixture types, venues and MVR files are still the web API's.
 | `StopFixtureTest` | Releases the test output now. Open while locked: letting go only hands the lights back to the show. |
 | `GetFixtureTestOptions` | What a test of a fixture type can do: its modes (each with the controls it supports and its channels), the running profile's universes with olad's patch state, and whether a test can run now (`available`, else `unavailable` says why). `NOT_FOUND` for a fixture type that is not there. Open while locked. |
 
-A player with no config store answers the calls that read its config path (the light show writes, `ListLightingGroups` and the fixture test) `UNIMPLEMENTED`.
+The fixture type calls take a name and, optionally, the directories to work in: `dir` is the fixture
+types directory and `venues_dir` the venues directory (where a GDTF type's users are found, and a
+rename's venue lines), both project-relative, defaulting to this host's profile (a config that does
+not load is `INTERNAL`). A name is a plain file name (`INVALID_ARGUMENT` for one with a path in it, `..`
+or a reserved name such as `lock`); a directory that leaves the project by `..`, an absolute path or
+a link is `INVALID_ARGUMENT` or `PERMISSION_DENIED`, and a save never makes a directory beneath such
+a link.
+
+| RPC | Description |
+|---|---|
+| `ListFixtureTypes` | Every fixture type of the directory and below (`fixture_types`, by name), and the files that did not read (`errors`). Each carries its file, its extension (`light` or `fixture`), the `owner` file and whether it `editable`, whether the channel-map form can say all of it (`form_editable`), its channels, and, for a GDTF type, a card of what its archive says (`gdtf`, unset when the archive does not read) with the venues' use of each mode. A directory that is not there lists nothing. Open while locked. |
+| `GetFixtureType` | One type with the text of its file (`dsl`). A GDTF in the library with no record of its own is a fixture with no file. `NOT_FOUND` when nothing declares the name. Open while locked. |
+| `SaveFixtureType` | Creates, updates or renames a fixture type from the file's whole text (`dsl`, which must declare this one type and nothing else) or from the channel-map form (`channel_map`: channel offsets and the strobe figures; refused, saying to edit as text, for a type with more in it than the form can say). A new name is a `.fixture` file; an existing one is written where its file is, and only if that file is the type's alone (`FAILED_PRECONDITION` naming the file and why otherwise). `file_form` `FIXTURE` moves a `.light` to a `.fixture`; `LIGHT` keeps a `.light` and is refused for a `.fixture`. `from` renames and retypes every venue line naming the old name in `venues_dir`, all or nothing. A text that does not parse, a GDTF archive that is missing or outside the project, and a text that declares another name are `INVALID_ARGUMENT`. There is no `expected_revision`: the file is replaced as it stands. Refused while locked. |
+| `DeleteFixtureType` | Deletes the type's file when it is the type's alone (`FAILED_PRECONDITION` otherwise). A GDTF fixture's archive goes with its record unless another type uses it (`archive_removed`, `archive_kept`); a GDTF in the library with no record is its archive, deleted. `NOT_FOUND` when neither has the name. Refused while locked. |
+| `GetFixtureTypeGdtfDetails` | What a GDTF fixture's archive holds, for its page (not the archive): every mode with its footprint, channel map and what a show can do in it (or why it cannot be imported), the venue fixtures using the type in their own modes, the beam, and the asset store paths of the rig model and thumbnail (`rig`, `thumbnail`, served by HTTP under `/api/lighting/assets/`). `NOT_FOUND` for no such type or a native one; `INVALID_ARGUMENT` for an archive that is missing or does not parse. Open while locked. |
+| `GetFixtureTypeSettings` | A GDTF fixture's own settings: its name, movement limits and strobe curve, the GDTF's strobe table, and the `revision` they are at (`unrecorded` for a fixture with no record yet). `NOT_FOUND` for a native type. Open while locked. |
+| `SaveFixtureTypeSettings` | Plans (`write` false) or saves a GDTF fixture's settings and, for a new name (`new_name`), the rename's rewrite of every venue line that names the type. `expected_revision` is the revision the settings were read at and `venue_revisions` the venue files' revisions from the plan: a record or venue file that has changed since is `ABORTED` (the record's current revision in `x-current-version`); so is every other conflict (a file that is not the type's alone, a name already taken), which makes a client read the settings again. Refused while locked, a plan too. |
 
 ## Lock mode
 
@@ -195,8 +212,8 @@ While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAud
 and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
 `DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
 `DeleteSong`, `ImportSongFile`, `CreateSongInDirectory`, `BulkImportSongs`, `SetBluetoothPairing` and
-`ForgetBluetoothDevice`, and `LightingService`'s `SaveLightShow`, `DeleteLightShow` and
-`StartFixtureTest`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`ForgetBluetoothDevice`, and `LightingService`'s `SaveLightShow`, `DeleteLightShow`,
+`StartFixtureTest`, `SaveFixtureType`, `DeleteFixtureType` and `SaveFixtureTypeSettings`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are

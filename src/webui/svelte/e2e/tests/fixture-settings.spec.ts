@@ -12,29 +12,33 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page, type Request } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { FIXTURE_TYPES, GDTF_INSPECTION } from "../mock-server/test-data";
+import {
+  fixtureSettingsReply,
+  fixtureTypeGdtfReply,
+  fixtureTypeInfoReply,
+  fixtureTypeListReply,
+  savedSettingsRequest,
+} from "../support/lighting-rpc";
 import { card } from "../support/locators";
+import { mockRpc, type RpcMock } from "../support/rpc";
 
 // The fixture page's settings form (lighting UI design §12.4): name and
 // movement limits, saved through a plan the user confirms. A fixture from a
-// GDTF has no default mode and no file to show. The mock's settings routes
-// are stateless; tests that need another answer route their own with
-// `page.route`.
+// GDTF has no default mode and no file to show. The mock's settings calls
+// are stateless; tests that need another answer answer their own with
+// `mockRpc`.
 
-/** Every settings POST the page makes, by `write`. */
-function settingsPosts(page: Page) {
-  const posts: {
-    write: boolean;
-    body: Record<string, unknown>;
-    req: Request;
-  }[] = [];
-  page.on("request", (req) => {
-    if (req.method() === "POST" && /\/settings(\?|$)/.test(req.url())) {
-      const body = req.postDataJSON();
-      posts.push({ write: body.write, body, req });
-    }
-  });
-  return posts;
+/** Every settings save the page makes, by `write`. */
+function settingsPosts(rpc: RpcMock) {
+  return {
+    all: () =>
+      rpc
+        .calls(LightingService.method.saveFixtureTypeSettings)
+        .map((r) => ({ write: r.write, body: savedSettingsRequest(r) })),
+  };
 }
 
 const confirmDialog = (page: Page) => page.locator(".dialog-overlay");
@@ -69,20 +73,45 @@ test.describe("Fixture settings", () => {
   });
 
   test("a rename says which venue lines it rewrites", async ({ page }) => {
-    const posts = settingsPosts(page);
+    const rpc = await mockRpc(page);
+    const posts = settingsPosts(rpc);
     // After the save the page follows the new name; the stateless mock
-    // still knows the type as pixelbrick.
-    await page.route(/\/api\/lighting\/fixture-types\/PB15/, (r) =>
-      r.continue({ url: r.request().url().replace("PB15", "pixelbrick") }),
+    // still knows the type as pixelbrick, so the type is answered under
+    // either name.
+    const pixelbrick = FIXTURE_TYPES.pixelbrick;
+    const known = (name: string) => (name === "PB15" ? "pixelbrick" : name);
+    rpc.unary(LightingService.method.getFixtureType, (req) =>
+      fixtureTypeInfoReply(FIXTURE_TYPES[known(req.name)]),
+    );
+    rpc.unary(LightingService.method.getFixtureTypeSettings, (req) =>
+      fixtureSettingsReply({
+        name: req.name,
+        movement: { max_pan_speed: null, max_tilt_speed: null },
+        strobe_curve: null,
+        strobe: { steps: 0, automatic: "declared" },
+        version: "mock-v1",
+      }),
+    );
+    rpc.unary(LightingService.method.getFixtureTypeGdtfDetails, () =>
+      fixtureTypeGdtfReply({
+        archive: "library/pb15.gdtf",
+        rig: null,
+        thumbnail: null,
+        beam: null,
+        about: null,
+        venues: [],
+        inspection: GDTF_INSPECTION,
+      }),
     );
     // The list, re-read after the save, knows it by its new name too (the
     // page's address follows the rename).
-    await page.route(/\/api\/lighting\/fixture-types(\?.*)?$/, async (r) => {
-      const res = await r.fetch();
-      const body = await res.json();
-      body.fixture_types.PB15 = body.fixture_types.pixelbrick;
-      await r.fulfill({ response: res, json: body });
-    });
+    rpc.unary(
+      LightingService.method.listFixtureTypes,
+      fixtureTypeListReply({
+        fixture_types: { ...FIXTURE_TYPES, PB15: pixelbrick },
+        errors: [],
+      }),
+    );
     await card(page, "pixelbrick").click();
     await page.getByTestId("ft-set-name").fill("PB15");
     await page.getByTestId("ft-set-save").click();
@@ -90,8 +119,8 @@ test.describe("Fixture settings", () => {
       'Renaming "pixelbrick" to "PB15" rewrites 3 venue lines: built-in (2), club (1).',
     );
     await confirmDialog(page).getByRole("button", { name: "Save" }).click();
-    await expect.poll(() => posts.filter((p) => p.write).length).toBe(1);
-    expect(posts.find((p) => p.write)!.body.name).toBe("PB15");
+    await expect.poll(() => posts.all().filter((p) => p.write).length).toBe(1);
+    expect(posts.all().find((p) => p.write)!.body.name).toBe("PB15");
     await expect(page.getByTestId("ft-set-msg")).toContainText(
       "Renamed in 3 venue lines: built-in (2), club (1).",
     );
@@ -102,50 +131,40 @@ test.describe("Fixture settings", () => {
   test("a fixture that pans or tilts shows its movement limits", async ({
     page,
   }) => {
-    const posts = settingsPosts(page);
-    await page.route(
-      "**/api/lighting/fixture-types/pixelbrick/settings*",
-      (r) =>
-        r.request().method() === "GET"
-          ? r.fulfill({
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                name: "pixelbrick",
-                movement: { max_pan_speed: 240, max_tilt_speed: null },
-                version: "mock-v1",
-              }),
-            })
-          : r.fallback(),
+    const rpc = await mockRpc(page);
+    const posts = settingsPosts(rpc);
+    rpc.unary(
+      LightingService.method.getFixtureTypeSettings,
+      fixtureSettingsReply({
+        name: "pixelbrick",
+        movement: { max_pan_speed: 240, max_tilt_speed: null },
+        strobe_curve: null,
+        strobe: null,
+        version: "mock-v1",
+      }),
     );
-    await page.route("**/api/lighting/fixture-types/pixelbrick/gdtf*", (r) =>
-      r.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          archive: "library/mover.gdtf",
-          rig: null,
-          thumbnail: null,
-          beam: null,
-          about: null,
-          venues: [],
-          inspection: {
-            fixture: "Mover",
-            manufacturer: "Test",
-            modes: [
-              {
-                name: "8: RGBS",
-                channel_count: 6,
-                footprint: 6,
-                capabilities: ["color", "pan_tilt"],
-                channels: [
-                  [1, "pan"],
-                  [2, "tilt"],
-                ],
-              },
-            ],
-          },
-        }),
+    rpc.unary(
+      LightingService.method.getFixtureTypeGdtfDetails,
+      fixtureTypeGdtfReply({
+        archive: "library/mover.gdtf",
+        rig: null,
+        thumbnail: null,
+        beam: null,
+        about: null,
+        venues: [],
+        inspection: {
+          modes: [
+            {
+              name: "8: RGBS",
+              footprint: 6,
+              capabilities: ["color", "pan_tilt"],
+              channels: [
+                [1, "pan"],
+                [2, "tilt"],
+              ],
+            },
+          ],
+        },
       }),
     );
     await card(page, "pixelbrick").click();
@@ -154,8 +173,8 @@ test.describe("Fixture settings", () => {
     await expect(page.getByTestId("ft-set-tilt")).toHaveValue("");
     await page.getByTestId("ft-set-tilt").fill("180");
     await page.getByTestId("ft-set-save").click();
-    await expect.poll(() => posts.filter((p) => p.write).length).toBe(1);
-    const write = posts.find((p) => p.write)!.body;
+    await expect.poll(() => posts.all().filter((p) => p.write).length).toBe(1);
+    const write = posts.all().find((p) => p.write)!.body;
     expect(write.movement).toEqual({
       max_pan_speed: 240,
       max_tilt_speed: 180,

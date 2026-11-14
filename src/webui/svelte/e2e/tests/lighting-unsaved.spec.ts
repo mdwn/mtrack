@@ -13,7 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 // Leaving a Lighting form with unsaved edits asks first, through the app's
 // guard: staying keeps the edits and the address, leaving discards them, a
@@ -61,16 +63,8 @@ test.describe("A hand-written fixture type", () => {
   test("unsaved: Cancel asks; Stay keeps the edit; a save then leaves without asking", async ({
     page,
   }) => {
-    const puts: unknown[] = [];
-    await page.route(/\/api\/lighting\/fixture-types\/par(\?.*)?$/, (r) => {
-      if (r.request().method() !== "PUT") return r.fallback();
-      puts.push(r.request().postDataJSON());
-      return r.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved" }),
-      });
-    });
+    const rpc = await mockRpc(page);
+    const puts = () => rpc.calls(LightingService.method.saveFixtureType);
     await page.goto("/#/lighting/fixtures/par");
     const first = page
       .getByTestId("ft-channel-row")
@@ -89,7 +83,7 @@ test.describe("A hand-written fixture type", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save", exact: true })
       .click();
-    await expect.poll(() => puts.length).toBe(1);
+    await expect.poll(() => puts().length).toBe(1);
     await expect(page).toHaveURL(/#\/lighting\/fixtures$/);
     await expect(dialog(page)).toHaveCount(0);
   });

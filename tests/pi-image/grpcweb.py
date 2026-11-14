@@ -12,18 +12,24 @@
 # You should have received a copy of the GNU General Public License along with
 # this program. If not, see <https://www.gnu.org/licenses/>.
 #
-"""The two gRPC-Web calls the boot check makes, for a shell with only curl.
+"""The gRPC-Web calls the boot check makes, for a shell with only curl.
 
 The player's web port answers gRPC-Web, and in its text form
 (`application/grpc-web-text`) a call is base64 in and base64 out, which curl
-carries without help. This builds the two request bodies and reads the one
-answer the check needs, with no protobuf library: the image under test has
-none, and neither does the runner.
+carries without help. This builds the request bodies and reads the answers
+the check needs, with no protobuf library: the image under test has none, and
+neither does the runner.
 
     grpcweb.py request watch-hardware   the body for PlayerService/Watch
     grpcweb.py request unlock           the body for PlayerService/SetLock
+    grpcweb.py request save-fixture-type NAME DSL
+                                        the body for LightingService/SaveFixtureType:
+                                        a fixture type of that name from that text
     grpcweb.py status < answer          the first hardware event, as JSON
     grpcweb.py ok < answer              exit 0 if the call's grpc-status is 0
+    grpcweb.py saved-fixture-type < answer
+                                        the name a SaveFixtureType answer says it
+                                        saved; fails if the call was refused
 
 Field numbers are those of src/proto/player/v1/player.proto.
 """
@@ -36,6 +42,29 @@ import sys
 def frame(message: bytes) -> str:
     """One gRPC-Web data frame, in the text form."""
     return base64.b64encode(b"\x00" + len(message).to_bytes(4, "big") + message).decode()
+
+
+def varint_bytes(value: int) -> bytes:
+    """A number as a varint."""
+    out = b""
+    while True:
+        low = value & 0x7F
+        value >>= 7
+        if value:
+            out += bytes([low | 0x80])
+        else:
+            return out + bytes([low])
+
+
+def string_field(number: int, text: str) -> bytes:
+    """A string field: its key (wire type 2), its length, its UTF-8."""
+    data = text.encode()
+    return varint_bytes(number << 3 | 2) + varint_bytes(len(data)) + data
+
+
+def save_fixture_type(name: str, dsl: str) -> str:
+    """SaveFixtureTypeRequest { name: 1, body: oneof { dsl: 6 } }."""
+    return frame(string_field(1, name) + string_field(6, dsl))
 
 
 REQUESTS = {
@@ -129,10 +158,27 @@ def call_ok(body: bytes) -> bool:
     return False
 
 
+def saved_fixture_type(body: bytes) -> str:
+    """The name in a SaveFixtureTypeResponse (field 1), of a call that was
+    not refused."""
+    if not call_ok(body):
+        raise ValueError("the call was refused")
+    for trailers, message in frames(body):
+        if not trailers:
+            return fields(message).get(1, b"").decode()
+    raise ValueError("no answer in the body")
+
+
 def main() -> int:
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "request" and args[1] in REQUESTS:
         print(REQUESTS[args[1]])
+        return 0
+    if len(args) == 4 and args[:2] == ["request", "save-fixture-type"]:
+        print(save_fixture_type(args[2], args[3]))
+        return 0
+    if args == ["saved-fixture-type"]:
+        print(saved_fixture_type(unbase64(sys.stdin.read())))
         return 0
     if args == ["status"]:
         print(json.dumps(status(unbase64(sys.stdin.read()))))

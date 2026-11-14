@@ -18,6 +18,7 @@ import {
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { getConfigReply, savedReply } from "../support/config-rpc";
+import { savedTypeRequest } from "../support/lighting-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
 import { MVR_INSPECTION } from "../mock-server/test-data";
@@ -67,7 +68,8 @@ test.describe("Fixture types", () => {
   test("a new channel-map type with the defaults: the name is required, then the default channel is sent", async ({
     page,
   }) => {
-    const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
+    const rpc = await mockRpc(page);
+    const writes = () => rpc.calls(LightingService.method.saveFixtureType);
     await page.goto("/#/lighting/fixtures");
     await page
       .getByRole("button", { name: "Define a fixture by hand" })
@@ -82,21 +84,22 @@ test.describe("Fixture types", () => {
     // No name has a sensible default: the save stops, visibly.
     await expect(page.locator(".save-msg")).toHaveText("Name is required");
     await page.waitForTimeout(300);
-    expect(writes).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
 
     await page.locator("#ft-name").fill("House Par");
     await save.click();
-    await expect.poll(() => writes.length).toBe(1);
-    expect(writes[0].method()).toBe("PUT");
-    expect(writes[0].url()).toContain("/fixture-types/House%20Par");
+    await expect.poll(() => writes().length).toBe(1);
+    const sent = savedTypeRequest(writes()[0]);
+    expect(sent.name).toBe("House Par");
     // The one channel row the form started with is in the body.
-    expect(writes[0].postDataJSON().channels).toEqual({ dimmer: 1 });
+    expect(sent.form?.channels).toEqual({ dimmer: 1 });
   });
 
   test("a new .fixture type with the template saves the template as it is", async ({
     page,
   }) => {
-    const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
+    const rpc = await mockRpc(page);
+    const writes = () => rpc.calls(LightingService.method.saveFixtureType);
     await page.goto("/#/lighting/fixtures");
     await page
       .getByRole("button", { name: "Define a fixture by hand" })
@@ -107,11 +110,11 @@ test.describe("Fixture types", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await expect.poll(() => writes.length).toBe(1);
-    const url = new URL(writes[0].url());
-    expect(url.pathname).toMatch(/\/fixture-types\/Name$/);
-    expect(url.searchParams.get("ext")).toBe("fixture");
-    expect(writes[0].postData()).toBe(text);
+    await expect.poll(() => writes().length).toBe(1);
+    const sent = savedTypeRequest(writes()[0]);
+    expect(sent.name).toBe("Name");
+    expect(sent.ext).toBe("fixture");
+    expect(sent.text).toBe(text);
   });
 
   test("a GDTF import is one step: the file alone, no mode, no name", async ({

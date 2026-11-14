@@ -78,7 +78,20 @@ import {
   probeAudioRequest,
   startCalibrationRequest,
 } from "../grpc/config";
-import { mapFit, mapGroups, mapReadiness } from "../grpc/lighting";
+import {
+  mapFit,
+  mapFixtureSettings,
+  mapFixtureTypeDeleted,
+  mapFixtureTypeEntry,
+  mapFixtureTypeGdtf,
+  mapFixtureTypeList,
+  mapFixtureTypeSaved,
+  mapGroups,
+  mapReadiness,
+  mapSettingsSaved,
+  saveFixtureSettingsRequest,
+  saveFixtureTypeRequest,
+} from "../grpc/lighting";
 import {
   callError,
   mapPlaylistDetail,
@@ -94,7 +107,6 @@ import {
   del,
   uploadFile,
   uploadFiles,
-  putText,
   apiError,
   versionedError,
 } from "./rest";
@@ -393,10 +405,16 @@ export async function fetchFixtureTypes(
   dir?: string,
   venuesDir?: string,
 ): Promise<FixtureTypeList> {
-  const params = dirParams(dir, venuesDir);
-  const res = await get(`/lighting/fixture-types${params}`);
-  if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
-  return res.json();
+  try {
+    return mapFixtureTypeList(
+      await lightingClient.listFixtureTypes({
+        dir: dir || undefined,
+        venuesDir: venuesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to fetch fixture types");
+  }
 }
 
 /** Imports a GDTF in one step: the fixture is usable in a venue in any of
@@ -589,12 +607,14 @@ export async function fetchFixtureType(
   name: string,
   dir?: string,
 ): Promise<FixtureTypeEntry> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await get(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to fetch fixture type");
-  return res.json();
+  try {
+    return mapFixtureTypeEntry(
+      await lightingClient.getFixtureType({ name, dir: dir || undefined }),
+      false,
+    );
+  } catch (e) {
+    throw callError(e, "Failed to fetch fixture type");
+  }
 }
 
 export async function fetchFixtureTypeGdtf(
@@ -602,25 +622,33 @@ export async function fetchFixtureTypeGdtf(
   dir?: string,
   venuesDir?: string,
 ): Promise<FixtureTypeGdtf> {
-  const params = dirParams(dir, venuesDir);
-  const res = await get(
-    `/lighting/fixture-types/${encodeURIComponent(name)}/gdtf${params}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to read the GDTF archive");
-  return res.json();
+  try {
+    return mapFixtureTypeGdtf(
+      await lightingClient.getFixtureTypeGdtfDetails({
+        name,
+        dir: dir || undefined,
+        venuesDir: venuesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to read the GDTF archive");
+  }
 }
 
 export async function fetchFixtureSettings(
   name: string,
   dir?: string,
 ): Promise<FixtureSettingsData> {
-  const params = dirParams(dir);
-  const res = await get(
-    `/lighting/fixture-types/${encodeURIComponent(name)}/settings${params}`,
-  );
-  if (!res.ok)
-    throw await apiError(res, "Failed to read the fixture's settings");
-  return res.json();
+  try {
+    return mapFixtureSettings(
+      await lightingClient.getFixtureTypeSettings({
+        name,
+        dir: dir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to read the fixture's settings");
+  }
 }
 
 /** Plans (`write: false`) or saves a GDTF type's settings. A save sends the
@@ -637,23 +665,26 @@ export async function postFixtureSettings(
   dirs: { dir?: string; venuesDir?: string },
   version?: string,
 ): Promise<SettingsSaved> {
-  const res = await post(
-    `/lighting/fixture-types/${encodeURIComponent(name)}/settings${dirParams(dirs.dir, dirs.venuesDir)}`,
-    JSON.stringify(body),
-    version ? { "If-Match": version } : undefined,
-  );
-  if (!res.ok)
-    throw await versionedError(res, "Failed to save the fixture's settings");
+  let saved: SettingsSaved;
+  try {
+    saved = mapSettingsSaved(
+      await lightingClient.saveFixtureTypeSettings(
+        saveFixtureSettingsRequest(name, body, dirs, version),
+      ),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to save the fixture's settings");
+  }
   if (body.write) {
     // A rename rewrites venue lines; a new default changes fixtures' modes.
     fixtureTypesChanged();
     venueChanged(null);
   }
-  return res.json();
+  return saved;
 }
 
-/** The query of a venue or fixture type save: its directory, and the old
- *  name when the save renames (the server moves or renames the one file). */
+/** The query of a venue save: its directory, and the old name when the
+ *  save renames (the server moves or renames the one file). */
 function saveParams(
   dir: string | undefined,
   from: string | null | undefined,
@@ -679,22 +710,18 @@ export async function saveFixtureType(
   from?: string | null,
   venuesDir?: string,
 ): Promise<FixtureTypeSaved> {
-  const params = saveParams(dir, from, typeRenameParams(from, venuesDir));
-  const res = await put(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
-    JSON.stringify(data),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  let saved: FixtureTypeSaved;
+  try {
+    saved = mapFixtureTypeSaved(
+      await lightingClient.saveFixtureType(
+        saveFixtureTypeRequest(name, data, { dir, from, venuesDir }),
+      ),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to save fixture type");
+  }
   typeSaved(from);
-  return res.json();
-}
-
-/** The venues directory a type's rename retypes the venue lines in. */
-function typeRenameParams(
-  from: string | null | undefined,
-  venuesDir: string | undefined,
-): Record<string, string> {
-  return from && venuesDir ? { venues_dir: venuesDir } : {};
+  return saved;
 }
 
 /** After a type's save: a rename rewrote the venue lines naming it too. */
@@ -714,17 +741,22 @@ export async function saveFixtureTypeText(
   from?: string | null,
   venuesDir?: string,
 ): Promise<FixtureTypeSaved> {
-  const params = saveParams(dir, from, {
-    ext,
-    ...typeRenameParams(from, venuesDir),
-  });
-  const res = await putText(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
-    dsl,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  let saved: FixtureTypeSaved;
+  try {
+    saved = mapFixtureTypeSaved(
+      await lightingClient.saveFixtureType(
+        saveFixtureTypeRequest(
+          name,
+          { text: dsl },
+          { ext, dir, from, venuesDir },
+        ),
+      ),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to save fixture type");
+  }
   typeSaved(from);
-  return res.json();
+  return saved;
 }
 
 /** Deletes a fixture type. For a fixture from a GDTF, its archive goes too
@@ -733,13 +765,16 @@ export async function deleteFixtureType(
   name: string,
   dir?: string,
 ): Promise<FixtureTypeDeleted> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await del(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
+  let deleted: FixtureTypeDeleted;
+  try {
+    deleted = mapFixtureTypeDeleted(
+      await lightingClient.deleteFixtureType({ name, dir: dir || undefined }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to delete fixture type");
+  }
   fixtureTypesChanged();
-  return res.json();
+  return deleted;
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.

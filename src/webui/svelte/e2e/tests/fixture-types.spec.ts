@@ -13,7 +13,16 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import {
+  fixtureTypeListReply,
+  fixtureTypeSavedReply,
+  savedTypeRequest,
+  typeEntry,
+} from "../support/lighting-rpc";
+import type { FixtureTypeEntry } from "../../src/gen/rules/mtrack_rules";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Fixture Types Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -27,29 +36,19 @@ test.describe("Fixture Types Management", () => {
     // Same shape as the venue case: a directory is a set of independent files,
     // so one that no longer parses must not empty the list — and must not go
     // unmentioned either, or the only signal is a fixture type quietly missing.
-    await page.route("**/api/lighting/fixture-types*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          fixture_types: {
-            RGBW_Par: {
-              fixture_type: { name: "RGBW_Par", channels: {} },
-              file: "rgbw_par.light",
-              extension: "light",
-              referential: false,
-              rich: false,
-            },
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.listFixtureTypes,
+      fixtureTypeListReply({
+        fixture_types: { RGBW_Par: typeEntry("RGBW_Par") },
+        errors: [
+          {
+            file: "broken.light",
+            error: "expected channel definition at line 4",
           },
-          errors: [
-            {
-              file: "broken.light",
-              error: "expected channel definition at line 4",
-            },
-          ],
-        }),
-      });
-    });
+        ],
+      }),
+    );
     // Re-fetch through the panel's own Refresh rather than reloading the page,
     // which would discard the navigation `beforeEach` performed.
     await page.getByRole("button", { name: "Refresh" }).first().click();
@@ -127,47 +126,39 @@ test.describe("Fixture Types Management", () => {
   test("a GDTF card whose archive is unreadable falls back, and a used-by of 0 shows no pill", async ({
     page,
   }) => {
-    const entry = (gdtf: unknown) => ({
-      fixture_type: { name: "x", channels: {} },
-      file: "x.fixture",
-      extension: "fixture",
-      referential: true,
-      rich: false,
-      gdtf,
-    });
-    await page.route("**/api/lighting/fixture-types*", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          fixture_types: {
-            lost: entry(null),
-            unused: entry({
-              fixture: "PB15 PixelBrick",
-              manufacturer: "Astera LED Technology",
-              modes: 1,
-              beam: null,
-              thumbnail: "abc/thumbnail.png",
-              used_by: 0,
-              in_use: [],
-            }),
-            busy: entry({
-              fixture: "PB15 PixelBrick",
-              manufacturer: "Astera LED Technology",
-              modes: 9,
-              beam: null,
-              thumbnail: null,
-              used_by: 10,
-              in_use: [
-                { mode: "a", count: 4 },
-                { mode: "b", count: 3 },
-                { mode: "c", count: 2 },
-                { mode: "d", count: 1 },
-              ],
-            }),
-          },
-          errors: [],
-        }),
+    const entry = (name: string, gdtf: FixtureTypeEntry["gdtf"]) =>
+      typeEntry(name, { extension: "fixture", referential: true, gdtf });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.listFixtureTypes,
+      fixtureTypeListReply({
+        fixture_types: {
+          lost: entry("lost", null),
+          unused: entry("unused", {
+            fixture: "PB15 PixelBrick",
+            manufacturer: "Astera LED Technology",
+            modes: 1,
+            beam: null,
+            thumbnail: "abc/thumbnail.png",
+            used_by: 0,
+            in_use: [],
+          }),
+          busy: entry("busy", {
+            fixture: "PB15 PixelBrick",
+            manufacturer: "Astera LED Technology",
+            modes: 9,
+            beam: null,
+            thumbnail: null,
+            used_by: 10,
+            in_use: [
+              { mode: "a", count: 4 },
+              { mode: "b", count: 3 },
+              { mode: "c", count: 2 },
+              { mode: "d", count: 1 },
+            ],
+          }),
+        },
+        errors: [],
       }),
     );
     await page.getByRole("button", { name: "Refresh" }).first().click();
@@ -225,23 +216,26 @@ test.describe("Fixture Types Management", () => {
     await expect(page.getByTestId("ft-referential-note")).toHaveCount(0);
   });
 
-  test("saving a .fixture type PUTs the DSL as text", async ({ page }) => {
+  test("saving a .fixture type sends the DSL as text", async ({ page }) => {
+    const rpc = await mockRpc(page);
     await card(page, "mover").click();
     await expect(page.getByTestId("ft-dsl")).toBeVisible();
 
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/mover") &&
-        req.method() === "PUT",
-    );
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    const request = await requestPromise;
-    expect(request.url()).toContain("ext=fixture");
-    expect(request.headers()["content-type"]).toContain("text/plain");
-    expect(request.postData()).toContain('channel "pan"');
+    await expect
+      .poll(() => rpc.calls(LightingService.method.saveFixtureType).length)
+      .toBe(1);
+    const sent = savedTypeRequest(
+      rpc.calls(LightingService.method.saveFixtureType)[0],
+    );
+    expect(sent.name).toBe("mover");
+    expect(sent.ext).toBe("fixture");
+    // The text, not the channel-map form.
+    expect(sent.form).toBeNull();
+    expect(sent.text).toContain('channel "pan"');
   });
 
   test("a .light type can be opened as text and converted", async ({
@@ -249,6 +243,7 @@ test.describe("Fixture Types Management", () => {
   }) => {
     // The channel map is the default way in; this is the way out of it, and
     // the only path from a v1 file to the rich form.
+    const rpc = await mockRpc(page);
     await card(page, "par").getByTestId("ft-edit-text").click();
     await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type "par"/);
     await expect(page.locator(".channel-row")).toHaveCount(0);
@@ -258,17 +253,18 @@ test.describe("Fixture Types Management", () => {
     await expect(selector).toHaveValue("light");
     await selector.selectOption("fixture");
 
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/par") &&
-        req.method() === "PUT",
-    );
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    const request = await requestPromise;
-    expect(request.url()).toContain("ext=fixture");
+    await expect
+      .poll(() => rpc.calls(LightingService.method.saveFixtureType).length)
+      .toBe(1);
+    const sent = savedTypeRequest(
+      rpc.calls(LightingService.method.saveFixtureType)[0],
+    );
+    expect(sent.name).toBe("par");
+    expect(sent.ext).toBe("fixture");
   });
 
   test("a rich type is not offered the .light form", async ({ page }) => {
@@ -285,6 +281,7 @@ test.describe("Fixture Types Management", () => {
     // The file is keyed on the declared name, and the server refuses a save
     // where the URL and the text disagree — so the field reads it out.
     await card(page, "mover").click();
+    const rpc = await mockRpc(page);
     const nameField = page.getByTestId("ft-name-derived");
     await expect(nameField).toHaveValue("mover");
     await expect(nameField).toHaveJSProperty("readOnly", true);
@@ -296,28 +293,25 @@ test.describe("Fixture Types Management", () => {
 
     // The rename is one save under the declared name, from the old one:
     // the server moves or renames the file, so nothing is deleted after.
-    const deletes: string[] = [];
-    page.on("request", (req) => {
-      if (req.method() === "DELETE") deletes.push(req.url());
-    });
-    const putPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/renamed") &&
-        req.method() === "PUT",
-    );
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    const put = await putPromise;
-    expect(new URL(put.url()).searchParams.get("from")).toBe("mover");
+    await expect
+      .poll(() => rpc.calls(LightingService.method.saveFixtureType).length)
+      .toBe(1);
+    const put = savedTypeRequest(
+      rpc.calls(LightingService.method.saveFixtureType)[0],
+    );
+    expect(put.name).toBe("renamed");
+    expect(put.from).toBe("mover");
     // The rename retyped the venue lines naming it, and says so, as the
     // fixture settings' rename does.
     await expect(page.locator(".save-msg").first()).toContainText(
       "Renamed in 3 venue lines: built-in (2), club (1).",
     );
     await page.waitForTimeout(300);
-    expect(deletes).toHaveLength(0);
+    expect(rpc.calls(LightingService.method.deleteFixtureType)).toHaveLength(0);
   });
 
   test("Define a fixture by hand offers both forms", async ({ page }) => {
@@ -363,36 +357,33 @@ test.describe("Fixture Types Management", () => {
     await expect(page.locator(".channel-row")).toHaveCount(initialCount - 1);
   });
 
-  test("saving fixture type calls PUT API", async ({ page }) => {
-    let saveCalled = false;
-    await page.route("**/api/lighting/fixture-types/*", async (route) => {
-      if (route.request().method() === "PUT") {
-        saveCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+  test("saving a fixture type calls SaveFixtureType", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.saveFixtureType,
+      fixtureTypeSavedReply({ name: "par" }),
+    );
 
     await card(page, "par").click();
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    expect(saveCalled).toBe(true);
+    await expect
+      .poll(() => rpc.calls(LightingService.method.saveFixtureType).length)
+      .toBe(1);
+    // A channel-map type is saved from the form, as its channels.
+    const sent = savedTypeRequest(
+      rpc.calls(LightingService.method.saveFixtureType)[0],
+    );
+    expect(sent.name).toBe("par");
+    expect(sent.form?.channels).toMatchObject({ red: 1, dimmer: 4 });
   });
 
   test("deleting a fixture from a GDTF names the venues that use it, then DELETEs", async ({
     page,
   }) => {
-    const deletes: string[] = [];
-    page.on("request", (req) => {
-      if (req.method() === "DELETE") deletes.push(req.url());
-    });
+    const rpc = await mockRpc(page);
     await card(page, "pixelbrick")
       .getByRole("button", { name: "Delete" })
       .click();
@@ -407,18 +398,15 @@ test.describe("Fixture Types Management", () => {
     // Cancelled: nothing is deleted.
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await page.waitForTimeout(300);
-    expect(deletes).toHaveLength(0);
+    expect(rpc.calls(LightingService.method.deleteFixtureType)).toHaveLength(0);
 
     await card(page, "pixelbrick")
       .getByRole("button", { name: "Delete" })
       .click();
-    const requestPromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/pixelbrick") &&
-        req.method() === "DELETE",
-    );
     await dialog.getByRole("button", { name: "Confirm" }).click();
-    await requestPromise;
+    await expect
+      .poll(() => rpc.calls(LightingService.method.deleteFixtureType))
+      .toMatchObject([{ name: "pixelbrick" }]);
   });
 
   test("cancel button closes editor form", async ({ page }) => {

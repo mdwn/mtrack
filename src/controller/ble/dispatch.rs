@@ -764,6 +764,13 @@ mod tests {
             "StartFixtureTest",
             "StopFixtureTest",
             "GetFixtureTestOptions",
+            "ListFixtureTypes",
+            "GetFixtureType",
+            "SaveFixtureType",
+            "DeleteFixtureType",
+            "GetFixtureTypeGdtfDetails",
+            "GetFixtureTypeSettings",
+            "SaveFixtureTypeSettings",
         ] {
             assert!(methods.contains(&method), "{method} is not in {methods:?}");
         }

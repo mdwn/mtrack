@@ -110,24 +110,6 @@ pub fn router() -> Router<WebUiState> {
 
     // All other routes use the default body limit.
     Router::new()
-        .route(
-            "/lighting/fixture-types",
-            get(lighting_api::get_fixture_types),
-        )
-        .route(
-            "/lighting/fixture-types/{name}",
-            get(lighting_api::get_fixture_type)
-                .put(lighting_api::put_fixture_type)
-                .delete(lighting_api::delete_fixture_type),
-        )
-        .route(
-            "/lighting/fixture-types/{name}/gdtf",
-            get(lighting_api::get_fixture_type_gdtf),
-        )
-        .route(
-            "/lighting/fixture-types/{name}/settings",
-            get(fixture_settings::get_settings).post(fixture_settings::post_settings),
-        )
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
         .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
         .route("/lighting/mvr/export/keep", post(mvr_api::keep_export))
@@ -552,10 +534,6 @@ mod test {
         .await;
         assert_eq!(status, StatusCode::LOCKED);
         assert!(!dir.path().join("lighting/venues/lock.light").exists());
-        assert_eq!(
-            send(&app, "PUT", "/api/lighting/fixture-types/lock", "{}").await,
-            StatusCode::LOCKED
-        );
         // Ordinary edits stay locked.
         assert_eq!(
             send(&app, "PUT", "/api/lighting/venues/ordinary", "{}").await,

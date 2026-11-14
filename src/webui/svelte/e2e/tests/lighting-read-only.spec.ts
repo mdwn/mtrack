@@ -24,7 +24,13 @@ import type {
   FixtureTypeList,
   VenueList,
 } from "../../src/gen/rules/mtrack_rules";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import {
+  fixtureTypeInfoReply,
+  fixtureTypeListReply,
+} from "../support/lighting-rpc";
 import { card } from "../support/locators";
+import { mockRpc } from "../support/rpc";
 
 const SHARED =
   'Defined in tour/all.light alongside venue "Arena"; edit that file by hand.';
@@ -146,22 +152,19 @@ const types = {
 
 test.describe("A fixture type whose file is not its alone", () => {
   test.beforeEach(async ({ page }) => {
-    await page.route(/\/api\/lighting\/fixture-types(\?.*)?$/, (route) =>
-      route.fulfill({ json: types }),
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      LightingService.method.listFixtureTypes,
+      fixtureTypeListReply(types),
     );
     // The text editor reads the type's file.
-    await page.route(
-      /\/api\/lighting\/fixture-types\/Wash%20A(\?.*)?$/,
-      (route) =>
-        route.request().method() === "GET"
-          ? route.fulfill({
-              json: {
-                ...washType("Wash A"),
-                footprint: undefined,
-                dsl: WASH_DSL,
-              } satisfies FixtureTypeEntry,
-            })
-          : route.fallback(),
+    rpc.unary(
+      LightingService.method.getFixtureType,
+      fixtureTypeInfoReply({
+        ...washType("Wash A"),
+        footprint: undefined,
+        dsl: WASH_DSL,
+      } satisfies FixtureTypeEntry),
     );
   });
 

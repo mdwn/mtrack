@@ -419,3 +419,182 @@ pub(in super::super) fn test_answer(a: &proto::FixtureTestAnswer) -> Value {
         }).collect::<Vec<_>>(),
     })
 }
+
+// ---- Fixture types ----
+
+fn optional<T: serde::Serialize>(value: &Option<T>) -> Value {
+    serde_json::to_value(value).unwrap()
+}
+
+fn type_channels(t: &proto::FixtureTypeChannels) -> Value {
+    json!({
+        "name": t.name,
+        "channels": t.channels,
+        "max_strobe_frequency": t.max_strobe_frequency,
+        "min_strobe_frequency": t.min_strobe_frequency,
+        "strobe_dmx_offset": t.strobe_dmx_offset,
+    })
+}
+
+/// A fixture type as the REST routes sent it. A listing's entry carries
+/// `footprint` (null for a GDTF type's) and, for a GDTF type, `gdtf` (null
+/// when the archive did not read); a single type's carries `dsl` (null with
+/// no file) instead. An unset field is a null, never a missing key, except
+/// the ones the routes left out.
+pub(in super::super) fn fixture_type_info(i: &proto::FixtureTypeInfo, listing: bool) -> Value {
+    let mut entry = json!({
+        "referential": i.referential,
+        "rich": i.rich,
+        "fixture_type": type_channels(i.fixture_type.as_ref().unwrap()),
+        "file": i.file,
+        "extension": i.extension,
+        "owner": i.owner.as_ref().map(|o| json!({
+            "file": o.file, "editable": o.editable, "reason": o.reason,
+        })),
+        "form_editable": i.form_editable,
+    });
+    if listing {
+        entry["footprint"] = optional(&i.footprint);
+        if let Some(card) = &i.gdtf {
+            entry["gdtf"] = json!({
+                "fixture": card.fixture,
+                "manufacturer": card.manufacturer,
+                "modes": card.modes,
+                "beam": card.beam.as_ref().map(|b| json!({
+                    "type": b.beam_type, "angle": b.angle,
+                })),
+                "thumbnail": card.thumbnail,
+                "used_by": card.used_by,
+                "in_use": card.in_use.iter().map(|m| json!({
+                    "mode": m.mode, "count": m.count,
+                })).collect::<Vec<_>>(),
+            });
+        } else if i.referential {
+            entry["gdtf"] = Value::Null;
+        }
+    } else {
+        entry["dsl"] = optional(&i.dsl);
+    }
+    entry
+}
+
+pub(in super::super) fn fixture_type_list(l: &proto::ListFixtureTypesResponse) -> Value {
+    json!({
+        "fixture_types": l.fixture_types.iter()
+            .map(|(name, info)| (name.clone(), fixture_type_info(info, true)))
+            .collect::<serde_json::Map<_, _>>(),
+        "errors": l.errors.iter()
+            .map(|e| json!({"file": e.file, "error": e.error}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+pub(in super::super) fn rename(r: &proto::FixtureTypeRename) -> Value {
+    json!({
+        "from": r.from,
+        "to": r.to,
+        "venues": r.venues.iter().map(|v| json!({
+            "venue": v.venue, "file": v.file, "lines": v.lines,
+        })).collect::<Vec<_>>(),
+        "lines": r.lines,
+    })
+}
+
+pub(in super::super) fn fixture_type_saved(s: &proto::SaveFixtureTypeResponse) -> Value {
+    json!({
+        "status": "saved",
+        "name": s.name,
+        "rename": s.rename.as_ref().map(rename),
+        "venue_error": s.venue_error.as_ref().map(venue_error),
+    })
+}
+
+pub(in super::super) fn fixture_type_deleted(d: &proto::DeleteFixtureTypeResponse) -> Value {
+    json!({
+        "status": "deleted",
+        "name": d.name,
+        "archive_removed": d.archive_removed,
+        "archive_kept": d.archive_kept,
+    })
+}
+
+fn gdtf_mode(m: &proto::GdtfModeInfo) -> Value {
+    use proto::gdtf_mode_info::Outcome;
+    let mut mode = json!({"name": m.name, "footprint": m.footprint});
+    match m.outcome.as_ref().unwrap() {
+        Outcome::Refused(reason) => mode["refused"] = json!(reason),
+        Outcome::Facts(f) => {
+            mode["capabilities"] = json!(f.capabilities.iter().map(capability).collect::<Vec<_>>());
+            mode["wants"] = json!(f.wants.iter().map(want).collect::<Vec<_>>());
+            mode["cells"] = json!(f.cells);
+            if let Some(range) = &f.strobe_range {
+                mode["strobe_range"] = json!({"min_hz": range.min_hz, "max_hz": range.max_hz});
+            }
+            mode["channels"] = json!(f
+                .channels
+                .iter()
+                .map(|c| json!([c.offset, c.name]))
+                .collect::<Vec<_>>());
+        }
+    }
+    mode
+}
+
+/// What `GET /api/lighting/fixture-types/{name}/gdtf` sent.
+pub(in super::super) fn gdtf_details(g: &proto::FixtureTypeGdtfDetails) -> Value {
+    json!({
+        "archive": g.archive,
+        "rig": g.rig,
+        "thumbnail": g.thumbnail,
+        "beam": g.beam.as_ref().map(|b| json!({
+            "type": b.beam_type,
+            "beam_angle": b.beam_angle,
+            "field_angle": b.field_angle,
+            "luminous_flux": b.luminous_flux,
+            "color_temperature": b.color_temperature,
+            "power": b.power,
+        })),
+        "about": g.about,
+        "venues": g.venues.iter().map(|v| json!({
+            "name": v.name,
+            "fixtures": v.fixtures.iter()
+                .map(|f| json!({"name": f.name, "mode": f.mode}))
+                .collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "inspection": {"modes": g.modes.iter().map(gdtf_mode).collect::<Vec<_>>()},
+    })
+}
+
+fn strobe_curve(value: i32) -> Value {
+    match proto::FixtureStrobeCurve::try_from(value).unwrap() {
+        proto::FixtureStrobeCurve::Unspecified => Value::Null,
+        proto::FixtureStrobeCurve::Period => json!("period"),
+        proto::FixtureStrobeCurve::Linear => json!("linear"),
+        proto::FixtureStrobeCurve::Declared => json!("declared"),
+    }
+}
+
+pub(in super::super) fn fixture_settings(s: &proto::FixtureTypeSettings) -> Value {
+    let movement = s.movement.as_ref().unwrap();
+    json!({
+        "name": s.name,
+        "movement": {
+            "max_pan_speed": movement.max_pan_speed,
+            "max_tilt_speed": movement.max_tilt_speed,
+        },
+        "strobe_curve": strobe_curve(s.strobe_curve),
+        "strobe": s.strobe.as_ref().map(|t| json!({
+            "steps": t.steps, "automatic": strobe_curve(t.automatic),
+        })),
+        "version": s.revision,
+    })
+}
+
+pub(in super::super) fn settings_saved(s: &proto::FixtureTypeSettingsSaved) -> Value {
+    json!({
+        "version": s.revision,
+        "rename": s.rename.as_ref().map(rename),
+        "venue_versions": s.venue_revisions.iter().collect::<std::collections::BTreeMap<_, _>>(),
+        "venue_error": s.venue_error.as_ref().map(venue_error),
+    })
+}

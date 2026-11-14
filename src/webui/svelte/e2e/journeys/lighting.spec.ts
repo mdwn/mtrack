@@ -14,7 +14,9 @@
 
 import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { card } from "../support/locators";
+import { lightingClientAt } from "../support/player-client";
 import type { VenueList } from "../../src/gen/rules/mtrack_rules";
 import { api, expect, status, synthGdtf, synthMvr, test } from "./harness";
 
@@ -134,7 +136,9 @@ test.describe("Fixture types", () => {
     );
     const venue = project.read("lighting/venues/club.venue");
     expect(lineOf(venue, "B1")).toContain('Synth-Brick mode "8: RGBS"');
-    await api(project, "/lighting/fixture-types/Synth-Brick");
+    await lightingClientAt(project.url).getFixtureType({
+      name: "Synth-Brick",
+    });
   });
 
   test("deleting a fixture from a GDTF removes its archive, unless another fixture uses it", async ({
@@ -175,8 +179,11 @@ test.describe("Fixture types", () => {
     await confirmDialog(page).getByRole("button", { name: "Confirm" }).click();
     await expect(card(page, "Par")).toHaveCount(0);
     expect(project.exists("lighting/fixture_types/par.light")).toBe(false);
-    const res = await fetch(`${project.url}/api/lighting/fixture-types/Par`);
-    expect(res.status).toBe(404);
+    const gone = await lightingClientAt(project.url)
+      .getFixtureType({ name: "Par" })
+      .catch((e) => e);
+    expect(gone).toBeInstanceOf(ConnectError);
+    expect((gone as ConnectError).code).toBe(Code.NotFound);
 
     await page.goto("/#/lighting/venues");
     await card(page, "spare").getByRole("button", { name: "Delete" }).click();
@@ -358,10 +365,9 @@ test.describe("The fixture's settings", () => {
     // The record was at its old name's own file, so it moves to the new
     // name's: the file the server says owns "Brick-Two" holds it, and the
     // old one is gone.
-    const renamed = await api<{ owner: { file: string } | null }>(
-      project,
-      "/lighting/fixture-types/Brick-Two",
-    );
+    const renamed = await lightingClientAt(project.url).getFixtureType({
+      name: "Brick-Two",
+    });
     expect(renamed.owner?.file).toBe("brick-two.fixture");
     expect(
       project.read(`lighting/fixture_types/${renamed.owner!.file}`),
@@ -395,11 +401,8 @@ test.describe("MVR import", () => {
     );
     const name = Object.keys(venues.venues).find((v) => v !== "house")!;
     expect(name).toBeTruthy();
-    const types = await api<{ fixture_types: Record<string, unknown> }>(
-      project,
-      "/lighting/fixture-types",
-    );
-    const typeName = Object.keys(types.fixture_types)[0];
+    const types = await lightingClientAt(project.url).listFixtureTypes({});
+    const typeName = Object.keys(types.fixtureTypes)[0];
     expect(typeName).toBeTruthy();
 
     await page.goto("/#/lighting/fixtures");

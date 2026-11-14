@@ -104,15 +104,23 @@ api() { # api <path> [curl args...]
     shift
     inside curl -sS -m 15 "$@" "http://127.0.0.1:8080/api$path" || true
 }
-# A call to the player's gRPC service over gRPC-Web, from inside the image:
+# A call to the player's gRPC services over gRPC-Web, from inside the image:
 # status and the lock are there, not under /api. In the text form a call is
 # base64 both ways, which curl carries; grpcweb.py builds the request and
 # reads the answer. A stream never ends, so curl's timeout is how one stops.
+# A method of PlayerService is named as it is; another service's with its
+# service (LightingService/SaveFixtureType).
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-rpc() { # rpc <method> <grpcweb.py request name> <seconds> -> prints the answer, base64
-    inside curl -sS -m "$3" -H 'content-type: application/grpc-web-text' \
-        -H 'accept: application/grpc-web-text' -d "$("$HERE/grpcweb.py" request "$2")" \
-        "http://127.0.0.1:8080/player.v1.PlayerService/$1" || true
+rpc() { # rpc <method> <grpcweb.py request name> <seconds> [request args...] -> prints the answer, base64
+    local method="$1" request="$2" seconds="$3"
+    shift 3
+    case "$method" in
+        */*) ;;
+        *) method="PlayerService/$method" ;;
+    esac
+    inside curl -sS -m "$seconds" -H 'content-type: application/grpc-web-text' \
+        -H 'accept: application/grpc-web-text' -d "$("$HERE/grpcweb.py" request "$request" "$@")" \
+        "http://127.0.0.1:8080/player.v1.$method" || true
 }
 
 echo "== a working copy =="
@@ -304,13 +312,12 @@ if rpc SetLock unlock 15 | "$HERE/grpcweb.py" ok 2>/dev/null; then
 else
     fail "it does not unlock"
 fi
-saved="$(api /lighting/fixture-types/BootCheckPar -X PUT -H 'content-type: text/plain' \
-    --data-binary 'fixture_type "BootCheckPar" {
+saved="$(rpc LightingService/SaveFixtureType save-fixture-type 15 BootCheckPar 'fixture_type "BootCheckPar" {
   channels: 3
   channel_map: { "red": 1, "green": 2, "blue": 3 }
-}')"
-expect "$(field "$saved" 'd["status"]')" saved \
-    "a fixture type saves" "a fixture type does not save: $saved"
+}' | "$HERE/grpcweb.py" saved-fixture-type 2>/dev/null || true)"
+expect "$saved" BootCheckPar \
+    "a fixture type saves" "a fixture type does not save: '$saved'"
 saved="$(api /lighting/venues/boot-check -X PUT -H 'content-type: application/json' \
     -d '{"fixtures":[{"name":"A","fixture_type":"BootCheckPar","universe":1,"start_channel":1,"tags":[]}]}')"
 expect "$(field "$saved" 'd["status"]')" saved "a venue saves" "a venue does not save: $saved"
