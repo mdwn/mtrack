@@ -13,11 +13,17 @@
 //
 
 import { type Page, type Response } from "@playwright/test";
+import { fromBinary } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import {
+  FixtureTestAnswerSchema,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import type { StageState } from "../../src/gen/rules/mtrack_rules";
 import { StageReader } from "../../src/lib/stage/feed";
+import { readFrames } from "../support/grpc-web";
+import { lightingClientAt } from "../support/player-client";
 import { expect, status, synthGdtf, test, type Project } from "./harness";
 
 // Testing a fixture from its page, against the real binary with its DMX
@@ -29,22 +35,27 @@ import { expect, status, synthGdtf, test, type Project } from "./harness";
 const EXPIRY_MS = 1500;
 test.use({ env: { MTRACK_TEST_OUTPUT_EXPIRY_MS: String(EXPIRY_MS) } });
 
-interface Frame {
-  frame: { name: string; value: number; address: number }[];
-}
+type Answer = ReturnType<typeof answerOf>;
 
-const byName = (body: Frame) =>
-  Object.fromEntries(body.frame.map((c) => [c.name, c.value]));
-
-/** The next POST of the test (with this colour, when given: a heartbeat
- *  can come first). */
-const posted = (page: Page, color?: string) =>
-  page.waitForResponse(
-    (r: Response) =>
-      r.url().includes("/api/lighting/fixture-test") &&
-      r.request().method() === "POST" &&
-      (!color || (r.request().postData() ?? "").includes(color)),
+const answerOf = (body: Uint8Array) =>
+  fromBinary(
+    FixtureTestAnswerSchema,
+    readFrames(body).find((f) => f.flag === 0)!.payload,
   );
+
+const byName = (answer: Answer) =>
+  Object.fromEntries(answer.frame.map((c) => [c.name, c.value]));
+
+/** The next start of the test (with this colour, when given: a heartbeat
+ *  can come first), and what the player answered it. */
+const posted = async (page: Page, color?: string): Promise<Answer> => {
+  const res = await page.waitForResponse(
+    (r: Response) =>
+      r.url().includes("/player.v1.LightingService/StartFixtureTest") &&
+      (!color || (r.request().postDataBuffer()?.includes(color) ?? false)),
+  );
+  return answerOf(new Uint8Array(await res.body()));
+};
 
 const testOutput = async (project: Project) =>
   (await status(project)).hardware.test_output;
@@ -72,7 +83,7 @@ test("a fixture lights full white on Send, follows a swatch, and stops", async (
   // Send alone: full white, strobe off.
   const first = posted(page);
   await page.getByTestId("ftest-send").check();
-  const white = byName((await (await first).json()) as Frame);
+  const white = byName(await first);
   expect(white).toMatchObject({ red: 255, green: 255, blue: 255 });
   await expect(page.getByTestId("ftest-live")).toContainText(
     "universe 1, addresses 1–4",
@@ -87,7 +98,7 @@ test("a fixture lights full white on Send, follows a swatch, and stops", async (
   // A swatch: the engine's frame follows.
   const second = posted(page, "#ff0000");
   await page.getByTestId("ftest-swatch-red").click();
-  expect(byName((await (await second).json()) as Frame)).toMatchObject({
+  expect(byName(await second)).toMatchObject({
     red: 255,
     green: 0,
     blue: 0,
@@ -100,20 +111,14 @@ test("a fixture lights full white on Send, follows a swatch, and stops", async (
 
 test("a test nobody keeps alive goes dark by itself", async ({ project }) => {
   project.write("lighting/library/synth.gdtf", synthGdtf());
-  const res = await fetch(`${project.url}/api/lighting/fixture-test`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      fixture_type: "Synth Brick",
-      mode: "8: RGBS",
-      universe: 1,
-      address: 1,
-      controls: { color: "#ffffff", dimmer: 1, strobe: null },
-    }),
+  const body = await lightingClientAt(project.url).startFixtureTest({
+    fixtureType: "Synth Brick",
+    mode: "8: RGBS",
+    universe: 1,
+    address: 1,
+    controls: { color: "#ffffff", dimmer: 1, strobe: {} },
   });
-  expect(res.status).toBe(200);
-  const body = (await res.json()) as { expires_in_secs: number };
-  expect(body.expires_in_secs).toBeCloseTo(EXPIRY_MS / 1000, 1);
+  expect(body.expiresInSecs).toBeCloseTo(EXPIRY_MS / 1000, 1);
   expect(await testOutput(project)).not.toBeNull();
   // No heartbeat: gone soon after the expiry.
   await expect
@@ -162,27 +167,21 @@ test.describe("a venue fixture under test", () => {
     const latest = () => states.at(-1);
 
     try {
-      const post = async (color: string) => {
-        const res = await fetch(`${project.url}/api/lighting/fixture-test`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            fixture_type: "Par",
-            mode: null,
-            universe: 1,
-            address: 1,
-            controls: { color, dimmer: 1 },
-          }),
+      const lighting = lightingClientAt(project.url);
+      const post = (color: string) =>
+        lighting.startFixtureTest({
+          fixtureType: "Par",
+          universe: 1,
+          address: 1,
+          controls: { color, dimmer: 1 },
         });
-        expect(res.status).toBe(200);
-        return (await res.json()) as {
-          warnings: { kind: string; fixtures?: string[] }[];
-        };
-      };
       const body = await post("#ff0000");
       // The test says it overrides the venue's fixture there.
+      const overlap = body.warnings.find(
+        (w) => w.kind.case === "venueOverlap",
+      )?.kind;
       expect(
-        body.warnings.find((w) => w.kind === "venue_overlap")?.fixtures,
+        overlap?.case === "venueOverlap" ? overlap.value.fixtures : undefined,
       ).toEqual(["Front"]);
 
       await expect.poll(() => latest()?.under_test).toEqual(["Front"]);
@@ -199,9 +198,7 @@ test.describe("a venue fixture under test", () => {
       await expect.poll(() => latest()?.fixtures.Front?.green).toBe(255);
 
       // Stop: back to the show's values, nothing marked.
-      await fetch(`${project.url}/api/lighting/fixture-test`, {
-        method: "DELETE",
-      });
+      await lighting.stopFixtureTest({});
       await expect.poll(() => latest()?.under_test).toEqual([]);
       expect(latest()!.fixtures.Front?.green ?? 0).toBe(0);
       expect(latest()!.fixtures.Front?.red ?? 0).toBe(0);

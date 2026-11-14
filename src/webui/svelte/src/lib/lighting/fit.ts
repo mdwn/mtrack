@@ -13,7 +13,7 @@
 //
 
 /**
- * The Fit shows page's data: the facts and suggestions `GET /api/lighting/fit`
+ * The Fit shows page's data: the facts and suggestions `GetLightingFit`
  * reports (design/lighting_ui_design.md, section 9), and the small pure rules
  * the page applies to them.
  */

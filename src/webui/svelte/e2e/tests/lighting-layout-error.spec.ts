@@ -17,17 +17,24 @@
 // drawing the last layout that did lay out.
 
 import { test, expect } from "@playwright/test";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { lightShowReply } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 
+// The show the mock server serves for any file.
+const DEFAULT_SHOW =
+  'show "Main" {\n    @00:00.000\n    front: static, color: "blue", duration: 5s\n}\n';
 test("a failing include shows the reason and keeps the last good layout", async ({
   page,
 }) => {
-  await page.route("**/api/lighting/missing.light", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({
-      status: 404,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "Lighting file not found: missing.light" }),
-    });
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getLightShow, (req) => {
+    if (req.name !== "missing.light") return lightShowReply(DEFAULT_SHOW);
+    throw new ConnectError(
+      "Lighting file not found: missing.light",
+      Code.NotFound,
+    );
   });
   await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
   await expect(page.locator(".lighting-section")).toBeVisible();

@@ -14,7 +14,7 @@
 
 //! The light show API's payloads (`/api/lighting`): the show files, the
 //! groups a cue can target, a show's validation, and a song's shows
-//! evaluated offline (`POST /api/lighting/evaluate`, the 3D view's Preview
+//! evaluated offline (`EvaluateSongLighting`, the 3D view's Preview
 //! mode) in the shape the live `state` message has.
 
 use serde::Serialize;
@@ -73,7 +73,7 @@ pub struct LightFileInfo {
     pub path: String,
 }
 
-/// `GET /api/lighting/groups`: the groups a cue can target.
+/// `ListLightingGroups`: the groups a cue can target.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingGroups {
@@ -92,7 +92,7 @@ pub struct LightingGroup {
     pub fixtures: Vec<String>,
 }
 
-/// `POST /api/lighting/validate`: whether a show parses, and why not.
+/// `ValidateLightShow`: whether a show parses, and why not.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingValidation {

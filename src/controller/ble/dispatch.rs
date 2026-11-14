@@ -729,22 +729,63 @@ mod tests {
         }
     }
 
+    /// The methods of the `player.v1` service `service`, from the proto.
+    fn service_methods(service: &str) -> Vec<&'static str> {
+        use std::sync::OnceLock;
+        static SET: OnceLock<prost_types::FileDescriptorSet> = OnceLock::new();
+        let set = SET.get_or_init(|| {
+            prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).expect("descriptor")
+        });
+        set.file
+            .iter()
+            .filter(|file| file.package() == "player.v1")
+            .flat_map(|file| &file.service)
+            .filter(|s| s.name() == service)
+            .flat_map(|s| &s.method)
+            .map(|method| method.name())
+            .collect()
+    }
+
+    /// `LightingService` is the lighting pages' and is not on the
+    /// allowlist either: every one of its methods is refused before any
+    /// service sees it, locked or not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lighting_service_is_not_reachable_over_bluetooth() {
+        let methods = service_methods("LightingService");
+        for method in [
+            "GetLightShow",
+            "SaveLightShow",
+            "DeleteLightShow",
+            "ValidateLightShow",
+            "GetLightingReadiness",
+            "GetLightingFit",
+            "EvaluateSongLighting",
+            "ListLightingGroups",
+            "StartFixtureTest",
+            "StopFixtureTest",
+            "GetFixtureTestOptions",
+        ] {
+            assert!(methods.contains(&method), "{method} is not in {methods:?}");
+        }
+        let (player, dispatcher, _device) = setup().await;
+        for locked in [false, true] {
+            player.set_locked(locked);
+            for (id, method) in methods.iter().enumerate() {
+                assert!(!ALLOWED.contains(method), "{method} is allowed");
+                let response = call(&dispatcher, id as u32 + 1, method, Vec::new()).await;
+                assert_eq!(response.code, PERMISSION_DENIED, "{method}");
+                assert!(response.message.contains(method), "{}", response.message);
+            }
+        }
+    }
+
     /// `ConfigService` is the editor pages' and is not on the allowlist,
     /// which names `PlayerService` methods: every one of its methods is
     /// refused before any service sees it, locked or not, and none is a
     /// name the allowlist holds.
     #[tokio::test(flavor = "multi_thread")]
     async fn config_service_is_not_reachable_over_bluetooth() {
-        let set = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).expect("descriptor");
-        let methods: Vec<&str> = set
-            .file
-            .iter()
-            .filter(|file| file.package() == "player.v1")
-            .flat_map(|file| &file.service)
-            .filter(|service| service.name() == "ConfigService")
-            .flat_map(|service| &service.method)
-            .map(|method| method.name())
-            .collect();
+        let methods = service_methods("ConfigService");
         assert!(methods.contains(&"SaveProfileFile"), "{methods:?}");
         // The device, calibration and restart calls are the service's too,
         // and none of them is the phone's.

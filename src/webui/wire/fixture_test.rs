@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The fixture test's payloads (`/api/lighting/fixture-test`): what a type's
+//! The fixture test's payloads (`LightingService`'s fixture test calls): what a type's
 //! modes let a test do, the test asked for, and what it sent.
 
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lighting::fixture_test::{ControlSupport, FrameChannel};
 
-/// `GET /api/lighting/fixture-test/options`: the type's modes, the running
+/// `GetFixtureTestOptions`: the type's modes, the running
 /// profile's universes, and whether a test can run now.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -90,7 +90,7 @@ pub enum TestUnavailable {
     NoUniverses,
 }
 
-/// `POST /api/lighting/fixture-test`: a test to send. The controls are read
+/// `StartFixtureTest`: a test to send. The controls are read
 /// leniently, each refused by name when it is not what it should be.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]

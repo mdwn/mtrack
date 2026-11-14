@@ -43,14 +43,15 @@ import {
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
   ConfigService,
+  LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { errorHeaders, requestMessage, unaryBody } from "./grpc-web";
 
 /** The services a spec can name. Add each service here as the proto gains
- *  one (`LightingService`): the route and the by-name lookup read the
- *  methods from these descriptors. */
-const SERVICES: DescService[] = [PlayerService, ConfigService];
+ *  one: the route and the by-name lookup read the methods from these
+ *  descriptors. */
+const SERVICES: DescService[] = [PlayerService, ConfigService, LightingService];
 
 /** How a call nothing answers is answered, when {@link RpcMockOptions.otherwise}
  *  is set.

@@ -17,7 +17,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use super::super::safe_path::VerifiedRoot;
-use crate::util::FaultKind;
+use super::lighting_writes::Answer;
 
 /// The project directory: where mtrack.yaml lives.
 ///
@@ -25,24 +25,6 @@ use crate::util::FaultKind;
 /// configured path outside it belongs to the operator — creating it turns a
 /// typo into an empty directory, and writes outside the paths the generated
 /// systemd unit fences the service into.
-/// A fault as an HTTP response: the one table from [`FaultKind`] to a
-/// status, the error's text as the body.
-pub(crate) fn fault_response(kind: FaultKind, message: String) -> axum::response::Response {
-    let status = match kind {
-        FaultKind::NotFound => StatusCode::NOT_FOUND,
-        FaultKind::Precondition => StatusCode::CONFLICT,
-        FaultKind::Invalid => StatusCode::BAD_REQUEST,
-        FaultKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    (status, Json(json!({"error": message}))).into_response()
-}
-
-/// The web API's answer to a song lookup that failed: 404 for no such
-/// song, 400 for one that did not load, saying why.
-pub(crate) fn song_lookup_response(e: crate::songs::SongLookupError) -> axum::response::Response {
-    fault_response(e.kind(), e.to_string())
-}
-
 pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
     crate::util::project_dir_of(&state.config_path)
 }
@@ -215,19 +197,30 @@ where
     T: Send + 'static,
     E: std::fmt::Display + Send + 'static,
 {
+    blocking_answer(label, f)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+/// [`spawn_blocking_io`], with the failure as the plain [`Answer`] a
+/// surface that is not HTTP (gRPC, MCP) can give as it stands.
+pub(crate) async fn blocking_answer<F, T, E>(label: &str, f: F) -> Result<T, Answer>
+where
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
     let label = label.to_string();
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(val)) => Ok(val),
-        Ok(Err(e)) => Err((
+        Ok(Err(e)) => Err(Answer::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to {}: {}", label, e)})),
-        )
-            .into_response()),
-        Err(e) => Err((
+            format!("Failed to {}: {}", label, e),
+        )),
+        Err(e) => Err(Answer::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("{} task failed: {}", label, e)})),
-        )
-            .into_response()),
+            format!("{} task failed: {}", label, e),
+        )),
     }
 }
 

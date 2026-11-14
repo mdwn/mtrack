@@ -14,6 +14,8 @@
 mod asset;
 mod config_service;
 mod config_songs;
+mod lighting_convert;
+mod lighting_service;
 mod playlist_settings;
 mod playlists;
 mod remote;
@@ -36,6 +38,7 @@ use crate::{
     player::{Player, PLAY_DECLINED_KEY},
     proto::player::v1::{
         config_service_server::ConfigServiceServer,
+        lighting_service_server::LightingServiceServer,
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
         CancelAutoPlayResponse, Cue, DeletePlaylistRequest, DeletePlaylistResponse,
@@ -127,7 +130,8 @@ impl super::Driver for Driver {
                 .add_service(reflection_service)
                 .add_service(health_service().await)
                 .add_service(player_service(player.clone()))
-                .add_service(config_service(player))
+                .add_service(config_service(player.clone()))
+                .add_service(lighting_service(player))
                 .serve_with_incoming(
                     tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true)),
                 )
@@ -211,8 +215,20 @@ pub(crate) fn config_service(
     }
 }
 
+/// The lighting pages' service, behind the lock: what the gRPC controller
+/// and the web UI's gRPC-Web route serve beside [`player_service`].
+/// Bluetooth does not carry it.
+pub(crate) fn lighting_service(
+    player: Arc<Player>,
+) -> LockGuard<LightingServiceServer<lighting_service::LightingServer>> {
+    LockGuard {
+        inner: LightingServiceServer::new(lighting_service::LightingServer::new(player.clone())),
+        player,
+    }
+}
+
 /// The standard `grpc.health.v1.Health` service, reporting the server as a
-/// whole and the player and editor services as serving. It is not behind the lock: a
+/// whole and the player, editor and lighting services as serving. It is not behind the lock: a
 /// health check must answer on a locked player. The gRPC controller and the
 /// web UI's gRPC-Web route both serve it.
 pub(crate) async fn health_service() -> HealthServer<impl Health> {
@@ -222,6 +238,9 @@ pub(crate) async fn health_service() -> HealthServer<impl Health> {
         .await;
     reporter
         .set_serving::<ConfigServiceServer<config_service::ConfigServer>>()
+        .await;
+    reporter
+        .set_serving::<LightingServiceServer<lighting_service::LightingServer>>()
         .await;
     service
 }
@@ -2739,7 +2758,11 @@ mod test {
             .into_iter()
             .map(|(service, _)| service)
             .collect();
-        assert!(services.contains("PlayerService") && services.contains("ConfigService"));
+        assert!(
+            services.contains("PlayerService")
+                && services.contains("ConfigService")
+                && services.contains("LightingService")
+        );
     }
 
     /// Every RPC the lock policy leaves open is in the proto.
@@ -2798,7 +2821,24 @@ mod test {
         ] {
             assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
         }
-        // The reads are open, and so is the controller restart.
+        // Writing a light show and starting a fixture test are locked out.
+        for rpc in ["SaveLightShow", "DeleteLightShow", "StartFixtureTest"] {
+            assert!(locked.contains(&("LightingService", rpc)), "{rpc}");
+        }
+        // The reads are open, and so is the controller restart, the
+        // lighting validation and evaluation, and the release of a test.
+        for rpc in [
+            "GetLightShow",
+            "ValidateLightShow",
+            "GetLightingReadiness",
+            "GetLightingFit",
+            "EvaluateSongLighting",
+            "ListLightingGroups",
+            "StopFixtureTest",
+            "GetFixtureTestOptions",
+        ] {
+            assert!(open.contains(&rpc), "{rpc}");
+        }
         for rpc in [
             "GetSongConfig",
             "GetSongWaveform",
@@ -2831,6 +2871,14 @@ mod test {
                 "ConfigService" => {
                     let name = <super::ConfigServiceServer<super::config_service::ConfigServer> as NamedService>::NAME;
                     super::config_service(player.clone())
+                        .oneshot(request(name)?)
+                        .await?
+                }
+                "LightingService" => {
+                    let name = <super::LightingServiceServer<
+                        super::lighting_service::LightingServer,
+                    > as NamedService>::NAME;
+                    super::lighting_service(player.clone())
                         .oneshot(request(name)?)
                         .await?
                 }
@@ -2884,6 +2932,7 @@ mod test {
         assert!(names.contains(&"grpc.health.v1.Health"), "{names:?}");
         assert!(names.contains(&"player.v1.PlayerService"), "{names:?}");
         assert!(names.contains(&"player.v1.ConfigService"), "{names:?}");
+        assert!(names.contains(&"player.v1.LightingService"), "{names:?}");
         Ok(())
     }
 
@@ -2904,7 +2953,12 @@ mod test {
             .await?;
         let mut health = HealthClient::new(channel);
 
-        for service in ["", "player.v1.PlayerService", "player.v1.ConfigService"] {
+        for service in [
+            "",
+            "player.v1.PlayerService",
+            "player.v1.ConfigService",
+            "player.v1.LightingService",
+        ] {
             let status = health
                 .check(HealthCheckRequest {
                     service: service.to_string(),

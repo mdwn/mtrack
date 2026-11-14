@@ -24,6 +24,8 @@
 // actually reads survived the deletion.
 
 import { test, expect } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 
@@ -132,15 +134,10 @@ test("an edited effect switched to another type keeps its parameters", async ({
   // result handed over as JS Maps lost every parameter on the type switch,
   // and the file was written as `dimmer` with no duration.
   await loadRules();
-  let saved = "";
-  await page.route("**/api/lighting/**", async (route) => {
-    if (route.request().method() === "PUT") {
-      saved = route.request().postData() ?? "";
-      await route.fulfill({ status: 200, body: "{}" });
-    } else {
-      await route.continue();
-    }
-  });
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.saveLightShow, {});
+  const savedSource = () =>
+    rpc.calls(LightingService.method.saveLightShow).at(-1)?.source ?? "";
   await openFirstCue(page);
   const duration = page
     .locator(".param", { hasText: "Duration" })
@@ -152,9 +149,9 @@ test("an edited effect switched to another type keeps its parameters", async ({
     page.locator(".param", { hasText: "Duration" }).locator("input"),
   ).toHaveValue("3s");
   await page.getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => saved).toContain("dimmer");
-  expect(saved).toContain("duration: 3s");
-  expect(rules.document(saved, "show.light").error).toBeUndefined();
+  await expect.poll(savedSource).toContain("dimmer");
+  expect(savedSource()).toContain("duration: 3s");
+  expect(rules.document(savedSource(), "show.light").error).toBeUndefined();
 });
 
 test("a type switch keeps what the new type and every type read", async () => {

@@ -14,16 +14,24 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
-import type { SongList } from "../../src/gen/rules/mtrack_rules";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { Code, ConnectError } from "@connectrpc/connect";
+import type {
+  PreviewEvaluation,
+  SongList,
+} from "../../src/gen/rules/mtrack_rules";
+import {
+  LightingService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
 import { listSongsReply } from "../support/library-rpc";
+import { previewReply } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 
 import { sendStage } from "../support/stage";
 
 // The venue card's 3D Preview (lighting UI design, section 12.1), on the
 // current venue at `#/lighting/venues/<venue>?view=3d&mode=preview`. Every test
-// routes its own songs and evaluations with `page.route`. The scene's test
+// routes its own songs and evaluations with `mockRpc`. The scene's test
 // hook is the viewport's `data-fed` attribute: in Preview it carries exactly
 // what the scene was handed (channels, poses, cells).
 
@@ -63,44 +71,35 @@ interface Asked {
 /** Answers every evaluation with `answer(time)`, remembering the asks. */
 async function routeEvaluate(
   page: Page,
-  answer: (time: number) => object = () => ({}),
+  answer: (time: number) => Partial<PreviewEvaluation> = () => ({}),
   untouched: string[] = [],
-  status = 200,
+  failure?: string,
 ) {
   const asked: Asked[] = [];
-  await page.route("**/api/lighting/evaluate", async (route) => {
-    const body = route.request().postDataJSON() as Asked;
-    asked.push(body);
-    if (status !== 200) {
-      await route.fulfill({
-        status,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Failed to parse show.light: line 3" }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        song: body.song,
-        evaluations: body.times.map((time) => ({
-          time,
-          fixtures: {},
-          poses: {},
-          cells: {},
-          active_effects: [],
-          ...answer(time),
-        })),
-        untouched,
-      }),
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.evaluateSongLighting, (req) => {
+    asked.push({ song: req.song, times: [...req.times] });
+    if (failure) throw new ConnectError(failure, Code.InvalidArgument);
+    return previewReply({
+      song: req.song,
+      evaluations: req.times.map((time) => ({
+        time,
+        fixtures: {},
+        poses: {},
+        cells: {},
+        strobe_rates: {},
+        active_effects: [],
+        ...answer(time),
+      })),
+      untouched,
+      venue_error: null,
     });
   });
   return asked;
 }
 
 /** A show that lights the mover red and swings it towards the drummer. */
-const MOVING = (time: number) => ({
+const MOVING = (time: number): Partial<PreviewEvaluation> => ({
   fixtures: { "mover-1": { red: time > 5 ? 255 : 0, dimmer: 255 } },
   poses: {
     "mover-1": {
@@ -388,7 +387,7 @@ test.describe("3D Preview on the venue card", () => {
     page,
   }) => {
     await routeSongs(page);
-    await routeEvaluate(page, MOVING, [], 400);
+    await routeEvaluate(page, MOVING, [], "Failed to parse show.light: line 3");
     await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-error")).toContainText(
       "Failed to parse show.light: line 3",
@@ -396,23 +395,15 @@ test.describe("3D Preview on the venue card", () => {
     await expect(page.getByTestId("preview-activity")).toHaveCount(0);
   });
 
-  test("an evaluation that is not an evaluation says so and draws nothing", async ({
+  test("an empty evaluation draws nothing and does not crash", async ({
     page,
   }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (e) => pageErrors.push(e));
     await routeSongs(page);
-    await page.route("**/api/lighting/evaluate", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: "{}",
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(LightingService.method.evaluateSongLighting, {});
     await openCard(page, wsId, "&mode=preview");
-    await expect(page.getByTestId("preview-error")).toContainText(
-      "answer was not understood",
-    );
     await expect(page.getByTestId("preview-activity")).toHaveCount(0);
     expect(pageErrors).toEqual([]);
   });

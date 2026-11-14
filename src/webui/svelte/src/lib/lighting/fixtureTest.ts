@@ -27,8 +27,14 @@ import type {
   TestOptions,
   TestRequest,
 } from "../../gen/rules/mtrack_rules";
+import { lightingClient, lightingKeepaliveClient } from "../grpc/client";
+import {
+  mapTestAnswer,
+  mapTestOptions,
+  startFixtureTestRequest,
+  testCallError,
+} from "../grpc/lighting";
 import { rules } from "../rules";
-import { dirParams } from "../api/config";
 
 /** The controls the panel holds, whatever the mode can take of them. */
 export interface TestControls {
@@ -41,19 +47,7 @@ export interface TestControls {
   levels: Record<string, number>;
 }
 
-const BASE = "/api/lighting/fixture-test";
-
-/** A refusal: the HTTP status and the server's reason, when it gave one. */
-export class TestRefused extends Error {
-  status: number;
-  reason: string | null;
-
-  constructor(message: string, status: number, reason: string | null) {
-    super(message);
-    this.status = status;
-    this.reason = reason;
-  }
-}
+export { TestRefused } from "../grpc/lighting";
 
 /** Full white at rest: what Send shows before anything else is touched,
  *  so a healthy fixture visibly answers. */
@@ -118,26 +112,22 @@ export function frameChannels(frame: FrameChannel[]): Record<string, number> {
   return out;
 }
 
-async function refusal(res: Response, fallback: string): Promise<TestRefused> {
-  const body: { error?: string; reason?: string } = await res
-    .json()
-    .catch(() => ({}));
-  return new TestRefused(
-    body.error || `${fallback}: ${res.status}`,
-    res.status,
-    body.reason ?? (res.status === 423 ? "locked" : null),
-  );
-}
-
 export async function fetchTestOptions(
   fixtureType: string,
   dir?: string,
   venuesDir?: string,
 ): Promise<TestOptions> {
-  const query = dirParams(dir, venuesDir, { fixture_type: fixtureType });
-  const res = await fetch(`${BASE}/options${query}`);
-  if (!res.ok) throw await refusal(res, "Failed to read the test options");
-  return res.json();
+  try {
+    return mapTestOptions(
+      await lightingClient.getFixtureTestOptions({
+        fixtureType,
+        dir: dir || undefined,
+        venuesDir: venuesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw testCallError(e, "Failed to read the test options");
+  }
 }
 
 export async function sendTest(
@@ -145,19 +135,27 @@ export async function sendTest(
   dir?: string,
   venuesDir?: string,
 ): Promise<TestAnswer> {
-  const res = await fetch(`${BASE}${dirParams(dir, venuesDir)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw await refusal(res, "Failed to send");
-  return res.json();
+  try {
+    return mapTestAnswer(
+      await lightingClient.startFixtureTest(
+        startFixtureTestRequest(body, dir, venuesDir),
+      ),
+    );
+  } catch (e) {
+    throw testCallError(e, "Failed to send");
+  }
 }
 
-/** Releases the test output. `keepalive` lets it go out as the page
- *  closes. */
+/** Releases the test output. `keepalive` lets it go out as the page closes,
+ *  where a failure to reach the player is not worth reporting. */
 export async function releaseTest(keepalive = false): Promise<void> {
-  await fetch(BASE, { method: "DELETE", keepalive });
+  try {
+    await (
+      keepalive ? lightingKeepaliveClient : lightingClient
+    ).stopFixtureTest({});
+  } catch {
+    // Nothing to tell: the test ends by itself within seconds.
+  }
 }
 
 /**

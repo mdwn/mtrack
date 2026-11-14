@@ -14,7 +14,11 @@
 
 import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { ConfigService, PlayerService } from "../../gen/player/v1/player_pb";
+import {
+  ConfigService,
+  LightingService,
+  PlayerService,
+} from "../../gen/player/v1/player_pb";
 
 const transport = createGrpcWebTransport({
   baseUrl: window.location.origin,
@@ -22,3 +26,16 @@ const transport = createGrpcWebTransport({
 
 export const playerClient = createClient(PlayerService, transport);
 export const configClient = createClient(ConfigService, transport);
+export const lightingClient = createClient(LightingService, transport);
+
+/** A lighting client whose calls outlive the page: for the one call a page
+ *  makes as it closes (releasing a fixture test), which a plain request
+ *  would lose with the page. */
+export const lightingKeepaliveClient = createClient(
+  LightingService,
+  createGrpcWebTransport({
+    baseUrl: window.location.origin,
+    fetch: (input, init) =>
+      globalThis.fetch(input, { ...init, keepalive: true }),
+  }),
+);

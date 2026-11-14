@@ -2345,12 +2345,9 @@ impl McpServer {
         let songs_root = self.songs_root_verified().await?;
         let shown = shown_in(songs_root.as_path(), &path);
         // The file to remove: a link itself, not what it leads to.
-        let removed =
-            web(
-                lighting_api::check_light_show_delete(store.path(), &songs_root, &path, &shown)
-                    .await,
-            )
-            .await?;
+        let removed = answered(
+            lighting_api::check_light_show_delete(store.path(), &songs_root, &path, &shown).await,
+        )?;
 
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
@@ -2385,7 +2382,7 @@ impl McpServer {
 
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
-        web(lighting_api::remove_light_show(songs_root.as_path(), &removed).await).await?;
+        answered(lighting_api::remove_light_show(songs_root.as_path(), &removed).await)?;
         self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
@@ -3974,16 +3971,17 @@ impl McpServer {
         let store = self.config_store()?;
         let root = self.songs_root_verified().await?;
         let shown = shown_in(root.as_path(), path);
-        web(lighting_api::save_light_show(
-            store.path(),
-            &root,
-            path,
-            &shown,
-            source,
-            song_lighting_tempo(song).as_ref(),
+        answered(
+            lighting_api::save_light_show(
+                store.path(),
+                &root,
+                path,
+                &shown,
+                source,
+                song_lighting_tempo(song).as_ref(),
+            )
+            .await,
         )
-        .await)
-        .await
     }
 
     /// Resolves a playlist file path. With `None`, returns the top-level
@@ -4409,6 +4407,11 @@ async fn web<T>(result: Result<T, axum::response::Response>) -> Result<T, McpErr
         Ok(value) => Ok(value),
         Err(response) => Err(response_err(response).await),
     }
+}
+
+/// A light show writer's answer as the tool's: its refusal ([`answer_err`]).
+fn answered<T>(result: Result<T, lighting_writes::Answer>) -> Result<T, McpError> {
+    result.map_err(answer_err)
 }
 
 /// A song writer's refusal as the tool's ([`answer_err`]).

@@ -21,7 +21,9 @@
 use std::time::Duration;
 
 use mtrack::proto::player::v1::{
-    GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayRequest, StopRequest,
+    GetActiveEffectsRequest, GetCuesRequest, GetLightShowRequest, GetLightShowResponse,
+    NextRequest, PlayRequest, SaveLightShowRequest, SaveLightShowResponse, StopRequest,
+    ValidateLightShowRequest, ValidateLightShowResponse,
 };
 
 use crate::capabilities::Capabilities;
@@ -69,17 +71,22 @@ pub async fn generated_show_passes_validation() -> CheckOutcome {
     let client = Client::connect(&server).await?;
 
     let show = LightingSpec::simple("Validation", "lighting/v.light", LIGHTING_GROUP);
-    let (status, body) = client
-        .send_text(
-            reqwest::Method::POST,
-            "lighting/validate",
-            crate::sabotage::pick(show.source.clone(), "not a show".to_string()),
+    let answer: ValidateLightShowResponse = client
+        .lighting_call(
+            "ValidateLightShow",
+            &ValidateLightShowRequest {
+                source: crate::sabotage::pick(show.source.clone(), "not a show".to_string()),
+                song: None,
+                file: None,
+            },
         )
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
 
     check!(
-        status.is_success(),
-        "the generated light show did not validate: HTTP {status}\n{body}\n--- show ---\n{}",
+        answer.valid,
+        "the generated light show did not validate: {}\n--- show ---\n{}",
+        answer.errors.join("; "),
         show.source
     );
 
@@ -101,13 +108,21 @@ pub async fn malformed_show_is_rejected() -> CheckOutcome {
         "show \"Broken\" { @00:00.000 this is not a valid effect line ".to_string(),
         LightingSpec::simple("Valid", "v.light", LIGHTING_GROUP).source,
     );
-    let (status, body) = client
-        .send_text(reqwest::Method::POST, "lighting/validate", broken)
-        .await?;
+    let answer: ValidateLightShowResponse = client
+        .lighting_call(
+            "ValidateLightShow",
+            &ValidateLightShowRequest {
+                source: broken,
+                song: None,
+                file: None,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
     check!(
-        !status.is_success(),
-        "a malformed light show was accepted as valid (HTTP {status}): {body}"
+        !answer.valid && !answer.errors.is_empty(),
+        "a malformed light show was accepted as valid: {answer:?}"
     );
 
     server.check_clean_log(&["invalid", "parse", "lighting"])?;
@@ -222,23 +237,38 @@ pub async fn show_written_via_api_is_readable() -> CheckOutcome {
     let client = Client::connect(&server).await?;
 
     let show = LightingSpec::simple("Api Show", "api_show.light", LIGHTING_GROUP);
-    let (status, body) = client
-        .send_text(
-            reqwest::Method::PUT,
-            "lighting/api_show.light",
-            show.source.clone(),
+    let saved: Result<SaveLightShowResponse, _> = client
+        .lighting_call(
+            "SaveLightShow",
+            &SaveLightShowRequest {
+                name: "api_show.light".to_string(),
+                source: show.source.clone(),
+            },
         )
-        .await?;
+        .await;
     check!(
-        status.is_success(),
-        "writing a light show through the API failed: HTTP {status}\n{body}"
+        saved.is_ok(),
+        "writing a light show through the API failed: {}",
+        saved.err().map(|e| e.to_string()).unwrap_or_default()
     );
 
-    let (status, readback) = client.get_text("lighting/api_show.light").await?;
+    let read: Result<GetLightShowResponse, _> = client
+        .lighting_call(
+            "GetLightShow",
+            &GetLightShowRequest {
+                name: "api_show.light".to_string(),
+            },
+        )
+        .await;
     check!(
-        status.is_success(),
-        "reading the show back failed: HTTP {status}\n{readback}"
+        read.is_ok(),
+        "reading the show back failed: {}",
+        read.as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
     );
+    let readback = read.map_err(|e| e.to_string())?.source;
     check!(
         readback.contains(crate::sabotage::pick(LIGHTING_GROUP, "e2e-absent-marker")),
         "the show read back does not contain what was written:\n{readback}"

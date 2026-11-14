@@ -90,6 +90,34 @@ impl Answer {
     }
 }
 
+/// A path that is not safe, as the web API answered it.
+impl From<super::super::safe_path::SafePathError> for Answer {
+    fn from(e: super::super::safe_path::SafePathError) -> Self {
+        use super::super::safe_path::SafePathError;
+        let status = match &e {
+            SafePathError::NotFound => StatusCode::NOT_FOUND,
+            SafePathError::OutsideRoot => StatusCode::FORBIDDEN,
+            SafePathError::InvalidName => StatusCode::BAD_REQUEST,
+            SafePathError::RootNotFound | SafePathError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Answer::new(status, e.to_string())
+    }
+}
+
+/// A failed song lookup, by the one table from its kind to a status.
+impl From<crate::songs::SongLookupError> for Answer {
+    fn from(e: crate::songs::SongLookupError) -> Self {
+        use crate::util::FaultKind;
+        let status = match e.kind() {
+            FaultKind::NotFound => StatusCode::NOT_FOUND,
+            FaultKind::Precondition => StatusCode::CONFLICT,
+            FaultKind::Invalid => StatusCode::BAD_REQUEST,
+            FaultKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Answer::new(status, e.to_string())
+    }
+}
+
 impl IntoResponse for Answer {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()

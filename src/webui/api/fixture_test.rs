@@ -28,60 +28,86 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::http::StatusCode;
 use serde_json::json;
 
-use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, project_root, resolve_lighting_dir, system_from_files, LightingDir,
 };
+use super::lighting_writes::Answer;
 use crate::lighting;
 use crate::lighting::fixture_test::{self, TestControls};
 use crate::lighting::patch::{self, PatchSpan};
 use crate::lighting::system::TypeInModeError;
 use crate::lighting::types::FixtureType;
+use crate::player::Player;
 use crate::webui::wire::fixture_test::{
-    TestAnswer, TestChannel, TestMode, TestOlad, TestOptions, TestRequest, TestUnavailable,
-    TestUniverse, TestWarning,
+    TestAnswer, TestChannel, TestMode, TestOlad, TestOptions, TestUnavailable, TestUniverse,
+    TestWarning,
 };
 
 /// The directories a test works in, as the page passes them from the
-/// running profile.
-#[derive(serde::Deserialize, Default)]
-pub(super) struct TestQuery {
-    dir: Option<String>,
-    venues_dir: Option<String>,
-    fixture_type: Option<String>,
+/// running profile: each, when left out, the one the engine reads on this
+/// host.
+#[derive(Default, Clone)]
+pub(crate) struct TestDirs {
+    pub dir: Option<String>,
+    pub venues_dir: Option<String>,
 }
 
-fn refuse(status: StatusCode, reason: impl serde::Serialize, error: impl Into<String>) -> Response {
-    (
+/// The controls a test asks for, as they come in: a colour not yet read,
+/// and numbers not yet checked. One left out is not touched.
+#[derive(Default, Clone)]
+pub(crate) struct ControlInput {
+    /// `#rrggbb`.
+    pub color: Option<String>,
+    /// 0..1.
+    pub dimmer: Option<f64>,
+    /// `Some(None)` is off, `Some(Some(hz))` a rate.
+    pub strobe: Option<Option<f64>>,
+    /// Degrees.
+    pub pan: Option<f64>,
+    pub tilt: Option<f64>,
+    /// Further channel levels by channel name, 0..1.
+    pub levels: BTreeMap<String, f64>,
+}
+
+/// A test to send.
+#[derive(Clone)]
+pub(crate) struct TestInput {
+    pub fixture_type: String,
+    pub mode: Option<String>,
+    pub universe: u16,
+    pub address: u16,
+    pub controls: ControlInput,
+    /// Raw channel values, by offset or channel name.
+    pub raw: BTreeMap<String, u32>,
+}
+
+/// A refusal of a test: the status the web API gave it, why in a word
+/// (`reason`) and in a sentence (`error`).
+fn refuse(status: StatusCode, reason: impl serde::Serialize, error: impl Into<String>) -> Answer {
+    Answer {
         status,
-        Json(json!({"error": error.into(), "reason": reason})),
-    )
-        .into_response()
+        body: json!({"error": error.into(), "reason": reason}),
+    }
 }
 
 /// Why testing is not possible right now, if it is not.
-async fn unavailable(state: &WebUiState) -> Option<(TestUnavailable, String)> {
-    if state.player.is_locked() {
+async fn unavailable(player: &Player) -> Option<(TestUnavailable, String)> {
+    if player.is_locked() {
         return Some((
             TestUnavailable::Locked,
             "The player is locked. Unlock it to test a fixture.".to_string(),
         ));
     }
-    if state.player.is_playing().await {
+    if player.is_playing().await {
         return Some((
             TestUnavailable::Playing,
             "A song is playing. Stop it to test a fixture.".to_string(),
         ));
     }
-    let Some(engine) = state.player.dmx_engine() else {
+    let Some(engine) = player.dmx_engine() else {
         return Some((
             TestUnavailable::NoDmx,
             "The running profile has no DMX output, so there is nothing to send to.".to_string(),
@@ -98,22 +124,18 @@ async fn unavailable(state: &WebUiState) -> Option<(TestUnavailable, String)> {
 
 /// The project root and the fixture types and venues directories a test
 /// request reads.
-#[allow(clippy::result_large_err)]
 fn test_dirs(
-    state: &WebUiState,
-    query: &TestQuery,
-) -> Result<(PathBuf, PathBuf, PathBuf), Response> {
-    let types_dir = resolve_lighting_dir(
-        &state.config_path,
-        query.dir.as_deref(),
-        LightingDir::FixtureTypes,
-    )?;
+    config_path: &std::path::Path,
+    query: &TestDirs,
+) -> Result<(PathBuf, PathBuf, PathBuf), Answer> {
+    let types_dir =
+        resolve_lighting_dir(config_path, query.dir.as_deref(), LightingDir::FixtureTypes)?;
     let venues_dir = resolve_lighting_dir(
-        &state.config_path,
+        config_path,
         query.venues_dir.as_deref(),
         LightingDir::Venues,
     )?;
-    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let root = canonical_project_root(&project_root(config_path)?)?;
     Ok((root, types_dir, venues_dir))
 }
 
@@ -160,56 +182,56 @@ fn prepare(
     Ok(prepared)
 }
 
+/// The colour `#rrggbb` (the `#` optional) reads as.
+fn parse_color(text: &str) -> Result<[u8; 3], String> {
+    let invalid = || "color must be \"#rrggbb\"".to_string();
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if hex.len() != 6 || !hex.is_char_boundary(2) || !hex.is_char_boundary(4) {
+        return Err(invalid());
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| invalid());
+    Ok([byte(0)?, byte(2)?, byte(4)?])
+}
+
 /// Reads the request's controls: `color` as `#rrggbb`, `dimmer` 0..1,
-/// `strobe` Hz or null for off, `pan`/`tilt` degrees, any other name a
-/// channel level 0..1.
-fn controls_from(map: &serde_json::Map<String, serde_json::Value>) -> Result<TestControls, String> {
+/// `strobe` Hz or off, `pan`/`tilt` degrees, any other name a channel level
+/// 0..1. A number that is not finite is refused by the control's name.
+fn controls_from(input: &ControlInput) -> Result<TestControls, String> {
+    let finite = |key: &str, value: f64| {
+        Some(value)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("control \"{key}\" must be a number"))
+    };
     let mut controls = TestControls::default();
-    for (key, value) in map {
-        let number = || {
-            value
-                .as_f64()
-                .filter(|v| v.is_finite())
-                .ok_or_else(|| format!("control \"{key}\" must be a number"))
-        };
-        match key.as_str() {
-            "color" => {
-                let text = value
-                    .as_str()
-                    .ok_or("color must be \"#rrggbb\"".to_string())?;
-                let hex = text.strip_prefix('#').unwrap_or(text);
-                if hex.len() != 6 {
-                    return Err("color must be \"#rrggbb\"".to_string());
-                }
-                let byte = |i: usize| {
-                    u8::from_str_radix(&hex[i..i + 2], 16)
-                        .map_err(|_| "color must be \"#rrggbb\"".to_string())
-                };
-                controls.color = Some([byte(0)?, byte(2)?, byte(4)?]);
-            }
-            "dimmer" => controls.dimmer = Some(number()?.clamp(0.0, 1.0)),
-            "strobe" => {
-                controls.strobe = Some(if value.is_null() {
-                    None
-                } else {
-                    Some(number()?.max(0.0))
-                })
-            }
-            "pan" => controls.pan = Some(number()?),
-            "tilt" => controls.tilt = Some(number()?),
-            other => {
-                controls
-                    .levels
-                    .insert(other.to_string(), number()?.clamp(0.0, 1.0));
-            }
-        }
+    if let Some(color) = &input.color {
+        controls.color = Some(parse_color(color)?);
+    }
+    if let Some(dimmer) = input.dimmer {
+        controls.dimmer = Some(finite("dimmer", dimmer)?.clamp(0.0, 1.0));
+    }
+    if let Some(strobe) = input.strobe {
+        controls.strobe = Some(match strobe {
+            None => None,
+            Some(hz) => Some(finite("strobe", hz)?.max(0.0)),
+        });
+    }
+    if let Some(pan) = input.pan {
+        controls.pan = Some(finite("pan", pan)?);
+    }
+    if let Some(tilt) = input.tilt {
+        controls.tilt = Some(finite("tilt", tilt)?);
+    }
+    for (name, level) in &input.levels {
+        controls
+            .levels
+            .insert(name.clone(), finite(name, *level)?.clamp(0.0, 1.0));
     }
     Ok(controls)
 }
 
 /// Reads raw values: keys are 1-based offsets or channel names.
 fn raw_from(
-    raw: &BTreeMap<String, serde_json::Value>,
+    raw: &BTreeMap<String, u32>,
     names: &BTreeMap<u16, String>,
 ) -> Result<BTreeMap<u16, u8>, String> {
     let mut out = BTreeMap::new();
@@ -222,23 +244,17 @@ fn raw_from(
                 .map(|(offset, _)| *offset)
                 .ok_or_else(|| format!("this mode has no channel \"{key}\""))?,
         };
-        let byte = value
-            .as_u64()
-            .filter(|v| *v <= 255)
-            .ok_or_else(|| format!("raw value for \"{key}\" must be 0 to 255"))?;
-        out.insert(offset, byte as u8);
+        let byte = u8::try_from(*value)
+            .map_err(|_| format!("raw value for \"{key}\" must be 0 to 255"))?;
+        out.insert(offset, byte);
     }
     Ok(out)
 }
 
 /// The current venue's fixtures the test's span runs into, by name, on
 /// the addresses a universe has: past 512 nothing is sent.
-fn venue_overlaps(state: &WebUiState, test: &PatchSpan) -> Vec<String> {
-    let Some(system) = state
-        .player
-        .broadcast_handles()
-        .and_then(|h| h.lighting_system)
-    else {
+fn venue_overlaps(player: &Player, test: &PatchSpan) -> Vec<String> {
+    let Some(system) = player.broadcast_handles().and_then(|h| h.lighting_system) else {
         return Vec::new();
     };
     let system = system.lock();
@@ -276,23 +292,27 @@ fn universes_with_olad(engine: &crate::dmx::engine::Engine) -> (Vec<TestUniverse
     (universes, Some(reachable))
 }
 
-/// GET /api/lighting/fixture-test/options?fixture_type= — what the test panel
-/// needs: the type's modes, each with the controls it supports and its
-/// channels; the running profile's universes with olad's patch state; and
-/// whether a test can run now.
-pub(super) async fn get_options(
-    State(state): State<WebUiState>,
-    Query(query): Query<TestQuery>,
-) -> Response {
-    let Some(type_name) = query.fixture_type.clone().filter(|n| !n.is_empty()) else {
-        return refuse(StatusCode::BAD_REQUEST, "type", "fixture_type is required");
-    };
-    let (root, types_dir, venues_dir) = match test_dirs(&state, &query) {
-        Ok(d) => d,
-        Err(r) => return r,
-    };
-    let why_not = unavailable(&state).await;
-    let engine = state.player.dmx_engine();
+/// What the test panel needs for the fixture type `type_name`: the type's
+/// modes, each with the controls it supports and its channels; the running
+/// profile's universes with olad's patch state; and whether a test can run
+/// now. 404 `type` for a name no fixture type has.
+pub(crate) async fn test_options(
+    player: &Player,
+    config_path: &std::path::Path,
+    type_name: &str,
+    query: &TestDirs,
+) -> Result<TestOptions, Answer> {
+    if type_name.is_empty() {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "type",
+            "fixture_type is required",
+        ));
+    }
+    let type_name = type_name.to_string();
+    let (root, types_dir, venues_dir) = test_dirs(config_path, query)?;
+    let why_not = unavailable(player).await;
+    let engine = player.dmx_engine();
     let name = type_name.clone();
     let outcome = tokio::task::spawn_blocking(move || {
         let system = system_from_files(&root, &types_dir, &venues_dir)?;
@@ -372,62 +392,62 @@ pub(super) async fn get_options(
     })
     .await;
     match outcome {
-        Ok(Ok(Some(options))) => (StatusCode::OK, Json(options)).into_response(),
-        Ok(Ok(None)) => refuse(
+        Ok(Ok(Some(options))) => Ok(options),
+        Ok(Ok(None)) => Err(refuse(
             StatusCode::NOT_FOUND,
             "type",
             format!("no fixture type named \"{type_name}\""),
-        ),
-        Ok(Err(e)) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "files", e),
-        Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "files", e.to_string()),
+        )),
+        Ok(Err(e)) => Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "files", e)),
+        Err(e) => Err(refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "files",
+            e.to_string(),
+        )),
     }
 }
 
-/// POST /api/lighting/fixture-test — starts or updates a test: resolves the
-/// controls (and raw values over them) for the fixture at the given
-/// universe and address, lays them over the engine's output, and answers
-/// the frame, how long it holds, and anything worth knowing.
-pub(super) async fn post_test(
-    State(state): State<WebUiState>,
-    Query(query): Query<TestQuery>,
-    Json(request): Json<TestRequest>,
-) -> Response {
-    if let Some((reason, message)) = unavailable(&state).await {
+/// Starts or updates a test: resolves the controls (and raw values over
+/// them) for the fixture at the given universe and address, lays them over
+/// the engine's output, and answers the frame, how long it holds, and
+/// anything worth knowing.
+pub(crate) async fn start_test(
+    player: &Player,
+    config_path: &std::path::Path,
+    query: &TestDirs,
+    request: TestInput,
+) -> Result<TestAnswer, Answer> {
+    if let Some((reason, message)) = unavailable(player).await {
         let status = if reason == TestUnavailable::Locked {
             StatusCode::LOCKED
         } else {
             StatusCode::CONFLICT
         };
-        return refuse(status, reason, message);
+        return Err(refuse(status, reason, message));
     }
-    let Some(engine) = state.player.dmx_engine() else {
-        return refuse(StatusCode::CONFLICT, "no_dmx", "no DMX engine");
+    let Some(engine) = player.dmx_engine() else {
+        return Err(refuse(StatusCode::CONFLICT, "no_dmx", "no DMX engine"));
     };
     if !engine.configured_universes().contains(&request.universe) {
-        return refuse(
+        return Err(refuse(
             StatusCode::BAD_REQUEST,
             "universe",
             format!(
                 "universe {} is not one of the running profile's DMX universes",
                 request.universe
             ),
-        );
+        ));
     }
     if !(1..=512).contains(&request.address) {
-        return refuse(
+        return Err(refuse(
             StatusCode::BAD_REQUEST,
             "address",
             "the address must be 1 to 512",
-        );
+        ));
     }
-    let controls = match controls_from(&request.controls) {
-        Ok(c) => c,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, "controls", e),
-    };
-    let (root, types_dir, venues_dir) = match test_dirs(&state, &query) {
-        Ok(d) => d,
-        Err(r) => return r,
-    };
+    let controls = controls_from(&request.controls)
+        .map_err(|e| refuse(StatusCode::BAD_REQUEST, "controls", e))?;
+    let (root, types_dir, venues_dir) = test_dirs(config_path, query)?;
     let (type_name, mode) = (request.fixture_type.clone(), request.mode.clone());
     let prepared = tokio::task::spawn_blocking(move || {
         prepare(&root, &types_dir, &venues_dir, &type_name, mode.as_deref())
@@ -436,14 +456,22 @@ pub(super) async fn post_test(
     let prepared = match prepared {
         Ok(Ok(p)) => p,
         Ok(Err(TypeInModeError::Unknown(name))) => {
-            return refuse(
+            return Err(refuse(
                 StatusCode::NOT_FOUND,
                 "type",
                 format!("no fixture type named \"{name}\""),
-            )
+            ))
         }
-        Ok(Err(TypeInModeError::Mode(why))) => return refuse(StatusCode::BAD_REQUEST, "mode", why),
-        Err(e) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "files", e.to_string()),
+        Ok(Err(TypeInModeError::Mode(why))) => {
+            return Err(refuse(StatusCode::BAD_REQUEST, "mode", why))
+        }
+        Err(e) => {
+            return Err(refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "files",
+                e.to_string(),
+            ))
+        }
     };
 
     let info = lighting::system::fixture_info_for(
@@ -454,10 +482,8 @@ pub(super) async fn post_test(
         &prepared.fixture_type,
     );
     let names = fixture_test::channel_names(&info);
-    let raw = match raw_from(&request.raw, &names) {
-        Ok(r) => r,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, "raw", e),
-    };
+    let raw =
+        raw_from(&request.raw, &names).map_err(|e| refuse(StatusCode::BAD_REQUEST, "raw", e))?;
     let frame = fixture_test::resolve_frame(&info, &controls, &raw);
     let footprint = fixture_test::footprint(&info);
     let channels: Vec<(u16, u8)> = frame
@@ -465,50 +491,45 @@ pub(super) async fn post_test(
         .filter(|c| c.address <= 512)
         .map(|c| (c.address, c.value))
         .collect();
-    let expiry = match engine.set_test_output(crate::dmx::engine::TestOutput {
-        universe: request.universe,
-        address: request.address,
-        footprint,
-        fixture_type: request.fixture_type.clone(),
-        mode: request.mode.clone(),
-        channels,
-    }) {
-        Ok(expiry) => expiry,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, "universe", e),
-    };
+    let expiry = engine
+        .set_test_output(crate::dmx::engine::TestOutput {
+            universe: request.universe,
+            address: request.address,
+            footprint,
+            fixture_type: request.fixture_type.clone(),
+            mode: request.mode.clone(),
+            channels,
+        })
+        .map_err(|e| refuse(StatusCode::BAD_REQUEST, "universe", e))?;
 
     let warnings = warnings(
-        &state,
+        player,
         &engine,
         &request,
         footprint,
         &fixture_test::unsupported(&fixture_test::control_support(&info), &controls),
     )
     .await;
-    (
-        StatusCode::OK,
-        Json(TestAnswer {
-            active: true,
-            universe: request.universe,
-            address: request.address,
-            footprint,
-            fixture_type: request.fixture_type,
-            mode: request.mode,
-            expires_in_secs: expiry.as_secs_f64(),
-            frame,
-            warnings,
-        }),
-    )
-        .into_response()
+    Ok(TestAnswer {
+        active: true,
+        universe: request.universe,
+        address: request.address,
+        footprint,
+        fixture_type: request.fixture_type,
+        mode: request.mode,
+        expires_in_secs: expiry.as_secs_f64(),
+        frame,
+        warnings,
+    })
 }
 
 /// What a test should be told: fixtures of the current venue it is lit
 /// over, a span past 512, olad not answering or not patched for the
 /// universe, and controls the mode has no channel for.
 async fn warnings(
-    state: &WebUiState,
+    player: &Player,
     engine: &Arc<crate::dmx::engine::Engine>,
-    request: &TestRequest,
+    request: &TestInput,
     footprint: u16,
     unsupported: &[String],
 ) -> Vec<TestWarning> {
@@ -519,7 +540,7 @@ async fn warnings(
         address: request.address,
         footprint,
     };
-    let overlaps = venue_overlaps(state, &span);
+    let overlaps = venue_overlaps(player, &span);
     if !overlaps.is_empty() {
         out.push(TestWarning::VenueOverlap {
             message: format!(
@@ -568,476 +589,9 @@ async fn warnings(
     out
 }
 
-/// DELETE /api/lighting/fixture-test — releases the test now.
-pub(super) async fn delete_test(State(state): State<WebUiState>) -> Response {
-    if let Some(engine) = state.player.dmx_engine() {
+/// Releases the test output now.
+pub(crate) fn stop_test(player: &Player) {
+    if let Some(engine) = player.dmx_engine() {
         engine.release_test_output();
-    }
-    (StatusCode::OK, Json(json!({"active": false}))).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::path::Path as FsPath;
-
-    use axum::body::Body;
-    use tower::ServiceExt;
-
-    use super::super::super::api;
-    use super::super::test_helpers::*;
-    use super::*;
-
-    const PAR: &str = "fixture_type \"Par\" {\n  channels: 4\n  \
-        channel_map: { \"dimmer\": 1, \"red\": 2, \"green\": 3, \"blue\": 4 }\n}\n";
-
-    /// A fake olad web server answering every universe query with `body`.
-    fn fake_olad(body: &'static str) -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut stream in listener.incoming().flatten() {
-                let mut request = [0u8; 1024];
-                let _ = stream.read(&mut request);
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        port
-    }
-
-    use crate::testutil::net::ClosedPort;
-
-    fn write_project(root: &FsPath, venue: Option<&str>) {
-        std::fs::create_dir_all(root.join("lighting/fixture_types")).unwrap();
-        std::fs::create_dir_all(root.join("lighting/venues")).unwrap();
-        std::fs::create_dir_all(root.join("lighting/library")).unwrap();
-        std::fs::write(root.join("lighting/fixture_types/par.light"), PAR).unwrap();
-        std::fs::write(
-            root.join("lighting/library/synth.gdtf"),
-            crate::testutil::lighting::synthetic_gdtf(),
-        )
-        .unwrap();
-        if let Some(venue) = venue {
-            std::fs::write(root.join("lighting/venues/house.light"), venue).unwrap();
-        }
-    }
-
-    /// A state whose player runs a DMX engine on universe 1 (olad's web
-    /// server at `olad_port`), with the current venue `venue` when given.
-    fn dmx_state(
-        olad_port: u16,
-        venue: Option<&str>,
-    ) -> (
-        WebUiState,
-        tempfile::TempDir,
-        tempfile::TempDir,
-        Arc<crate::dmx::engine::Engine>,
-    ) {
-        let engine_project = tempfile::tempdir().unwrap();
-        write_project(engine_project.path(), venue);
-        let current = if venue.is_some() {
-            "  current_venue: house\n"
-        } else {
-            ""
-        };
-        let yaml = format!(
-            "ola_http_port: {olad_port}\nuniverses:\n  - universe: 1\n    name: main\nlighting:\n{current}  groups: {{}}\n"
-        );
-        let dmx: crate::config::Dmx = config::Config::builder()
-            .add_source(config::File::from_str(&yaml, config::FileFormat::Yaml))
-            .build()
-            .unwrap()
-            .try_deserialize()
-            .unwrap();
-        let mut engine = crate::dmx::engine::Engine::new(
-            &dmx,
-            dmx.lighting(),
-            Some(engine_project.path()),
-            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
-        )
-        .unwrap();
-        // The fake olad answers when its thread gets to it; on a loaded
-        // runner, that can be past a probe's usual limits.
-        engine.set_olad_limits(crate::dmx::patch_check::ProbeLimits::PATIENT);
-        let engine = Arc::new(engine);
-        let songs = Arc::new(crate::songs::Songs::new(std::collections::HashMap::new()));
-        let (state, dir) = test_state_with_dmx(songs, engine.clone());
-        // A player starts locked, as a show machine should; a test edits.
-        state.player.set_locked(false);
-        write_project(dir.path(), venue);
-        (state, dir, engine_project, engine)
-    }
-
-    async fn call(
-        state: &WebUiState,
-        method: &str,
-        uri: &str,
-        body: Option<serde_json::Value>,
-    ) -> (StatusCode, serde_json::Value) {
-        let request = http::Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json");
-        let request = match body {
-            Some(b) => request.body(Body::from(b.to_string())).unwrap(),
-            None => request.body(Body::empty()).unwrap(),
-        };
-        let response = api::guarded_router(state)
-            .with_state(state.clone())
-            .oneshot(request)
-            .await
-            .unwrap();
-        let status = response.status();
-        let text = response_body(response).await;
-        (status, serde_json::from_str(&text).unwrap_or(json!(text)))
-    }
-
-    fn red_par() -> serde_json::Value {
-        json!({
-            "fixture_type": "Par", "mode": null, "universe": 1, "address": 10,
-            "controls": {"color": "#ff0000", "dimmer": 1},
-        })
-    }
-
-    #[tokio::test]
-    async fn a_test_resolves_the_frame_lays_it_over_the_output_and_releases() {
-        let closed = ClosedPort::bind();
-        let (state, _dir, _p, engine) = dmx_state(closed.port(), None);
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(red_par())).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["active"], true);
-        assert_eq!(body["footprint"], 4);
-        let frame: Vec<(u64, String, u64)> = body["frame"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| {
-                (
-                    c["address"].as_u64().unwrap(),
-                    c["name"].as_str().unwrap().to_string(),
-                    c["value"].as_u64().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            frame,
-            vec![
-                (10, "dimmer".into(), 255),
-                (11, "red".into(), 255),
-                (12, "green".into(), 0),
-                (13, "blue".into(), 0)
-            ]
-        );
-        assert!(body["expires_in_secs"].as_f64().unwrap() > 0.0);
-        let live = engine.test_output_status().expect("live");
-        assert_eq!((live.universe, live.address, live.footprint), (1, 10, 4));
-        // olad is not there: said.
-        let kinds: Vec<&str> = body["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|w| w["kind"].as_str().unwrap())
-            .collect();
-        assert_eq!(kinds, vec!["olad_unreachable"]);
-
-        // Status says so, for every page.
-        let hardware = state.player.hardware_status();
-        assert_eq!(hardware.test_output.expect("a live test").address, 10);
-
-        // A raw value wins over its channel, by offset or by name.
-        let mut raw = red_par();
-        raw["raw"] = json!({"3": 42, "blue": 7});
-        let (_, body) = call(&state, "POST", "/lighting/fixture-test", Some(raw)).await;
-        assert_eq!(body["frame"][2]["value"], 42);
-        assert_eq!(body["frame"][2]["raw"], true);
-        assert_eq!(body["frame"][3]["value"], 7);
-
-        let (status, body) = call(&state, "DELETE", "/lighting/fixture-test", None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["active"], false);
-        assert!(engine.test_output_status().is_none());
-        let (_, status_body) = call(&state, "GET", "/status", None).await;
-        assert!(status_body["hardware"]["test_output"].is_null());
-    }
-
-    #[tokio::test]
-    async fn a_gdtf_fixture_in_a_mode_and_what_the_mode_cannot_do() {
-        let closed = ClosedPort::bind();
-        let (state, _dir, _p, _engine) = dmx_state(closed.port(), None);
-        let body = json!({
-            "fixture_type": "Synth Brick", "mode": "8: RGBS", "universe": 1, "address": 1,
-            "controls": {"color": "#ffffff", "dimmer": 1, "pan": 10},
-        });
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(body)).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let unsupported: Vec<&str> = body["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|w| w["kind"] == "unsupported_control")
-            .map(|w| w["control"].as_str().unwrap())
-            .collect();
-        assert_eq!(unsupported, vec!["pan"]);
-        assert!(body["frame"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["name"] == "red" && c["value"] == 255));
-    }
-
-    #[tokio::test]
-    async fn each_refusal_says_why() {
-        let closed = ClosedPort::bind();
-        let (state, _dir, _p, engine) = dmx_state(closed.port(), None);
-        let post = |body: serde_json::Value| {
-            let state = state.clone();
-            async move { call(&state, "POST", "/lighting/fixture-test", Some(body)).await }
-        };
-        let with = |key: &str, value: serde_json::Value| {
-            let mut b = red_par();
-            b[key] = value;
-            b
-        };
-
-        let (status, body) = post(with("universe", json!(9))).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("universe"))
-        );
-        let (status, body) = post(with("fixture_type", json!("Nope"))).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::NOT_FOUND, Some("type"))
-        );
-        let (status, body) = post(with("mode", json!("8: RGBS"))).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("mode"))
-        );
-        assert!(
-            body["error"].as_str().unwrap().contains("no modes"),
-            "{body}"
-        );
-        let gdtf =
-            json!({"fixture_type": "Synth Brick", "mode": null, "universe": 1, "address": 1});
-        let (status, body) = post(gdtf).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("mode"))
-        );
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("choose one of its modes"),
-            "{body}"
-        );
-        let (status, body) = post(with("address", json!(0))).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("address"))
-        );
-        let mut bad = red_par();
-        bad["controls"]["color"] = json!("red");
-        let (status, body) = post(bad).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("controls"))
-        );
-        assert!(
-            engine.test_output_status().is_none(),
-            "nothing refused was sent"
-        );
-
-        // Locked: refused, and locking releases a running test.
-        let (status, _) = post(red_par()).await;
-        assert_eq!(status, StatusCode::OK);
-        state.player.set_locked(true);
-        assert!(
-            engine.test_output_status().is_none(),
-            "the lock released it"
-        );
-        let (status, _) = post(red_par()).await;
-        assert_eq!(status, StatusCode::LOCKED);
-        // Releasing stays open while locked.
-        let (status, _) = call(&state, "DELETE", "/lighting/fixture-test", None).await;
-        assert_eq!(status, StatusCode::OK);
-        let (_, options) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Par",
-            None,
-        )
-        .await;
-        assert_eq!(options["unavailable"], "locked");
-        assert_eq!(options["available"], false);
-    }
-
-    #[tokio::test]
-    async fn without_dmx_or_while_playing_there_is_nothing_to_test() {
-        let (state, dir) = test_state();
-        state.player.set_locked(false);
-        write_project(dir.path(), None);
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(red_par())).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::CONFLICT, Some("no_dmx"))
-        );
-        let (_, options) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Par",
-            None,
-        )
-        .await;
-        assert_eq!(options["unavailable"], "no_dmx");
-        assert_eq!(options["universes"], json!([]));
-
-        // A song playing comes first: stop it, then there is the DMX to set up.
-        let (state, dir) = test_state_with_audio_device("mock-device");
-        state.player.set_locked(false);
-        write_project(dir.path(), None);
-        state.player.play().await.unwrap();
-        assert!(state.player.is_playing().await);
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(red_par())).await;
-        assert_eq!(
-            (status, body["reason"].as_str()),
-            (StatusCode::CONFLICT, Some("playing"))
-        );
-        state.player.stop().await;
-    }
-
-    #[tokio::test]
-    async fn the_warnings_name_the_venue_fixtures_and_the_unpatched_universe() {
-        let olad = fake_olad(r#"{"id":1,"name":"Universe 1","input_ports":[],"output_ports":[]}"#);
-        // "Edge" sits past 512, where the test at 510 runs on into, but
-        // nothing is sent there: it is not lit over.
-        let venue = "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n  \
-            fixture \"Back\" Par @ 1:30\n  fixture \"Edge\" Par @ 1:513\n}\n";
-        let (state, _dir, _p, _engine) = dmx_state(olad, Some(venue));
-        let mut body = red_par();
-        body["address"] = json!(510);
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(body)).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let kinds: Vec<&str> = body["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|w| w["kind"].as_str().unwrap())
-            .collect();
-        assert_eq!(kinds, vec!["past_universe_end", "universe_unpatched"]);
-        // Only the channels up to 512 are in the override.
-        assert_eq!(body["frame"].as_array().unwrap().len(), 4);
-
-        let (_, body) = call(&state, "POST", "/lighting/fixture-test", Some(red_par())).await;
-        let overlap = body["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|w| w["kind"] == "venue_overlap")
-            .expect("an overlap")
-            .clone();
-        assert_eq!(overlap["fixtures"], json!(["Front"]));
-
-        let (_, options) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Par",
-            None,
-        )
-        .await;
-        assert_eq!(options["universes"][0]["patched"], false);
-        assert_eq!(options["olad"]["reachable"], true);
-    }
-
-    #[tokio::test]
-    async fn a_type_with_no_channels_lights_no_venue_fixture() {
-        let venue = "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n}\n";
-        let closed = ClosedPort::bind();
-        let (state, dir, _p, _engine) = dmx_state(closed.port(), Some(venue));
-        std::fs::write(
-            dir.path().join("lighting/fixture_types/blank.light"),
-            "fixture_type \"Blank\" {\n}\n",
-        )
-        .unwrap();
-        let mut body = red_par();
-        body["fixture_type"] = json!("Blank");
-        body["address"] = json!(11);
-        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(body)).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["footprint"], 0);
-        assert!(
-            body["warnings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|w| w["kind"] != "venue_overlap"),
-            "{body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_options_describe_each_mode() {
-        let closed = ClosedPort::bind();
-        let (state, _dir, _p, _engine) = dmx_state(closed.port(), None);
-        let (status, options) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Synth%20Brick",
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{options}");
-        assert_eq!(options["gdtf"], true);
-        assert_eq!(options["available"], true);
-        assert_eq!(options["default_mode"], "8: RGBS");
-        let modes = options["modes"].as_array().unwrap();
-        let rgbs = modes.iter().find(|m| m["name"] == "8: RGBS").unwrap();
-        assert_eq!(rgbs["controls"]["color"], true);
-        assert!(rgbs["controls"]["strobe"].is_object(), "{rgbs}");
-        assert!(rgbs["controls"]["pan"].is_null());
-        let mover = modes.iter().find(|m| m["name"] == "Mover 16bit").unwrap();
-        assert!(
-            mover["controls"]["pan"]["max"].as_f64().unwrap() > 0.0,
-            "{mover}"
-        );
-        assert!(mover["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["name"] == "pan fine"));
-        assert_eq!(options["universes"][0]["universe"], 1);
-        assert_eq!(options["universes"][0]["name"], "main");
-        assert!(
-            options["universes"][0]["patched"].is_null(),
-            "olad unreachable: unknown"
-        );
-
-        let (_, native) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Par",
-            None,
-        )
-        .await;
-        assert_eq!(native["gdtf"], false);
-        assert_eq!(native["modes"].as_array().unwrap().len(), 1);
-        assert!(native["modes"][0]["name"].is_null());
-        assert_eq!(native["modes"][0]["controls"]["dimmer"], "channel");
-        let (status, _) = call(
-            &state,
-            "GET",
-            "/lighting/fixture-test/options?fixture_type=Nope",
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

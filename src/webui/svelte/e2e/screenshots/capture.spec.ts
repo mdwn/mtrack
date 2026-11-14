@@ -30,8 +30,10 @@ import { sendWatchUnchecked } from "../support/watch";
 import { CONFIG_STORE, SONGS } from "../mock-server/test-data";
 import {
   ConfigService,
+  LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
+import { lightShowReply } from "../support/lighting-rpc";
 import {
   getConfigReply,
   serveSongConfig,
@@ -561,14 +563,9 @@ async function tempoImportRoutes(page: Page) {
     STE_SONG,
     `${STE_YAML}lighting:\n  - file: show.light\n`,
   );
-  await page.route("**/api/lighting/show.light", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({
-      status: 200,
-      contentType: "text/plain",
-      body: SHOW_WITH_TEMPO,
-    });
-  });
+  rpc.unary(LightingService.method.getLightShow, (req) =>
+    lightShowReply(req.name === "show.light" ? SHOW_WITH_TEMPO : ""),
+  );
 }
 
 test("tempo-import-dialog", async ({ page }) => {

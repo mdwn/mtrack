@@ -23,7 +23,7 @@ buttons across every editor become visibly disabled, with a tooltip explaining w
 controls (play, stop, next, previous, playlist switching) always work regardless of lock state.
 
 The lock holds on every control surface, not only the web UI. While locked, the gRPC config
-RPCs ([gRPC](grpc.md#lock-mode)) and the MCP tools that write config or project files
+and lighting write RPCs ([gRPC](grpc.md#lock-mode)) and the MCP tools that write config or project files
 ([MCP](mcp.md#lock-mode)) are refused too; reads and playback controls stay open on all of
 them. Track gain faders are a performance control: a gain change still saves to the active
 profile while locked. The lock is normally toggled from the web UI (a gRPC client or a paired phone can also do it, with
@@ -799,7 +799,9 @@ uses gRPC-Web (PlayerService), and so do the playlists, the song list, the lock 
 config store with its profiles (see [gRPC](grpc.md)), and the samples, the metronome defaults, the
 profile files, the device lists, the audio device test, the trigger calibration, the controller
 restart, and a song's config, files, waveform and tempo guess with the browsing and importing of
-songs, which are `ConfigService` calls; and so does everything the page watches: the `Watch` stream
+songs, which are `ConfigService` calls; the light show files with their validation and evaluation, the
+Lighting overview's readiness checks, the Fit shows page, the groups a cue can target and the
+fixture test, which are `LightingService` calls; and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no
@@ -814,8 +816,9 @@ the standard gRPC health service (`grpc.health.v1.Health`) on either gRPC port.
 All mutating REST endpoints are blocked when the player is in lock mode, returning
 HTTP 423 (Locked); the gRPC calls that write refuse with `FAILED_PRECONDITION`. These always
 work: read endpoints, playback control, the lock toggle (`SetLock`), playlist activation
-(`SwitchToPlaylist`), the lighting validation endpoint, the controller restart (`RestartControllers`), and
-the lighting endpoints that only compute or inspect and write nothing (preview evaluation and
-MVR inspection). Releasing a fixture test also works, since it only returns the lights to the
+(`SwitchToPlaylist`), the light show validation (`ValidateLightShow`), the controller restart
+(`RestartControllers`), and the lighting calls that only compute or inspect and write nothing
+(preview evaluation, `EvaluateSongLighting`, and MVR inspection). Releasing a fixture test
+(`StopFixtureTest`) also works, since it only returns the lights to the
 show. Opening the Bluetooth pairing window and forgetting a paired phone are refused, since they
 change who may control the player.
