@@ -40,6 +40,7 @@
 //! locked. The gate sits in
 //! `call_tool`, so a new tool is refused while locked until it is listed.
 
+use crate::lighting::effects::LayerSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1618,7 +1619,7 @@ impl McpServer {
             "per_layer_seconds": analysis
                 .per_layer_seconds
                 .iter()
-                .map(|(layer, secs)| (layer.keyword().to_string(), *secs))
+                .map(|(layer, secs)| (LayerSet::standard().display_name(*layer), *secs))
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "warnings": warnings,
         })))
@@ -1676,7 +1677,7 @@ impl McpServer {
                 "position": e.position,
                 "groups": e.groups,
                 "type": e.effect_type,
-                "layer": e.layer.keyword(),
+                "layer": LayerSet::standard().display_name(e.layer),
                 "duration": e.duration.as_secs_f64(),
                 "blend_mode": e.blend_mode.keyword(),
                 "parameters": e.parameters,
@@ -2950,7 +2951,7 @@ fn evaluation_json(
             json!({
                 "id": effect.id,
                 "type": effect.effect_type,
-                "layer": effect.layer.keyword(),
+                "layer": LayerSet::standard().display_name(effect.layer),
                 "elapsed": effect.elapsed.as_secs_f64(),
                 "duration": effect.duration.as_secs_f64(),
                 "fixtures": effect.fixtures,

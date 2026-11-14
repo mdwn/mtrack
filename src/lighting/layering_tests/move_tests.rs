@@ -632,7 +632,7 @@ fn a_pitched_lens_does_not_mistake_an_ordinary_target_for_the_pan_axis() {
 #[test]
 fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
     let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
-    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 0.5);
     let mut effect = move_to(
         "slow",
         MoveTarget::Angles {
@@ -642,7 +642,7 @@ fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
         None,
         1.5,
     );
-    effect.layer = EffectLayer::Background;
+    effect.layer = EffectLayer::BACKGROUND;
     engine
         .start_effect_part_way(effect, Duration::from_secs(2))
         .unwrap();

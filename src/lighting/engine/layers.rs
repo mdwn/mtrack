@@ -323,25 +323,25 @@ mod tests {
     #[test]
     fn intensity_master_set_value() {
         let mut state = LayerState::default();
-        state.set_intensity_master(EffectLayer::Background, 0.5);
-        assert_eq!(state.intensity_master(EffectLayer::Background), 0.5);
+        state.set_intensity_master(EffectLayer::BACKGROUND, 0.5);
+        assert_eq!(state.intensity_master(EffectLayer::BACKGROUND), 0.5);
     }
 
     #[test]
     fn intensity_master_one_removes() {
         let mut state = LayerState::default();
-        state.set_intensity_master(EffectLayer::Background, 0.5);
-        state.set_intensity_master(EffectLayer::Background, 1.0);
+        state.set_intensity_master(EffectLayer::BACKGROUND, 0.5);
+        state.set_intensity_master(EffectLayer::BACKGROUND, 1.0);
         assert!(state.intensity_masters.is_empty());
     }
 
     #[test]
     fn intensity_master_clamps() {
         let mut state = LayerState::default();
-        state.set_intensity_master(EffectLayer::Background, 1.5);
+        state.set_intensity_master(EffectLayer::BACKGROUND, 1.5);
         assert!(state.intensity_masters.is_empty());
-        state.set_intensity_master(EffectLayer::Background, -0.5);
-        assert_eq!(state.intensity_master(EffectLayer::Background), 0.0);
+        state.set_intensity_master(EffectLayer::BACKGROUND, -0.5);
+        assert_eq!(state.intensity_master(EffectLayer::BACKGROUND), 0.0);
     }
 
     #[test]
@@ -357,12 +357,12 @@ mod tests {
     fn unfreeze_adjusts_start_times() {
         let mut clock = LayerClock::default();
         let base = Instant::now();
-        let mut effect = make_effect("a", EffectLayer::Background);
+        let mut effect = make_effect("a", EffectLayer::BACKGROUND);
         effect.start_time = Some(base);
         let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
         clock.freeze(at(base));
         clock.unfreeze(
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             &mut active,
             at(base + Duration::from_secs(2)),
         );
@@ -378,13 +378,13 @@ mod tests {
     fn unfreeze_starts_an_effect_cued_during_the_freeze_from_its_beginning() {
         let mut clock = LayerClock::default();
         let base = Instant::now();
-        let mut effect = make_effect("a", EffectLayer::Background);
+        let mut effect = make_effect("a", EffectLayer::BACKGROUND);
         // Frozen at 0; cued 5 s in; unfrozen at 10 s.
         effect.start_time = Some(base + Duration::from_secs(5));
         let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
         clock.freeze(at(base));
         clock.unfreeze(
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             &mut active,
             at(base + Duration::from_secs(10)),
         );
@@ -400,9 +400,9 @@ mod tests {
         let mut clock = LayerClock::default();
         let mut active = HashMap::new();
         let now = at(Instant::now());
-        clock.set_speed(EffectLayer::Background, &mut active, 0.0, now);
+        clock.set_speed(EffectLayer::BACKGROUND, &mut active, 0.0, now);
         assert!(clock.is_frozen());
-        clock.set_speed(EffectLayer::Background, &mut active, 0.5, now);
+        clock.set_speed(EffectLayer::BACKGROUND, &mut active, 0.5, now);
         assert!(!clock.is_frozen());
         assert_eq!(clock.speed(), 0.5);
     }
@@ -415,12 +415,12 @@ mod tests {
             song: Some(Duration::from_secs(s)),
         };
         let mut clock = LayerClock::default();
-        let mut effect = make_effect("a", EffectLayer::Background);
+        let mut effect = make_effect("a", EffectLayer::BACKGROUND);
         effect.start_time = Some(instant);
         effect.cue_time = Some(Duration::ZERO);
         let mut active: HashMap<String, EffectInstance> = [("a".to_string(), effect)].into();
         // Half speed from 1 s: 1 s in, 4 s to go at half speed, so 9 s.
-        clock.set_speed(EffectLayer::Background, &mut active, 0.5, song(1));
+        clock.set_speed(EffectLayer::BACKGROUND, &mut active, 0.5, song(1));
         assert_eq!(
             clock.end_of(&active["a"], song(2)),
             Some(Duration::from_secs(9))

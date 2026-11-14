@@ -419,21 +419,21 @@ mod tests {
 
     #[test]
     fn channel_state_new_clamps_above_one() {
-        let cs = ChannelState::new(1.5, EffectLayer::Background, BlendMode::Replace);
+        let cs = ChannelState::new(1.5, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert_eq!(cs.value, 1.0);
     }
 
     #[test]
     fn channel_state_new_clamps_below_zero() {
-        let cs = ChannelState::new(-0.5, EffectLayer::Background, BlendMode::Replace);
+        let cs = ChannelState::new(-0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert_eq!(cs.value, 0.0);
     }
 
     #[test]
     fn channel_state_new_normal_value() {
-        let cs = ChannelState::new(0.75, EffectLayer::Midground, BlendMode::Add);
+        let cs = ChannelState::new(0.75, EffectLayer::MIDGROUND, BlendMode::Add);
         assert_eq!(cs.value, 0.75);
-        assert_eq!(cs.layer, EffectLayer::Midground);
+        assert_eq!(cs.layer, EffectLayer::MIDGROUND);
         assert_eq!(cs.blend_mode, BlendMode::Add);
     }
 
@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn blend_replace() {
-        let a = ChannelState::new(0.3, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.8, EffectLayer::Foreground, BlendMode::Replace);
+        let a = ChannelState::new(0.3, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.8, EffectLayer::FOREGROUND, BlendMode::Replace);
         let result = a.blend_with(b);
         assert!((result.value - 0.8).abs() < 1e-9);
     }
@@ -451,8 +451,8 @@ mod tests {
 
     #[test]
     fn blend_multiply() {
-        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.6, EffectLayer::Midground, BlendMode::Multiply);
+        let a = ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.6, EffectLayer::MIDGROUND, BlendMode::Multiply);
         let result = a.blend_with(b);
         assert!((result.value - 0.3).abs() < 1e-9);
     }
@@ -461,16 +461,16 @@ mod tests {
 
     #[test]
     fn blend_add_no_overflow() {
-        let a = ChannelState::new(0.3, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Add);
+        let a = ChannelState::new(0.3, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.4, EffectLayer::MIDGROUND, BlendMode::Add);
         let result = a.blend_with(b);
         assert!((result.value - 0.7).abs() < 1e-9);
     }
 
     #[test]
     fn blend_add_clamped_to_one() {
-        let a = ChannelState::new(0.7, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Add);
+        let a = ChannelState::new(0.7, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.8, EffectLayer::MIDGROUND, BlendMode::Add);
         let result = a.blend_with(b);
         assert!((result.value - 1.0).abs() < 1e-9);
     }
@@ -480,8 +480,8 @@ mod tests {
     #[test]
     fn blend_overlay_dark_base() {
         // base < 0.5 → multiply formula: 2 * base * overlay
-        let a = ChannelState::new(0.25, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Overlay);
+        let a = ChannelState::new(0.25, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::MIDGROUND, BlendMode::Overlay);
         let result = a.blend_with(b);
         assert!((result.value - 0.25).abs() < 1e-9); // 2 * 0.25 * 0.5 = 0.25
     }
@@ -489,8 +489,8 @@ mod tests {
     #[test]
     fn blend_overlay_bright_base() {
         // base >= 0.5 → screen formula: 1 - 2*(1-base)*(1-overlay)
-        let a = ChannelState::new(0.75, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Overlay);
+        let a = ChannelState::new(0.75, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::MIDGROUND, BlendMode::Overlay);
         let result = a.blend_with(b);
         // 1 - 2*(0.25)*(0.5) = 1 - 0.25 = 0.75
         assert!((result.value - 0.75).abs() < 1e-9);
@@ -500,8 +500,8 @@ mod tests {
 
     #[test]
     fn blend_screen() {
-        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Screen);
+        let a = ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::MIDGROUND, BlendMode::Screen);
         let result = a.blend_with(b);
         // 1 - (0.5)*(0.5) = 0.75
         assert!((result.value - 0.75).abs() < 1e-9);
@@ -511,19 +511,19 @@ mod tests {
 
     #[test]
     fn blend_uses_higher_layer() {
-        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
-        let b = ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Multiply);
+        let a = ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::FOREGROUND, BlendMode::Multiply);
         let result = a.blend_with(b);
-        assert_eq!(result.layer, EffectLayer::Foreground);
+        assert_eq!(result.layer, EffectLayer::FOREGROUND);
         assert_eq!(result.blend_mode, BlendMode::Multiply);
     }
 
     #[test]
     fn blend_keeps_self_blend_mode_when_higher() {
-        let a = ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Add);
-        let b = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply);
+        let a = ChannelState::new(0.5, EffectLayer::FOREGROUND, BlendMode::Add);
+        let b = ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Multiply);
         let result = a.blend_with(b);
-        assert_eq!(result.layer, EffectLayer::Foreground);
+        assert_eq!(result.layer, EffectLayer::FOREGROUND);
         assert_eq!(result.blend_mode, BlendMode::Add);
     }
 
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn fixture_state_set_and_get_channel() {
         let mut fs = FixtureState::new();
-        let cs = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
+        let cs = ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
         fs.set_channel("red".to_string(), cs);
         assert_eq!(fs.get_channel("red"), Some(&cs));
     }
@@ -548,11 +548,11 @@ mod tests {
         let channels = vec![
             (
                 "red".to_string(),
-                ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+                ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
             ),
             (
                 "green".to_string(),
-                ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+                ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
             ),
         ];
         let fs = FixtureState::from_channels(channels);
@@ -566,13 +566,13 @@ mod tests {
         let mut fs1 = FixtureState::new();
         fs1.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
 
         let mut fs2 = FixtureState::new();
         fs2.set_channel(
             "green".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
 
         fs1.blend_with(&fs2);
@@ -585,13 +585,13 @@ mod tests {
         let mut fs1 = FixtureState::new();
         fs1.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
 
         let mut fs2 = FixtureState::new();
         fs2.set_channel(
             "red".to_string(),
-            ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Replace),
+            ChannelState::new(0.8, EffectLayer::MIDGROUND, BlendMode::Replace),
         );
 
         fs1.blend_with(&fs2);
@@ -606,16 +606,16 @@ mod tests {
         let mut fs1 = FixtureState::new();
         fs1.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut fs2 = FixtureState::new();
         fs2.set_channel(
             "red".to_string(),
-            ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Replace),
+            ChannelState::new(0.8, EffectLayer::MIDGROUND, BlendMode::Replace),
         );
         fs2.set_channel(
             "_intensity".to_string(),
-            ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Multiply),
+            ChannelState::new(0.4, EffectLayer::MIDGROUND, BlendMode::Multiply),
         );
         fs1.blend_with(&fs2);
         assert!(fs1.channels.is_empty());
@@ -630,15 +630,15 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.set_channel(
             "_intensity".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.set_channel(
             "pan".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.scale_values(0.5);
         assert_eq!(fs.get_channel("red").unwrap().value, 0.5);
@@ -654,11 +654,11 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.set_channel(
             "_intensity".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut cmds = fs.to_dmx_commands(&fixture);
         cmds.sort_by_key(|c| c.channel);
@@ -699,7 +699,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
@@ -712,7 +712,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
@@ -747,18 +747,18 @@ mod tests {
         // A normalized write to pan, as `static pan: 100%` produces...
         fs.set_channel(
             "pan".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.set_channel(
             "dimmer".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         // ...loses to a physical intent on the same channel.
         fs.physical.set(
             PhysicalParameter::Pan,
             Intent {
                 degrees: 0.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             },
         );
         let mut cmds = fs.to_dmx_commands(&fixture);
@@ -790,7 +790,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "pan".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut cmds = fs.to_dmx_commands(&fixture);
         cmds.sort_by_key(|c| c.channel);
@@ -805,7 +805,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "nonexistent".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert!(cmds.is_empty());
@@ -817,7 +817,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "dimmer".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
@@ -876,7 +876,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
         // Channel 10 = byte 1 (cell "a"), channel 11 = byte 2 (cell "b").
@@ -890,12 +890,12 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut cell_b = FixtureState::new();
         cell_b.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::FOREGROUND, BlendMode::Replace),
         );
         let cmds =
             fs.to_dmx_commands_with_cells(
@@ -918,12 +918,12 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut cell_b = FixtureState::new();
         cell_b.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Multiply),
         );
         let cmds =
             fs.to_dmx_commands_with_cells(
@@ -947,7 +947,7 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
@@ -973,12 +973,12 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut own = FixtureState::new();
         own.channels.insert(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
+            ChannelState::new(0.5, EffectLayer::MIDGROUND, BlendMode::Multiply),
         );
         let values = fs.cell_values(&red_cell(), Some(&own));
         assert_eq!(values, vec![("red".to_string(), 0.5)]);
@@ -990,7 +990,7 @@ mod tests {
         let mut own = FixtureState::new();
         own.channels.insert(
             "red".to_string(),
-            ChannelState::new(0.75, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.75, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let values = fs.cell_values(&red_cell(), Some(&own));
         assert_eq!(values, vec![("red".to_string(), 0.75)]);
@@ -1004,12 +1004,12 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut own = FixtureState::new();
         own.set_channel(
             "_intensity".to_string(),
-            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Multiply),
+            ChannelState::new(0.0, EffectLayer::MIDGROUND, BlendMode::Multiply),
         );
         let cmds = fs.to_dmx_commands_with_cells(&fixture, |name| (name == "b").then_some(&own));
         assert_eq!(byte_at(&cmds, 10), 255, "cell a keeps the fixture's red");
@@ -1022,11 +1022,11 @@ mod tests {
         let mut fs = FixtureState::new();
         fs.set_channel(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fs.set_channel(
             "dimmer".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
         let dimmer_cmds: Vec<_> = cmds.iter().filter(|c| c.channel == 12).collect();

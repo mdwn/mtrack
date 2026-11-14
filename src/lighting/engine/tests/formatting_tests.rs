@@ -58,7 +58,7 @@ fn test_format_active_effects() {
         None,
         None,
     );
-    chase_effect.layer = EffectLayer::Foreground;
+    chase_effect.layer = EffectLayer::FOREGROUND;
     engine.start_effect(chase_effect).unwrap();
 
     // Format and verify output

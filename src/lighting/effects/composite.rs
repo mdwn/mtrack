@@ -137,7 +137,7 @@ impl Composite {
                     0.0
                 }),
                 white_bottom: false,
-                top: EffectLayer::Background,
+                top: EffectLayer::BACKGROUND,
             }
         } else {
             Composite {
@@ -146,7 +146,7 @@ impl Composite {
                 driven: [false; 4],
                 peak: None,
                 white_bottom: true,
-                top: EffectLayer::Background,
+                top: EffectLayer::BACKGROUND,
             }
         };
         if let Some(dimmer) = seed.dimmer {
@@ -414,7 +414,7 @@ pub(crate) fn resolve_fixture(
     if shared_dimmer {
         put(
             parent,
-            top.unwrap_or(EffectLayer::Background),
+            top.unwrap_or(EffectLayer::BACKGROUND),
             "dimmer",
             shared,
         );
@@ -473,7 +473,9 @@ mod tests {
 
     const DIMMER_RGB: [&str; 4] = ["dimmer", "red", "green", "blue"];
     const RGB: [&str; 3] = ["red", "green", "blue"];
-    use EffectLayer::{Background as A, Foreground as C, Midground as B};
+    const A: EffectLayer = EffectLayer::BACKGROUND;
+    const B: EffectLayer = EffectLayer::MIDGROUND;
+    const C: EffectLayer = EffectLayer::FOREGROUND;
 
     #[test]
     fn a_dimmed_layer_dims_itself_on_both_kinds() {

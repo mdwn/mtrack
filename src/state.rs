@@ -937,15 +937,15 @@ mod tests {
         let mut fixture_state = FixtureState::new();
         fixture_state.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fixture_state.channels.insert(
             "green".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fixture_state.channels.insert(
             "blue".to_string(),
-            ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("test_fixture".to_string(), fixture_state);
 
@@ -966,11 +966,11 @@ mod tests {
         let mut fixture_state = FixtureState::new();
         fixture_state.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         fixture_state.channels.insert(
             "dimmer".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("fixture_with_dimmer".to_string(), fixture_state);
 
@@ -1009,7 +1009,7 @@ mod tests {
         let mut fixture_state = FixtureState::new();
         fixture_state.channels.insert(
             "red".to_string(),
-            ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("dark_fixture".to_string(), fixture_state);
 
@@ -1025,7 +1025,7 @@ mod tests {
         let mut fixture_state = FixtureState::new();
         fixture_state.channels.insert(
             "red".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("unknown_fixture".to_string(), fixture_state);
 
@@ -1414,12 +1414,12 @@ mod tests {
         let mut bed = FixtureState::new();
         bed.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let mut cell_2 = FixtureState::new();
         cell_2.channels.insert(
             "red".to_string(),
-            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Replace),
+            ChannelState::new(0.0, EffectLayer::MIDGROUND, BlendMode::Replace),
         );
 
         let mut states = HashMap::new();
@@ -1496,7 +1496,7 @@ mod tests {
         let mut bed = FixtureState::new();
         bed.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let states = HashMap::from([("Bar".to_string(), bed.clone())]);
 
@@ -1522,7 +1522,7 @@ mod tests {
         let mut cell_2 = FixtureState::new();
         cell_2.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         // Only the cell has state — no state for "Bar" itself.
         let states = HashMap::from([("Bar/2".to_string(), cell_2)]);
@@ -1611,14 +1611,14 @@ mod tests {
             PhysicalParameter::Pan,
             Intent {
                 degrees: 0.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             },
         );
         state.physical.set(
             PhysicalParameter::Tilt,
             Intent {
                 degrees: 135.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             },
         );
         let states: HashMap<String, FixtureState> =
@@ -1677,7 +1677,7 @@ mod tests {
         let mut state = FixtureState::new();
         state.channels.insert(
             "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let states: HashMap<String, FixtureState> =
             [("bar".to_string(), state)].into_iter().collect();

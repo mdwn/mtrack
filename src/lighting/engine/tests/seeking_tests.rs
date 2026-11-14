@@ -397,7 +397,7 @@ fn test_start_effect_part_way_conflict_resolution() {
         None,
         None,
     );
-    fg_effect.layer = EffectLayer::Foreground;
+    fg_effect.layer = EffectLayer::FOREGROUND;
     fg_effect.priority = 10;
 
     engine

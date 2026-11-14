@@ -339,7 +339,7 @@ show "Test" {
     );
     assert_eq!(
         clear_cmd.layer,
-        Some(crate::lighting::effects::EffectLayer::Foreground)
+        Some(crate::lighting::effects::EffectLayer::FOREGROUND)
     );
 
     // Second cue should have freeze command
@@ -352,7 +352,7 @@ show "Test" {
     );
     assert_eq!(
         freeze_cmd.layer,
-        Some(crate::lighting::effects::EffectLayer::Background)
+        Some(crate::lighting::effects::EffectLayer::BACKGROUND)
     );
 
     // Third cue should have master command with intensity
@@ -365,7 +365,7 @@ show "Test" {
     );
     assert_eq!(
         master_cmd.layer,
-        Some(crate::lighting::effects::EffectLayer::Midground)
+        Some(crate::lighting::effects::EffectLayer::MIDGROUND)
     );
     assert!(master_cmd.intensity.is_some());
     assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.001);
@@ -410,7 +410,7 @@ show "Test" {
     let effect = &first_cue.effects[0];
     assert_eq!(
         effect.layer,
-        Some(crate::lighting::effects::EffectLayer::Foreground)
+        Some(crate::lighting::effects::EffectLayer::FOREGROUND)
     );
 
     // Second cue should have cycle effect
