@@ -13,6 +13,7 @@
 //
 mod asset;
 mod config_service;
+mod config_songs;
 mod playlist_settings;
 mod playlists;
 mod remote;
@@ -2786,8 +2787,24 @@ mod test {
         ] {
             assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
         }
+        // The song writes are locked out; the song reads are open.
+        for rpc in [
+            "CreateSong",
+            "SaveSongConfig",
+            "DeleteSong",
+            "ImportSongFile",
+            "CreateSongInDirectory",
+            "BulkImportSongs",
+        ] {
+            assert!(locked.contains(&("ConfigService", rpc)), "{rpc}");
+        }
         // The reads are open, and so is the controller restart.
         for rpc in [
+            "GetSongConfig",
+            "GetSongWaveform",
+            "GuessSongTempo",
+            "ListSongFiles",
+            "BrowseDirectory",
             "ListProfileFiles",
             "GetProfileFile",
             "ListAudioDevices",

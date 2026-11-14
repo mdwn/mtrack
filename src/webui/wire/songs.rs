@@ -12,7 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The songs API's payloads, and the shape the web UI holds of the song
+//! The song calls' payloads as the web UI holds them (`ConfigService` maps
+//! its messages into them: src/lib/grpc/songs.ts), and the shape it holds of the song
 //! list (`SongList`, which it maps `ListSongs` messages into:
 //! src/lib/grpc/library.ts).
 
@@ -70,7 +71,7 @@ pub struct SongFailure {
     pub failed: bool,
 }
 
-/// `GET /api/songs/:name/tempo-guess`: a tempo map suggested for the song,
+/// `GuessSongTempo`: a tempo map suggested for the song,
 /// and where it came from.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -92,13 +93,7 @@ pub enum TempoGuessSource {
     BeatGrid,
 }
 
-/// `GET /api/songs/:name/files`: the files in a song's directory, by name.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct SongFiles {
-    pub files: Vec<SongFile>,
-}
-
+/// A file in a song's directory (`ListSongFiles`).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongFile {
@@ -107,7 +102,7 @@ pub struct SongFile {
     pub kind: FileKind,
 }
 
-/// `GET /api/browse`: a directory under the config root, directories first.
+/// `BrowseDirectory`: a directory under the config root, directories first.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Browse {
@@ -127,7 +122,7 @@ pub struct BrowseEntry {
     pub is_dir: bool,
 }
 
-/// `POST /api/browse/bulk-import`: the songs made, by directory.
+/// `BulkImportSongs`: the songs made, by directory.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BulkImport {

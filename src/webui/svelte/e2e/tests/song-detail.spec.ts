@@ -14,6 +14,8 @@
 
 import { test, expect } from "@playwright/test";
 import { parse } from "yaml";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { mockRpc } from "../support/rpc";
 
 test.describe("Song Detail", () => {
   test.beforeEach(async ({ page }) => {
@@ -371,6 +373,8 @@ test.describe("Song Detail - Section Editor", () => {
   });
 
   test("drag on empty area creates a new section", async ({ page }) => {
+    const rpc = await mockRpc(page);
+    rpc.unary(ConfigService.method.saveSongConfig, {});
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
@@ -396,13 +400,15 @@ test.describe("Song Detail - Section Editor", () => {
 
     // The palette slot is taken as a real choice, not just a display
     // fallback, so it survives sections being added or reordered later.
-    const request = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/songs/Test%20Song%20Beta") &&
-        req.method() === "PUT",
-    );
     await page.getByRole("button", { name: "Save" }).first().click();
-    const saved = parse((await request).postData() ?? "") as {
+    await expect
+      .poll(() =>
+        rpc.calls(ConfigService.method.saveSongConfig).map((c) => c.name),
+      )
+      .toEqual(["Test Song Beta"]);
+    const saved = parse(
+      rpc.calls(ConfigService.method.saveSongConfig)[0].yaml,
+    ) as {
       sections: { name: string; color?: string }[];
     };
     expect(saved.sections).toHaveLength(3);

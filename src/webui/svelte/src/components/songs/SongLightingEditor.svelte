@@ -773,11 +773,7 @@
         if (!filename.startsWith("dmx_") && isMidiFile(filename)) {
           filename = `dmx_${filename}`;
         }
-        const res = await importFileToSong(song.name, path, filename);
-        if (!res.ok) {
-          const data = await res.json().catch(() => null);
-          throw new Error(data?.error ?? `Import failed: ${res.status}`);
-        }
+        await importFileToSong(song.name, path, filename);
       }
       onreload();
     } catch (err: any) {

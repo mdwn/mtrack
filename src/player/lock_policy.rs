@@ -128,6 +128,14 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GetProfileFile"),
     (Grpc, "ListAudioDevices"),
     (Grpc, "ListMidiDevices"),
+    // The song reads: a song's config, its waveform, its tempo guess, its
+    // files, and the project folder's listing. Creating, saving, deleting
+    // and importing stay locked out.
+    (Grpc, "GetSongConfig"),
+    (Grpc, "GetSongWaveform"),
+    (Grpc, "GuessSongTempo"),
+    (Grpc, "ListSongFiles"),
+    (Grpc, "BrowseDirectory"),
     // The controller restart: open while locked, as it always was (it
     // changes nothing but restarting what the config already says).
     (Grpc, "RestartControllers"),
@@ -179,9 +187,9 @@ mod tests {
 
     #[test]
     fn web_gets_are_open_and_other_methods_are_listed() {
-        assert!(open_while_locked(Web, "GET /songs/{name}"));
+        assert!(open_while_locked(Web, "GET /lighting/{name}"));
         assert!(open_while_locked(Web, "POST /lighting/validate"));
-        assert!(!open_while_locked(Web, "PUT /songs/{name}"));
+        assert!(!open_while_locked(Web, "PUT /lighting/{name}"));
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
         assert!(!open_while_locked(Mcp, "Play"));
@@ -201,6 +209,26 @@ mod tests {
         // and the calibration calls open an audio device and are not.
         for open in ["ListAudioDevices", "ListMidiDevices", "RestartControllers"] {
             assert!(open_while_locked(Grpc, open), "{open}");
+        }
+        // The song calls: the reads are open, the writes are not.
+        for open in [
+            "GetSongConfig",
+            "GetSongWaveform",
+            "GuessSongTempo",
+            "ListSongFiles",
+            "BrowseDirectory",
+        ] {
+            assert!(open_while_locked(Grpc, open), "{open}");
+        }
+        for locked in [
+            "CreateSong",
+            "SaveSongConfig",
+            "DeleteSong",
+            "ImportSongFile",
+            "CreateSongInDirectory",
+            "BulkImportSongs",
+        ] {
+            assert!(!open_while_locked(Grpc, locked), "{locked}");
         }
         for locked in [
             "ProbeAudioDevice",

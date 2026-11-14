@@ -58,16 +58,21 @@ const CURRENT_VERSION_KEY = "x-current-version";
  *  `INVALID_ARGUMENT` with what is wrong with it, a missing one `NOT_FOUND`,
  *  one that exists `ALREADY_EXISTS`, one changed elsewhere `ABORTED`, which is
  *  a `ConflictError` as a stale version was, carrying the version the file is
- *  at when the server says it); with
+ *  at when the server says it; a refusal of something that is there already
+ *  has `kind` "exists"); with
  *  none, `fallback` and the code. Anything that is not a failed call (an
  *  error in the page's own code) passes through. */
 export function callError(e: unknown, fallback: string): Error {
   const err = ConnectError.from(e);
   if (!(e instanceof ConnectError)) return e instanceof Error ? e : err;
   const message = err.rawMessage || `${fallback}: ${Code[err.code]}`;
-  return err.code === Code.Aborted
-    ? new ConflictError(message, err.metadata.get(CURRENT_VERSION_KEY))
-    : new ApiError(message);
+  if (err.code === Code.Aborted) {
+    return new ConflictError(message, err.metadata.get(CURRENT_VERSION_KEY));
+  }
+  return new ApiError(
+    message,
+    err.code === Code.AlreadyExists ? "exists" : null,
+  );
 }
 
 // ---- Lengths ----

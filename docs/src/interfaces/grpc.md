@@ -114,7 +114,9 @@ not.
 gRPC-Web, behind the same [lock](#lock-mode). It is listed in reflection and reported by the health
 service, and is not reachable over Bluetooth. The web UI's config editor calls it for the samples,
 the metronome defaults, the hardware profile files of the `profiles_dir`, the audio and MIDI
-device lists, the audio device test, the trigger calibration, and the restart of the controllers.
+device lists, the audio device test, the trigger calibration, and the restart of the controllers;
+the song pages and the import pages call it for a song's config, its files, its waveform and tempo
+guess, and for browsing the project and importing songs from it.
 
 | RPC | Description |
 |---|---|
@@ -132,6 +134,17 @@ device lists, the audio device test, the trigger calibration, and the restart of
 | `StopCalibration` | Ends the session and answers the channel's calibrated parameters. `FAILED_PRECONDITION` without a session or before a capture (the session is closed either way). Refused while locked. |
 | `CancelCalibration` | Closes any session; nothing to cancel is not an error. Refused while locked. |
 | `RestartControllers` | Restarts every controller from the current config and answers their status. `FAILED_PRECONDITION` during playback. Open while locked. |
+| `GetSongConfig` | Reads a song's config file as written (`yaml`), from the file the song was loaded from. A song that is loaded but whose file is gone answers a `summary` of it instead. `NOT_FOUND` for no such song, or a failed one with no file. Open while locked. |
+| `CreateSong` | Creates a song: a folder `name` under the songs directory (a nested song's has `/`) with a `song.yaml` of `yaml`, validated first, then reloads the songs. `ALREADY_EXISTS` when the song has a config already, or the name `yaml` declares is another song's (that name is in the `x-taken-name-bin` metadata); `FAILED_PRECONDITION` for a `song.yaml` beside it that is another song's. Refused while locked. |
+| `SaveSongConfig` | Validates `yaml` and writes it to the file the song was loaded from, then reloads the songs. The song's folder must exist (`NOT_FOUND`). A config that is not valid is `INVALID_ARGUMENT`, with every problem in the message, separated by `; `. `ALREADY_EXISTS` for a rename onto another song's name (with `x-taken-name-bin`); `FAILED_PRECONDITION` when the file is another song's config. There is no revision to present: the last save wins. Refused while locked. |
+| `DeleteSong` | Deletes a song's config file, leaving its audio, MIDI and lighting files, and takes the song off the playlists that name it. `NOT_FOUND` when there is none; `FAILED_PRECONDITION` for the song playing, or a file that is another song's. Refused while locked. |
+| `GetSongWaveform` | A song's peaks, track by track (`Waveform`, the message `Watch` carries): at most 500 packed floats a track, whatever the song's length, so 16 tracks are about 32 KB. Computed on first ask and kept; the metronome and pilot tracks are rendered fresh each time. `NOT_FOUND` for no such song; `INVALID_ARGUMENT` for one that failed to load. Open while locked. |
+| `GuessSongTempo` | A tempo map for a song, from its MIDI file's tempo events if it has one, else from its click track's beat grid: the guess (`tempo`), the `tempo:` block it would be (`config`), and its `source`. `NOT_FOUND` for no such song or one with neither source; `INVALID_ARGUMENT` for one that failed to load; `FAILED_PRECONDITION` for a beat grid with too few beats. Open while locked. |
+| `ListSongFiles` | The files directly in a song's folder, sorted by name, each with its `FileKind`; the song's config is left out, and hidden files unless the config names them. `NOT_FOUND` / `INVALID_ARGUMENT` as `GuessSongTempo`. Open while locked. |
+| `ImportSongFile` | Copies a file of the project (`path`, which must resolve to a file within the folder holding `mtrack.yaml`; anything else is `INVALID_ARGUMENT`) into the song's folder, as `filename` if given, and reloads the songs. A song with no folder yet is made, with its config. The name must be a safe file name of a type the player plays (audio, MIDI or `.light`, in any case). Answers the file's name and the name the song has, which is not the one asked for when that is taken. Refused while locked. |
+| `BrowseDirectory` | Lists a folder of the project (`path`, relative to the folder holding `mtrack.yaml`; empty for the folder itself), directories first, then files by name, hidden ones left out. `NOT_FOUND` for a path that is not a folder within the project, symlinks that leave it included. Open while locked. |
+| `CreateSongInDirectory` | Makes a song of a project folder: scans it for audio, MIDI and lighting files, splits stereo and multichannel files into a track per channel, writes the `song.yaml` and reloads the songs. `name` is optional (the folder's, past the names taken). `ALREADY_EXISTS` when the folder has a config or `name` is another song's (with `x-taken-name-bin`); `INVALID_ARGUMENT` for a path that is not a folder; `NOT_FOUND` for one outside the project. Refused while locked. |
+| `BulkImportSongs` | Makes a song of each song folder below a project folder that has no config, and reloads the songs once. Folders with a config are `skipped`; a folder that fails is in `failed`, not an error. Errors as `CreateSongInDirectory`. Refused while locked. |
 
 The refusals are statuses: a version the file has since left, or a `create` onto a file that is
 there (including one a stem reaches, `stage.yaml` with only `stage.yaml.yaml`), is `ABORTED` (the
@@ -147,7 +160,8 @@ send `expected_checksum` like the other config writes (a stale one is `FAILED_PR
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
 `UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile`, `RemoveProfile`
 and `ConfigService`'s `UpdateSamples`, `UpdateMetronome`, `SaveProfileFile`,
-`DeleteProfileFile`, `ProbeAudioDevice` and the calibration calls) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+`DeleteProfileFile`, `ProbeAudioDevice`, the calibration calls, `CreateSong`, `SaveSongConfig`,
+`DeleteSong`, `ImportSongFile`, `CreateSongInDirectory` and `BulkImportSongs`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
 Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
 control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
 after a short pause, while locked. `SavePlaylist` and `DeletePlaylist` are playlist edits and are

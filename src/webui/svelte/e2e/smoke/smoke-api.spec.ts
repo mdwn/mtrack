@@ -50,16 +50,14 @@ test.describe("Smoke: REST API", () => {
     }
   });
 
-  test("GET /api/songs/:name returns individual song", async ({ request }) => {
-    const response = await request.get(
-      `/api/songs/${encodeURIComponent("Another cool song")}`,
-    );
-    expect(response.ok()).toBe(true);
-    const body = await response.json();
+  test("GetSongConfig returns an individual song", async ({ baseURL }) => {
+    const body = await configClientAt(baseURL!).getSongConfig({
+      name: "Another cool song",
+    });
 
-    expect(body.name).toBe("Another cool song");
-    expect(body.tracks).toBeDefined();
-    expect(body.tracks.length).toBeGreaterThanOrEqual(1);
+    // The example song has no config file: the summary stands for it.
+    expect(body.summary?.name).toBe("Another cool song");
+    expect(body.summary?.tracks.length).toBeGreaterThanOrEqual(1);
   });
 
   test("ListAudioDevices returns device list", async ({ baseURL }) => {

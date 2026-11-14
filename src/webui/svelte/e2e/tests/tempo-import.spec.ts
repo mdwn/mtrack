@@ -14,8 +14,12 @@
 
 import { test, expect } from "@playwright/test";
 import { parse } from "yaml";
-import { SONGS } from "../mock-server/test-data";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
+import { SONGS, songConfigYaml } from "../mock-server/test-data";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import { serveSongConfig } from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { mockRpc } from "../support/rpc";
 
@@ -74,6 +78,8 @@ const LIGHT_SHOW_ABSOLUTE_TEMPO = [
 test.describe("Tempo import between timeline and light shows", () => {
   /** The show body served for the current test; set one before navigating. */
   let showBody = LIGHT_SHOW_WITH_TEMPO;
+  /** The song configs saved so far. */
+  let savedSongs: () => string[] = () => [];
 
   test.beforeEach(async ({ page }) => {
     showBody = LIGHT_SHOW_WITH_TEMPO;
@@ -90,14 +96,18 @@ test.describe("Tempo import between timeline and light shows", () => {
     }
     const rpc = await mockRpc(page);
     rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
-    await page.route("**/api/songs/Test%20Song%20Beta", async (route) => {
-      if (route.request().method() !== "GET") return route.continue();
-      const res = await route.fetch();
-      const yaml =
-        (await res.text()) +
-        "tempo:\n  bpm: 132\nlighting:\n  - file: show.light\n";
-      await route.fulfill({ response: res, body: yaml });
-    });
+    // The config the mock serves for the song as it is, with a song-level
+    // tempo and a lighting file added: the list above says the same file.
+    const beta = SONGS.songs.find((s) => s.name === "Test Song Beta")!;
+    serveSongConfig(
+      rpc,
+      "Test Song Beta",
+      songConfigYaml(beta) +
+        "tempo:\n  bpm: 132\nlighting:\n  - file: show.light\n",
+    );
+    rpc.unary(ConfigService.method.saveSongConfig, {});
+    savedSongs = () =>
+      rpc.calls(ConfigService.method.saveSongConfig).map((c) => c.yaml);
     await page.route("**/api/lighting/show.light", async (route) => {
       if (route.request().method() !== "GET") return route.continue();
       await route.fulfill({
@@ -151,13 +161,9 @@ test.describe("Tempo import between timeline and light shows", () => {
     );
     await dialog.getByRole("button", { name: "Done" }).click();
 
-    const request = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/songs/Test%20Song%20Beta") &&
-        req.method() === "PUT",
-    );
     await page.getByRole("button", { name: "Save" }).first().click();
-    const saved = parse((await request).postData() ?? "") as {
+    await expect.poll(() => savedSongs().length).toBe(1);
+    const saved = parse(savedSongs()[0]) as {
       tempo?: { changes?: { measure: number; bpm: number }[] };
     };
 

@@ -28,11 +28,18 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { sendWatchUnchecked } from "../support/watch";
 import { CONFIG_STORE, SONGS } from "../mock-server/test-data";
-import { PlayerService } from "../../src/gen/player/v1/player_pb";
-import { getConfigReply } from "../support/config-rpc";
+import {
+  ConfigService,
+  PlayerService,
+} from "../../src/gen/player/v1/player_pb";
+import {
+  getConfigReply,
+  serveSongConfig,
+  waveformReply,
+} from "../support/config-rpc";
 import { listSongsReply } from "../support/library-rpc";
 import { stubPlaylist } from "../support/playlists";
-import { mockRpc } from "../support/rpc";
+import { mockRpc, type RpcMock } from "../support/rpc";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -354,19 +361,15 @@ const STE_WAVEFORM_VIRTUAL = {
   ],
 };
 
-async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
+async function steInstallRoutes(
+  page: Page,
+  yaml: string = STE_YAML,
+): Promise<RpcMock> {
+  const rpc = await mockRpc(page);
   // The song's raw YAML (the editor parses tempo/pilot/sections from it).
-  await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "text/yaml",
-      body: yaml,
-    });
-  });
+  serveSongConfig(rpc, STE_SONG, yaml);
   // A fuller waveform so the lanes look like a real song.
-  await page.route(`**/api/songs/${STE_ENC}/waveform`, async (route) => {
-    await route.fulfill({ json: STE_WAVEFORM });
-  });
+  rpc.unary(ConfigService.method.getSongWaveform, waveformReply(STE_WAVEFORM));
   // Trim the reported duration to the authored region so "Fit" fills the width.
   const data = structuredClone(SONGS);
   for (const s of data.songs) {
@@ -376,8 +379,8 @@ async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
       s.duration_display = "0:34";
     }
   }
-  const rpc = await mockRpc(page);
   rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
+  return rpc;
 }
 
 async function steOpen(page: Page, yaml: string = STE_YAML, wsId?: string) {
@@ -502,12 +505,13 @@ test("player-section-chips", async ({ page }) => {
 });
 
 test("virtual-track-waveforms", async ({ page }) => {
-  await steInstallRoutes(page, MET_YAML);
+  const rpc = await steInstallRoutes(page, MET_YAML);
   // The click and pilot lanes come from the same waveform payload as the
   // file tracks; they are synthesized rather than read off disk.
-  await page.route(`**/api/songs/${STE_ENC}/waveform`, async (route) => {
-    await route.fulfill({ json: STE_WAVEFORM_VIRTUAL });
-  });
+  rpc.unary(
+    ConfigService.method.getSongWaveform,
+    waveformReply(STE_WAVEFORM_VIRTUAL),
+  );
   await page.goto(`/#/songs/${STE_ENC}/sections`);
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
   await expect(page.locator(".waveform-lane")).toHaveCount(5);
@@ -552,14 +556,11 @@ async function tempoImportRoutes(page: Page) {
   }
   const rpc = await mockRpc(page);
   rpc.unary(PlayerService.method.listSongs, listSongsReply(data));
-  await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({
-      status: 200,
-      contentType: "text/yaml",
-      body: `${STE_YAML}lighting:\n  - file: show.light\n`,
-    });
-  });
+  serveSongConfig(
+    rpc,
+    STE_SONG,
+    `${STE_YAML}lighting:\n  - file: show.light\n`,
+  );
   await page.route("**/api/lighting/show.light", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({

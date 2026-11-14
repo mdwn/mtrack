@@ -24,11 +24,24 @@
 //
 // The mock server answers the same calls with the same helpers.
 import type { MessageInitShape } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import {
+  ConfigService,
+  FileKind as FileKindMessage,
   ProbeOutcome,
+  TempoGuessSource,
+  type BrowseDirectoryResponseSchema,
+  type BulkImportSongsResponseSchema,
   type CalibrationNoiseFloorSchema,
   type CalibrationResultSchema,
+  type CreateSongInDirectoryResponseSchema,
+  type CreateSongResponseSchema,
   type GetConfigResponseSchema,
+  type GetSongConfigResponseSchema,
+  type GuessSongTempoResponseSchema,
+  type ImportSongFileResponseSchema,
+  type ListSongFilesResponseSchema,
+  type WaveformSchema,
   type GetProfileFileResponseSchema,
   type ListAudioDevicesResponseSchema,
   type ListMidiDevicesResponseSchema,
@@ -38,18 +51,25 @@ import {
   type RestartControllersResponseSchema,
   type UpdateConfigResponseSchema,
 } from "../../src/gen/player/v1/player_pb";
+import type { RpcMock } from "./rpc";
 import type {
   AudioDeviceInfo,
   AudioProbe,
+  Browse,
+  BulkImport,
   ChannelCalibration,
   ConfigReload,
   ControllerStatus,
+  FileKind,
   MidiDeviceInfo,
   NoiseFloor,
   Profile,
   ProfileFileInfo,
   ProbeKind,
+  SongFile,
   StoreSnapshot,
+  TempoGuess,
+  Waveform,
 } from "../../src/gen/rules/mtrack_rules";
 
 export function getConfigReply(
@@ -237,4 +257,152 @@ export function restartControllersReply(
       error: c.error ?? undefined,
     })),
   };
+}
+
+// ---- Songs ----
+
+const FILE_KINDS: Record<FileKind, FileKindMessage> = {
+  directory: FileKindMessage.DIRECTORY,
+  audio: FileKindMessage.AUDIO,
+  midi: FileKindMessage.MIDI,
+  lighting: FileKindMessage.LIGHTING,
+  other: FileKindMessage.OTHER,
+};
+
+/** A song's config file. */
+export function getSongConfigReply(
+  yaml: string,
+): MessageInitShape<typeof GetSongConfigResponseSchema> {
+  return { yaml };
+}
+
+/** A song's waveform, track by track. */
+export function waveformReply(
+  waveform: Waveform,
+): MessageInitShape<typeof WaveformSchema> {
+  return {
+    songName: waveform.song_name,
+    tracks: waveform.tracks.map((t) => ({ name: t.name, peaks: t.peaks })),
+  };
+}
+
+/** The files in a song's folder. */
+export function listSongFilesReply(
+  files: SongFile[],
+): MessageInitShape<typeof ListSongFilesResponseSchema> {
+  return {
+    files: files.map((f) => ({ name: f.name, kind: FILE_KINDS[f.type] })),
+  };
+}
+
+/** A folder of the project, as the file browser lists it. */
+export function browseReply(
+  browse: Browse,
+): MessageInitShape<typeof BrowseDirectoryResponseSchema> {
+  return {
+    path: browse.path,
+    root: browse.root,
+    entries: browse.entries.map((e) => ({
+      name: e.name,
+      path: e.path,
+      kind: FILE_KINDS[e.type],
+      isDir: e.is_dir,
+    })),
+  };
+}
+
+/** What a bulk import made of each folder. */
+export function bulkImportReply(
+  imported: BulkImport,
+): MessageInitShape<typeof BulkImportSongsResponseSchema> {
+  return {
+    created: imported.created,
+    skipped: imported.skipped,
+    failed: imported.failed,
+  };
+}
+
+/** A song created in a folder of the project. */
+export function createInDirectoryReply(created: {
+  path?: string;
+  song: string;
+}): MessageInitShape<typeof CreateSongInDirectoryResponseSchema> {
+  return { path: created.path ?? "", song: created.song };
+}
+
+/** A song created. */
+export function createSongReply(
+  song: string,
+): MessageInitShape<typeof CreateSongResponseSchema> {
+  return { song };
+}
+
+/** A file imported into a song. */
+export function importSongFileReply(imported: {
+  file: string;
+  song: string;
+}): MessageInitShape<typeof ImportSongFileResponseSchema> {
+  return imported;
+}
+
+/** A tempo guess. */
+export function tempoGuessReply(
+  guess: TempoGuess,
+): MessageInitShape<typeof GuessSongTempoResponseSchema> {
+  const [numerator, denominator] = guess.tempo.time_signature;
+  return {
+    source:
+      guess.source === "midi"
+        ? TempoGuessSource.MIDI
+        : TempoGuessSource.BEAT_GRID,
+    tempo: {
+      startSeconds: guess.tempo.start_seconds,
+      bpm: guess.tempo.bpm,
+      timeSignatureNumerator: numerator,
+      timeSignatureDenominator: denominator,
+      alignmentRmsMs: guess.tempo.alignment_rms_ms,
+      changes: guess.tempo.changes.map((c) => ({
+        measure: c.measure,
+        beat: c.beat,
+        bpm: c.bpm,
+        timeSignatureNumerator: c.time_signature[0],
+        timeSignatureDenominator: c.time_signature[1],
+        transitionBeats: c.transition_beats,
+      })),
+    },
+    config: {
+      bpm: guess.config.bpm,
+      timeSignature: guess.config.time_signature ?? "4/4",
+      start: guess.config.start,
+      changes: (guess.config.changes ?? []).map((c) => ({
+        measure: c.measure,
+        beat: c.beat,
+        bpm: c.bpm,
+        timeSignature: c.time_signature,
+        transition: c.transition
+          ? {
+              ramp:
+                "beats" in c.transition
+                  ? { case: "beats" as const, value: c.transition.beats }
+                  : { case: "measures" as const, value: c.transition.measures },
+            }
+          : undefined,
+      })),
+    },
+  };
+}
+
+/** Makes `rpc` serve song `name`'s config as `yaml`, and no other song's.
+ *  The saves it gets are `rpc.calls(ConfigService.method.saveSongConfig)`. */
+export function serveSongConfig(
+  rpc: RpcMock,
+  name: string,
+  yaml: string,
+): void {
+  rpc.unary(ConfigService.method.getSongConfig, (req) => {
+    if (req.name !== name) {
+      throw new ConnectError(`unable to find song ${req.name}`, Code.NotFound);
+    }
+    return getSongConfigReply(yaml);
+  });
 }

@@ -1912,6 +1912,88 @@ service ConfigService {
     // control surfaces are not disrupted; INTERNAL when the restart fails.
     // Open while locked.
     rpc RestartControllers(RestartControllersRequest) returns (RestartControllersResponse);
+
+    // GetSongConfig reads a song's config file, as written. A song that is
+    // loaded but whose config file is gone answers a summary of the song in
+    // place of the file. NOT_FOUND when there is no such song, or when it
+    // failed to load and has no config file to show. Open while locked.
+    rpc GetSongConfig(GetSongConfigRequest) returns (GetSongConfigResponse);
+
+    // CreateSong creates a new song with the given config: a folder under the
+    // songs directory, with a song.yaml, and reloads the songs. The config is
+    // validated before anything is made. INVALID_ARGUMENT when the config is
+    // not valid (the message lists what is wrong, separated by "; ") or the
+    // name is not safe as a folder name; ALREADY_EXISTS when the song has a
+    // config already or the name the config declares is another song's;
+    // FAILED_PRECONDITION when a song.yaml there is another song's. Refused
+    // while locked.
+    rpc CreateSong(CreateSongRequest) returns (CreateSongResponse);
+
+    // SaveSongConfig validates a song's config and replaces the file the song
+    // was loaded from, then reloads the songs. The song's folder must be
+    // there. NOT_FOUND when it is not; INVALID_ARGUMENT when the config is not
+    // valid (as for CreateSong); ALREADY_EXISTS when the config renames the
+    // song to a name another song holds; FAILED_PRECONDITION when the file
+    // there is another song's. Refused while locked.
+    rpc SaveSongConfig(SaveSongConfigRequest) returns (SaveSongConfigResponse);
+
+    // DeleteSong deletes a song's config file, leaving its audio, MIDI and
+    // lighting files, and takes the song off the playlists that name it.
+    // NOT_FOUND when the song or its config file is not there;
+    // FAILED_PRECONDITION while the song is playing. Refused while locked.
+    rpc DeleteSong(DeleteSongRequest) returns (DeleteSongResponse);
+
+    // GetSongWaveform answers the peaks of a song's tracks, at most 500 to a track,
+    // computed on first ask and kept (the metronome and pilot tracks are
+    // rendered fresh each time). NOT_FOUND when there is no such song;
+    // INVALID_ARGUMENT for a song that failed to load. Open while locked.
+    rpc GetSongWaveform(GetSongWaveformRequest) returns (Waveform);
+
+    // GuessSongTempo suggests a tempo map for a song, from its MIDI file's
+    // tempo events if it has one, else from the click track's beat grid.
+    // NOT_FOUND when the song is not there or has neither (the message says
+    // which); INVALID_ARGUMENT for a song that failed to load;
+    // FAILED_PRECONDITION when the beat grid has too few beats. Open while
+    // locked.
+    rpc GuessSongTempo(GuessSongTempoRequest) returns (GuessSongTempoResponse);
+
+    // ListSongFiles lists the files directly in a song's folder (audio, MIDI,
+    // lighting and others), sorted by name; the song's config file is left
+    // out, and hidden files unless the config names them. NOT_FOUND when
+    // there is no such song; INVALID_ARGUMENT for a song that failed to load.
+    // Open while locked.
+    rpc ListSongFiles(ListSongFilesRequest) returns (ListSongFilesResponse);
+
+    // ImportSongFile copies a file from the player's project folder into a
+    // song's folder (creating the song and its config when it has none) and
+    // reloads the songs. The source must be a file within the project folder
+    // (INVALID_ARGUMENT otherwise), of a type the player plays (audio, MIDI or
+    // lighting); a file of the same name in the song is replaced.
+    // INVALID_ARGUMENT for a name that is not safe. Refused while locked.
+    rpc ImportSongFile(ImportSongFileRequest) returns (ImportSongFileResponse);
+
+    // BrowseDirectory lists a folder of the player's project, directories
+    // first and then files by name, hidden files left out. The path is
+    // relative to the project folder. NOT_FOUND when it is not a folder in
+    // the project. Open while locked.
+    rpc BrowseDirectory(BrowseDirectoryRequest) returns (BrowseDirectoryResponse);
+
+    // CreateSongInDirectory makes a song of a project folder: it scans the
+    // folder for audio, MIDI and lighting files and writes a song.yaml,
+    // splitting stereo and multichannel files into a track per channel, and
+    // reloads the songs. ALREADY_EXISTS when the folder has a config or the
+    // name asked for is another song's (the name is in the
+    // `x-taken-name-bin` metadata); INVALID_ARGUMENT when the path is not a
+    // folder or does not scan; NOT_FOUND when it is outside the project.
+    // Refused while locked.
+    rpc CreateSongInDirectory(CreateSongInDirectoryRequest) returns (CreateSongInDirectoryResponse);
+
+    // BulkImportSongs makes a song of each song folder below a project
+    // folder that has no config, and reloads the songs once. Folders with a
+    // config are skipped; a folder that fails is reported, not fatal.
+    // INVALID_ARGUMENT when the path is not a folder; NOT_FOUND when it is
+    // outside the project. Refused while locked.
+    rpc BulkImportSongs(BulkImportSongsRequest) returns (BulkImportSongsResponse);
 }
 
 message ListAudioDevicesRequest {}
@@ -2168,4 +2250,229 @@ message ProfileFileSaved {
 message DeleteProfileFileRequest {
     // The file's name or stem, as for GetProfileFile.
     string filename = 1;
+}
+
+// ---- Songs ----
+
+message GetSongConfigRequest {
+    // The song's name, as the song list gives it (a nested song's has "/").
+    string name = 1;
+}
+
+message GetSongConfigResponse {
+    // The config file as written. Empty when `summary` is set.
+    string yaml = 1;
+    // Set when the song is loaded but its config file is gone: what the
+    // player has of it.
+    optional SongConfigSummary summary = 2;
+}
+
+// SongConfigSummary is a loaded song, for the page of a song that has no
+// config file now.
+message SongConfigSummary {
+    string name = 1;
+    uint64 duration_ms = 2;
+    // The length as "m:ss".
+    string duration_display = 3;
+    uint32 num_channels = 4;
+    string sample_format = 5;
+    repeated string tracks = 6;
+}
+
+message CreateSongRequest {
+    // The song's folder, below the songs directory.
+    string name = 1;
+    // The song's config file.
+    string yaml = 2;
+}
+
+message CreateSongResponse {
+    // The name the song was created under.
+    string song = 1;
+}
+
+message SaveSongConfigRequest {
+    string name = 1;
+    string yaml = 2;
+}
+
+message SaveSongConfigResponse {}
+
+message DeleteSongRequest {
+    string name = 1;
+}
+
+message DeleteSongResponse {
+    string name = 1;
+}
+
+message GetSongWaveformRequest {
+    string name = 1;
+}
+
+message GuessSongTempoRequest {
+    string name = 1;
+}
+
+// TempoGuessSource is what a tempo guess was read from.
+enum TempoGuessSource {
+    TEMPO_GUESS_SOURCE_UNSPECIFIED = 0;
+    // The song's MIDI file's tempo events.
+    TEMPO_GUESS_SOURCE_MIDI = 1;
+    // The click track's beat grid.
+    TEMPO_GUESS_SOURCE_BEAT_GRID = 2;
+}
+
+message GuessSongTempoResponse {
+    TempoGuessSource source = 1;
+    // The guess, as the tempo editors show it.
+    GuessedTempo tempo = 2;
+    // The guess as a song's `tempo:` block.
+    SongTempo config = 3;
+}
+
+// GuessedTempo is a guessed tempo map.
+message GuessedTempo {
+    double start_seconds = 1;
+    double bpm = 2;
+    // Numerator, then denominator.
+    uint32 time_signature_numerator = 3;
+    uint32 time_signature_denominator = 4;
+    repeated GuessedTempoChange changes = 5;
+    // RMS alignment error in milliseconds between the MIDI's beats and the
+    // click track's, when there was a beat grid to compare with. Above about
+    // 15 suggests the MIDI does not match the recording.
+    optional double alignment_rms_ms = 6;
+}
+
+message GuessedTempoChange {
+    uint32 measure = 1;
+    uint32 beat = 2;
+    double bpm = 3;
+    uint32 time_signature_numerator = 4;
+    uint32 time_signature_denominator = 5;
+    optional uint32 transition_beats = 6;
+}
+
+// SongTempo is a song's `tempo:` block.
+message SongTempo {
+    double bpm = 1;
+    // "4/4", "7/8".
+    string time_signature = 2;
+    // Seconds before measure 1 beat 1.
+    optional double start = 3;
+    repeated SongTempoChange changes = 4;
+}
+
+message SongTempoChange {
+    uint32 measure = 1;
+    optional double beat = 2;
+    optional double bpm = 3;
+    optional string time_signature = 4;
+    optional TempoTransition transition = 5;
+}
+
+// TempoTransition is how a tempo change ramps from the tempo before it.
+message TempoTransition {
+    oneof ramp {
+        // Linearly over this many quarter-note beats.
+        double beats = 1;
+        // Linearly over this many measures.
+        double measures = 2;
+    }
+}
+
+message ListSongFilesRequest {
+    string name = 1;
+}
+
+// FileKind is what a file is to the player, by its extension.
+enum FileKind {
+    FILE_KIND_UNSPECIFIED = 0;
+    FILE_KIND_DIRECTORY = 1;
+    FILE_KIND_AUDIO = 2;
+    FILE_KIND_MIDI = 3;
+    FILE_KIND_LIGHTING = 4;
+    FILE_KIND_OTHER = 5;
+}
+
+// DirectoryFile is a file in a song's folder.
+message DirectoryFile {
+    string name = 1;
+    FileKind kind = 2;
+}
+
+message ListSongFilesResponse {
+    repeated DirectoryFile files = 1;
+}
+
+message ImportSongFileRequest {
+    // The song to import into; a name with no song yet makes one.
+    string name = 1;
+    // The source file, as a path within the project folder.
+    string path = 2;
+    // The name to give the copy; the source's by default.
+    optional string filename = 3;
+}
+
+message ImportSongFileResponse {
+    // The name of the file in the song.
+    string file = 1;
+    // The name the song has: a new one's may not be the one asked for, when
+    // that is taken.
+    string song = 2;
+}
+
+message BrowseDirectoryRequest {
+    // Relative to the project folder; empty or "/" for the folder itself.
+    string path = 1;
+}
+
+message BrowseDirectoryResponse {
+    // The folder listed, relative to the project folder ("/" for it).
+    string path = 1;
+    // The project folder.
+    string root = 2;
+    repeated BrowseEntry entries = 3;
+}
+
+message BrowseEntry {
+    string name = 1;
+    // Relative to the project folder, from "/".
+    string path = 2;
+    FileKind kind = 3;
+    bool is_dir = 4;
+}
+
+message CreateSongInDirectoryRequest {
+    // The folder, relative to the project folder.
+    string path = 1;
+    // The song's name; the folder's by default (past the names taken).
+    optional string name = 2;
+}
+
+message CreateSongInDirectoryResponse {
+    // The config file written.
+    string path = 1;
+    // The song's name.
+    string song = 2;
+}
+
+message BulkImportSongsRequest {
+    // The folder below which each song folder is imported, relative to the
+    // project folder.
+    string path = 1;
+}
+
+message BulkImportSongsResponse {
+    // The folders a song was made of, by path below the folder given.
+    repeated string created = 1;
+    // The folders that have a config already.
+    repeated string skipped = 2;
+    repeated ImportFailure failed = 3;
+}
+
+message ImportFailure {
+    string name = 1;
+    string error = 2;
 }

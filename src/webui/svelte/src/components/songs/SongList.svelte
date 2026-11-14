@@ -169,12 +169,7 @@
     )
       return;
     try {
-      const res = await deleteSong(name);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        await showAlert(data?.error ?? `Delete failed (${res.status})`);
-        return;
-      }
+      await deleteSong(name);
       load();
     } catch (err) {
       await showAlert(err instanceof Error ? err.message : "Delete failed");

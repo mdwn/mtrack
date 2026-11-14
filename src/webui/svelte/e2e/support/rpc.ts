@@ -158,10 +158,19 @@ export class RpcMock {
 
   /** Fails `method` with a gRPC status `code` (a `Code` of
    *  `@connectrpc/connect`: `Code.NotFound`, `Code.FailedPrecondition` for a
-   *  locked player, `Code.Aborted` for a changed revision) and `message`. */
-  error(method: MethodRef, code: Code, message: string): void {
+   *  locked player, `Code.Aborted` for a changed revision) and `message`,
+   *  with the status's `metadata` (`x-current-version`) if given. */
+  error(
+    method: MethodRef,
+    code: Code,
+    message: string,
+    metadata?: HeadersInit,
+  ): void {
     const desc = resolve(method);
-    this.answers.set(keyOf(desc), () => new ConnectError(message, code));
+    this.answers.set(
+      keyOf(desc),
+      () => new ConnectError(message, code, metadata),
+    );
   }
 
   /** The decoded requests the page has sent `method`, in order. */
@@ -212,7 +221,11 @@ export class RpcMock {
       if (answered instanceof ConnectError) {
         return {
           body: new Uint8Array(),
-          headers: errorHeaders(answered.code, answered.rawMessage),
+          headers: errorHeaders(
+            answered.code,
+            answered.rawMessage,
+            answered.metadata,
+          ),
         };
       }
       return { body: answered as Uint8Array };

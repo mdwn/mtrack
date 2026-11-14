@@ -13,7 +13,11 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { Code } from "@connectrpc/connect";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
 import type { TempoGuess } from "../../src/gen/rules/mtrack_rules";
+import { tempoGuessReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 
 /** The guess as a song's `tempo:` block, as the player serves it. */
 const CONFIG = { bpm: 120, time_signature: "4/4" };
@@ -82,42 +86,36 @@ test.describe("Tempo Detection - MIDI source (Test Song Alpha)", () => {
   test("clicking Detect from MIDI calls the tempo-guess API", async ({
     page,
   }) => {
-    let apiCalled = false;
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      apiCalled = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(GOOD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(GOOD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".estimated-badge")).toBeVisible();
-    expect(apiCalled).toBe(true);
+    expect(
+      rpc.calls(ConfigService.method.guessSongTempo).map((c) => c.name),
+    ).toEqual(["Test Song Alpha"]);
   });
 
   test("shows from MIDI badge after successful detection", async ({ page }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(GOOD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(GOOD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".estimated-badge")).toContainText("from MIDI");
   });
 
   test("no alignment warning for well-matched MIDI", async ({ page }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(GOOD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(GOOD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".estimated-badge")).toBeVisible();
@@ -127,13 +125,11 @@ test.describe("Tempo Detection - MIDI source (Test Song Alpha)", () => {
   test("shows alignment warning when MIDI alignment is poor", async ({
     page,
   }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(BAD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(BAD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".alignment-warn-badge")).toBeVisible();
@@ -143,13 +139,11 @@ test.describe("Tempo Detection - MIDI source (Test Song Alpha)", () => {
   });
 
   test("alignment warning includes RMS value", async ({ page }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(BAD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(BAD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     // Badge should show the rounded ms value (87.5 rounds to 88)
@@ -160,23 +154,21 @@ test.describe("Tempo Detection - MIDI source (Test Song Alpha)", () => {
     page,
   }) => {
     // Song has no click track so the server omits alignment_rms_ms entirely.
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          source: "midi",
-          tempo: {
-            start_seconds: 0.0,
-            bpm: 120,
-            time_signature: [4, 4],
-            changes: [],
-            // alignment_rms_ms intentionally absent
-          },
-          config: CONFIG,
-        } satisfies TempoGuess),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply({
+        source: "midi",
+        tempo: {
+          start_seconds: 0.0,
+          bpm: 120,
+          time_signature: [4, 4],
+          changes: [],
+          // alignment_rms_ms intentionally absent
+        },
+        config: CONFIG,
+      }),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".estimated-badge")).toBeVisible();
@@ -191,13 +183,11 @@ test.describe("Tempo Detection - beat grid source (Test Song Beta)", () => {
   });
 
   test("no alignment warning for beat-grid-sourced tempo", async ({ page }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(BEAT_GRID_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(BEAT_GRID_TEMPO),
+    );
 
     await page.getByRole("button", { name: /guess from beat grid/i }).click();
     await expect(page.locator(".estimated-badge")).toContainText(
@@ -215,13 +205,11 @@ test.describe("Tempo Detection - error and state transitions", () => {
   test("button shows Re-detect after a successful detection", async ({
     page,
   }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(GOOD_MIDI_TEMPO),
-      });
-    });
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.guessSongTempo,
+      tempoGuessReply(GOOD_MIDI_TEMPO),
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
     await expect(page.locator(".estimated-badge")).toBeVisible();
@@ -232,9 +220,12 @@ test.describe("Tempo Detection - error and state transitions", () => {
   });
 
   test("API error does not break the UI", async ({ page }) => {
-    await page.route("**/api/songs/*/tempo-guess", async (route) => {
-      await route.fulfill({ status: 500, body: "Internal Server Error" });
-    });
+    const rpc = await mockRpc(page);
+    rpc.error(
+      ConfigService.method.guessSongTempo,
+      Code.Internal,
+      "Internal Server Error",
+    );
 
     await page.getByRole("button", { name: /detect from midi/i }).click();
 

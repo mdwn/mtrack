@@ -12,12 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ConfigService`, a second gRPC service for the editor pages**: `UpdateSamples`,
   `UpdateMetronome`, `ListProfileFiles`, `GetProfileFile`, `SaveProfileFile`,
   `DeleteProfileFile`, `ListAudioDevices`, `ProbeAudioDevice`, `ListMidiDevices`,
-  `StartCalibration`, `CaptureCalibration`, `StopCalibration`, `CancelCalibration` and
-  `RestartControllers` (`player.v1.ConfigService`, in `player.proto`; the rest of the config
-  editor's calls follow it in later releases). It is served on the gRPC port and by the web UI's
-  gRPC-Web, behind the same lock as `PlayerService` (the writes, the audio probe and the
-  calibration calls are refused while locked; the reads, the device lists and the controller
-  restart are open), listed in reflection and reported by the health service. It is not
+  `StartCalibration`, `CaptureCalibration`, `StopCalibration`, `CancelCalibration`,
+  `RestartControllers`, `GetSongConfig`, `CreateSong`, `SaveSongConfig`, `DeleteSong`,
+  `GetSongWaveform`, `GuessSongTempo`, `ListSongFiles`, `ImportSongFile`, `BrowseDirectory`,
+  `CreateSongInDirectory` and `BulkImportSongs` (`player.v1.ConfigService`, in `player.proto`;
+  the rest of the config editor's calls follow it in later releases). It is served on the gRPC
+  port and by the web UI's gRPC-Web, behind the same lock as `PlayerService` (the writes, the
+  audio probe, the calibration calls and the song writes and imports are refused while locked;
+  the reads, the device lists, the song reads and the controller restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
@@ -263,6 +265,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller restart work while locked, as the routes did. The calibration walks through at most
   one session at a time for the whole player, whichever port the calls arrive on. The Bluetooth
   pairing routes are unchanged. See [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's routes for a song's config, files, waveform and tempo guess, and for
+  browsing and importing**: `GET`, `POST`, `PUT` and `DELETE /api/songs/<name>`,
+  `GET /api/songs/<name>/waveform`, `/tempo-guess` and `/files`, `POST /api/songs/<name>/import`,
+  `GET /api/browse`, `POST /api/browse/create-song` and `POST /api/browse/bulk-import` are gone;
+  the web UI calls `ConfigService` for them. A script that used them should call
+  `GetSongConfig`, `CreateSong`, `SaveSongConfig`, `DeleteSong`, `GetSongWaveform`,
+  `GuessSongTempo`, `ListSongFiles`, `ImportSongFile`, `BrowseDirectory`, `CreateSongInDirectory`
+  and `BulkImportSongs`, over gRPC or gRPC-Web; for example
+  `grpcurl -plaintext -d '{"name":"My Song"}' host:43234 player.v1.ConfigService/GetSongConfig`.
+  The song's YAML is a string (`yaml`) in the request and the answer, where the routes took and
+  gave `text/yaml`; the song's name is a field, so a nested song's `Artist/Album/Song` needs no
+  escaping. The answers are messages, not JSON: file kinds are the enum `FileKind`, a waveform is
+  the `Waveform` message `Watch` carries (packed floats), and a tempo guess is typed
+  (`GuessSongTempoResponse`). A song with a config file that is gone answers `GetSongConfig` with a
+  `summary` where the route answered a JSON summary in place of the YAML. The writes, the imports
+  and the creates are refused while the player is locked, and the reads are open, as the routes
+  were. The refusals are statuses: a song or folder that is not there is `NOT_FOUND`; a name,
+  path, file type or config that is not valid is `INVALID_ARGUMENT` (an import source outside the
+  project, a file that is not a file and a config with several problems included: the problems
+  are in the message, separated by `; `); a song or config that exists, or a name another song
+  holds, is `ALREADY_EXISTS` (the name is in the `x-taken-name-bin` metadata, where the routes
+  answered 409 with `taken`); a delete of the song playing, a save over a `song.yaml` that is
+  another song's, and a beat grid with too few beats to guess from are `FAILED_PRECONDITION` (409
+  and 422). The routes had no version to check and the RPCs add none: the last save wins, as it
+  did. See [gRPC](docs/src/interfaces/grpc.md).
 
 ## [0.18.2] - 2026-11-13
 
