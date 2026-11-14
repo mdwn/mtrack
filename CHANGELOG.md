@@ -15,11 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StartCalibration`, `CaptureCalibration`, `StopCalibration`, `CancelCalibration`,
   `RestartControllers`, `GetSongConfig`, `CreateSong`, `SaveSongConfig`, `DeleteSong`,
   `GetSongWaveform`, `GuessSongTempo`, `ListSongFiles`, `ImportSongFile`, `BrowseDirectory`,
-  `CreateSongInDirectory` and `BulkImportSongs` (`player.v1.ConfigService`, in `player.proto`;
+  `CreateSongInDirectory`, `BulkImportSongs`, `GetBluetooth`, `SetBluetoothPairing` and
+  `ForgetBluetoothDevice` (`player.v1.ConfigService`, in `player.proto`;
   the rest of the config editor's calls follow it in later releases). It is served on the gRPC
   port and by the web UI's gRPC-Web, behind the same lock as `PlayerService` (the writes, the
   audio probe, the calibration calls and the song writes and imports are refused while locked;
-  the reads, the device lists, the song reads and the controller restart are open), listed in reflection and reported by the health service. It is not
+  the reads, the device lists, the song reads, the Bluetooth status and the controller restart are open), listed in reflection and reported by the health service. It is not
   reachable over Bluetooth: the phone's allowlist names `PlayerService` methods only. See
   [gRPC](docs/src/interfaces/grpc.md).
 - **Bluetooth controller**: a phone can control the player over Bluetooth Low Energy with no
@@ -263,8 +264,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message names the RPC to call first where it named the route. The probe and the calibration
   calls are refused while the player is locked, as the routes were; the device lists and the
   controller restart work while locked, as the routes did. The calibration walks through at most
-  one session at a time for the whole player, whichever port the calls arrive on. The Bluetooth
-  pairing routes are unchanged. See [gRPC](docs/src/interfaces/grpc.md).
+  one session at a time for the whole player, whichever port the calls arrive on. See
+  [gRPC](docs/src/interfaces/grpc.md).
+- **Breaking: the web API's Bluetooth pairing routes**: `GET /api/bluetooth`,
+  `POST /api/bluetooth/pairing` and `DELETE /api/bluetooth/devices/{address}` are gone; the web UI
+  calls `ConfigService` for them. A script that used them should call `GetBluetooth`,
+  `SetBluetoothPairing` (`open`, and `seconds` for the time, kept between 10 and 600, 120 when
+  absent) and `ForgetBluetoothDevice` (`address`), over gRPC or gRPC-Web; for example
+  `grpcurl -plaintext -d '{"open":true}' host:43234 player.v1.ConfigService/SetBluetoothPairing`.
+  All three answer a `BluetoothStatus` message (`configured`, `running`, `error`, the `pairing`
+  window and the `devices`) where the routes answered the same fields as JSON. `GetBluetooth` is
+  open while the player is locked; opening or closing the window and forgetting a phone are
+  refused while locked (`FAILED_PRECONDITION`, as the routes answered 423). The other refusals
+  are statuses: Bluetooth not running is `FAILED_PRECONDITION` (409), an address that is none
+  `INVALID_ARGUMENT` (400), one that is not a phone paired with the player `NOT_FOUND` (404) and a
+  radio stack that refused `UNAVAILABLE` (502). The pairing calls are on both ports, and are not
+  reachable over Bluetooth. See [gRPC](docs/src/interfaces/grpc.md).
 - **Breaking: the web API's routes for a song's config, files, waveform and tempo guess, and for
   browsing and importing**: `GET`, `POST`, `PUT` and `DELETE /api/songs/<name>`,
   `GET /api/songs/<name>/waveform`, `/tempo-guess` and `/files`, `POST /api/songs/<name>/import`,

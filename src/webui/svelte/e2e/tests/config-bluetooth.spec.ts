@@ -13,6 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { ConfigService } from "../../src/gen/player/v1/player_pb";
+import { bluetoothReply } from "../support/config-rpc";
+import { mockRpc } from "../support/rpc";
 
 // The Bluetooth controller's card: pairing a phone from the web UI. The mock
 // keeps the window and the phones per test, named by a request header.
@@ -73,17 +76,15 @@ test.describe("Bluetooth pairing", () => {
   test("a controller not saved yet says to save the configuration", async ({
     page,
   }) => {
-    await page.route("**/api/bluetooth", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          configured: false,
-          running: false,
-          error: null,
-          pairing: { open: false, seconds_left: 0 },
-          devices: [],
-        }),
+    const rpc = await mockRpc(page);
+    rpc.unary(
+      ConfigService.method.getBluetooth,
+      bluetoothReply({
+        configured: false,
+        running: false,
+        error: null,
+        pairing: { open: false, seconds_left: 0 },
+        devices: [],
       }),
     );
     await openBluetoothCard(page);

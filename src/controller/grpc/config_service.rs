@@ -36,6 +36,7 @@ use crate::proto::player::v1::{
     StartCalibrationRequest, StopCalibrationRequest, UpdateConfigResponse, UpdateMetronomeRequest,
     UpdateSamplesRequest,
 };
+use crate::webui::api::bluetooth::{self, BluetoothError};
 use crate::webui::api::devices::{self, CalibrateStart, DeviceError};
 use crate::webui::api::profiles::{self, ProfileFileError, ProfileSave};
 use crate::webui::api::status;
@@ -492,6 +493,73 @@ impl ConfigService for ConfigServer {
         super::config_songs::bulk_import(&self.player, store.path(), request.into_inner())
             .await
             .map(Response::new)
+    }
+
+    async fn get_bluetooth(
+        &self,
+        _: Request<proto::GetBluetoothRequest>,
+    ) -> Result<Response<proto::BluetoothStatus>, Status> {
+        Ok(Response::new(bluetooth_to_proto(
+            bluetooth::status_of(&self.player).await,
+        )))
+    }
+
+    async fn set_bluetooth_pairing(
+        &self,
+        request: Request<proto::SetBluetoothPairingRequest>,
+    ) -> Result<Response<proto::BluetoothStatus>, Status> {
+        let req = request.into_inner();
+        bluetooth::set_pairing(&self.player, req.open, req.seconds)
+            .await
+            .map(|status| Response::new(bluetooth_to_proto(status)))
+            .map_err(bluetooth_status)
+    }
+
+    async fn forget_bluetooth_device(
+        &self,
+        request: Request<proto::ForgetBluetoothDeviceRequest>,
+    ) -> Result<Response<proto::BluetoothStatus>, Status> {
+        bluetooth::forget(&self.player, &request.into_inner().address)
+            .await
+            .map(|status| Response::new(bluetooth_to_proto(status)))
+            .map_err(bluetooth_status)
+    }
+}
+
+/// A refusal of a pairing call as a status: Bluetooth not running is
+/// `FAILED_PRECONDITION`, an address that is none `INVALID_ARGUMENT`, one
+/// that is not a paired phone `NOT_FOUND`, a radio stack that refused
+/// `UNAVAILABLE`. The message is the one the REST route gave.
+fn bluetooth_status(e: BluetoothError) -> Status {
+    let message = e.to_string();
+    match e {
+        BluetoothError::NotRunning(_) => Status::failed_precondition(message),
+        BluetoothError::BadAddress(_) => Status::invalid_argument(message),
+        BluetoothError::NotPaired(_) => Status::not_found(message),
+        BluetoothError::Adapter(_) => Status::unavailable(message),
+    }
+}
+
+fn bluetooth_to_proto(
+    status: crate::webui::wire::bluetooth::BluetoothStatus,
+) -> proto::BluetoothStatus {
+    proto::BluetoothStatus {
+        configured: status.configured,
+        running: status.running,
+        error: status.error,
+        pairing: Some(proto::BluetoothPairingWindow {
+            open: status.pairing.open,
+            seconds_left: status.pairing.seconds_left,
+        }),
+        devices: status
+            .devices
+            .into_iter()
+            .map(|p| proto::BluetoothPhone {
+                address: p.address,
+                name: p.name,
+                connected: p.connected,
+            })
+            .collect(),
     }
 }
 
@@ -2054,6 +2122,287 @@ mod tests {
                 assert_ne!(message, locked, "{method}");
             }
         }
+        Ok(())
+    }
+
+    // ---- Bluetooth pairing ----
+
+    /// A controller that does nothing but hold a Bluetooth handle.
+    struct HandleOnly(crate::controller::ble::BleHandle);
+
+    impl crate::controller::Driver for HandleOnly {
+        fn monitor_events(&self) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
+            tokio::spawn(std::future::pending())
+        }
+        fn ble_handle(&self) -> Option<crate::controller::ble::BleHandle> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// A served project whose player runs a Bluetooth controller; when
+    /// `attached`, over a fake radio holding a phone, a connected phone and
+    /// a pedal the owner trusts.
+    async fn with_bluetooth(
+        attached: bool,
+    ) -> Fallible<(Served, Arc<crate::controller::ble::fake::Fake>)> {
+        use crate::controller::ble::fake::{device, started, trusted_device};
+        let served = served().await?;
+        let handle = crate::controller::ble::BleHandle::default();
+        let (fake, pairing) = started(vec![
+            device(1, true, true),
+            device(2, true, false),
+            trusted_device(3, true),
+        ])
+        .await;
+        pairing.close().await.unwrap();
+        if attached {
+            handle.attach(pairing);
+        }
+        served
+            .player
+            .install_controller(crate::controller::Controller::new_from_drivers(vec![
+                Arc::new(HandleOnly(handle)),
+            ]));
+        Ok((served, fake))
+    }
+
+    async fn bluetooth(served: &Served) -> Result<pb::BluetoothStatus, tonic::Status> {
+        Ok(served
+            .server
+            .get_bluetooth(Request::new(pb::GetBluetoothRequest {}))
+            .await?
+            .into_inner())
+    }
+
+    async fn pairing(
+        served: &Served,
+        open: bool,
+        seconds: Option<u32>,
+    ) -> Result<pb::BluetoothStatus, tonic::Status> {
+        Ok(served
+            .server
+            .set_bluetooth_pairing(Request::new(pb::SetBluetoothPairingRequest {
+                open,
+                seconds,
+            }))
+            .await?
+            .into_inner())
+    }
+
+    async fn forget(served: &Served, address: &str) -> Result<pb::BluetoothStatus, tonic::Status> {
+        Ok(served
+            .server
+            .forget_bluetooth_device(Request::new(pb::ForgetBluetoothDeviceRequest {
+                address: address.to_string(),
+            }))
+            .await?
+            .into_inner())
+    }
+
+    fn phones(status: &pb::BluetoothStatus) -> Vec<(&str, Option<&str>, bool)> {
+        status
+            .devices
+            .iter()
+            .map(|p| (p.address.as_str(), p.name.as_deref(), p.connected))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_a_bluetooth_controller_nothing_is_configured() -> Fallible {
+        let served = served().await?;
+        assert_eq!(
+            bluetooth(&served).await?,
+            pb::BluetoothStatus {
+                configured: false,
+                running: false,
+                error: None,
+                pairing: Some(pb::BluetoothPairingWindow {
+                    open: false,
+                    seconds_left: 0
+                }),
+                devices: vec![],
+            }
+        );
+        // Pairing and forgetting need a running controller.
+        let refused = pairing(&served, true, None).await.unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        let refused = forget(&served, "00:00:00:00:00:01").await.unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        Ok(())
+    }
+
+    /// A controller configured on a build without Bluetooth fails to start,
+    /// and says why.
+    #[cfg(not(all(target_os = "linux", feature = "ble")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_controller_that_failed_says_why() -> Fallible {
+        let served = served().await?;
+        served
+            .player
+            .start_controllers(vec![crate::config::Controller::Ble(
+                crate::config::BleController::new(None),
+            )]);
+        let status = bluetooth(&served).await?;
+        assert!(status.configured, "{status:?}");
+        assert!(!status.running, "{status:?}");
+        assert!(status.error.unwrap().contains("Bluetooth"));
+        Ok(())
+    }
+
+    /// A controller that cannot reach the radio keeps retrying, and says
+    /// why until it is running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_controller_that_is_retrying_says_why() -> Fallible {
+        let (served, _fake) = with_bluetooth(false).await?;
+        let handle = served.player.ble_handle().expect("handle");
+        handle.failed("the radio is blocked");
+        let status = bluetooth(&served).await?;
+        assert!(!status.running, "{status:?}");
+        assert_eq!(status.error.as_deref(), Some("the radio is blocked"));
+
+        let (_fake, attached) = crate::controller::ble::fake::started(vec![]).await;
+        handle.attach(attached);
+        let status = bluetooth(&served).await?;
+        assert!(status.running, "{status:?}");
+        assert_eq!(status.error, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_configured_controller_that_is_not_running_is_closed_and_empty() -> Fallible {
+        let (served, _fake) = with_bluetooth(false).await?;
+        let status = bluetooth(&served).await?;
+        assert!(status.configured);
+        assert!(!status.running);
+        assert!(!status.pairing.unwrap().open);
+        assert!(status.devices.is_empty());
+        let refused = pairing(&served, true, None).await.unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn it_lists_the_phones_but_not_the_owners_own_devices() -> Fallible {
+        let (served, _fake) = with_bluetooth(true).await?;
+        let status = bluetooth(&served).await?;
+        assert!(status.running);
+        assert_eq!(status.error, None);
+        assert_eq!(
+            phones(&status),
+            vec![
+                ("00:00:00:00:00:01", Some("phone 1"), true),
+                ("00:00:00:00:00:02", Some("phone 2"), false),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_window_opens_for_the_time_asked_clamped_and_closes() -> Fallible {
+        let (served, fake) = with_bluetooth(true).await?;
+        let left = |status: &pb::BluetoothStatus| status.pairing.as_ref().unwrap().seconds_left;
+
+        let status = pairing(&served, true, None).await?;
+        assert!(status.pairing.as_ref().unwrap().open);
+        assert!((119..=120).contains(&left(&status)), "{status:?}");
+
+        // The read sees it too.
+        assert!(bluetooth(&served).await?.pairing.unwrap().open);
+
+        let status = pairing(&served, true, Some(1)).await?;
+        assert!((9..=10).contains(&left(&status)), "{status:?}");
+        let status = pairing(&served, true, Some(86400)).await?;
+        assert!((599..=600).contains(&left(&status)), "{status:?}");
+        let status = pairing(&served, true, Some(45)).await?;
+        assert!((44..=45).contains(&left(&status)), "{status:?}");
+
+        let status = pairing(&served, false, None).await?;
+        let window = status.pairing.unwrap();
+        assert!(!window.open);
+        assert_eq!(window.seconds_left, 0);
+        assert_eq!(fake.pairable.lock().last(), Some(&false));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refusing_adapter_is_unavailable() -> Fallible {
+        let (served, fake) = with_bluetooth(true).await?;
+        *fake.failing.lock() = true;
+        let refused = pairing(&served, true, None).await.unwrap_err();
+        assert_eq!(refused.code(), Code::Unavailable);
+        assert_eq!(refused.message(), "adapter gone");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forgetting_a_phone_removes_it_and_answers_the_list() -> Fallible {
+        let (served, fake) = with_bluetooth(true).await?;
+        let status = forget(&served, "00:00:00:00:00:01").await?;
+        assert_eq!(*fake.removed.lock(), vec![[0, 0, 0, 0, 0, 1]]);
+        assert_eq!(
+            phones(&status),
+            vec![("00:00:00:00:00:02", Some("phone 2"), false)]
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forgetting_what_is_not_a_phone_is_refused() -> Fallible {
+        let (served, fake) = with_bluetooth(true).await?;
+        let refused = forget(&served, "nonsense").await.unwrap_err();
+        assert_eq!(refused.code(), Code::InvalidArgument);
+        assert_eq!(refused.message(), "Not a Bluetooth address");
+        // Unknown, and the owner's own.
+        for address in ["00:00:00:00:00:09", "00:00:00:00:00:03"] {
+            let refused = forget(&served, address).await.unwrap_err();
+            assert_eq!(refused.code(), Code::NotFound, "{address}");
+            assert_eq!(
+                refused.message(),
+                "Not a phone paired with this player",
+                "{address}"
+            );
+        }
+        assert!(fake.removed.lock().is_empty());
+        Ok(())
+    }
+
+    /// While locked the status is served, and opening or closing the window
+    /// and forgetting a phone are refused before the handler runs (the table
+    /// in lock_policy; this is the service behind it, as the web UI reaches
+    /// it).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_locked_player_can_be_read_but_not_paired_with() -> Fallible {
+        use tower::ServiceExt;
+        let (served, fake) = with_bluetooth(true).await?;
+        served.player.set_locked(true);
+        let call = |method: &'static str| {
+            let player = served.player.clone();
+            async move {
+                let request = http::Request::post(format!("/player.v1.ConfigService/{method}"))
+                    .header("content-type", "application/grpc")
+                    .body(tonic::body::Body::empty())
+                    .unwrap();
+                let response = crate::controller::grpc::config_service(player)
+                    .oneshot(request)
+                    .await
+                    .unwrap();
+                tonic::Status::from_header_map(response.headers())
+                    .map(|s| (s.code(), s.message().to_string()))
+            }
+        };
+        let locked = crate::player::LockedError.to_string();
+        for method in ["SetBluetoothPairing", "ForgetBluetoothDevice"] {
+            let (code, text) = call(method).await.expect(method);
+            assert_eq!(code, Code::FailedPrecondition, "{method}");
+            assert_eq!(text, locked, "{method}");
+        }
+        // The read is past the guard: whatever it answers, it is not the lock.
+        if let Some((_, text)) = call("GetBluetooth").await {
+            assert_ne!(text, locked);
+        }
+        assert!(bluetooth(&served).await?.running);
+        assert!(fake.removed.lock().is_empty());
+        assert_eq!(fake.pairable.lock().as_slice(), &[false, false]);
         Ok(())
     }
 }

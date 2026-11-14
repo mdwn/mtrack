@@ -12,12 +12,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The Bluetooth API's payloads (`/api/bluetooth`): whether the controller
+//! The Bluetooth pairing's payloads (`ConfigService`'s Bluetooth RPCs): whether the controller
 //! runs, whether phones may pair, and the phones paired.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-/// `GET /api/bluetooth`, and what every change to it answers: the
+/// What `GetBluetooth` answers, and what every change to it answers: the
 /// Bluetooth controller as it is now.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -52,15 +52,4 @@ pub struct BluetoothPhone {
     /// The name it gave, when it gave one.
     pub name: Option<String>,
     pub connected: bool,
-}
-
-/// `POST /api/bluetooth/pairing`: opens or closes the pairing window.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct PairingRequest {
-    pub open: bool,
-    /// How long to keep it open, in seconds. Defaults to 120 and is kept
-    /// between 10 and 600. Ignored when closing.
-    #[serde(default)]
-    pub seconds: Option<u32>,
 }

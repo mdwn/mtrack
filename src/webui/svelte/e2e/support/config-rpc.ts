@@ -30,6 +30,7 @@ import {
   FileKind as FileKindMessage,
   ProbeOutcome,
   TempoGuessSource,
+  type BluetoothStatusSchema,
   type BrowseDirectoryResponseSchema,
   type BulkImportSongsResponseSchema,
   type CalibrationNoiseFloorSchema,
@@ -55,6 +56,7 @@ import type { RpcMock } from "./rpc";
 import type {
   AudioDeviceInfo,
   AudioProbe,
+  BluetoothStatus,
   Browse,
   BulkImport,
   ChannelCalibration,
@@ -255,6 +257,27 @@ export function restartControllersReply(
       status: c.status,
       detail: c.detail ?? undefined,
       error: c.error ?? undefined,
+    })),
+  };
+}
+
+/** The Bluetooth controller, as `GetBluetooth` and every change to it
+ *  answers. */
+export function bluetoothReply(
+  status: BluetoothStatus,
+): MessageInitShape<typeof BluetoothStatusSchema> {
+  return {
+    configured: status.configured,
+    running: status.running,
+    error: status.error ?? undefined,
+    pairing: {
+      open: status.pairing.open,
+      secondsLeft: status.pairing.seconds_left,
+    },
+    devices: status.devices.map((d) => ({
+      address: d.address,
+      name: d.name ?? undefined,
+      connected: d.connected,
     })),
   };
 }

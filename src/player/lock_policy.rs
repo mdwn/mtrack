@@ -136,6 +136,10 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GuessSongTempo"),
     (Grpc, "ListSongFiles"),
     (Grpc, "BrowseDirectory"),
+    // The Bluetooth controller's state is a read. Opening the pairing window
+    // and forgetting a phone stay locked out: who may control the player is
+    // not for a locked player to change.
+    (Grpc, "GetBluetooth"),
     // The controller restart: open while locked, as it always was (it
     // changes nothing but restarting what the config already says).
     (Grpc, "RestartControllers"),
@@ -228,6 +232,11 @@ mod tests {
             "CreateSongInDirectory",
             "BulkImportSongs",
         ] {
+            assert!(!open_while_locked(Grpc, locked), "{locked}");
+        }
+        // Bluetooth: the status is a read; pairing and forgetting are not.
+        assert!(open_while_locked(Grpc, "GetBluetooth"));
+        for locked in ["SetBluetoothPairing", "ForgetBluetoothDevice"] {
             assert!(!open_while_locked(Grpc, locked), "{locked}");
         }
         for locked in [

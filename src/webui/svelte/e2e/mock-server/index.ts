@@ -71,6 +71,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code } from "@connectrpc/connect";
 import {
   AddProfileRequestSchema,
+  BluetoothStatusSchema,
   BrowseDirectoryRequestSchema,
   BrowseDirectoryResponseSchema,
   BulkImportSongsRequestSchema,
@@ -88,6 +89,7 @@ import {
   DeleteProfileFileRequestSchema,
   DeleteSongRequestSchema,
   DeleteSongResponseSchema,
+  ForgetBluetoothDeviceRequestSchema,
   GetConfigResponseSchema,
   GetPlaylistRequestSchema,
   GetPlaylistResponseSchema,
@@ -114,6 +116,7 @@ import {
   SaveProfileFileRequestSchema,
   SaveSongConfigRequestSchema,
   SaveSongConfigResponseSchema,
+  SetBluetoothPairingRequestSchema,
   SetLockRequestSchema,
   SetLockResponseSchema,
   SwitchToPlaylistResponseSchema,
@@ -129,6 +132,7 @@ import {
   unaryBody,
 } from "../support/grpc-web.js";
 import {
+  bluetoothReply,
   browseReply,
   bulkImportReply,
   calibrationReply,
@@ -182,12 +186,12 @@ class GrpcFailure extends Error {
 
 function grpcUnary(
   method: string,
-  answer: (request: Uint8Array) => Uint8Array,
+  answer: (request: Uint8Array, req: express.Request) => Uint8Array,
   service = "PlayerService",
 ): void {
   app.post(`/player.v1.${service}/${method}`, grpcRaw, (req, res) => {
     try {
-      const body = answer(requestMessage(new Uint8Array(req.body ?? [])));
+      const body = answer(requestMessage(new Uint8Array(req.body ?? [])), req);
       res
         .status(200)
         .set({ "content-type": "application/grpc-web+proto" })
@@ -588,38 +592,61 @@ function bluetoothSim(req: express.Request): BluetoothSim {
   return sim;
 }
 
-function bluetoothBody(sim: BluetoothSim) {
+function bluetoothBody(sim: BluetoothSim): Uint8Array {
   const left = Math.max(0, Math.ceil((sim.openUntil - Date.now()) / 1000));
-  return {
-    configured: true,
-    running: true,
-    error: null,
-    pairing: { open: left > 0, seconds_left: left },
-    devices: sim.phones,
-  };
+  return toBinary(
+    BluetoothStatusSchema,
+    create(
+      BluetoothStatusSchema,
+      bluetoothReply({
+        configured: true,
+        running: true,
+        error: null,
+        pairing: { open: left > 0, seconds_left: left },
+        devices: sim.phones,
+      }),
+    ),
+  );
 }
 
-app.get("/api/bluetooth", (req, res) => {
-  res.json(bluetoothBody(bluetoothSim(req)));
-});
+grpcUnary(
+  "GetBluetooth",
+  (_request, req) => bluetoothBody(bluetoothSim(req)),
+  "ConfigService",
+);
 
-app.post("/api/bluetooth/pairing", (req, res) => {
-  const sim = bluetoothSim(req);
-  const seconds = Math.min(600, Math.max(10, Number(req.body?.seconds ?? 120)));
-  sim.openUntil = req.body?.open ? Date.now() + seconds * 1000 : 0;
-  res.json(bluetoothBody(sim));
-});
+grpcUnary(
+  "SetBluetoothPairing",
+  (request, req) => {
+    const { open, seconds } = fromBinary(
+      SetBluetoothPairingRequestSchema,
+      request,
+    );
+    const sim = bluetoothSim(req);
+    const window = Math.min(600, Math.max(10, seconds ?? 120));
+    sim.openUntil = open ? Date.now() + window * 1000 : 0;
+    return bluetoothBody(sim);
+  },
+  "ConfigService",
+);
 
-app.delete("/api/bluetooth/devices/:address", (req, res) => {
-  const sim = bluetoothSim(req);
-  const before = sim.phones.length;
-  sim.phones = sim.phones.filter((p) => p.address !== req.params.address);
-  if (sim.phones.length === before) {
-    res.status(404).json({ error: "Not a phone paired with this player" });
-    return;
-  }
-  res.json(bluetoothBody(sim));
-});
+grpcUnary(
+  "ForgetBluetoothDevice",
+  (request, req) => {
+    const { address } = fromBinary(ForgetBluetoothDeviceRequestSchema, request);
+    const sim = bluetoothSim(req);
+    const before = sim.phones.length;
+    sim.phones = sim.phones.filter((p) => p.address !== address);
+    if (sim.phones.length === before) {
+      throw new GrpcFailure(
+        Code.NotFound,
+        "Not a phone paired with this player",
+      );
+    }
+    return bluetoothBody(sim);
+  },
+  "ConfigService",
+);
 
 // --- Lighting ---
 
