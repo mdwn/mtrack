@@ -225,7 +225,7 @@ test.describe("Playlist editor: an entry's ambient light", () => {
         { fade_out: null, fade_in: null },
       ],
       entry_ambient: [null, false, { fade_in: "3s" }],
-      // Not edited on this page: the save passes each back with its song.
+      // The save passes each back with its song, and the entry says so.
       entry_palette: [{}, { primary: "#2040ff" }, {}],
       ambient: null,
       available_songs: [],
@@ -236,7 +236,7 @@ test.describe("Playlist editor: an entry's ambient light", () => {
       "Transitions",
     );
     await expect(playlists.transitionsToggle(rows.nth(1))).toHaveText(
-      "fade in 2 measures · 2s gap · no ambient before",
+      "fade in 2 measures · 2s gap · no ambient before · 1 color recolored",
     );
     await expect(playlists.transitionsToggle(rows.nth(2))).toHaveText(
       "own ambient",

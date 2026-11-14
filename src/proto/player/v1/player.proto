@@ -645,6 +645,10 @@ message GetPlaylistResponse {
     // Each loaded song's tracks, by the song's name, for choosing the ones a
     // fade leaves out. Empty unless the request had with_library.
     map<string, TrackNames> song_tracks = 7;
+    // Each loaded song's lighting palette, by the song's name, for showing
+    // the colours an entry plays in. A song with no slots and no overrides
+    // is left out. Empty unless the request had with_library.
+    map<string, SongPalette> song_palettes = 8;
 }
 
 // SavePlaylistRequest replaces the songs of a playlist, or makes one.
@@ -754,6 +758,28 @@ message SongListing {
     repeated string loop_crossfade_cut = 17;
     // The song's named sections.
     repeated Section sections = 18;
+    // The lighting palette slots the song's shows declare, and the song's
+    // own overrides of them. Absent when the song has none of either.
+    SongPalette palette = 19;
+}
+
+// SongPalette is a song's lighting palette: the slots its shows declare with
+// the colour each show gives them, and the song's own overrides of those.
+message SongPalette {
+    // The slots the song's shows declare, in the order declared, each with
+    // its default colour as "#rrggbb". A slot two shows declare is listed
+    // once, with the first show's colour.
+    repeated PaletteSlot slots = 1;
+    // The song's own overrides (the palette: of its song.yaml), as "#rrggbb"
+    // by slot name. May name a slot none of its shows declares.
+    map<string, string> overrides = 2;
+}
+
+// PaletteSlot is a palette slot with a colour.
+message PaletteSlot {
+    string name = 1;
+    // The colour as "#rrggbb".
+    string color = 2;
 }
 
 // ListSongsResponse is a page of the library: every song, loaded or not,

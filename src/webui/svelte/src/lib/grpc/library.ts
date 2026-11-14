@@ -32,6 +32,7 @@ import type {
   ListSongsResponse,
   SavePlaylistRequestSchema,
   SongListing,
+  SongPalette as SongPaletteMessage,
 } from "../../gen/player/v1/player_pb";
 import type {
   Ambient,
@@ -44,6 +45,7 @@ import type {
   SongFailure,
   SongInfo,
   SongList,
+  SongPalette,
 } from "../../gen/rules/mtrack_rules";
 
 // ---- Errors ----
@@ -155,6 +157,9 @@ export function mapPlaylistDetail(r: GetPlaylistResponse): PlaylistDetail {
     song_tracks: Object.fromEntries(
       Object.entries(r.songTracks).map(([song, t]) => [song, [...t.names]]),
     ),
+    song_palettes: Object.fromEntries(
+      Object.entries(r.songPalettes).map(([song, p]) => [song, songPalette(p)]),
+    ),
   };
 }
 
@@ -234,6 +239,17 @@ function autoPlayMessage(a: AutoPlayConfig | null | undefined) {
 
 // ---- Songs ----
 
+/** A song's palette message as the editors hold it (`SongPalette`). */
+function songPalette(p: SongPaletteMessage | undefined): SongPalette {
+  return {
+    slots: (p?.slots ?? []).map((slot) => ({
+      name: slot.name,
+      color: slot.color,
+    })),
+    overrides: { ...(p?.overrides ?? {}) },
+  };
+}
+
 function songInfo(s: SongListing): SongInfo {
   const ms = wholeMillis(s.duration);
   return {
@@ -260,6 +276,7 @@ function songInfo(s: SongListing): SongInfo {
     loop_crossfade_ms:
       s.loopCrossfadeMs !== undefined ? Number(s.loopCrossfadeMs) : null,
     loop_crossfade_cut: [...s.loopCrossfadeCut],
+    palette: songPalette(s.palette),
     sections: s.sections.map((section) => ({
       name: section.name,
       start_measure: section.startMeasure,

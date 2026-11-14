@@ -31,5 +31,5 @@ export { waitLocale };
 /** The translation function (`$t`), as plain functions take it. */
 export type Translate = (
   key: string,
-  opts?: { values?: Record<string, string> },
+  opts?: { values?: Record<string, string | number> },
 ) => string;
