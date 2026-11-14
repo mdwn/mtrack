@@ -33,7 +33,8 @@ the same `PlayerException` with the same gRPC codes either way.
   addresses, the gRPC port and the host name with the player (`RememberedPlayer`, in the
   preferences next to what Bluetooth needs); or **Enter an address** on the connect screen takes a
   host name or IP with an optional `:port` (`lib/src/app/wifi_address.dart`), and the player it
-  makes is Wi-Fi only. No mDNS browsing.
+  makes is Wi-Fi only; or tap a player the connect screen found on the network (below), which is
+  Wi-Fi only too.
 - Connecting tries Wi-Fi first for two seconds (up to three addresses), then Bluetooth. On
   Bluetooth, with addresses known, it looks again every twenty seconds and moves over once the
   player answers and no call is in flight (it waits up to ten seconds for that, then leaves it to
@@ -49,6 +50,31 @@ the same `PlayerException` with the same gRPC codes either way.
 Wi-Fi is open to whoever is on the player's network, as the web UI is; Bluetooth keeps its pairing.
 See the [Bluetooth Control](../docs/src/interfaces/bluetooth.md#over-wi-fi) page and the design,
 [`design/remote_phase3_design.md`](../design/remote_phase3_design.md) §4.
+
+### Finding players on the network
+
+While the connect screen is up the app browses for the DNS-SD service `_mtrack._tcp` that the player
+advertises (instance name = the player's host name, TXT `v` and `web`; its SRV host label is
+`<host name>-mtrack.local` and is never shown). `PlayerBrowser` (`lib/src/app/ports.dart`) is the
+seam: one stream of the set of players found so far, each with its name, addresses and gRPC port,
+which starts on listen and stops on cancel. `lib/src/platform/bonsoir_player_browser.dart` implements
+it with the platform's own browser (`NsdManager`, Bonjour) through `bonsoir`, and is the only file
+that imports the plugin.
+
+- `Session` starts browsing with the Bluetooth scan (`startScan`) whether or not Bluetooth works,
+  and stops it when a player is chosen, when the phase leaves `noPlayer`, and on dispose. The list is
+  `Session.wifiFound`; `searching` is true while the scan runs and for the first six seconds of
+  browsing (which goes on, so a late player still appears). A browse that fails sets `browseFailed`
+  and the screen says "Could not search the network."; Bluetooth and the address field are
+  unaffected. Having no Wi-Fi is not a failure: the list is just empty.
+- Tapping a row is `connectToFound`: the addresses are tried IPv4 first, then IPv6, link-local last,
+  at most three, with no pairing, and the player is remembered as Wi-Fi only under the id
+  `mdns:<name>` with `RememberedPlayer.mdnsName` set.
+- Staying found: when a player remembered with an `mdnsName` answers on none of its addresses, the
+  connect browses for that name for four seconds and, when it is found at an address that was not
+  tried, tries those and remembers them. A player that was just chosen from the list is not looked
+  for again. One typed by address has no name, and relies on the list finding it again.
+- The same player found over both radios is two rows; they are not merged.
 
 ## Songs
 
@@ -168,6 +194,7 @@ which 0.20 MB is the 3D view (three.js, mostly).
   `lib/src/platform/grpc_wifi_link.dart` opens `GrpcChannel`s for the session.
 - `lib/src/ble/` (`ble_transport.dart`, `ble_link.dart`) is the only code that touches the Bluetooth
   plugin. `lib/src/platform/` holds the other plugin adapters: `shared_preferences`, `wakelock_plus`,
+  `bonsoir` (`bonsoir_player_browser.dart`, browsing for players),
   and `webview_stage.dart`, the web view the Lights tab shows the stage page in (`webview_flutter`)
   with the reading of the bundled page from the app's assets. None of these can be tested without a
   phone, so each is kept to translating calls.
@@ -269,6 +296,19 @@ on a device:
   back, on a real network; iOS asking for local network access and what it does when refused; and
   Android sending the app's sockets over mobile data when the Wi-Fi network has no internet
   (see [Network permission](#network-permission)).
+- Browsing for players (`lib/src/platform/bonsoir_player_browser.dart`, all of it; only the session
+  logic around it is tested, against a fake): that `NsdManager` on Android and Bonjour on iOS find a
+  `_mtrack._tcp` service and resolve it to addresses, a port and the `v` record (`bonsoir` asks
+  for the TXT record itself on Android, with a multicast query of its own); that the instance name
+  and not the `<host name>-mtrack.local` host label is what comes out; which addresses come back (IPv4
+  and IPv6 mixed, link-local ones with or without a zone); that a service lost on the network
+  leaves the list; that it works with a VPN up (the Pixel runs Tailscale) and with Wi-Fi that has
+  no internet; that it needs no permission on the Android versions in use, and what a newer Android
+  that asks for local network access does; and, on iOS, the local network prompt coming at the
+  first browse, and what the list does when it is refused (empty, or the "Could not search the network."
+  line; which one depends on what the plugin reports, and the code treats only an error from it as a
+  failure). Re-finding a remembered player by its name
+  after its address changed has not run on a network either.
 - Keeping the screen on while connected (`wakelock_plus`), and releasing it in the background.
 - Haptics on Play and Stop, and the feel of the 600 ms hold under a real finger.
 - The bundled variable fonts' weights on a real device (the tests load the files but cannot show
@@ -306,7 +346,10 @@ its Linux desktop backend pulls in `bluez` and `dbus` (MPL-2.0), which the app d
 ship in its licence notices. `PlayerLink` and `PlayerTransport` are all the rest of the app depends
 on, so the plugin can be replaced by rewriting `lib/src/ble/`. The others are `shared_preferences`
 (the remembered player), `grpc` (Wi-Fi; Apache-2.0, with `http2` and a few of Google's auth packages it
-pulls in, BSD-3-Clause or Apache-2.0), `wakelock_plus` (keeping the screen on), `package_info_plus` (the version
+pulls in, BSD-3-Clause or Apache-2.0), `wakelock_plus` (keeping the screen on), `bonsoir` (finding players on the network by DNS-SD; MIT, with
+its per-platform packages, `bonsoir_android`, `bonsoir_darwin`, `bonsoir_linux`, `bonsoir_windows` and
+`bonsoir_platform_interface`; the app uses the first two, and `PlayerBrowser` is all the rest of the app
+depends on, so it can be replaced by rewriting `lib/src/platform/bonsoir_player_browser.dart`), `package_info_plus` (the version
 on the settings sheet, and already a dependency of `wakelock_plus`) and `webview_flutter` (the Lights
 tab's web view), all BSD-3-Clause. There is no
 state-management package: `Session` is a plain `ChangeNotifier`.
@@ -321,6 +364,11 @@ player's own port. The network declarations are:
   `res/xml/network_security_config.xml` allows cleartext HTTP to `127.0.0.1` and nowhere else; it
   governs the platform's HTTP stacks and the web view, not the Dart sockets the gRPC connection uses,
   so it does not block plaintext gRPC to a LAN address, and the web view stays limited to loopback.
+- Android, from `bonsoir`'s own manifest, merged in at build time (nothing is added by hand):
+  `CHANGE_WIFI_MULTICAST_STATE`, a normal permission with no prompt, which lets it hold a multicast
+  lock while it browses. (It also declares `INTERNET`, which the app has already.) No location
+  permission, and none for Bluetooth beyond what is below.
+- iOS: `NSBonjourServices` with `_mtrack._tcp`, which is all iOS lets the app browse for.
 - iOS: `NSAppTransportSecurity` with `NSAllowsLocalNetworking` in `Info.plist` for the stage
   page, and `NSLocalNetworkUsageDescription` ("mtrack uses your local network to control your
   mtrack player over Wi-Fi."), which makes iOS ask once before the app may reach a device on the

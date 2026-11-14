@@ -17,6 +17,7 @@ import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/app/session.dart';
 
+import 'fake_browser.dart';
 import 'fake_link.dart';
 import 'fake_player.dart';
 import 'fake_wifi.dart';
@@ -31,15 +32,18 @@ class Harness {
     bool known = true,
     Rig? rig,
     bool withWifi = false,
+    bool withBrowser = false,
     RememberedPlayer? player,
   }) : rig = rig ?? Rig() {
     store = MemoryStore(known ? (player ?? remembered) : null);
     wifi = withWifi ? FakeWifi(this.rig) : null;
+    browser = withBrowser ? FakeBrowser() : null;
     session = Session(
       link: this.rig.link,
       store: store,
       wake: wake,
       wifi: wifi,
+      browser: browser,
       monotonic: () => async.elapsed,
     );
     this.rig.link.paired.add('p1');
@@ -53,6 +57,10 @@ class Harness {
 
   /// The network, when the harness was made with one.
   late final FakeWifi? wifi;
+
+  /// The browser for players on the network, when the harness was made with
+  /// one.
+  late final FakeBrowser? browser;
 
   FakeLink get link => rig.link;
   FakePlayer get player => rig.player;

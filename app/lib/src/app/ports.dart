@@ -18,6 +18,67 @@ import '../../gen/player/v1/player.pb.dart' as player;
 import '../protocol/player_channel.dart';
 import 'wifi_address.dart';
 
+/// A player seen on the network by its DNS-SD advert (`_mtrack._tcp`).
+class FoundPlayer {
+  /// A player advertised as [name], reachable at [hosts] on [port].
+  const FoundPlayer({
+    required this.name,
+    required this.hosts,
+    required this.port,
+    this.version,
+  });
+
+  /// The service's instance name: the player's host name. This is what to
+  /// show. (The service's own host label is an implementation detail of the
+  /// advert and is never kept.)
+  final String name;
+
+  /// The addresses it answers on, as strings, in the order the platform gave
+  /// them: IPv4 and IPv6 mixed. See [orderedHosts].
+  final List<String> hosts;
+
+  /// The gRPC port.
+  final int port;
+
+  /// The mtrack version it reports (the `v` TXT record), or null.
+  final String? version;
+
+  /// [hosts] in the order to try them: IPv4 first, then IPv6, with the
+  /// link-local IPv6 addresses (which cannot be reached without knowing the
+  /// interface) last. The order inside each group is kept.
+  List<String> get orderedHosts {
+    int rank(String host) {
+      final parsed = InternetAddress.tryParse(host);
+      if (parsed == null) {
+        return 1;
+      }
+      if (parsed.type == InternetAddressType.IPv4) {
+        return 0;
+      }
+      return parsed.isLinkLocal ? 3 : 2;
+    }
+
+    return [
+      for (var group = 0; group <= 3; group++)
+        for (final host in hosts)
+          if (rank(host) == group) host,
+    ];
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is FoundPlayer &&
+      other.name == name &&
+      other.port == port &&
+      other.version == version &&
+      other.hosts.length == hosts.length &&
+      [for (var i = 0; i < hosts.length; i++) other.hosts[i] == hosts[i]]
+          .every((same) => same);
+
+  @override
+  int get hashCode => Object.hash(name, port, version, Object.hashAll(hosts));
+}
+
 /// A player the app will reconnect to: one it has paired with over
 /// Bluetooth, or one it was given an address for, or both.
 class RememberedPlayer {
@@ -27,6 +88,8 @@ class RememberedPlayer {
   /// [hostname] the name it gave itself there (what tells it from another
   /// device that comes to have the same address). [bluetooth] is false for a
   /// player known only by its address, which is reached over Wi-Fi alone.
+  /// [mdnsName] is the DNS-SD instance name it was found under, if it was
+  /// found that way: what to look for again when its addresses stop working.
   const RememberedPlayer({
     required this.id,
     required this.name,
@@ -34,7 +97,19 @@ class RememberedPlayer {
     this.port,
     this.hostname,
     this.bluetooth = true,
+    this.mdnsName,
   });
+
+  /// A player found on the network as [found], reached over Wi-Fi alone and
+  /// remembered under its instance name.
+  RememberedPlayer.byService(FoundPlayer found)
+    : id = 'mdns:${found.name}',
+      name = found.name,
+      hosts = found.orderedHosts.take(maxHosts).toList(),
+      port = found.port,
+      hostname = null,
+      bluetooth = false,
+      mdnsName = found.name;
 
   /// A player known only by [address]; [name] is what to call it.
   RememberedPlayer.byAddress(WifiAddress address, {String? name})
@@ -43,7 +118,8 @@ class RememberedPlayer {
       hosts = [address.host],
       port = address.port,
       hostname = null,
-      bluetooth = false;
+      bluetooth = false,
+      mdnsName = null;
 
   /// The platform's identifier for the peripheral (a made-up one that starts
   /// `wifi:` for a player with no Bluetooth).
@@ -65,6 +141,10 @@ class RememberedPlayer {
   /// Whether the player can be reached over Bluetooth.
   final bool bluetooth;
 
+  /// The DNS-SD instance name the player was found under on the network, or
+  /// null when it was not found that way (a typed address, or Bluetooth).
+  final String? mdnsName;
+
   /// Whether there is anywhere to try over Wi-Fi.
   bool get hasWifi => hosts.isNotEmpty && port != null;
 
@@ -82,6 +162,7 @@ class RememberedPlayer {
     port: clearPort ? null : (port ?? this.port),
     hostname: hostname ?? this.hostname,
     bluetooth: bluetooth,
+    mdnsName: mdnsName,
   );
 
   /// The most addresses kept for a player.
@@ -110,6 +191,7 @@ class RememberedPlayer {
         name: newName,
         hostname: newHostname,
         bluetooth: bluetooth,
+        mdnsName: mdnsName,
       );
     }
     final newHosts = <String>{
@@ -124,6 +206,7 @@ class RememberedPlayer {
       port: newPort,
       hostname: newHostname,
       bluetooth: bluetooth,
+      mdnsName: mdnsName,
     );
   }
 
@@ -135,13 +218,21 @@ class RememberedPlayer {
       other.port == port &&
       other.hostname == hostname &&
       other.bluetooth == bluetooth &&
+      other.mdnsName == mdnsName &&
       other.hosts.length == hosts.length &&
       [for (var i = 0; i < hosts.length; i++) other.hosts[i] == hosts[i]]
           .every((same) => same);
 
   @override
-  int get hashCode =>
-      Object.hash(id, name, port, hostname, bluetooth, Object.hashAll(hosts));
+  int get hashCode => Object.hash(
+    id,
+    name,
+    port,
+    hostname,
+    bluetooth,
+    mdnsName,
+    Object.hashAll(hosts),
+  );
 }
 
 /// Opens connections to a player over Wi-Fi. The real one is in
@@ -152,6 +243,18 @@ abstract class WifiLink {
   /// nothing answers within [timeout], or when the player answers with an
   /// error (`UNIMPLEMENTED` for a player from before Wi-Fi).
   Future<PlayerChannel> connect(String host, int port, {Duration timeout});
+}
+
+/// Looks for players on the network by the DNS-SD service they advertise.
+/// The real one is in `lib/src/platform/`; tests use a fake.
+abstract class PlayerBrowser {
+  /// Browses for players: it starts when the stream is listened to and stops
+  /// when the subscription is cancelled. Each event is the whole set of
+  /// players found so far and resolved to an address and a port, so a player
+  /// that goes away (its service is lost) is a set without it. Only players
+  /// with at least one address are in a set. A failure (the platform cannot
+  /// browse, or refused) is an error on the stream, after which it is over.
+  Stream<List<FoundPlayer>> browse();
 }
 
 /// Where the app keeps the player it last used, across launches.

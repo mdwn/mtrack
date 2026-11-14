@@ -20,6 +20,7 @@ import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/app/session.dart';
 import 'package:mtrack_remote/src/ui/app.dart';
 
+import 'fake_browser.dart';
 import 'fake_link.dart';
 import 'fake_stage.dart';
 import 'fake_wifi.dart';
@@ -73,6 +74,7 @@ class AppHarness {
     this.views,
     this.session,
     this.wifi,
+    this.browser,
   );
 
   final WidgetTester tester;
@@ -90,6 +92,10 @@ class AppHarness {
   /// The network, when the app was built with one.
   final FakeWifi? wifi;
 
+  /// The browser for players on the network, when the app was built with
+  /// one.
+  final FakeBrowser? browser;
+
   /// The time the session's clock reads. Advances with [advance].
   Duration now = Duration.zero;
 
@@ -104,6 +110,7 @@ class AppHarness {
     String? stageView,
     Map<String, String>? views,
     bool withWifi = false,
+    bool withBrowser = false,
     RememberedPlayer? player,
   }) async {
     rig ??= Rig();
@@ -119,11 +126,13 @@ class AppHarness {
     final wake = FakeWake();
     late final AppHarness harness;
     final wifi = withWifi ? FakeWifi(rig) : null;
+    final browser = withBrowser ? FakeBrowser() : null;
     final session = Session(
       link: rig.link,
       store: store,
       wake: wake,
       wifi: wifi,
+      browser: browser,
       monotonic: () => harness.now,
     );
     final stage = FakeStageHost()..view = stageView;
@@ -137,6 +146,7 @@ class AppHarness {
       kept,
       session,
       wifi,
+      browser,
     );
     rig.link.paired.add('p1');
     await tester.pumpWidget(
@@ -220,6 +230,7 @@ void appTest(
   String? stageView,
   Map<String, String>? views,
   bool withWifi = false,
+  bool withBrowser = false,
   RememberedPlayer? player,
 }) {
   testWidgets(name, (tester) async {
@@ -236,6 +247,7 @@ void appTest(
       stageView: stageView,
       views: views,
       withWifi: withWifi,
+      withBrowser: withBrowser,
       player: player,
     );
     try {
