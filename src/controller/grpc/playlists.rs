@@ -1215,6 +1215,7 @@ ambient:
                 .get_playlist(Request::new(crate::proto::player::v1::GetPlaylistRequest {
                     name: "set".into(),
                     with_library,
+                    with_palettes: false,
                 }))
                 .await
         };
