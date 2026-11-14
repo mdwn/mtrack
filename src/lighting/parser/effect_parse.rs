@@ -21,6 +21,7 @@ use super::super::effects::{
     EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::grammar::Rule;
+use super::palette::{self, ColorRef};
 use super::types::{Effect, EffectKind, ParseContext};
 use super::utils::{
     parse_blend_mode, parse_color_string, parse_frequency_string, parse_layer,
@@ -51,6 +52,26 @@ fn parse_color_value(value: &str) -> Result<crate::lighting::effects::Color, Box
         )
         .into()
     })
+}
+
+/// The slot a `palette.<slot>` reference names, or an error saying it is
+/// not one the file declares and where the reference is.
+fn palette_slot(reference: &Pair<Rule>, ctx: &ParseContext) -> Result<String, Box<dyn Error>> {
+    let slot = palette::slot_of(reference.as_str()).unwrap_or_default();
+    if ctx.palette.contains_key(slot) {
+        return Ok(slot.to_string());
+    }
+    let (line, column) = reference.line_col();
+    let declared: Vec<&str> = ctx.palette.keys().map(String::as_str).collect();
+    Err(format!(
+        "palette slot '{slot}' is not declared (at line {line}, column {column}; {})",
+        if declared.is_empty() {
+            "this file has no palette block".to_string()
+        } else {
+            format!("declared: {}", declared.join(", "))
+        }
+    )
+    .into())
 }
 
 /// A level parameter's value -- a number or a percentage -- or an error
@@ -412,6 +433,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
     };
     let mut parameters = HashMap::new();
     let mut color_parameters = Vec::new();
+    let mut color_values: Vec<ColorRef> = Vec::new();
     let mut layer = None;
     let mut blend_mode = None;
     let mut up_time = None;
@@ -437,8 +459,25 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
             Rule::parameters => {
                 for param_pair in inner_pair.into_inner() {
                     if param_pair.as_rule() == Rule::parameter {
-                        let (key, value) = super::utils::parse_parameter(param_pair)?;
+                        let reference = param_pair
+                            .clone()
+                            .into_inner()
+                            .find(|p| p.as_rule() == Rule::parameter_value)
+                            .and_then(|value| value.into_inner().next())
+                            .filter(|value| value.as_rule() == Rule::palette_ref);
+                        let (key, mut value) = super::utils::parse_parameter(param_pair)?;
                         musical.record(&key, &value);
+                        if let Some(reference) = reference {
+                            let slot = palette_slot(&reference, ctx)?;
+                            // A colour is read as the slot's default; the
+                            // reference is kept to settle it again.
+                            if key == "color" {
+                                value = palette::hex(&ctx.palette[&slot]);
+                                color_values.push(ColorRef::Slot(slot));
+                            }
+                        } else if key == "color" {
+                            color_values.extend(parse_color_string(&value).map(ColorRef::Literal));
+                        }
                         match key.as_str() {
                             "color" if matches!(effect_type, EffectType::ColorCycle { .. }) => {
                                 color_parameters.push(value);
@@ -514,6 +553,14 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
         }
     }
 
+    // The colours it takes: a cycle's all, a static's last (each `color:`
+    // replaces the one before); another effect type ignores them.
+    let color_refs = match &final_effect_type {
+        EffectType::ColorCycle { .. } => color_values,
+        EffectType::Static { .. } => color_values.pop().into_iter().collect(),
+        _ => Vec::new(),
+    };
+
     Ok(Effect {
         groups,
         effect_type: final_effect_type,
@@ -526,6 +573,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
         per_cell,
         spread,
         ignored_parameters,
+        color_refs,
         tempo_offset_secs: ctx.offset_secs,
         musical,
     })
@@ -917,6 +965,7 @@ mod tests {
             tempo_map: None,
             cue_time: Duration::ZERO,
             offset_secs: 0.0,
+            palette: Default::default(),
         }
     }
 

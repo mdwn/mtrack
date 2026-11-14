@@ -4886,6 +4886,7 @@ mod test {
             let effect = Effect {
                 sequences: Vec::new(),
                 ignored_parameters: Vec::new(),
+                color_refs: Vec::new(),
                 tempo_offset_secs: 0.0,
                 musical: Default::default(),
                 per_cell: false,
@@ -4986,6 +4987,7 @@ mod test {
                 effects: vec![Effect {
                     sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
+                    color_refs: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),
                     per_cell: false,
@@ -5081,6 +5083,7 @@ mod test {
                 effects: vec![Effect {
                     sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
+                    color_refs: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),
                     per_cell: false,

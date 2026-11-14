@@ -24,6 +24,8 @@ pub(crate) struct ParseContext {
     pub tempo_map: Option<TempoMap>,
     pub cue_time: Duration,
     pub offset_secs: f64,
+    /// The slots a `palette.<slot>` may name, with their defaults.
+    pub palette: std::rc::Rc<super::palette::Palette>,
 }
 
 impl ParseContext {
@@ -56,6 +58,11 @@ pub struct LightShow {
     pub name: String,
     pub cues: Vec<Cue>,
     pub tempo_map: Option<crate::lighting::tempo::TempoMap>,
+    /// The file's palette: each slot its effects may refer to
+    /// (`palette.<slot>`), with its default colour. The colours of the
+    /// effects are those of these defaults until the palette is resolved
+    /// again with overrides (see [`LightShow::resolve_palette`]).
+    pub palette: super::palette::Palette,
 }
 
 /// A reusable sequence of cues that can be referenced in shows
@@ -169,6 +176,12 @@ pub struct Effect {
     /// leftovers lets a lint say so; rejecting them at parse time would break
     /// shows that already carry one.
     pub ignored_parameters: Vec<String>,
+    /// The `color:` values it was written with, in order, each a colour or
+    /// a palette slot: those of a `cycle`, or the last of a `static`; empty
+    /// for an effect type that takes none. The effect's own colours hold
+    /// the slots' colours at their defaults; [`Effect::resolve_palette`]
+    /// settles them to another palette's.
+    pub color_refs: Vec<super::palette::ColorRef>,
     /// The show's `offset` in force at this effect's cue, in seconds. Cue
     /// times are shifted by it, and so is the tempo map its `beats` /
     /// `measures` speeds and frequencies are read against at runtime (#525).
@@ -448,6 +461,7 @@ mod tests {
             down_time: None,
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,
@@ -471,6 +485,7 @@ mod tests {
             down_time: down,
             sequences: Vec::new(),
             ignored_parameters: Vec::new(),
+            color_refs: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
             per_cell: false,

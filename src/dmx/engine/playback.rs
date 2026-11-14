@@ -71,7 +71,10 @@ impl NextPassTimeline {
         let spawned = thread::Builder::new()
             .name("mtrack-dmx-pass-build".into())
             .spawn(move || {
-                let _ = tx.send(super::timeline::song_lighting_timeline(&song));
+                let _ = tx.send(super::timeline::song_lighting_timeline(
+                    &song,
+                    &std::collections::HashMap::new(),
+                ));
             });
         // Without a thread, it is built at the jump, as it always was.
         self.building = spawned.is_ok().then_some((jump.clone(), rx));
@@ -85,10 +88,10 @@ impl NextPassTimeline {
         jump: &crate::section_loop::SectionJump,
     ) -> Option<crate::lighting::timeline::LightingTimeline> {
         match self.building.take() {
-            Some((of, rx)) if of == *jump => rx
-                .recv()
-                .unwrap_or_else(|_| super::timeline::song_lighting_timeline(song)),
-            _ => super::timeline::song_lighting_timeline(song),
+            Some((of, rx)) if of == *jump => rx.recv().unwrap_or_else(|_| {
+                super::timeline::song_lighting_timeline(song, &std::collections::HashMap::new())
+            }),
+            _ => super::timeline::song_lighting_timeline(song, &std::collections::HashMap::new()),
         }
     }
 }
@@ -173,7 +176,9 @@ impl Engine {
                 dsl_lighting_shows.len()
             );
 
-            if let Some(timeline) = super::timeline::song_lighting_timeline(&song) {
+            if let Some(timeline) =
+                super::timeline::song_lighting_timeline(&song, &std::collections::HashMap::new())
+            {
                 // Set or clear the tempo map — a song without a tempo block must not
                 // inherit one from the previous song. Shows without their own tempo
                 // block fall back to the song's tempo map (song.yaml `tempo:`).

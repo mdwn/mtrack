@@ -56,6 +56,10 @@ pub struct Document {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub tempo: Option<TempoSection>,
+    /// Its `palette { }` block, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub palette: Option<PaletteSection>,
     pub sequences: Vec<Sequence>,
     pub shows: Vec<LightShow>,
     /// The comment lines after the last item, as written.
@@ -76,6 +80,7 @@ pub struct Document {
 pub enum DocumentItem {
     Include,
     Tempo,
+    Palette,
     Sequence,
     Show,
 }
@@ -116,6 +121,42 @@ pub struct Include {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comment: Option<String>,
+}
+
+/// A `palette { }` block as written: the colour slots a file's effects may
+/// refer to as `palette.<slot>`, each with its default colour.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PaletteSection {
+    pub slots: Vec<PaletteSlot>,
+    /// The comment lines above it, as written (`# …`, `// …`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_before: Option<Vec<String>>,
+    /// A comment on the `palette {` line, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comment: Option<String>,
+    /// The comment lines after the last slot, before the closing brace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_after: Option<Vec<String>>,
+    /// A comment on its closing brace's line, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub close_comment: Option<String>,
+}
+
+/// A `name: colour` of a palette.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PaletteSlot {
+    pub name: String,
+    /// The colour as written, with its quotes: `"#C01020"`, `rgb(1, 2, 3)`,
+    /// `"orange"`.
+    pub value: String,
+    #[serde(flatten)]
+    pub remarks: Remarks,
 }
 
 /// A `tempo { }` block as written.
@@ -685,6 +726,7 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         None,
         Include,
         Tempo,
+        Palette,
         Sequence,
         Show,
     }
@@ -697,6 +739,7 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
                 let slot = match last {
                     Last::Include => includes.last_mut().map(|i: &mut Include| &mut i.comment),
                     Last::Tempo => document.tempo.as_mut().map(|t| &mut t.close_comment),
+                    Last::Palette => document.palette.as_mut().map(|p| &mut p.close_comment),
                     Last::Sequence => document.sequences.last_mut().map(|s| &mut s.close_comment),
                     Last::Show => document.shows.last_mut().map(|s| &mut s.close_comment),
                     Last::None => None,
@@ -742,6 +785,17 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
                 document.tempo = Some(section);
                 last = Last::Tempo;
                 order.push(DocumentItem::Tempo);
+            }
+            Rule::palette => {
+                if document.palette.is_some() {
+                    return Err(format!("line {line}: {}", super::include::SECOND_PALETTE).into());
+                }
+                let before = comments.take();
+                let mut section = palette_section(pair, source)?;
+                section.comments_before = before;
+                document.palette = Some(section);
+                last = Last::Palette;
+                order.push(DocumentItem::Palette);
             }
             Rule::sequence => {
                 let mut seq = sequence(pair, source)?;
@@ -1112,6 +1166,56 @@ impl Comments {
             }
         }
     }
+}
+
+fn palette_section(pair: Pair<Rule>, source: &str) -> Result<PaletteSection, Box<dyn Error>> {
+    let mut section = PaletteSection {
+        slots: Vec::new(),
+        comments_before: None,
+        comment: None,
+        comments_after: None,
+        close_comment: None,
+    };
+    let mut comments = Comments::default();
+    for item in walk(&pair, source) {
+        let slot = match item {
+            Item::Comment { text, inline, .. } => {
+                // On a slot's line, it is that slot's; on the `{` line,
+                // the block's.
+                let slot = match section.slots.last_mut() {
+                    Some(last) => &mut last.remarks.comment,
+                    None => &mut section.comment,
+                };
+                comments.keep(text, inline, Some(slot));
+                continue;
+            }
+            Item::Pair(pair) => pair,
+        };
+        if slot.as_rule() != Rule::palette_slot {
+            continue;
+        }
+        let mut remarks = Remarks {
+            comments_before: comments.take(),
+            ..Remarks::default()
+        };
+        comments.keep_inner(&slot, source, &mut remarks.comment);
+        let mut parts = slot.into_inner();
+        let name = parts
+            .next()
+            .map(|p| p.as_str().trim().to_string())
+            .unwrap_or_default();
+        let value = parts
+            .find(|p| p.as_rule() == Rule::color_parameter)
+            .map(|p| p.as_str().trim().to_string())
+            .unwrap_or_default();
+        section.slots.push(PaletteSlot {
+            name,
+            value,
+            remarks,
+        });
+    }
+    section.comments_after = comments.take();
+    Ok(section)
 }
 
 fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn Error>> {

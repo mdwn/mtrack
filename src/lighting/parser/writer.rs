@@ -37,8 +37,8 @@ use super::super::tempo::{
 };
 use super::document::{
     Cue, CueEffect, CueLine, Document, DocumentItem, DurationUnit, LayerCommand, LayerCommandParam,
-    OffsetLine, Param, Remarks, SequenceArg, SequenceRef, TempoChange, TempoField, TempoSection,
-    Timestamp, TimestampKind, TRANSITION,
+    OffsetLine, PaletteSection, Param, Remarks, SequenceArg, SequenceRef, TempoChange, TempoField,
+    TempoSection, Timestamp, TimestampKind, TRANSITION,
 };
 use super::tempo_parse::{TRANSITION_MEASURES, TRANSITION_SNAP};
 
@@ -79,6 +79,7 @@ pub fn write(file: &Document) -> String {
     let counts = [
         (DocumentItem::Include, includes.len()),
         (DocumentItem::Tempo, usize::from(file.tempo.is_some())),
+        (DocumentItem::Palette, usize::from(file.palette.is_some())),
         (DocumentItem::Sequence, file.sequences.len()),
         (DocumentItem::Show, file.shows.len()),
     ];
@@ -96,6 +97,10 @@ pub fn write(file: &Document) -> String {
             }
             DocumentItem::Tempo => {
                 parts.extend(file.tempo.as_ref().map(write_tempo));
+                parts.push(String::new());
+            }
+            DocumentItem::Palette => {
+                parts.extend(file.palette.as_ref().map(write_palette));
                 parts.push(String::new());
             }
             DocumentItem::Sequence => {
@@ -306,6 +311,25 @@ fn param(p: &Param) -> Listed {
         text: format!("{}: {}", p.name, p.value),
         remarks: p.remarks.clone(),
     }
+}
+
+/// A `palette { }` block: a slot to a line, with the comments written
+/// around it.
+pub fn write_palette(palette: &PaletteSection) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.extend(own(&palette.comments_before, ""));
+    lines.push(line("palette {".to_string(), &palette.comment));
+    for slot in &palette.slots {
+        lines.extend(own(&slot.remarks.comments_before, "    "));
+        lines.push(line(
+            format!("    {}: {}", slot.name, slot.value),
+            &slot.remarks.comment,
+        ));
+        lines.extend(own(&slot.remarks.comments_after, "    "));
+    }
+    lines.extend(own(&palette.comments_after, "    "));
+    lines.push(line("}".to_string(), &palette.close_comment));
+    lines.join("\n")
 }
 
 /// The `tempo { }` block alone, as [`write`] writes it: what the editor's
