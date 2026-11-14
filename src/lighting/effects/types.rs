@@ -352,16 +352,133 @@ pub enum DimmerCurve {
     Cosine,
 }
 
-/// Effect layer for layering system
+/// Effect layer for layering system: an index into an ordered [`LayerSet`],
+/// bottom (0) to top, ordered by index. The name lives in the set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EffectLayer {
-    Background = 0, // Base layer (e.g., static colors)
-    Midground = 1,  // Middle layer (e.g., dimmer effects)
-    Foreground = 2, // Top layer (e.g., strobe effects)
+pub struct EffectLayer(pub u8);
+
+impl EffectLayer {
+    /// Base layer of the default set (e.g., static colors).
+    pub const BACKGROUND: EffectLayer = EffectLayer(0);
+    /// Middle layer of the default set (e.g., dimmer effects).
+    pub const MIDGROUND: EffectLayer = EffectLayer(1);
+    /// Top layer of the default set (e.g., strobe effects).
+    pub const FOREGROUND: EffectLayer = EffectLayer(2);
+
+    /// The layer's position in its [`LayerSet`], bottom first.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
-/// The layer an effect runs on when the DSL names none.
-pub const DEFAULT_LAYER: EffectLayer = EffectLayer::Background;
+/// The layer an effect runs on when the DSL names none: the bottom layer
+/// of every set.
+pub const DEFAULT_LAYER: EffectLayer = EffectLayer(0);
+
+/// The most layers a [`LayerSet`] holds.
+pub const MAX_LAYERS: usize = 16;
+
+/// The names of the layers, bottom to top. The position of a name is its
+/// [`EffectLayer`] index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerSet {
+    names: Vec<String>,
+}
+
+/// The default layers, bottom to top.
+const DEFAULT_LAYER_NAMES: [&str; 3] = ["background", "midground", "foreground"];
+
+impl LayerSet {
+    /// A set of the given names, bottom to top. Names must be non-empty,
+    /// unique, and between one and [`MAX_LAYERS`] of them.
+    pub fn new(names: Vec<String>) -> Result<Self, String> {
+        if names.is_empty() {
+            return Err("at least one layer is required".to_string());
+        }
+        if names.len() > MAX_LAYERS {
+            return Err(format!(
+                "at most {} layers are allowed, got {}",
+                MAX_LAYERS,
+                names.len()
+            ));
+        }
+        for (i, name) in names.iter().enumerate() {
+            if name.is_empty() {
+                return Err("layer names cannot be empty".to_string());
+            }
+            if names[..i].contains(name) {
+                return Err(format!("duplicate layer name '{}'", name));
+            }
+        }
+        Ok(Self { names })
+    }
+
+    /// The default set, shared process-wide: `background`, `midground`,
+    /// `foreground`. L1 uses only this; callers that will take a
+    /// configured set take a `&LayerSet` and default to this.
+    pub fn standard() -> &'static LayerSet {
+        static STANDARD: std::sync::OnceLock<LayerSet> = std::sync::OnceLock::new();
+        STANDARD.get_or_init(LayerSet::default)
+    }
+
+    /// How many layers there are.
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Always false: a set holds at least one layer.
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    /// The layers' names, bottom to top.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// The layers, bottom to top.
+    pub fn layers(&self) -> impl Iterator<Item = EffectLayer> {
+        (0..self.names.len() as u8).map(EffectLayer)
+    }
+
+    /// The bottom layer, where an effect runs when it names none.
+    pub fn bottom(&self) -> EffectLayer {
+        DEFAULT_LAYER
+    }
+
+    /// The top layer.
+    pub fn top(&self) -> EffectLayer {
+        EffectLayer((self.names.len() - 1) as u8)
+    }
+
+    /// The layer's name, as the DSL writes it.
+    pub fn name(&self, layer: EffectLayer) -> Option<&str> {
+        self.names.get(layer.index()).map(String::as_str)
+    }
+
+    /// The layer's name, or `layer<N>` for an index outside the set.
+    pub fn display_name(&self, layer: EffectLayer) -> String {
+        self.name(layer)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("layer{}", layer.0))
+    }
+
+    /// The layer a name denotes.
+    pub fn parse(&self, name: &str) -> Option<EffectLayer> {
+        self.names
+            .iter()
+            .position(|n| n == name)
+            .map(|i| EffectLayer(i as u8))
+    }
+}
+
+impl Default for LayerSet {
+    fn default() -> Self {
+        Self {
+            names: DEFAULT_LAYER_NAMES.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+}
 
 /// Blend mode for combining effects
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -462,8 +579,34 @@ mod tests {
 
     #[test]
     fn effect_layer_ordering() {
-        assert!(EffectLayer::Background < EffectLayer::Midground);
-        assert!(EffectLayer::Midground < EffectLayer::Foreground);
+        assert!(EffectLayer::BACKGROUND < EffectLayer::MIDGROUND);
+        assert!(EffectLayer::MIDGROUND < EffectLayer::FOREGROUND);
+    }
+
+    #[test]
+    fn the_default_layer_set_names_the_three_layers() {
+        let set = LayerSet::standard();
+        assert_eq!(set.len(), 3);
+        assert_eq!(set.bottom(), EffectLayer::BACKGROUND);
+        assert_eq!(set.top(), EffectLayer::FOREGROUND);
+        assert_eq!(set.name(EffectLayer::MIDGROUND), Some("midground"));
+        assert_eq!(set.parse("foreground"), Some(EffectLayer::FOREGROUND));
+        assert_eq!(set.parse("accents"), None);
+        assert_eq!(set.name(EffectLayer(3)), None);
+        assert_eq!(set.display_name(EffectLayer(3)), "layer3");
+        assert_eq!(set.layers().count(), 3);
+    }
+
+    #[test]
+    fn a_layer_set_refuses_empty_duplicate_and_too_many() {
+        assert!(LayerSet::new(vec![]).is_err());
+        assert!(LayerSet::new(vec!["a".into(), "a".into()]).is_err());
+        assert!(LayerSet::new(vec!["".into()]).is_err());
+        let many: Vec<String> = (0..=MAX_LAYERS).map(|i| format!("l{i}")).collect();
+        assert!(LayerSet::new(many).is_err());
+        let ok: Vec<String> = (0..MAX_LAYERS).map(|i| format!("l{i}")).collect();
+        let set = LayerSet::new(ok).unwrap();
+        assert_eq!(set.top(), EffectLayer(15));
     }
 
     #[test]

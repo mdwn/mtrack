@@ -430,7 +430,7 @@ mod tests {
             PhysicalParameter::Pan,
             Intent {
                 degrees: 10.0,
-                layer: EffectLayer::Foreground,
+                layer: EffectLayer::FOREGROUND,
             },
         );
         let mut other = PhysicalState::default();
@@ -438,14 +438,14 @@ mod tests {
             PhysicalParameter::Pan,
             Intent {
                 degrees: 90.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             },
         );
         other.set(
             PhysicalParameter::Tilt,
             Intent {
                 degrees: -20.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             },
         );
         state.blend_with(&other);
@@ -459,7 +459,7 @@ mod tests {
         let later = PhysicalState {
             pan: Some(Intent {
                 degrees: 45.0,
-                layer: EffectLayer::Foreground,
+                layer: EffectLayer::FOREGROUND,
             }),
             tilt: None,
         };
@@ -478,11 +478,11 @@ mod tests {
         let physical = PhysicalState {
             pan: Some(Intent {
                 degrees: 0.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             }),
             tilt: Some(Intent {
                 degrees: 0.0,
-                layer: EffectLayer::Background,
+                layer: EffectLayer::BACKGROUND,
             }),
         };
         let resolved = resolve_physical(&physical, &defs);

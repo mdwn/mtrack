@@ -161,7 +161,7 @@ fn test_clear_layer_resets_strobe_channel() {
         None,
         None,
     );
-    strobe_effect.layer = EffectLayer::Foreground;
+    strobe_effect.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(strobe_effect).unwrap();
 
@@ -182,7 +182,7 @@ fn test_clear_layer_resets_strobe_channel() {
     );
 
     // Clear the foreground layer
-    engine.clear_layer(EffectLayer::Foreground);
+    engine.clear_layer(EffectLayer::FOREGROUND);
 
     // Verify the effect is stopped
     assert_eq!(engine.active_effects_count(), 0);
@@ -220,7 +220,7 @@ fn test_clear_all_layers_resets_strobe_channel() {
         None,
         None,
     );
-    bg_strobe.layer = EffectLayer::Background;
+    bg_strobe.layer = EffectLayer::BACKGROUND;
 
     let mut fg_strobe = EffectInstance::new(
         "fg_strobe".to_string(),
@@ -233,7 +233,7 @@ fn test_clear_all_layers_resets_strobe_channel() {
         None,
         None,
     );
-    fg_strobe.layer = EffectLayer::Foreground;
+    fg_strobe.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(bg_strobe).unwrap();
     engine.start_effect(fg_strobe).unwrap();
@@ -292,7 +292,7 @@ fn an_expired_strobe_sends_the_strobe_channel_off() {
         None,
         None,
     );
-    strobe.layer = EffectLayer::Foreground;
+    strobe.layer = EffectLayer::FOREGROUND;
     engine.start_effect(strobe).unwrap();
 
     let during = engine.update(Duration::from_millis(16), None).unwrap();
@@ -332,7 +332,7 @@ fn a_new_song_sends_a_latched_strobe_off() {
         None,
         None,
     );
-    strobe.layer = EffectLayer::Foreground;
+    strobe.layer = EffectLayer::FOREGROUND;
     strobe.blend_mode = BlendMode::Overlay;
     engine.start_effect(strobe).unwrap();
     engine.update(Duration::from_millis(23), None).unwrap();
@@ -356,7 +356,7 @@ fn a_new_song_sends_a_latched_strobe_off() {
         None,
         None,
     );
-    teal.layer = EffectLayer::Background;
+    teal.layer = EffectLayer::BACKGROUND;
     teal.blend_mode = BlendMode::Replace;
     engine.start_effect(teal).unwrap();
 
@@ -488,7 +488,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         None,
         None,
     );
-    bg_cycle.layer = EffectLayer::Background;
+    bg_cycle.layer = EffectLayer::BACKGROUND;
     bg_cycle.blend_mode = BlendMode::Replace;
     engine.start_effect(bg_cycle).unwrap();
 
@@ -507,7 +507,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         None,
         None,
     );
-    mid_chase.layer = EffectLayer::Midground;
+    mid_chase.layer = EffectLayer::MIDGROUND;
     mid_chase.blend_mode = BlendMode::Add;
     engine.start_effect(mid_chase).unwrap();
 
@@ -526,7 +526,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         None,
         None,
     );
-    fg_chase.layer = EffectLayer::Foreground;
+    fg_chase.layer = EffectLayer::FOREGROUND;
     fg_chase.blend_mode = BlendMode::Screen;
     engine.start_effect(fg_chase).unwrap();
 
@@ -544,7 +544,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         None,
         None,
     );
-    fg_pulse.layer = EffectLayer::Foreground;
+    fg_pulse.layer = EffectLayer::FOREGROUND;
     fg_pulse.blend_mode = BlendMode::Overlay;
     engine.start_effect(fg_pulse).unwrap();
 
@@ -560,7 +560,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         None,
         None,
     );
-    fg_strobe.layer = EffectLayer::Foreground;
+    fg_strobe.layer = EffectLayer::FOREGROUND;
     fg_strobe.blend_mode = BlendMode::Overlay;
     engine.start_effect(fg_strobe).unwrap();
 
@@ -633,7 +633,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    bg_cycle.layer = EffectLayer::Background;
+    bg_cycle.layer = EffectLayer::BACKGROUND;
     bg_cycle.blend_mode = BlendMode::Replace;
     engine.start_effect(bg_cycle).unwrap();
 
@@ -652,7 +652,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    left_chase.layer = EffectLayer::Foreground;
+    left_chase.layer = EffectLayer::FOREGROUND;
     left_chase.blend_mode = BlendMode::Screen;
     engine.start_effect(left_chase).unwrap();
 
@@ -671,7 +671,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    right_chase.layer = EffectLayer::Foreground;
+    right_chase.layer = EffectLayer::FOREGROUND;
     right_chase.blend_mode = BlendMode::Screen;
     engine.start_effect(right_chase).unwrap();
 
@@ -690,7 +690,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    mid_chase.layer = EffectLayer::Midground;
+    mid_chase.layer = EffectLayer::MIDGROUND;
     mid_chase.blend_mode = BlendMode::Add;
     engine.start_effect(mid_chase).unwrap();
 
@@ -719,7 +719,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    fg_pulse.layer = EffectLayer::Foreground;
+    fg_pulse.layer = EffectLayer::FOREGROUND;
     fg_pulse.blend_mode = BlendMode::Overlay;
     engine.start_effect(fg_pulse).unwrap();
 
@@ -746,7 +746,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    fg_strobe.layer = EffectLayer::Foreground;
+    fg_strobe.layer = EffectLayer::FOREGROUND;
     fg_strobe.blend_mode = BlendMode::Overlay;
     engine.start_effect(fg_strobe).unwrap();
 
@@ -816,7 +816,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         None,
         None,
     );
-    black_static.layer = EffectLayer::Background;
+    black_static.layer = EffectLayer::BACKGROUND;
     black_static.blend_mode = BlendMode::Replace;
     engine.start_effect(black_static).unwrap();
 
@@ -883,7 +883,7 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
         None,
         None,
     );
-    strobe.layer = EffectLayer::Foreground;
+    strobe.layer = EffectLayer::FOREGROUND;
     strobe.blend_mode = BlendMode::Overlay;
     engine.start_effect(strobe).unwrap();
 

@@ -88,7 +88,7 @@ fn lint_end(source: &str) -> Duration {
             }
             let layer = e
                 .layer
-                .unwrap_or(crate::lighting::effects::EffectLayer::Background);
+                .unwrap_or(crate::lighting::effects::EffectLayer::BACKGROUND);
             let authored_end = cue.time + e.total_duration();
             let cleared_at = clears
                 .iter()

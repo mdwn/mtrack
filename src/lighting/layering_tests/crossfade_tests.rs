@@ -222,7 +222,7 @@ fn test_static_effect_crossfade_comprehensive() {
             duration: Duration::from_secs(10), // Total duration
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
         Some(Duration::from_secs(1)), // up_time: 1s
         Some(Duration::from_secs(1)), // down_time: 1s
@@ -310,7 +310,7 @@ fn test_color_cycle_effect_crossfade() {
             duration: Duration::from_secs(11),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
         Some(Duration::from_secs(1)), // fade_in: 1s
         Some(Duration::from_secs(1)), // fade_out: 1s
@@ -366,7 +366,7 @@ fn test_pulse_effect_crossfade() {
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Overlay,
         Some(Duration::from_secs(1)), // fade_in: 1s
         Some(Duration::from_secs(1)), // fade_out: 1s
@@ -430,7 +430,7 @@ fn test_rainbow_effect_crossfade() {
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
         Some(Duration::from_secs(1)), // fade_in: 1s
         Some(Duration::from_secs(1)), // fade_out: 1s
@@ -569,7 +569,7 @@ fn test_static_effect_crossfade() {
             duration: Duration::from_secs(3),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
         Some(Duration::from_secs(1)), // 1 second fade in
         Some(Duration::from_secs(1)), // 1 second fade out

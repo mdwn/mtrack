@@ -38,7 +38,7 @@ fn test_effect_layering_with_strobe() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -50,7 +50,7 @@ fn test_effect_layering_with_strobe() {
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -97,7 +97,7 @@ fn test_strobe_effect_crossfade() {
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
         Some(Duration::from_secs(1)), // fade_in: 1s
         Some(Duration::from_secs(1)), // fade_out: 1s

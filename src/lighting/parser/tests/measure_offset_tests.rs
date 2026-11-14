@@ -917,7 +917,7 @@ show "Esaweg" {
     assert_eq!(strobe_effect.groups, vec!["all_wash"]);
     assert_eq!(
         strobe_effect.layer,
-        Some(crate::lighting::effects::EffectLayer::Foreground)
+        Some(crate::lighting::effects::EffectLayer::FOREGROUND)
     );
     assert_eq!(
         strobe_effect.blend_mode,

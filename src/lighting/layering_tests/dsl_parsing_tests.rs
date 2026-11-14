@@ -46,19 +46,19 @@ fn test_layering_show_dsl_parsing() {
     // Check static blue with replace blend mode
     let cue1 = &show.cues[0];
     let effect1 = &cue1.effects[0];
-    assert_eq!(effect1.layer, Some(EffectLayer::Background));
+    assert_eq!(effect1.layer, Some(EffectLayer::BACKGROUND));
     assert_eq!(effect1.blend_mode, Some(BlendMode::Replace));
 
     // Check dimmer with multiply blend mode
     let cue2 = &show.cues[1];
     let effect2 = &cue2.effects[0];
-    assert_eq!(effect2.layer, Some(EffectLayer::Midground));
+    assert_eq!(effect2.layer, Some(EffectLayer::MIDGROUND));
     assert_eq!(effect2.blend_mode, Some(BlendMode::Multiply));
 
     // Check strobe with overlay blend mode
     let cue3 = &show.cues[2];
     let effect3 = &cue3.effects[0];
-    assert_eq!(effect3.layer, Some(EffectLayer::Foreground));
+    assert_eq!(effect3.layer, Some(EffectLayer::FOREGROUND));
     assert_eq!(effect3.blend_mode, Some(BlendMode::Overlay));
 
     println!("Layering show DSL parsing test passed!");
@@ -98,7 +98,7 @@ fn test_dsl_blend_mode_parsing() {
     );
     assert_eq!(
         static_effect.layer,
-        Some(super::super::effects::EffectLayer::Background)
+        Some(super::super::effects::EffectLayer::BACKGROUND)
     );
 
     // Check second cue (dimmer effect)
@@ -111,7 +111,7 @@ fn test_dsl_blend_mode_parsing() {
     );
     assert_eq!(
         dimmer_effect.layer,
-        Some(super::super::effects::EffectLayer::Midground)
+        Some(super::super::effects::EffectLayer::MIDGROUND)
     );
 
     println!("✅ DSL blend mode parsing test passed");
@@ -185,7 +185,7 @@ fn test_dsl_layering_parsing() {
     assert_eq!(cue1.effects.len(), 1);
     let effect1 = &cue1.effects[0];
     assert_eq!(effect1.groups, vec!["front_wash"]);
-    assert_eq!(effect1.layer, Some(EffectLayer::Background));
+    assert_eq!(effect1.layer, Some(EffectLayer::BACKGROUND));
     assert_eq!(effect1.blend_mode, None); // Not specified in DSL
 
     // Check second cue (dimmer with midground layer and multiply blend mode)
@@ -194,7 +194,7 @@ fn test_dsl_layering_parsing() {
     assert_eq!(cue2.effects.len(), 1);
     let effect2 = &cue2.effects[0];
     assert_eq!(effect2.groups, vec!["front_wash"]);
-    assert_eq!(effect2.layer, Some(EffectLayer::Midground));
+    assert_eq!(effect2.layer, Some(EffectLayer::MIDGROUND));
     assert_eq!(effect2.blend_mode, Some(BlendMode::Multiply));
 
     println!("DSL layering parsing test passed!");

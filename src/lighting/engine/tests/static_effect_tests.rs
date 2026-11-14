@@ -114,7 +114,7 @@ fn a_replace_static_fades_from_the_bed_not_from_black() {
         .start_effect(color_static(
             "bed",
             (0.0, 0.0, 1.0),
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             BlendMode::Replace,
             None,
         ))
@@ -124,7 +124,7 @@ fn a_replace_static_fades_from_the_bed_not_from_black() {
         .start_effect(color_static(
             "lift",
             (1.0, 1.0, 0.0),
-            EffectLayer::Midground,
+            EffectLayer::MIDGROUND,
             BlendMode::Replace,
             Some((second, second, second)),
         ))
@@ -162,7 +162,7 @@ fn a_replace_static_over_nothing_still_fades_from_black() {
         .start_effect(color_static(
             "lift",
             (1.0, 1.0, 0.0),
-            EffectLayer::Midground,
+            EffectLayer::MIDGROUND,
             BlendMode::Replace,
             Some((second, second, second)),
         ))

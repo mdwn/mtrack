@@ -40,6 +40,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::lighting::effects::LayerSet;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
@@ -318,7 +319,7 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                 // on an RGB-only fixture; only dimmer-channel fixtures (and
                 // lower layers' colour) change there.
                 let unchanged =
-                    upper.layer == EffectLayer::Foreground && upper.blend == BlendMode::Replace;
+                    upper.layer == EffectLayer::FOREGROUND && upper.blend == BlendMode::Replace;
                 let fixtures = shared(&|f| !unchanged || f.dimmer);
                 if !fixtures.is_empty() {
                     reported.insert((ui, lower.layer));
@@ -332,8 +333,8 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                             upper.show,
                             secs(from),
                             groups_of(upper),
-                            upper.layer.keyword(),
-                            lower.layer.keyword(),
+                            LayerSet::standard().display_name(upper.layer),
+                            LayerSet::standard().display_name(lower.layer),
                             fixture_list(&fixtures),
                         ),
                     ));
@@ -356,8 +357,8 @@ fn upper_colour_and_dimmer_replace(items: &[Item], out: &mut Vec<Warning>) {
                             secs(from),
                             upper.effect.effect_type.name().to_lowercase(),
                             groups_of(upper),
-                            upper.layer.keyword(),
-                            lower.layer.keyword(),
+                            LayerSet::standard().display_name(upper.layer),
+                            LayerSet::standard().display_name(lower.layer),
                             fixture_list(&fixtures),
                         ),
                     ));

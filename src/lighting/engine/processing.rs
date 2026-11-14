@@ -1440,7 +1440,7 @@ mod tests {
             let mut cmds = HashMap::new();
             cmds.insert(
                 "dimmer".to_string(),
-                ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace),
+                ChannelState::new(1.0, EffectLayer::FOREGROUND, BlendMode::Replace),
             );
             cmds
         });

@@ -25,6 +25,7 @@
 //! since a revision is usually about what the rig does rather than what the
 //! file says.
 
+use crate::lighting::effects::LayerSet;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -210,7 +211,7 @@ fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCom
                     command: cmd.command_type.keyword().to_string(),
                     layer: cmd
                         .layer
-                        .map(|l| l.keyword().to_string())
+                        .map(|l| LayerSet::standard().display_name(l))
                         .unwrap_or_else(|| "all".to_string()),
                     intensity: cmd.intensity,
                     speed: cmd.speed,
@@ -305,8 +306,8 @@ fn field_changes(old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
     if old.layer != new.layer {
         fields.push(FieldChange {
             field: "layer".to_string(),
-            from: old.layer.keyword().to_string(),
-            to: new.layer.keyword().to_string(),
+            from: LayerSet::standard().display_name(old.layer),
+            to: LayerSet::standard().display_name(new.layer),
         });
     }
     if old.blend_mode != new.blend_mode {

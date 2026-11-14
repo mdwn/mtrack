@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::effects::LayerSet;
 use crate::webui::wire::fixture_types::{
     BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList,
     FixtureTypeSaved, GdtfBeam, GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse,
@@ -1672,7 +1673,7 @@ pub(crate) async fn evaluate_song(
                     id: effect.id.clone(),
                     groups: evaluated.effect_groups.get(&effect.id).cloned(),
                     kind: effect.effect_type.to_string(),
-                    layer: effect.layer.keyword().to_string(),
+                    layer: LayerSet::standard().display_name(effect.layer),
                     elapsed: effect.elapsed.as_secs_f64(),
                     duration: effect.duration.as_secs_f64(),
                     fixtures: effect.fixtures.clone(),

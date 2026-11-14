@@ -44,7 +44,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
     );
     seq1_effect1.id = "seq_intro_effect_1".to_string();
     seq1_effect1.sequences = vec!["intro".to_string()];
-    seq1_effect1.layer = EffectLayer::Background;
+    seq1_effect1.layer = EffectLayer::BACKGROUND;
 
     let mut seq1_effect2 = EffectInstance::new(
         "seq_intro_effect_2".to_string(),
@@ -63,7 +63,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
     );
     seq1_effect2.id = "seq_intro_effect_2".to_string();
     seq1_effect2.sequences = vec!["intro".to_string()];
-    seq1_effect2.layer = EffectLayer::Midground;
+    seq1_effect2.layer = EffectLayer::MIDGROUND;
 
     // Create an effect from a different sequence (on different fixture to avoid conflict)
     let mut seq2_effect = EffectInstance::new(
@@ -83,7 +83,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
     );
     seq2_effect.id = "seq_outro_effect_1".to_string();
     seq2_effect.sequences = vec!["outro".to_string()];
-    seq2_effect.layer = EffectLayer::Background;
+    seq2_effect.layer = EffectLayer::BACKGROUND;
 
     // Create a non-sequence effect
     let mut regular_effect = EffectInstance::new(
@@ -102,7 +102,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
         None,
     );
     regular_effect.id = "regular_effect".to_string();
-    regular_effect.layer = EffectLayer::Foreground;
+    regular_effect.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(seq1_effect1).unwrap();
     engine.start_effect(seq1_effect2).unwrap();
@@ -187,7 +187,7 @@ fn test_clear_all_layers_stops_all_effects() {
         None,
         None,
     );
-    bg_effect.layer = EffectLayer::Background;
+    bg_effect.layer = EffectLayer::BACKGROUND;
 
     let mut mid_effect = EffectInstance::new(
         "mid_effect".to_string(),
@@ -204,7 +204,7 @@ fn test_clear_all_layers_stops_all_effects() {
         None,
         None,
     );
-    mid_effect.layer = EffectLayer::Midground;
+    mid_effect.layer = EffectLayer::MIDGROUND;
 
     let mut fg_effect = EffectInstance::new(
         "fg_effect".to_string(),
@@ -221,7 +221,7 @@ fn test_clear_all_layers_stops_all_effects() {
         None,
         None,
     );
-    fg_effect.layer = EffectLayer::Foreground;
+    fg_effect.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(bg_effect).unwrap();
     engine.start_effect(mid_effect).unwrap();
@@ -261,19 +261,19 @@ fn test_clear_all_layers_clears_frozen_layers() {
         None,
         None,
     );
-    bg_effect.layer = EffectLayer::Background;
+    bg_effect.layer = EffectLayer::BACKGROUND;
 
     engine.start_effect(bg_effect).unwrap();
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
 
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
     assert_eq!(engine.active_effects_count(), 1);
 
     // Clear all layers
     engine.clear_all_layers();
 
     // Layer should no longer be frozen and effect should be gone
-    assert!(!engine.is_layer_frozen(EffectLayer::Background));
+    assert!(!engine.is_layer_frozen(EffectLayer::BACKGROUND));
     assert_eq!(engine.active_effects_count(), 0);
 }
 
@@ -301,7 +301,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
         None,
         None,
     );
-    fg_effect.layer = EffectLayer::Foreground;
+    fg_effect.layer = EffectLayer::FOREGROUND;
     fg_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(fg_effect).unwrap();
@@ -337,7 +337,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
         None,
         None,
     );
-    bg_effect.layer = EffectLayer::Background;
+    bg_effect.layer = EffectLayer::BACKGROUND;
     bg_effect.blend_mode = BlendMode::Replace;
 
     // Should be able to start the effect (locks should be cleared)
@@ -395,7 +395,7 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
         None,
         None,
     );
-    effect1.layer = EffectLayer::Background;
+    effect1.layer = EffectLayer::BACKGROUND;
 
     let mut effect2 = EffectInstance::new(
         "effect2".to_string(),
@@ -415,7 +415,7 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
         None,
         None,
     );
-    effect2.layer = EffectLayer::Background;
+    effect2.layer = EffectLayer::BACKGROUND;
 
     engine.start_effect(effect1).unwrap();
     engine.start_effect(effect2).unwrap();
@@ -428,8 +428,8 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
         .to_vec();
 
     // Freeze the layer
-    engine.freeze_layer(EffectLayer::Background);
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
+    engine.freeze_layer(EffectLayer::BACKGROUND);
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
 
     // Update multiple times - values should stay frozen
     let commands_frozen1 = engine
@@ -464,8 +464,8 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
     }
 
     // Unfreeze
-    engine.unfreeze_layer(EffectLayer::Background);
-    assert!(!engine.is_layer_frozen(EffectLayer::Background));
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
+    assert!(!engine.is_layer_frozen(EffectLayer::BACKGROUND));
 
     // Effects should resume and progress
     let commands_after = engine.update(Duration::from_millis(200), None).unwrap();
@@ -495,7 +495,7 @@ fn test_freeze_unfreeze_different_layers_independently() {
         None,
         None,
     );
-    bg_effect.layer = EffectLayer::Background;
+    bg_effect.layer = EffectLayer::BACKGROUND;
 
     let mut fg_effect = EffectInstance::new(
         "fg_effect".to_string(),
@@ -512,23 +512,23 @@ fn test_freeze_unfreeze_different_layers_independently() {
         None,
         None,
     );
-    fg_effect.layer = EffectLayer::Foreground;
+    fg_effect.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(bg_effect).unwrap();
     engine.start_effect(fg_effect).unwrap();
 
     // Freeze only background
-    engine.freeze_layer(EffectLayer::Background);
+    engine.freeze_layer(EffectLayer::BACKGROUND);
 
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
-    assert!(!engine.is_layer_frozen(EffectLayer::Foreground));
+    assert!(engine.is_layer_frozen(EffectLayer::BACKGROUND));
+    assert!(!engine.is_layer_frozen(EffectLayer::FOREGROUND));
 
     // Unfreeze background, freeze foreground
-    engine.unfreeze_layer(EffectLayer::Background);
-    engine.freeze_layer(EffectLayer::Foreground);
+    engine.unfreeze_layer(EffectLayer::BACKGROUND);
+    engine.freeze_layer(EffectLayer::FOREGROUND);
 
-    assert!(!engine.is_layer_frozen(EffectLayer::Background));
-    assert!(engine.is_layer_frozen(EffectLayer::Foreground));
+    assert!(!engine.is_layer_frozen(EffectLayer::BACKGROUND));
+    assert!(engine.is_layer_frozen(EffectLayer::FOREGROUND));
 
     // Both effects should still be active
     assert_eq!(engine.active_effects_count(), 2);
@@ -563,21 +563,21 @@ fn test_clear_all_layers_resets_layer_masters() {
     let mut engine = EffectEngine::new();
     engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
 
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
-    engine.set_layer_speed_master(EffectLayer::Midground, 2.0);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.15);
+    engine.set_layer_speed_master(EffectLayer::MIDGROUND, 2.0);
     assert_eq!(
-        engine.get_layer_intensity_master(EffectLayer::Background),
+        engine.get_layer_intensity_master(EffectLayer::BACKGROUND),
         0.15
     );
-    assert_eq!(engine.get_layer_speed_master(EffectLayer::Midground), 2.0);
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::MIDGROUND), 2.0);
 
     engine.clear_all_layers();
 
     assert_eq!(
-        engine.get_layer_intensity_master(EffectLayer::Background),
+        engine.get_layer_intensity_master(EffectLayer::BACKGROUND),
         1.0
     );
-    assert_eq!(engine.get_layer_speed_master(EffectLayer::Midground), 1.0);
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::MIDGROUND), 1.0);
 }
 
 /// Killing a single layer resets that layer's masters, and leaves the others alone.
@@ -586,17 +586,17 @@ fn test_clear_layer_resets_only_that_layers_masters() {
     let mut engine = EffectEngine::new();
     engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
 
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
-    engine.set_layer_intensity_master(EffectLayer::Foreground, 0.5);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.15);
+    engine.set_layer_intensity_master(EffectLayer::FOREGROUND, 0.5);
 
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     assert_eq!(
-        engine.get_layer_intensity_master(EffectLayer::Background),
+        engine.get_layer_intensity_master(EffectLayer::BACKGROUND),
         1.0
     );
     assert_eq!(
-        engine.get_layer_intensity_master(EffectLayer::Foreground),
+        engine.get_layer_intensity_master(EffectLayer::FOREGROUND),
         0.5,
         "clearing one layer must not touch another's master"
     );
@@ -609,19 +609,19 @@ fn test_stop_all_effects_resets_layer_masters() {
     let mut engine = EffectEngine::new();
     engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
 
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
-    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
-    engine.freeze_layer(EffectLayer::Foreground);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.15);
+    engine.set_layer_speed_master(EffectLayer::BACKGROUND, 0.5);
+    engine.freeze_layer(EffectLayer::FOREGROUND);
 
     engine.stop_all_effects();
 
     assert_eq!(
-        engine.get_layer_intensity_master(EffectLayer::Background),
+        engine.get_layer_intensity_master(EffectLayer::BACKGROUND),
         1.0
     );
-    assert_eq!(engine.get_layer_speed_master(EffectLayer::Background), 1.0);
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::BACKGROUND), 1.0);
     assert!(
-        !engine.is_layer_frozen(EffectLayer::Foreground),
+        !engine.is_layer_frozen(EffectLayer::FOREGROUND),
         "a frozen layer must not stay frozen into the next song"
     );
 }
@@ -637,11 +637,11 @@ fn test_duck_does_not_leak_into_the_next_song() {
     engine
         .start_effect(static_dimmer_effect(
             "song_a_bed",
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             1.0,
         ))
         .unwrap();
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.15);
 
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let ducked = commands
@@ -658,7 +658,7 @@ fn test_duck_does_not_leak_into_the_next_song() {
     engine
         .start_effect(static_dimmer_effect(
             "song_b_bed",
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             1.0,
         ))
         .unwrap();

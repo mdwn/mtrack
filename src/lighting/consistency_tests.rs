@@ -148,7 +148,7 @@ mod tests {
             1.0,
             0.5,
             0.25,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
@@ -161,7 +161,7 @@ mod tests {
             1.0,
             0.5,
             0.25,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_dim.update(Duration::from_millis(10), None).unwrap();
 
@@ -172,7 +172,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(2),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Multiply,
         );
         start_dimmer(
@@ -181,7 +181,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(2),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Multiply,
         );
 
@@ -207,7 +207,7 @@ mod tests {
             1.0,
             0.5,
             0.25,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_rgb_r.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
@@ -216,7 +216,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(2),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Replace,
         );
 
@@ -228,7 +228,7 @@ mod tests {
             1.0,
             0.5,
             0.25,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_dim_r.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
@@ -237,7 +237,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(2),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Replace,
         );
 
@@ -258,7 +258,7 @@ mod tests {
     fn test_dimmer_monotonic_and_timing() {
         let mut eng = EffectEngine::new();
         register_rgb_only_fixture(&mut eng, "fx", 1);
-        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
+        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::BACKGROUND);
         eng.update(Duration::from_millis(10), None).unwrap();
 
         // 2s fade to black - dimmer effects are permanent, so final value persists
@@ -268,7 +268,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(2),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Multiply,
         );
 
@@ -324,7 +324,7 @@ mod tests {
             None,
             None,
         );
-        e1.layer = EffectLayer::Foreground;
+        e1.layer = EffectLayer::FOREGROUND;
         e1.blend_mode = BlendMode::Replace;
         eng_rgb.start_effect(e1).unwrap();
 
@@ -342,7 +342,7 @@ mod tests {
             None,
             None,
         );
-        e2.layer = EffectLayer::Foreground;
+        e2.layer = EffectLayer::FOREGROUND;
         e2.blend_mode = BlendMode::Replace;
         eng_dim.start_effect(e2).unwrap();
 
@@ -370,7 +370,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
@@ -382,7 +382,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_dim.update(Duration::from_millis(10), None).unwrap();
 
@@ -397,7 +397,7 @@ mod tests {
             None,
             None,
         );
-        s1.layer = EffectLayer::Foreground;
+        s1.layer = EffectLayer::FOREGROUND;
         s1.blend_mode = BlendMode::Replace;
         eng_rgb.start_effect(s1).unwrap();
 
@@ -412,7 +412,7 @@ mod tests {
             None,
             None,
         );
-        s2.layer = EffectLayer::Foreground;
+        s2.layer = EffectLayer::FOREGROUND;
         s2.blend_mode = BlendMode::Replace;
         eng_dim.start_effect(s2).unwrap();
 
@@ -440,7 +440,7 @@ mod tests {
             0.0,
             0.0,
             1.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
@@ -452,7 +452,7 @@ mod tests {
             0.0,
             0.0,
             1.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_dim.update(Duration::from_millis(10), None).unwrap();
 
@@ -469,7 +469,7 @@ mod tests {
             None,
             None,
         );
-        p1.layer = EffectLayer::Foreground;
+        p1.layer = EffectLayer::FOREGROUND;
         p1.blend_mode = BlendMode::Multiply;
         eng_rgb.start_effect(p1).unwrap();
 
@@ -486,7 +486,7 @@ mod tests {
             None,
             None,
         );
-        p2.layer = EffectLayer::Foreground;
+        p2.layer = EffectLayer::FOREGROUND;
         p2.blend_mode = BlendMode::Multiply;
         eng_dim.start_effect(p2).unwrap();
 
@@ -513,7 +513,7 @@ mod tests {
             1.0,
             0.0,
             0.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
@@ -525,7 +525,7 @@ mod tests {
             1.0,
             0.0,
             0.0,
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
         );
         eng_dim.update(Duration::from_millis(10), None).unwrap();
 
@@ -544,7 +544,7 @@ mod tests {
             None,
             None,
         );
-        c1.layer = EffectLayer::Foreground;
+        c1.layer = EffectLayer::FOREGROUND;
         c1.blend_mode = BlendMode::Multiply;
         eng_rgb.start_effect(c1).unwrap();
 
@@ -562,7 +562,7 @@ mod tests {
             None,
             None,
         );
-        c2.layer = EffectLayer::Foreground;
+        c2.layer = EffectLayer::FOREGROUND;
         c2.blend_mode = BlendMode::Multiply;
         eng_dim.start_effect(c2).unwrap();
 
@@ -602,7 +602,7 @@ mod tests {
             None,
             None,
         );
-        r1.layer = EffectLayer::Foreground;
+        r1.layer = EffectLayer::FOREGROUND;
         r1.blend_mode = BlendMode::Replace;
         eng_rgb.start_effect(r1).unwrap();
 
@@ -619,7 +619,7 @@ mod tests {
             None,
             None,
         );
-        r2.layer = EffectLayer::Foreground;
+        r2.layer = EffectLayer::FOREGROUND;
         r2.blend_mode = BlendMode::Replace;
         eng_dim.start_effect(r2).unwrap();
 
@@ -680,7 +680,7 @@ mod tests {
                         None,
                         None,
                     );
-                    e1.layer = EffectLayer::Foreground;
+                    e1.layer = EffectLayer::FOREGROUND;
                     e1.blend_mode = BlendMode::Replace;
                     eng_rgb.start_effect(e1).unwrap();
 
@@ -698,7 +698,7 @@ mod tests {
                         None,
                         None,
                     );
-                    e2.layer = EffectLayer::Foreground;
+                    e2.layer = EffectLayer::FOREGROUND;
                     e2.blend_mode = BlendMode::Replace;
                     eng_dim.start_effect(e2).unwrap();
 
@@ -732,7 +732,7 @@ mod tests {
                 1.0,
                 1.0,
                 1.0,
-                EffectLayer::Background,
+                EffectLayer::BACKGROUND,
             );
             eng_rgb.update(Duration::from_millis(1), None).unwrap();
             let mut eng_dim = EffectEngine::new();
@@ -743,7 +743,7 @@ mod tests {
                 1.0,
                 1.0,
                 1.0,
-                EffectLayer::Background,
+                EffectLayer::BACKGROUND,
             );
             eng_dim.update(Duration::from_millis(1), None).unwrap();
             let mut s1 = EffectInstance::new(
@@ -757,7 +757,7 @@ mod tests {
                 None,
                 None,
             );
-            s1.layer = EffectLayer::Foreground;
+            s1.layer = EffectLayer::FOREGROUND;
             s1.blend_mode = BlendMode::Replace;
             eng_rgb.start_effect(s1).unwrap();
             let mut s2 = EffectInstance::new(
@@ -771,7 +771,7 @@ mod tests {
                 None,
                 None,
             );
-            s2.layer = EffectLayer::Foreground;
+            s2.layer = EffectLayer::FOREGROUND;
             s2.blend_mode = BlendMode::Replace;
             eng_dim.start_effect(s2).unwrap();
             for dt in sample_ms {
@@ -805,7 +805,7 @@ mod tests {
                         0.0,
                         0.0,
                         1.0,
-                        EffectLayer::Background,
+                        EffectLayer::BACKGROUND,
                     );
                     eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
@@ -816,7 +816,7 @@ mod tests {
                         0.0,
                         0.0,
                         1.0,
-                        EffectLayer::Background,
+                        EffectLayer::BACKGROUND,
                     );
                     eng_dim.update(Duration::from_millis(1), None).unwrap();
                     let mut p1 = EffectInstance::new(
@@ -832,7 +832,7 @@ mod tests {
                         None,
                         None,
                     );
-                    p1.layer = EffectLayer::Foreground;
+                    p1.layer = EffectLayer::FOREGROUND;
                     p1.blend_mode = BlendMode::Multiply;
                     eng_rgb.start_effect(p1).unwrap();
                     let mut p2 = EffectInstance::new(
@@ -848,7 +848,7 @@ mod tests {
                         None,
                         None,
                     );
-                    p2.layer = EffectLayer::Foreground;
+                    p2.layer = EffectLayer::FOREGROUND;
                     p2.blend_mode = BlendMode::Multiply;
                     eng_dim.start_effect(p2).unwrap();
                     for dt in sample_ms {
@@ -888,7 +888,7 @@ mod tests {
                         1.0,
                         0.0,
                         0.0,
-                        EffectLayer::Background,
+                        EffectLayer::BACKGROUND,
                     );
                     eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
@@ -899,7 +899,7 @@ mod tests {
                         1.0,
                         0.0,
                         0.0,
-                        EffectLayer::Background,
+                        EffectLayer::BACKGROUND,
                     );
                     eng_dim.update(Duration::from_millis(1), None).unwrap();
                     let mut c1 = EffectInstance::new(
@@ -916,7 +916,7 @@ mod tests {
                         None,
                         None,
                     );
-                    c1.layer = EffectLayer::Foreground;
+                    c1.layer = EffectLayer::FOREGROUND;
                     c1.blend_mode = BlendMode::Multiply;
                     eng_rgb.start_effect(c1).unwrap();
                     let mut c2 = EffectInstance::new(
@@ -933,7 +933,7 @@ mod tests {
                         None,
                         None,
                     );
-                    c2.layer = EffectLayer::Foreground;
+                    c2.layer = EffectLayer::FOREGROUND;
                     c2.blend_mode = BlendMode::Multiply;
                     eng_dim.start_effect(c2).unwrap();
                     for dt in sample_ms {
@@ -980,7 +980,7 @@ mod tests {
                         None,
                         None,
                     );
-                    r1.layer = EffectLayer::Foreground;
+                    r1.layer = EffectLayer::FOREGROUND;
                     r1.blend_mode = BlendMode::Replace;
                     eng_rgb.start_effect(r1).unwrap();
                     let mut r2 = EffectInstance::new(
@@ -996,7 +996,7 @@ mod tests {
                         None,
                         None,
                     );
-                    r2.layer = EffectLayer::Foreground;
+                    r2.layer = EffectLayer::FOREGROUND;
                     r2.blend_mode = BlendMode::Replace;
                     eng_dim.start_effect(r2).unwrap();
                     for dt in sample_ms {
@@ -1019,7 +1019,7 @@ mod tests {
     fn test_extremes_zero_duration_instant_cut_and_full_duration() {
         let mut eng = EffectEngine::new();
         register_rgb_only_fixture(&mut eng, "fx", 1);
-        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
+        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::BACKGROUND);
         eng.update(Duration::from_millis(10), None).unwrap();
 
         // Use near-instant dimmer; engine expires zero/near-zero quickly. Ensure no panic and subsequent long fade behaves.
@@ -1029,13 +1029,13 @@ mod tests {
             1.0,
             0.0,
             Duration::from_millis(1),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Multiply,
         );
         let _ = eng.update(Duration::from_millis(2), None).unwrap();
 
         // Long duration minimal change early on
-        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
+        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::BACKGROUND);
         eng.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
             &mut eng,
@@ -1043,7 +1043,7 @@ mod tests {
             1.0,
             0.0,
             Duration::from_secs(60),
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Multiply,
         );
         let cmds_100ms = eng.update(Duration::from_millis(100), None).unwrap();
@@ -1071,7 +1071,7 @@ mod tests {
             None,
             None,
         );
-        r_low.layer = EffectLayer::Foreground;
+        r_low.layer = EffectLayer::FOREGROUND;
         r_low.blend_mode = BlendMode::Replace;
         eng.start_effect(r_low).unwrap();
         let c0 = eng.update(Duration::from_millis(0), None).unwrap();
@@ -1091,7 +1091,7 @@ mod tests {
             None,
             None,
         );
-        r_high.layer = EffectLayer::Foreground;
+        r_high.layer = EffectLayer::FOREGROUND;
         r_high.blend_mode = BlendMode::Replace;
         eng.start_effect(r_high).unwrap();
         let c1 = eng.update(Duration::from_millis(125), None).unwrap();

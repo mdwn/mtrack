@@ -76,7 +76,7 @@ fn test_static_replace_blend_mode() {
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace, // This is what your DSL uses
     );
 
@@ -148,7 +148,7 @@ fn test_static_effect_timing() {
         None,
         None,
     );
-    indefinite_static.layer = EffectLayer::Foreground;
+    indefinite_static.layer = EffectLayer::FOREGROUND;
     indefinite_static.blend_mode = BlendMode::Replace;
 
     engine.start_effect(indefinite_static).unwrap();
@@ -194,7 +194,7 @@ fn test_static_effect_timing() {
         None,
         None,
     );
-    timed_static.layer = EffectLayer::Foreground;
+    timed_static.layer = EffectLayer::FOREGROUND;
     timed_static.blend_mode = BlendMode::Replace;
 
     engine.start_effect(timed_static.clone()).unwrap();
@@ -756,7 +756,7 @@ fn test_static_effect_fade_out() {
         Some(Duration::from_secs(0)), // hold_time
         Some(Duration::from_secs(2)), // down_time
     );
-    fade_out_effect.layer = EffectLayer::Foreground;
+    fade_out_effect.layer = EffectLayer::FOREGROUND;
     fade_out_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(fade_out_effect).unwrap();
@@ -836,7 +836,7 @@ fn static_with_level(level: f64, green: f64) -> EffectInstance {
             duration: Duration::from_secs(8),
         },
         vec!["back_wash".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     )
 }
@@ -916,7 +916,7 @@ fn test_static_without_a_level_still_renders_full() {
                 duration: Duration::from_secs(8),
             },
             vec!["back_wash".to_string()],
-            EffectLayer::Background,
+            EffectLayer::BACKGROUND,
             BlendMode::Replace,
         ))
         .unwrap();
