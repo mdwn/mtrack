@@ -565,6 +565,21 @@ sequences from show cues to reuse patterns.
 Switch to the **Raw DSL** tab to edit the lighting DSL text directly. A **Validate** button
 checks the syntax without saving. Switching back to the Timeline tab re-parses the DSL.
 
+### Palette
+
+Above the timeline, a collapsed **Palette** card edits each of the song's `.light` files'
+[`palette { }`](../lighting/cueing.md#palettes) block: add a slot (a name and its default
+colour), change its colour, rename it, or remove it. Renaming rewrites every `palette.<slot>`
+the file writes; removing a slot that something still uses is refused, and the uses are listed.
+A colour input in an effect or a sequence reference's colour argument then offers **Palette:
+slot** beside **Custom color**, and a timeline block paints the colour of the slot its effect
+uses.
+
+Under the song's **Lighting** tab, **Palette overrides** lists every slot the song's shows
+declare, with the show's default as a swatch and a picker that writes the song's `palette:`
+(**Reset** removes the key). An override for a slot no show declares is kept and marked **Not
+declared**. See [Palette overrides](../configuration/song-config.md#palette-overrides).
+
 ## Playlist Editor
 
 The playlist editor provides a left panel for browsing, creating, and deleting playlists,
@@ -580,6 +595,15 @@ up ("fade out 1 measure · fade in 4 beats"). The fade out applies only to loop 
 looping song. A save the player would not load (a bad length or curve, or a track the song does
 not have) is refused and nothing is written. See
 [Transitions](../getting-started/playlists.md#transitions).
+
+When any song in the playlist has a [palette](../lighting/cueing.md#palettes), a **Colors across
+the set** strip sits above the song list: one column per song, in playing order, with a band for
+each of the song's palette slots, painted in the colour it will play in (the show's default,
+then the song's override, then this entry's). A set full of the same colour shows as a row of
+matching columns. Click a column to open that entry's panel, where **Colors for this song**
+has a picker for each of the song's slots; **Reset** drops an override. An override naming a
+slot the song's shows do not declare is kept and marked **Not declared**. See
+[Palette overrides](../getting-started/playlists.md#palette-overrides).
 
 ![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
 ambient show](../images/playlist-auto-play.png)

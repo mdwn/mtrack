@@ -83,6 +83,12 @@ describe("a playlist read", () => {
     ambient: { on: true, show: "a.light", delay: "3s" },
     availableSongs: ["A", "B", "C", "D"],
     songTracks: { A: { names: ["kick", "snare"] }, D: { names: [] } },
+    songPalettes: {
+      A: {
+        slots: [{ name: "primary", color: "#C01020" }],
+        overrides: { primary: "#2040FF" },
+      },
+    },
   });
 
   it("maps each entry's settings into the editor's shape", () => {
@@ -120,6 +126,13 @@ describe("a playlist read", () => {
     expect(detail.ambient).toEqual({ show: "a.light", delay: "3s" });
     expect(detail.available_songs).toEqual(["A", "B", "C", "D"]);
     expect(detail.song_tracks).toEqual({ A: ["kick", "snare"], D: [] });
+    // Each song's palette, for the strip; a song without is left out.
+    expect(detail.song_palettes).toEqual({
+      A: {
+        slots: [{ name: "primary", color: "#C01020" }],
+        overrides: { primary: "#2040FF" },
+      },
+    });
   });
 
   it("maps a playlist with no ambient light and no library", () => {
@@ -132,6 +145,7 @@ describe("a playlist read", () => {
     expect(detail.ambient).toBeNull();
     expect(detail.available_songs).toEqual([]);
     expect(detail.song_tracks).toEqual({});
+    expect(detail.song_palettes).toEqual({});
   });
 });
 
@@ -249,6 +263,13 @@ describe("the song list", () => {
         hasTempoMap: true,
         loopCrossfadeMs: 3428n,
         loopCrossfadeCut: ["click"],
+        palette: {
+          slots: [
+            { name: "primary", color: "#C01020" },
+            { name: "accent", color: "#FFA500" },
+          ],
+          overrides: { primary: "#2040FF" },
+        },
         sections: [
           { name: "verse", startMeasure: 1, endMeasure: 8 },
           {
@@ -287,6 +308,13 @@ describe("the song list", () => {
       loop_playback: true,
       loop_crossfade_ms: 3428,
       loop_crossfade_cut: ["click"],
+      palette: {
+        slots: [
+          { name: "primary", color: "#C01020" },
+          { name: "accent", color: "#FFA500" },
+        ],
+        overrides: { primary: "#2040FF" },
+      },
       sections: [
         { name: "verse", start_measure: 1, end_measure: 8 },
         {
@@ -308,6 +336,8 @@ describe("the song list", () => {
     expect(plain.beat_grid).toBeNull();
     expect(plain.loop_crossfade_ms).toBeNull();
     expect(plain.duration_display).toBe("1:00");
+    // No palette is no slots and no overrides.
+    expect(plain.palette).toEqual({ slots: [], overrides: {} });
     expect(plain.track_count).toBe(0);
   });
 

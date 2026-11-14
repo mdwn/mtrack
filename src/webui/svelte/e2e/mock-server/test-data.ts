@@ -64,6 +64,7 @@ export const SONGS: SongList = {
       loop_playback: false,
       loop_crossfade_ms: null,
       loop_crossfade_cut: [],
+      palette: { slots: [], overrides: {} },
       sections: [],
     },
     {
@@ -97,6 +98,7 @@ export const SONGS: SongList = {
       loop_playback: true,
       loop_crossfade_ms: null,
       loop_crossfade_cut: [],
+      palette: { slots: [], overrides: {} },
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },
         { name: "chorus", start_measure: 5, end_measure: 8 },
@@ -132,6 +134,7 @@ export const SONGS: SongList = {
       loop_playback: false,
       loop_crossfade_ms: null,
       loop_crossfade_cut: [],
+      palette: { slots: [], overrides: {} },
       sections: [
         {
           name: "stab",
@@ -181,6 +184,7 @@ function playlistDetail(
     entry_palette: songs.map(() => ({})),
     available_songs,
     song_tracks,
+    song_palettes: {},
   };
 }
 
