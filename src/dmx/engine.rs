@@ -1883,6 +1883,7 @@ mod test {
             0,
             vec![dsl_path],
             None,
+            Default::default(),
             tx,
         )?);
 
@@ -5240,6 +5241,7 @@ mod test {
                 &engine,
                 std::slice::from_ref(&dsl_path),
                 None,
+                &std::collections::HashMap::new(),
                 0,
             )?;
             let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);

@@ -299,6 +299,38 @@ pub struct Song {
     sections: Vec<config::Section>,
     /// Per-song notification audio overrides.
     notification_audio: Option<config::SongNotificationConfig>,
+    /// The song's own lighting palette overrides, their colours read.
+    palette: HashMap<String, crate::lighting::effects::Color>,
+}
+
+/// Logs a warning for each slot in `overrides` that none of the song's shows
+/// declares. `entry` is the playlist the overrides are from; none for the
+/// song's own. A palette override that names nothing is no reason to refuse
+/// the song.
+pub(crate) fn warn_unknown_palette_slots(
+    song: &str,
+    entry: Option<&str>,
+    overrides: &HashMap<String, crate::lighting::effects::Color>,
+    files: &[DslLightingShow],
+) {
+    if overrides.is_empty() {
+        return;
+    }
+    let shows = crate::lighting::evaluate::shows_in(files);
+    for slot in crate::lighting::parser::unknown_slots(&shows, overrides.keys()) {
+        match entry {
+            None => warn!(
+                song,
+                slot, "the song's palette overrides a slot none of its shows declares"
+            ),
+            Some(playlist) => warn!(
+                song,
+                playlist,
+                slot,
+                "the playlist entry's palette overrides a slot none of the song's shows declares"
+            ),
+        }
+    }
 }
 
 /// A playlist transition's fade resolved to time ([`Song::fade_out_into`],
@@ -413,6 +445,11 @@ impl Song {
             }
         }
 
+        let palette = config
+            .palette_colors()
+            .map_err(|e| format!("song {}: {e}", config.name()))?;
+        warn_unknown_palette_slots(config.name(), None, &palette, &dsl_lighting_shows);
+
         let pilot_hints = match config.pilot() {
             Some(pilot) => Self::resolve_pilot_hints(pilot, beat_grid.as_ref(), start_path)
                 .map_err(|e| format!("song {}: {}", config.name(), e))?,
@@ -444,6 +481,7 @@ impl Song {
             loop_crossfade_cut: config.loop_crossfade_cut().to_vec(),
             sections: config.sections().to_vec(),
             notification_audio: config.notification_audio().cloned(),
+            palette,
         })
     }
 
@@ -715,6 +753,32 @@ impl Song {
             std::collections::HashMap::new(), // No sample overrides when creating from Song
             Vec::new(),                       // No sample trigger overrides
         )
+    }
+
+    /// The song's own lighting palette overrides: a slot its shows declare to
+    /// the colour it plays in.
+    pub fn palette(&self) -> &HashMap<String, crate::lighting::effects::Color> {
+        &self.palette
+    }
+
+    /// The palette overrides a play of the song starts with: its own, then
+    /// the playlist entry's `entry` laid over them. A slot's colour is the
+    /// show's default unless one of these names it.
+    pub fn palette_for_play(
+        &self,
+        entry: Option<&HashMap<String, crate::lighting::effects::Color>>,
+    ) -> HashMap<String, crate::lighting::effects::Color> {
+        crate::lighting::parser::layer_overrides(&self.palette, entry)
+    }
+
+    /// The slots in `overrides` that none of the song's shows declare,
+    /// sorted.
+    pub fn unknown_palette_slots<'a>(
+        &self,
+        overrides: impl IntoIterator<Item = &'a String>,
+    ) -> Vec<String> {
+        let shows = crate::lighting::evaluate::registered_shows(self);
+        crate::lighting::parser::unknown_slots(&shows, overrides)
     }
 
     /// Gets the name of the song.
@@ -1538,6 +1602,7 @@ impl Default for Song {
             loop_crossfade_cut: Vec::new(),
             sections: Vec::new(),
             notification_audio: None,
+            palette: HashMap::new(),
         }
     }
 }

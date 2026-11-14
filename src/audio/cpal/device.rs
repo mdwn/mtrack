@@ -1814,6 +1814,7 @@ impl AudioDevice for Device {
             break_fade_ids,
             start_fade,
             section_jumps,
+            ..
         } = loop_control;
         // Only for the song it was meant for, from the top.
         let start_fade = start_fade

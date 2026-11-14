@@ -11,7 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{collections::HashMap, error::Error, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    io::Write,
+    path::Path,
+};
 
 use config::Config;
 use midly::live::LiveEvent;
@@ -89,6 +94,11 @@ pub struct Song {
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
+    /// Lighting palette overrides: a slot the song's shows declare to the
+    /// colour it plays in, in place of the show's default. A colour is
+    /// anything the lighting DSL reads (`"#2040ff"`, `rgb(…)`, a name).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    palette: BTreeMap<String, String>,
 }
 
 pub use super::length::LoopCrossfade;
@@ -126,6 +136,7 @@ impl Song {
             metronome: None,
             pilot: None,
             notification_audio: None,
+            palette: BTreeMap::new(),
         }
     }
 
@@ -303,6 +314,10 @@ impl Song {
             }
         }
 
+        if let Err(e) = self.palette_colors() {
+            errors.push(e);
+        }
+
         if let Err(e) = self.loop_crossfade() {
             errors.push(e);
         }
@@ -412,6 +427,19 @@ impl Song {
     /// Gets the song's metronome configuration.
     pub fn metronome(&self) -> Option<&MetronomeConfig> {
         self.metronome.as_ref()
+    }
+
+    /// The song's palette overrides as written (slot to colour string).
+    pub fn palette(&self) -> &BTreeMap<String, String> {
+        &self.palette
+    }
+
+    /// The song's palette overrides, their colours read; an error names the
+    /// slot whose colour does not read.
+    pub fn palette_colors(
+        &self,
+    ) -> Result<HashMap<String, crate::lighting::effects::Color>, String> {
+        crate::lighting::parser::parse_overrides(&self.palette)
     }
 
     /// Gets the song's pilot hints configuration.
@@ -1209,5 +1237,60 @@ mod tests {
         assert!(LoopCrossfade::parse("lots").is_err());
         assert!(LoopCrossfade::parse("1e300s").is_err());
         assert!(LoopCrossfade::parse("1e20beats").is_err());
+    }
+
+    fn song_from(yaml: &str) -> Song {
+        config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    const PALETTE_SONG: &str = "name: P
+tracks:
+- name: t
+  file: t.wav
+palette:
+  primary: '#2040ff'
+  Back-Light: rgb(1, 2, 3)
+  accent: cyan
+";
+
+    #[test]
+    fn a_songs_palette_reads_every_spelling_of_a_colour() {
+        use crate::lighting::effects::Color;
+        let song = song_from(PALETTE_SONG);
+        let colors = song.palette_colors().unwrap();
+        assert_eq!(colors["primary"], Color::new(0x20, 0x40, 0xff));
+        assert_eq!(colors["Back-Light"], Color::new(1, 2, 3), "case kept");
+        assert_eq!(colors["accent"], Color::new(0, 255, 255));
+        assert!(song.validate().is_ok());
+        assert!(minimal_song().palette().is_empty());
+    }
+
+    #[test]
+    fn a_bad_palette_colour_is_an_error_naming_the_slot() {
+        let song = song_from(
+            "name: P\ntracks:\n- name: t\n  file: t.wav\npalette:\n  accent: notacolor\n",
+        );
+        let err = song.palette_colors().unwrap_err();
+        assert!(err.contains("'accent'"), "{err}");
+        assert!(err.contains("notacolor"), "{err}");
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("'accent'")), "{errors:?}");
+    }
+
+    #[test]
+    fn a_songs_palette_survives_a_write_and_read() {
+        let song = song_from(PALETTE_SONG);
+        let yaml = crate::util::to_yaml_string(&song).unwrap();
+        assert!(yaml.contains("palette:"), "{yaml}");
+        let again = song_from(&yaml);
+        assert_eq!(again.palette(), song.palette());
+        // A song with none writes none.
+        let plain = crate::util::to_yaml_string(&minimal_song()).unwrap();
+        assert!(!plain.contains("palette"), "{plain}");
     }
 }

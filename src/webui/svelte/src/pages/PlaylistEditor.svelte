@@ -63,6 +63,9 @@
   /** Each song's ambient light, kept in step with `editSongs`: null for the
    *  playlist's, false for none, or its own. */
   let editEntryAmbient = $state<PlaylistAmbient[]>([]);
+  /** Each song's palette overrides, kept in step with `editSongs`. Not
+   *  edited here: read and passed back as they are, so a save keeps them. */
+  let editEntryPalette = $state<Record<string, string>[]>([]);
   /** The slot whose transitions panel is open. */
   let openTransitions = $state<number | null>(null);
   let editAmbient = $state<PlaylistAmbient>(null);
@@ -138,6 +141,9 @@
       editEntryAmbient = fetched.songs.map(
         (_, i) => fetched.entry_ambient?.[i] ?? null,
       );
+      editEntryPalette = fetched.songs.map((_, i) => ({
+        ...(fetched.entry_palette?.[i] ?? {}),
+      }));
       openTransitions = null;
       editAmbient = fetched.ambient ?? null;
       assignSlotIds(editSongs);
@@ -154,6 +160,7 @@
         editAutoPlay = [];
         editFades = [];
         editEntryAmbient = [];
+        editEntryPalette = [];
         editAmbient = null;
         dirty = false;
       }
@@ -173,6 +180,7 @@
         auto_play: editAutoPlay,
         fades: editFades,
         entry_ambient: editEntryAmbient,
+        entry_palette: editEntryPalette,
         ambient: editAmbient,
       });
       dirty = false;
@@ -211,6 +219,7 @@
         editAutoPlay = [];
         editFades = [];
         editEntryAmbient = [];
+        editEntryPalette = [];
         editSlotIds = [];
       }
       confirmDelete = null;
@@ -244,6 +253,7 @@
     editAutoPlay = [...editAutoPlay, null];
     editFades = [...editFades, { fade_out: null, fade_in: null }];
     editEntryAmbient = [...editEntryAmbient, null];
+    editEntryPalette = [...editEntryPalette, {}];
     editSlotIds = [...editSlotIds, slotIdCounter++];
     dirty = true;
   }
@@ -253,6 +263,7 @@
     editAutoPlay = editAutoPlay.filter((_, i) => i !== index);
     editFades = editFades.filter((_, i) => i !== index);
     editEntryAmbient = editEntryAmbient.filter((_, i) => i !== index);
+    editEntryPalette = editEntryPalette.filter((_, i) => i !== index);
     editSlotIds = editSlotIds.filter((_, i) => i !== index);
     dirty = true;
   }
@@ -264,21 +275,25 @@
     const autoPlay = [...editAutoPlay];
     const fades = [...editFades];
     const entryAmbient = [...editEntryAmbient];
+    const entryPalette = [...editEntryPalette];
     const [item] = songs.splice(from, 1);
     const [id] = ids.splice(from, 1);
     const [ap] = autoPlay.splice(from, 1);
     const [fade] = fades.splice(from, 1);
     const [amb] = entryAmbient.splice(from, 1);
+    const [pal] = entryPalette.splice(from, 1);
     songs.splice(to, 0, item);
     ids.splice(to, 0, id);
     autoPlay.splice(to, 0, ap);
     fades.splice(to, 0, fade);
     entryAmbient.splice(to, 0, amb);
+    entryPalette.splice(to, 0, pal);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
     editFades = fades;
     editEntryAmbient = entryAmbient;
+    editEntryPalette = entryPalette;
     dirty = true;
   }
 
@@ -351,21 +366,25 @@
     const autoPlay = [...editAutoPlay];
     const fades = [...editFades];
     const entryAmbient = [...editEntryAmbient];
+    const entryPalette = [...editEntryPalette];
     const [moved] = songs.splice(dragIndex, 1);
     const [movedId] = ids.splice(dragIndex, 1);
     const [movedAp] = autoPlay.splice(dragIndex, 1);
     const [movedFade] = fades.splice(dragIndex, 1);
     const [movedAmb] = entryAmbient.splice(dragIndex, 1);
+    const [movedPal] = entryPalette.splice(dragIndex, 1);
     songs.splice(targetIndex, 0, moved);
     ids.splice(targetIndex, 0, movedId);
     autoPlay.splice(targetIndex, 0, movedAp);
     fades.splice(targetIndex, 0, movedFade);
     entryAmbient.splice(targetIndex, 0, movedAmb);
+    entryPalette.splice(targetIndex, 0, movedPal);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
     editFades = fades;
     editEntryAmbient = entryAmbient;
+    editEntryPalette = entryPalette;
     dirty = true;
     dragIndex = null;
     dragOverIndex = null;

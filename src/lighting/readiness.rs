@@ -191,6 +191,9 @@ impl VenueFacts {
             group_fixture_counts: self.group_fixture_counts.clone(),
             group_capabilities: self.group_capabilities.clone(),
             focus_points: self.focus_points.clone(),
+            palette_overrides: song
+                .map(|s| s.palette().keys().cloned().collect())
+                .unwrap_or_default(),
         }
     }
 

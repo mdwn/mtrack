@@ -171,6 +171,7 @@ function playlistDetail(
     fades: songs.map(() => ({ fade_out: null, fade_in: null })),
     ambient: null,
     entry_ambient: songs.map(() => null),
+    entry_palette: songs.map(() => ({})),
     available_songs,
     song_tracks,
   };
