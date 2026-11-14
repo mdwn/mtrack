@@ -24,10 +24,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::dmx::engine::Engine;
+use crate::lighting::effects::LayerSet;
 use crate::lighting::lint::{
     lint_shows, universe_coverage, GroupCapabilities, LintContext, Severity, Warning,
 };
-use crate::lighting::effects::LayerSet;
 use crate::lighting::parser::LightShow;
 use crate::lighting::system::LightingSystem;
 use crate::songs::Song;

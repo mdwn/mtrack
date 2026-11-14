@@ -271,11 +271,13 @@ pub fn parse_light_file_with(
     reader: &dyn IncludeReader,
     layers: &LayerSet,
 ) -> Result<LightShows, Box<dyn Error>> {
-    Ok(parse_file_with(content, path, root, external, reader, layers)?
-        .shows
-        .into_iter()
-        .map(|(name, show)| (name, show.into_show()))
-        .collect())
+    Ok(
+        parse_file_with(content, path, root, external, reader, layers)?
+            .shows
+            .into_iter()
+            .map(|(name, show)| (name, show.into_show()))
+            .collect(),
+    )
 }
 
 /// A file as parsed: its tempo map and its shows, each written cue kept

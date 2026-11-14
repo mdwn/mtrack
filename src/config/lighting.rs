@@ -477,4 +477,85 @@ mod tests {
         assert!(lighting.groups().is_empty());
         assert!(lighting.directories().is_none());
     }
+
+    fn lighting_yaml(yaml: &str) -> Lighting {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn layers_default_to_the_three() {
+        let l = lighting_yaml("current_venue: v\n");
+        assert_eq!(l.layers(), ["background", "midground", "foreground"]);
+        assert_eq!(l.layer_set().unwrap(), *LayerSet::standard());
+        assert_eq!(layer_set(None), *LayerSet::standard());
+        assert_eq!(layer_set(Some(&l)), *LayerSet::standard());
+        assert_eq!(
+            Lighting::new(None, None, None).layers(),
+            ["background", "midground", "foreground"]
+        );
+    }
+
+    #[test]
+    fn layers_are_read_bottom_to_top() {
+        let l = lighting_yaml("layers: [floor, mid, accents, blinders]\n");
+        assert_eq!(l.layers(), ["floor", "mid", "accents", "blinders"]);
+        let set = layer_set(Some(&l));
+        assert_eq!(set.len(), 4);
+        assert_eq!(set.top(), crate::lighting::effects::EffectLayer(3));
+    }
+
+    #[test]
+    fn a_config_without_layers_is_written_without_them() {
+        let l = lighting_yaml("current_venue: v\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert!(!written.contains("layers"), "{written}");
+        // Spelled out as the default, they are the default and written
+        // the same way.
+        let spelled = lighting_yaml("layers: [background, midground, foreground]\n");
+        assert!(!crate::util::to_yaml_string(&spelled)
+            .unwrap()
+            .contains("layers"));
+    }
+
+    #[test]
+    fn configured_layers_are_written_back() {
+        let l = lighting_yaml("layers: [a, b]\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert_eq!(lighting_yaml(&written).layers(), ["a", "b"]);
+    }
+
+    #[test]
+    fn layers_that_are_not_a_set_are_refused_with_why() {
+        let many: Vec<String> = (0..17).map(|i| format!("l{i}")).collect();
+        let cases: Vec<(Vec<String>, &str)> = vec![
+            (vec![], "at least one"),
+            (vec!["a".into(), "a".into()], "duplicate layer name 'a'"),
+            (many, "at most 16"),
+            (vec!["has space".into()], "not an identifier"),
+            (vec!["1st".into()], "not an identifier"),
+            (vec!["a:b".into()], "not an identifier"),
+            (vec!["".into()], "layer names cannot be empty"),
+        ];
+        for (names, want) in cases {
+            let l = Lighting::new(None, None, None).with_layers(names.clone());
+            let error = l.layer_set().unwrap_err();
+            assert!(error.contains(want), "{names:?}: {error}");
+        }
+        // Sixteen is the most there can be.
+        let sixteen: Vec<String> = (0..16).map(|i| format!("l{i}")).collect();
+        assert!(Lighting::new(None, None, None)
+            .with_layers(sixteen)
+            .layer_set()
+            .is_ok());
+        // Dashes and underscores are identifier characters.
+        assert!(Lighting::new(None, None, None)
+            .with_layers(vec!["_a".into(), "b-c".into(), "D9".into()])
+            .layer_set()
+            .is_ok());
+    }
 }

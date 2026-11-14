@@ -281,6 +281,19 @@ pub(super) async fn post_config_profile(
     }
 }
 
+/// The refusal for a profile save that would take a layer from the shows
+/// using it: a 409 whose `error` names them, and `layer_losses` lists them.
+pub(super) fn layer_loss_response(losses: &[crate::player::LayerLoss]) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": crate::player::layer_loss_message(losses),
+            "layer_losses": losses,
+        })),
+    )
+        .into_response()
+}
+
 /// PUT /api/config/profiles/:index — update profile at index.
 pub(super) async fn put_config_profile(
     State(state): State<WebUiState>,
@@ -320,6 +333,12 @@ pub(super) async fn put_config_profile(
 
     if let Err(errors) = profile.validate() {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+    }
+
+    // A layer a show uses cannot be removed or renamed out from under it.
+    let losses = state.player.layer_losses_at(index, &profile).await;
+    if !losses.is_empty() {
+        return layer_loss_response(&losses);
     }
 
     match store.update_profile(index, profile, &checksum).await {
@@ -924,6 +943,118 @@ mod test {
         let body = response_body(response).await;
         let result: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(result["yaml"].as_str().unwrap().contains("updated"));
+    }
+
+    /// Sends `method` `uri` with a JSON body to the config router.
+    async fn send_json(
+        state: &crate::webui::server::WebUiState,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response_body(response).await;
+        (status, serde_json::from_str(&text).unwrap_or_default())
+    }
+
+    fn layers_profile(layers: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "dmx": { "universes": [], "lighting": { "layers": layers } }
+        })
+    }
+
+    /// A profile save that removes or renames a layer some show uses is
+    /// refused, naming the shows; one that adds or reorders layers, or
+    /// drops one nothing uses, is not.
+    #[tokio::test]
+    async fn a_save_that_drops_a_layer_a_show_uses_is_refused_with_the_shows() {
+        let (state, dir) = test_state_with_store();
+        let song = dir.path().join("songs/one");
+        std::fs::create_dir_all(&song).unwrap();
+        crate::testutil::write_wav(song.join("t.wav"), vec![vec![0_i32; 441]], 44100).unwrap();
+        std::fs::write(
+            song.join("song.yaml"),
+            "name: One\ntracks:\n  - name: t\n    file: t.wav\nlighting:\n  - file: show.light\n",
+        )
+        .unwrap();
+        std::fs::write(
+            song.join("show.light"),
+            "show \"main\" {\n    @00:00.000\n    all: static color: \"red\", duration: 1s, layer: accents\n}\n",
+        )
+        .unwrap();
+
+        // A profile with the layers the show needs, and the player on them.
+        let checksum = get_checksum(&state).await;
+        let (status, saved) = send_json(
+            &state,
+            "POST",
+            "/config/profiles",
+            serde_json::json!({
+                "expected_checksum": checksum,
+                "profile": layers_profile(&["background", "accents", "spare"]),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{saved}");
+        state.player.reload_songs().await.unwrap();
+        assert!(
+            state.player.songs().get("One").is_ok(),
+            "the show loads on the layers it uses"
+        );
+
+        let put = |layers: &[&str], checksum: String| {
+            let state = state.clone();
+            let body = serde_json::json!({
+                "expected_checksum": checksum,
+                "profile": layers_profile(layers),
+            });
+            async move { send_json(&state, "PUT", "/config/profiles/0", body).await }
+        };
+        let mut checksum = saved["checksum"].as_str().unwrap().to_string();
+
+        // Removed, then renamed: refused, and the shows are listed.
+        for layers in [
+            &["background", "spare"][..],
+            &["background", "glare", "spare"],
+        ] {
+            let (status, refusal) = put(layers, checksum.clone()).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{layers:?}: {refusal}");
+            let error = refusal["error"].as_str().unwrap();
+            assert!(error.contains("'accents'"), "{error}");
+            assert!(error.contains("One (show.light, show \"main\")"), "{error}");
+            assert_eq!(refusal["layer_losses"][0]["layer"], "accents");
+        }
+
+        // Dropping one nothing uses, adding, and reordering are allowed.
+        for layers in [
+            &["background", "accents"][..],
+            &["background", "accents", "extra"],
+            &["accents", "background"],
+        ] {
+            let (status, saved) = put(layers, checksum.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{layers:?}: {saved}");
+            checksum = saved["checksum"].as_str().unwrap().to_string();
+        }
+        // And the player followed the last save: the songs were read
+        // again against the new layers (the show is still on `accents`).
+        assert_eq!(
+            state.player.layers().names(),
+            ["accents", "background"],
+            "the player took the saved layers up"
+        );
+        assert!(state.player.songs().get("One").is_ok());
     }
 
     #[tokio::test]

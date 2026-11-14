@@ -1117,6 +1117,11 @@ message StageLayout {
     // for each layout sent after it. A frame names the layout it is read
     // against by this.
     uint32 id = 3;
+    // The player's lighting layers, bottom to top: the names an effect's
+    // layer can take, and the order the app draws them in. Never empty from
+    // a player that sends it; an older player sends none, and the default
+    // three (background, midground, foreground) are the layers then.
+    repeated string layers = 4;
 }
 
 // StageStrobe is the rate a strobing fixture flashes at.

@@ -237,7 +237,8 @@ fn includes_can_be_confined_to_a_root() {
     let root = dir.path().join("songs");
     let path = root.join("song/show.light");
     let parse = |source: &str| {
-        parse_light_file_within(LayerSet::standard(), source, Some(&path), Some(&root), None).map_err(|e| e.to_string())
+        parse_light_file_within(LayerSet::standard(), source, Some(&path), Some(&root), None)
+            .map_err(|e| e.to_string())
     };
     parse("include \"../common.light\"\n").expect("inside the root");
     let err = parse("include \"../../outside.light\"\n").expect_err("outside the root");

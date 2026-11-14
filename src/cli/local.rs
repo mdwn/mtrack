@@ -144,11 +144,8 @@ fn brightness_changes_report(
     }
 
     let layers = crate::config::lighting::layer_set(lighting);
-    let songs = songs::get_all_songs_with_defaults(
-        &player_config.songs(&config_path),
-        false,
-        &layers,
-    )?;
+    let songs =
+        songs::get_all_songs_with_defaults(&player_config.songs(&config_path), false, &layers)?;
     let findings =
         crate::lighting::brightness_changes::project_findings(&mut system, &songs, &layers);
     let total: usize = findings.iter().map(|(_, f)| f.len()).sum();
@@ -556,7 +553,7 @@ pub fn verify(
     let config_path = Path::new(config);
     let player_config = config::Player::deserialize(config_path)?;
     let songs_path = crate::util::resolved_dir(&player_config.songs(config_path));
-    let songs = songs::get_all_songs(&songs_path)?;
+    let songs = songs::get_all_songs_with_defaults(&songs_path, false, &player_config.layer_set())?;
 
     if songs.is_empty() {
         println!("No songs found in {}.", songs_path.display());

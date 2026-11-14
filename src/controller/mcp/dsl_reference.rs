@@ -141,6 +141,11 @@ fn slot(name: &str, layers: &LayerSet) -> Option<String> {
         "curves" => alternatives(v.curves),
         "easings" => alternatives(v.easings),
         "layers" => alternatives(v.layers.iter().map(String::as_str)),
+        // The examples name the player's own layers: the bottom, the one
+        // above it (the bottom again in a set of one), and the top.
+        "layer_bottom" => v.layers[0].clone(),
+        "layer_second" => v.layers.get(1).unwrap_or(&v.layers[0]).clone(),
+        "layer_top" => v.layers[v.layers.len() - 1].clone(),
         "blend_modes" => alternatives(v.blend_modes),
         "layer_commands" => listed(v.layer_commands.iter().map(|c| c.keyword())),
         "layer_command_params" => listed(LayerCommandParam::ALL.iter().map(|(_, w)| *w)),
@@ -184,6 +189,30 @@ pub(super) fn dsl_reference(layers: &LayerSet) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_players_own_layers_are_the_ones_the_reference_names() {
+        let layers = LayerSet::new(
+            ["floor", "mid", "accents", "blinders"]
+                .map(String::from)
+                .to_vec(),
+        )
+        .unwrap();
+        let text = dsl_reference(&layers);
+        assert!(!text.contains("{{"));
+        for name in ["floor", "mid", "accents", "blinders"] {
+            assert!(text.contains(&format!("`{name}`")), "{name} missing");
+        }
+        // The examples use the player's, not the defaults.
+        assert!(text.contains("clear(layer: mid)"), "{text}");
+        assert!(text.contains("master(layer: blinders"), "{text}");
+        assert!(!text.contains("layer: midground"));
+        assert!(!text.contains("layer: foreground"));
+        // The default reference still shows the default three.
+        let standard = dsl_reference(LayerSet::standard());
+        assert!(standard.contains("clear(layer: midground)"));
+        assert!(standard.contains("`background` | `midground` | `foreground`"));
+    }
 
     #[test]
     fn every_slot_is_filled() {

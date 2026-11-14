@@ -578,7 +578,14 @@ mod tests {
     use crate::lighting::parser::Sources;
 
     fn lay(source: &str) -> Layout {
-        layout(LayerSet::standard(), source, None, None, &Sources::none(), Duration::ZERO)
+        layout(
+            LayerSet::standard(),
+            source,
+            None,
+            None,
+            &Sources::none(),
+            Duration::ZERO,
+        )
     }
 
     fn close(got: f64, want: f64, what: &str) {
@@ -694,7 +701,14 @@ mod tests {
     fn the_beat_lines_are_the_click_grids_beats() {
         // A 6/8 bar is six beats on the click grid, not three quarters.
         let source = "tempo {\n    bpm: 120\n    time_signature: 6/8\n}\nshow \"S\" {\n    @1/1\n    all: static, color: \"red\", duration: 1s\n}\n";
-        let laid = layout(LayerSet::standard(), source, None, None, &Sources::none(), Duration::from_secs(3));
+        let laid = layout(
+            LayerSet::standard(),
+            source,
+            None,
+            None,
+            &Sources::none(),
+            Duration::from_secs(3),
+        );
         let bar: Vec<(u32, f64)> = laid
             .tempo
             .expect("tempo")

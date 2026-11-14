@@ -443,16 +443,15 @@ impl Player {
     /// Rescans the songs from `sources` and swaps them in, the scan lock
     /// held by the caller: one scan at a time, from its scan to its swap.
     fn rescan_locked(&self, sources: &SongSources) -> Result<(), ReloadSongsError> {
-        let new_songs =
-            songs::get_all_songs_with_defaults(
-                &sources.songs,
-                self.default_metronome(),
-                &self.layers(),
-            )
-            .map_err(|e| {
-                warn!("Failed to rescan songs: {}", e);
-                ReloadSongsError::Songs(e.to_string())
-            })?;
+        let new_songs = songs::get_all_songs_with_defaults(
+            &sources.songs,
+            self.default_metronome(),
+            &self.layers(),
+        )
+        .map_err(|e| {
+            warn!("Failed to rescan songs: {}", e);
+            ReloadSongsError::Songs(e.to_string())
+        })?;
 
         let new_playlists = super::load_playlists(
             sources.playlists_dir.as_deref(),

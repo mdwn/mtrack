@@ -721,8 +721,9 @@ impl Engine {
 
     fn read_ambient_shows(&self, path: &Path) -> Result<(String, Vec<LightShow>), String> {
         let content = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
-        let shows = crate::lighting::parser::parse_light_file(&self.layers(), &content, Some(path), None)
-            .map_err(|e| e.to_string())?;
+        let shows =
+            crate::lighting::parser::parse_light_file(&self.layers(), &content, Some(path), None)
+                .map_err(|e| e.to_string())?;
         if shows.is_empty() {
             return Err("the file has no show".to_string());
         }

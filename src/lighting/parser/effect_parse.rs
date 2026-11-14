@@ -446,9 +446,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect,
                             }
                             "layer" => {
                                 let (_, col) = param_pair_span.start_pos().line_col();
-                                layer = Some(parse_layer_in(ctx.layers, &value).ok_or_else(
-                                    || unknown_layer(ctx.layers, &value, col),
-                                )?);
+                                layer = Some(
+                                    parse_layer_in(ctx.layers, &value)
+                                        .ok_or_else(|| unknown_layer(ctx.layers, &value, col))?,
+                                );
                             }
                             "blend_mode" => {
                                 blend_mode = Some(

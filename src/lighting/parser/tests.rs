@@ -24,6 +24,8 @@ mod include_tests;
 #[cfg(test)]
 mod layer_commands_tests;
 #[cfg(test)]
+mod layers_tests;
+#[cfg(test)]
 mod layout_tests;
 #[cfg(test)]
 mod measure_offset_tests;

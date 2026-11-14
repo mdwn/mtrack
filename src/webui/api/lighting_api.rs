@@ -1739,7 +1739,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
         // case for editing a show. The groups are declared in the player config,
         // not by the engine, so the names are still knowable; only the fixtures
         // each resolves to are not.
-        return groups_from_config(&state.config_path).await;
+        return groups_from_config(&state).await;
     };
 
     // The lighting system's mutex is shared with the effects loop thread, and
@@ -1765,6 +1765,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
     match groups {
         Ok(groups) => Json(LightingGroups {
             groups,
+            layers: state.player.layers().names().to_vec(),
             resolved: None,
         })
         .into_response(),
@@ -2137,9 +2138,9 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
 /// player config when no engine is running to resolve them against.
-async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
+async fn groups_from_config(state: &WebUiState) -> axum::response::Response {
     // codeql[rust/path-injection] config_path is set at startup, not user input.
-    let path = config_path.to_path_buf();
+    let path = state.config_path.clone();
     // A parse failure is reported, not swallowed. `.ok()` here answered
     // "no groups" for a config that does not load at all — the same silent
     // empty list this fallback exists to remove, one layer down, and the reason
@@ -2192,6 +2193,7 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         .collect();
     Json(LightingGroups {
         groups,
+        layers: state.player.layers().names().to_vec(),
         resolved: Some(false),
     })
     .into_response()

@@ -290,7 +290,11 @@ fn fixture_list(names: &BTreeSet<&str>) -> String {
 
 /// Cases 1 and 2: an effect on a layer above one that dims the same
 /// fixtures at the same time.
-fn upper_colour_and_dimmer_replace(items: &[Item], ctx: &BrightnessContext, out: &mut Vec<Warning>) {
+fn upper_colour_and_dimmer_replace(
+    items: &[Item],
+    ctx: &BrightnessContext,
+    out: &mut Vec<Warning>,
+) {
     // One finding per upper effect and lower layer.
     let mut reported: BTreeSet<(usize, EffectLayer)> = BTreeSet::new();
     for (ui, upper) in items.iter().enumerate() {

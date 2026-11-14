@@ -115,15 +115,17 @@ fn parse_dsl_file(
             e
         )
     })?;
-    crate::lighting::parser::parse_light_file(layers, &content, Some(file_path), tempo_map).map_err(|e| {
-        // Prepend the file path to the error, preserving newlines in the original error
-        format!(
-            "Failed to parse DSL lighting show {}:\n{}",
-            file_path.display(),
-            e
-        )
-        .into()
-    })
+    crate::lighting::parser::parse_light_file(layers, &content, Some(file_path), tempo_map).map_err(
+        |e| {
+            // Prepend the file path to the error, preserving newlines in the original error
+            format!(
+                "Failed to parse DSL lighting show {}:\n{}",
+                file_path.display(),
+                e
+            )
+            .into()
+        },
+    )
 }
 
 impl DslLightingShow {
@@ -677,7 +679,11 @@ impl Song {
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
         let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
         for path in light_paths {
-            dsl_lighting_shows.push(DslLightingShow::load(layers, path, lighting_tempo.as_ref())?);
+            dsl_lighting_shows.push(DslLightingShow::load(
+                layers,
+                path,
+                lighting_tempo.as_ref(),
+            )?);
         }
 
         let song = Self {
@@ -2585,35 +2591,38 @@ pub fn get_all_songs_with_defaults(
             None => {}
             Some(Ok(song_config)) => match path.parent() {
                 Some(parent) => match parent.canonicalize() {
-                    Ok(canonical_parent) => match Song::new_in(layers, &canonical_parent, &song_config) {
-                        Ok(mut song) => {
-                            // Record the exact source yaml so MCP read/patch
-                            // tools can target it regardless of layout. The
-                            // path comes from the directory walk above;
-                            // canonicalize for symlink safety. On the rare
-                            // canonicalize race (permission flip / symlink
-                            // rotation) fall back to the un-canonicalized
-                            // path so flat-layout writes don't silently
-                            // retarget to `<base>/song.yaml`.
-                            song.config_path =
-                                Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
-                            song.apply_metronome_default(default_metronome);
-                            songs.insert(song.name().to_string(), Arc::new(song));
+                    Ok(canonical_parent) => {
+                        match Song::new_in(layers, &canonical_parent, &song_config) {
+                            Ok(mut song) => {
+                                // Record the exact source yaml so MCP read/patch
+                                // tools can target it regardless of layout. The
+                                // path comes from the directory walk above;
+                                // canonicalize for symlink safety. On the rare
+                                // canonicalize race (permission flip / symlink
+                                // rotation) fall back to the un-canonicalized
+                                // path so flat-layout writes don't silently
+                                // retarget to `<base>/song.yaml`.
+                                song.config_path = Some(
+                                    path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                                );
+                                song.apply_metronome_default(default_metronome);
+                                songs.insert(song.name().to_string(), Arc::new(song));
+                            }
+                            Err(e) => {
+                                warn!("Skipping song at {}: {}", path.display(), e);
+                                // Song::new failures are always recorded — the YAML
+                                // parsed as a song but its content is invalid.
+                                failures.push(SongLoadFailure {
+                                    name: song_config.name().to_string(),
+                                    base_path: canonical_parent,
+                                    config_path: path
+                                        .canonicalize()
+                                        .unwrap_or_else(|_| path.to_path_buf()),
+                                    error: format!("{}", e),
+                                });
+                            }
                         }
-                        Err(e) => {
-                            warn!("Skipping song at {}: {}", path.display(), e);
-                            // Song::new failures are always recorded — the YAML
-                            // parsed as a song but its content is invalid.
-                            failures.push(SongLoadFailure {
-                                name: song_config.name().to_string(),
-                                base_path: canonical_parent,
-                                config_path: path
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| path.to_path_buf()),
-                                error: format!("{}", e),
-                            });
-                        }
-                    },
+                    }
                     Err(e) => {
                         warn!(
                             "Skipping song at {}: failed to canonicalize: {}",
@@ -4126,9 +4135,14 @@ mod test {
     #[test]
     fn dsl_lighting_show_file_not_found() {
         let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
-        let err = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), Path::new("/tmp"), &config, None)
-            .expect_err("expected error")
-            .to_string();
+        let err = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            Path::new("/tmp"),
+            &config,
+            None,
+        )
+        .expect_err("expected error")
+        .to_string();
         assert!(err.contains("does not exist"), "Error: {err}");
     }
 
@@ -4137,9 +4151,14 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("bad.dsl"), "show {")?;
         let config = crate::config::LightingShow::new("bad.dsl".to_string());
-        let err = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), tempdir.path(), &config, None)
-            .expect_err("expected error")
-            .to_string();
+        let err = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            tempdir.path(),
+            &config,
+            None,
+        )
+        .expect_err("expected error")
+        .to_string();
         assert!(
             err.contains("Failed to parse DSL lighting show"),
             "Error: {err}"
@@ -4152,7 +4171,12 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("valid.dsl"), "# just a comment\n")?;
         let config = crate::config::LightingShow::new("valid.dsl".to_string());
-        let show = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), tempdir.path(), &config, None)?;
+        let show = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            tempdir.path(),
+            &config,
+            None,
+        )?;
         assert_eq!(show.file_path(), tempdir.path().join("valid.dsl"));
         assert!(show.shows().is_empty());
         Ok(())
@@ -4164,7 +4188,12 @@ mod test {
         let abs_path = tempdir.path().join("absolute.dsl");
         fs::write(&abs_path, "")?;
         let config = crate::config::LightingShow::new(abs_path.to_string_lossy().to_string());
-        let show = super::DslLightingShow::new(crate::lighting::effects::LayerSet::standard(), Path::new("/some/other/path"), &config, None)?;
+        let show = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            Path::new("/some/other/path"),
+            &config,
+            None,
+        )?;
         assert_eq!(show.file_path(), abs_path);
         Ok(())
     }
@@ -6123,8 +6152,20 @@ pilot:
         )
         .unwrap();
         let two_files = vec![
-            super::DslLightingShow::with_shows(crate::lighting::effects::LayerSet::standard(), PathBuf::from("main.light"), main, None, None),
-            super::DslLightingShow::with_shows(crate::lighting::effects::LayerSet::standard(), PathBuf::from("outro.light"), outro, None, None),
+            super::DslLightingShow::with_shows(
+                crate::lighting::effects::LayerSet::standard(),
+                PathBuf::from("main.light"),
+                main,
+                None,
+                None,
+            ),
+            super::DslLightingShow::with_shows(
+                crate::lighting::effects::LayerSet::standard(),
+                PathBuf::from("outro.light"),
+                outro,
+                None,
+                None,
+            ),
         ];
         assert_eq!(super::lighting_end(&two_files), Duration::from_secs(10));
 

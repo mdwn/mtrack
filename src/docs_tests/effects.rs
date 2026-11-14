@@ -147,7 +147,12 @@ fn heading(kind: EffectKind) -> &'static str {
 fn every_effect_has_a_section_and_no_other() {
     let types = section(EFFECTS_MD, "## Effect Types");
     let written = types.lines().filter(|l| l.starts_with("### ")).count();
-    assert_eq!(written, vocabulary(crate::lighting::effects::LayerSet::standard()).effects.len());
+    assert_eq!(
+        written,
+        vocabulary(crate::lighting::effects::LayerSet::standard())
+            .effects
+            .len()
+    );
     for effect in vocabulary(crate::lighting::effects::LayerSet::standard()).effects {
         assert!(types.contains(&format!("\n{}\n", heading(effect.kind))));
     }

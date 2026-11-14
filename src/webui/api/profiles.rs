@@ -326,6 +326,12 @@ pub(super) async fn put_profile(
         return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
     }
 
+    // A layer a show uses cannot be removed or renamed out from under it.
+    let losses = state.player.layer_losses(existing.as_ref(), &profile);
+    if !losses.is_empty() {
+        return Err(super::config_api::layer_loss_response(&losses));
+    }
+
     let new_json = serde_json::to_value(&profile).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -1037,6 +1037,16 @@ impl McpServer {
             .profile_from_update(args.index as usize, args.body)
             .await
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let losses = self
+            .player
+            .layer_losses_at(args.index as usize, &profile)
+            .await;
+        if !losses.is_empty() {
+            return Err(McpError::invalid_params(
+                crate::player::layer_loss_message(&losses),
+                None,
+            ));
+        }
         let snapshot = store
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await
@@ -1496,7 +1506,12 @@ impl McpServer {
                 Ok((shows, song_lighting_tempo(&song)))
             }
             (None, Some(source)) => {
-                let shows = crate::lighting::parser::parse_light_shows_in(&self.player.layers(), source, None).map_err(|e| {
+                let shows = crate::lighting::parser::parse_light_shows_in(
+                    &self.player.layers(),
+                    source,
+                    None,
+                )
+                .map_err(|e| {
                     McpError::invalid_params(
                         format!(
                             "{e}\n\nIf this show uses `@bar`/`beat` timing, pass `song` \

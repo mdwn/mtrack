@@ -74,7 +74,11 @@ Every effect also reads {{common_params}}.
   {{chase_transitions}}. `crossfade` is `fade` by another name.
 - `curve` (`dimmer`): {{curves}}.
 - `easing` (`move`): {{easings}}.
-- `layer`: {{layers}} (grandMA-inspired layers).
+- `layer`: one of this player's layers, bottom to top: {{layers}}. A higher
+  layer draws over a lower; an effect with no `layer:` runs on the bottom one
+  (`{{layer_bottom}}`). The player's config (`dmx.lighting.layers`) sets the
+  layers (the default is `background`, `midground`, `foreground`), and a show
+  naming a layer the player lacks fails to load.
 - `blend_mode`: {{blend_modes}}.
 - `per`: {{per}} — `cell` (or `cells`) runs the effect across a pixel
   fixture's cells. `spread`: an angle (`360deg`) that phases a `cycle` or a
@@ -93,11 +97,11 @@ required, but for `clear()`, which with no layer clears every layer.
 
 ```
 @01:00.000
-clear(layer: midground)                          # hard cut — stop this layer now
+clear(layer: {{layer_second}})                   # hard cut — stop this layer now
 clear()                                          # hard cut on every layer
-freeze(layer: background)                        # pin current output, ignore new cues
-unfreeze(layer: background)                      # resume normal updates
-master(layer: foreground, intensity: 50%)        # scale the layer's output
+freeze(layer: {{layer_bottom}})                  # pin current output, ignore new cues
+unfreeze(layer: {{layer_bottom}})                # resume normal updates
+master(layer: {{layer_top}}, intensity: 50%)     # scale the layer's output
 ```
 
 `master(...)` also accepts `speed:` (scales effect rates) in addition to
@@ -162,9 +166,9 @@ substituted as written (a quoted colour, a group, a number, a duration):
 ```
 sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
     @1/1
-    $target: static color: $bed, dimmer: 100%, layer: background, duration: 2measures
+    $target: static color: $bed, dimmer: 100%, layer: {{layer_bottom}}, duration: 2measures
     @1/1
-    $target: static color: $hit, dimmer: 100%, layer: foreground, duration: 1beat
+    $target: static color: $hit, dimmer: 100%, layer: {{layer_top}}, duration: 1beat
 }
 
 show "Song" {

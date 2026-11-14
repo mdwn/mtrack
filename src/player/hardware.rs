@@ -1036,9 +1036,7 @@ impl Player {
             self.set_layers(new);
         }
         let songs_error = match self.resolve_song_sources().await {
-            Some(sources)
-                if layers_changed || Some(&sources) != self.song_sources().as_ref() =>
-            {
+            Some(sources) if layers_changed || Some(&sources) != self.song_sources().as_ref() => {
                 info!("The songs or playlists moved: reloading them");
                 // A config changed outside the whole-config save (a hand
                 // edit, read in by a profile save) has had no check: the
