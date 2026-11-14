@@ -13,6 +13,7 @@
 //
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::time::Duration;
@@ -223,7 +224,7 @@ pub(super) fn reload_timeline(
 
     // No end cap of its own: `reload_show` carries the running timeline's
     // over.
-    let timeline = super::engine::lighting_timeline(all_shows, Duration::ZERO)
+    let timeline = super::engine::lighting_timeline(all_shows, Duration::ZERO, &HashMap::new())
         .ok_or("No shows found after re-parse")?;
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
     Ok(engine.reload_show(timeline, tempo_map, generation))

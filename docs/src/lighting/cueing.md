@@ -294,8 +294,8 @@ show "Song" {
 
 - The path is relative to the folder of the file that includes it, and must name a `.light`
   file.
-- An included file defines only sequences, and may include other files; a show, tempo, fixture
-  type or venue in it is an error.
+- An included file defines only sequences (and a [`palette`](#palettes) for them), and may
+  include other files; a show, tempo, fixture type or venue in it is an error.
 - Its sequences play under the tempo of the file that includes them, so beats and measures
   follow each song.
 - A sequence name defined in two files is an error, rather than one silently replacing the
@@ -306,6 +306,54 @@ show "Song" {
   sequences in bars and beats that a song without a tempo never plays.
 - Through the web UI or MCP, an include must stay inside the songs folder.
 - Editing an included file reloads the shows that include it, like editing the show itself.
+
+## Palettes
+
+A `palette { }` block names the colours a show is built from. Each name is a **slot** with a
+default colour; effects refer to a slot as `palette.<slot>` instead of writing the colour, so
+the look of a whole file is set in one place.
+
+```light
+palette {
+    primary: "#C01020"
+    secondary: "orange"
+    accent: rgb(255, 240, 200)
+}
+
+sequence "Hit"(color: palette.accent) {
+    @1/1
+    front_wash: static color: $color, dimmer: 100%, duration: 1beat
+}
+
+show "Main" {
+    @1/1
+    front_wash: static color: palette.primary, dimmer: 100%, duration: 8measures
+    back_truss: cycle color: palette.primary, color: palette.secondary, speed: 1.0, duration: 8measures
+
+    @9/1
+    sequence "Hit"
+    @10/1
+    sequence "Hit"(color: palette.secondary)
+}
+```
+
+- The block sits at file scope, beside `tempo` and `sequence`. Separate the slots with a line
+  break or a comma. A slot name is an identifier (`primary`, `back-light`), and its value is any
+  colour a `color:` takes: a quoted name, a hex colour or `rgb(r, g, b)`.
+- A file has at most one `palette` block; a second is an error. A slot declared twice in a block
+  is an error too.
+- `palette.<slot>` stands wherever a colour does: a `color:` on a `static` or a `cycle` (once for
+  each colour of a cycle), and as the value passed to, or the default of, a sequence
+  parameter. The sequence body still says `$color`; the slot is what it is bound to.
+- A slot the file does not declare is an error that names the slot and where it is, e.g.
+  `line 16: palette slot 'missing' is not declared (at line 16, column 31; declared: primary,
+  secondary, accent)`. Every slot has a default, so a show always plays on its own.
+- The defaults are the colours of the show: they are what plays, and what the editor previews.
+  The colours are settled once, before a song starts, so nothing changes while it plays.
+- With several `.light` files in one song, each declares its own slots. A slot is named by its
+  name alone, whichever file declares it.
+- An included file may carry a `palette` block of its own, for its sequences. Its slots are
+  available to the file that includes it, which takes its own colour for a slot both declare.
 
 ## Measure Offsets
 

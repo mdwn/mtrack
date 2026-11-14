@@ -35,7 +35,8 @@ quoted or not), or `rgb(255, 128, 0)`.
 Sets fixed parameter values for fixtures. Useful for solid colors, fixed dimmer levels, or any unchanging state.
 
 **Parameters:**
-- `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), or RGB (`rgb(255,0,0)`)
+- `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), RGB (`rgb(255,0,0)`), or a
+  slot of the file's [palette](cueing.md#palettes) (`palette.primary`)
 - `dimmer` or `intensity`: Dimmer level (0-100% or 0.0-1.0)
 - `red`, `green`, `blue`, `white`: Individual color channel levels (0-100% or 0.0-1.0)
 - Any other channel name with a level sets that channel on fixtures that have it
@@ -61,7 +62,8 @@ back_wash: static red: 100%, green: 50%, blue: 0%, dimmer: 60%, duration: 5s
 Cycles through a list of colors continuously. Colors transition smoothly or instantly based on transition mode.
 
 **Parameters:**
-- `color`: Multiple color values (e.g., `color: "red", color: "green", color: "blue"`)
+- `color`: Multiple color values (e.g., `color: "red", color: "green", color: "blue"`), each a
+  literal color or a [palette](cueing.md#palettes) slot (`color: palette.primary`)
 - `speed`: Cycles per second, or tempo-aware (e.g., `1.5`, `1measure`, `2beats`). Default `1.0`
 - `direction`: `forward` (default), `backward`, or `pingpong`
 - `transition`: `snap` (instant, the default), `fade` (smooth; `crossfade` means the same), or

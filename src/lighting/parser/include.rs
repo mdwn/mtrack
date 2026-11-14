@@ -14,7 +14,9 @@
 //! `include "common.light"`: sequences shared between files (#540).
 //!
 //! An included path is relative to the folder of the file that includes it,
-//! and the included file may define only sequences, and include others. Its
+//! and the included file may define only sequences, and include others -- and
+//! a `palette`, whose slots its sequences may refer to, and the including
+//! file too, which takes its own colour for a slot both declare. Its
 //! sequences then play as if the including file defined them, under that
 //! file's tempo.
 
@@ -150,6 +152,10 @@ impl Include {
     }
 }
 
+/// Why a file may not hold a second `palette` block.
+pub(super) const SECOND_PALETTE: &str =
+    "this is a second palette block, but a file has at most one";
+
 /// A file being read for its includes: where it is, and how to name it in
 /// errors.
 #[derive(Clone)]
@@ -236,8 +242,17 @@ fn add_file(
 
     let mut includes = Vec::new();
     let mut sequences = Vec::new();
+    let mut palette = None;
     for pair in items(pairs) {
         let what = match pair.as_rule() {
+            Rule::palette => {
+                let line = pair.line_col().0;
+                if palette.is_some() {
+                    return Err(format!("{shown}: line {line}: {SECOND_PALETTE}").into());
+                }
+                palette = Some(super::palette::read(pair).map_err(|e| format!("{shown}: {e}"))?);
+                continue;
+            }
             Rule::include => {
                 includes.push(Include::from_pair(pair));
                 continue;
@@ -270,5 +285,6 @@ fn add_file(
         reader,
         seen,
     )?;
+    library.add_palette(palette.unwrap_or_default());
     library.add(sequences, Some(&shown))
 }

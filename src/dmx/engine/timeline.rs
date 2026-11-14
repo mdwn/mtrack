@@ -12,10 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::{error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use tracing::{debug, error, warn};
 
+use crate::lighting::effects::Color;
 use crate::lighting::engine::StopScope;
 use crate::songs::Song;
 
@@ -147,14 +148,18 @@ pub(super) enum MidiDmxStart {
 /// The lighting timeline `shows` make, ready to start; `None` for none.
 /// With audio of `audio_length`, the audio ends the song as it always has;
 /// without (zero), the last effect does rather than the last cue.
+///
+/// `palette` recolours slots the shows declare (a slot to its colour); any
+/// slot it does not name plays in its show's default.
 pub(crate) fn lighting_timeline(
     shows: Vec<crate::lighting::parser::LightShow>,
     audio_length: Duration,
+    palette: &HashMap<String, Color>,
 ) -> Option<crate::lighting::timeline::LightingTimeline> {
     if shows.is_empty() {
         return None;
     }
-    let mut timeline = crate::lighting::timeline::LightingTimeline::new(shows);
+    let mut timeline = crate::lighting::timeline::LightingTimeline::with_palette(shows, palette);
     timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
     Some(timeline)
 }
@@ -163,10 +168,12 @@ pub(crate) fn lighting_timeline(
 /// `None` for a song without any.
 pub(crate) fn song_lighting_timeline(
     song: &Song,
+    palette: &HashMap<String, Color>,
 ) -> Option<crate::lighting::timeline::LightingTimeline> {
     lighting_timeline(
         crate::lighting::evaluate::registered_shows(song),
         song.duration(),
+        palette,
     )
 }
 

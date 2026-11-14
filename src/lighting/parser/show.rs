@@ -23,7 +23,10 @@ use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, describe_pest_error};
 use super::grammar::{LightingParser, Rule};
-use super::include::{add_included, Include, IncludeReader, IncludingFile, Sources};
+use super::include::{
+    add_included, Include, IncludeReader, IncludingFile, Sources, SECOND_PALETTE,
+};
+use super::palette::{self, Palette};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
@@ -259,10 +262,12 @@ pub fn parse_light_file_with(
     external: Option<&TempoMap>,
     reader: &dyn IncludeReader,
 ) -> Result<LightShows, Box<dyn Error>> {
-    Ok(parse_file_with(content, path, root, external, reader)?
+    let parsed = parse_file_with(content, path, root, external, reader)?;
+    let palette = parsed.palette;
+    Ok(parsed
         .shows
         .into_iter()
-        .map(|(name, show)| (name, show.into_show()))
+        .map(|(name, show)| (name, show.into_show(&palette)))
         .collect())
 }
 
@@ -273,6 +278,9 @@ pub(super) struct ParsedFile<'i> {
     /// The map the file's shows play to unless they carry their own: the
     /// file's `tempo` block (the last, if several), else the song's.
     pub(super) tempo_map: Option<TempoMap>,
+    /// The slots its shows' effects may refer to, with their defaults: the
+    /// file's own and those of the files it includes.
+    pub(super) palette: Rc<Palette>,
     /// The shows by name, in file order, a later show of a name
     /// replacing an earlier (`LightShows` holds one per name).
     pub(super) shows: indexmap::IndexMap<String, ParsedShow>,
@@ -293,11 +301,12 @@ pub(super) struct ParsedShow {
 }
 
 impl ParsedShow {
-    fn into_show(self) -> LightShow {
+    fn into_show(self, palette: &Palette) -> LightShow {
         LightShow {
             name: self.name,
             cues: flatten(self.cues),
             tempo_map: self.tempo_map,
+            palette: palette.clone(),
         }
     }
 }
@@ -310,6 +319,8 @@ pub(crate) struct FileItems<'i> {
     pub(super) sequences: Vec<Pair<'i, Rule>>,
     pub(super) shows: Vec<Pair<'i, Rule>>,
     pub(super) includes: Vec<Include>,
+    /// The slots its `palette` block declares (none for a file without).
+    pub(super) palette: Palette,
 }
 
 /// Parses `content`'s file-level items, the song's tempo map `external`
@@ -328,7 +339,9 @@ pub(crate) fn file_items<'i>(
         sequences: Vec::new(),
         shows: Vec::new(),
         includes: Vec::new(),
+        palette: Palette::new(),
     };
+    let mut has_palette = false;
 
     // First pass: collect tempo sections, sequences, and show pairs
     for pair in items(pairs) {
@@ -344,6 +357,12 @@ pub(crate) fn file_items<'i>(
                 items_found.shows.push(pair);
             }
             Rule::include => items_found.includes.push(Include::from_pair(pair)),
+            Rule::palette => {
+                if std::mem::replace(&mut has_palette, true) {
+                    return Err(format!("line {}: {SECOND_PALETTE}", pair.line_col().0).into());
+                }
+                items_found.palette = palette::read(pair)?;
+            }
             _ => {}
         }
     }
@@ -370,6 +389,7 @@ pub(super) fn parse_file_with<'i>(
         sequences: sequence_pairs,
         shows: show_pairs,
         includes,
+        palette,
     } = file_items(content, external)?;
 
     let mut library = SequenceLibrary::new(&global_tempo);
@@ -388,6 +408,7 @@ pub(super) fn parse_file_with<'i>(
         reader,
         &mut seen,
     )?;
+    library.add_palette(palette.clone());
     library.add(sequence_pairs.clone(), None)?;
     library.check_all()?;
 
@@ -434,6 +455,7 @@ pub(super) fn parse_file_with<'i>(
     }
 
     Ok(ParsedFile {
+        palette: library.palette(),
         tempo_map: global_tempo,
         shows,
         library,
@@ -1150,6 +1172,7 @@ fn parse_cue(
         tempo_map: tempo_map.clone(),
         cue_time: abs_time,
         offset_secs: applied_offset_secs,
+        palette: library.palette(),
     };
     for effect_pair in effect_pairs {
         base.effects

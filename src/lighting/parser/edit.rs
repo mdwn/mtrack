@@ -338,10 +338,16 @@ pub fn param_ref(text: &str) -> bool {
     LightingParser::parse(Rule::param_ref_only, text.trim()).is_ok()
 }
 
-/// A string value in quotes, unless it is a parameter, which must stay
-/// bare.
+/// Whether `text`, whole, is a palette slot reference (`palette.name`) by
+/// the grammar's `palette_ref`.
+pub fn palette_ref(text: &str) -> bool {
+    LightingParser::parse(Rule::palette_ref_only, text.trim()).is_ok()
+}
+
+/// A string value in quotes, unless it is a parameter or a palette slot,
+/// which must stay bare.
 pub fn quoted(value: &str) -> String {
-    if param_ref(value) {
+    if param_ref(value) || palette_ref(value) {
         value.trim().to_string()
     } else {
         format!("\"{value}\"")
