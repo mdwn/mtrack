@@ -45,7 +45,7 @@ fn test_format_active_effects_all_effect_types() {
     engine.start_effect(static_effect).unwrap();
     let output = engine.format_active_effects();
     assert!(output.contains("Static"), "Missing Static in: {}", output);
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // ColorCycle
     let cc_effect = EffectInstance::new(
@@ -69,7 +69,7 @@ fn test_format_active_effects_all_effect_types() {
         "Missing ColorCycle in: {}",
         output
     );
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // Strobe
     let strobe_effect = EffectInstance::new(
@@ -86,7 +86,7 @@ fn test_format_active_effects_all_effect_types() {
     engine.start_effect(strobe_effect).unwrap();
     let output = engine.format_active_effects();
     assert!(output.contains("Strobe"), "Missing Strobe in: {}", output);
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // Dimmer
     let dimmer_effect = EffectInstance::new(
@@ -105,7 +105,7 @@ fn test_format_active_effects_all_effect_types() {
     engine.start_effect(dimmer_effect).unwrap();
     let output = engine.format_active_effects();
     assert!(output.contains("Dimmer"), "Missing Dimmer in: {}", output);
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // Chase
     let chase_effect = EffectInstance::new(
@@ -125,7 +125,7 @@ fn test_format_active_effects_all_effect_types() {
     engine.start_effect(chase_effect).unwrap();
     let output = engine.format_active_effects();
     assert!(output.contains("Chase"), "Missing Chase in: {}", output);
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // Rainbow
     let rainbow_effect = EffectInstance::new(
@@ -144,7 +144,7 @@ fn test_format_active_effects_all_effect_types() {
     engine.start_effect(rainbow_effect).unwrap();
     let output = engine.format_active_effects();
     assert!(output.contains("Rainbow"), "Missing Rainbow in: {}", output);
-    engine.clear_layer(EffectLayer::Background);
+    engine.clear_layer(EffectLayer::BACKGROUND);
 
     // Pulse
     let pulse_effect = EffectInstance::new(

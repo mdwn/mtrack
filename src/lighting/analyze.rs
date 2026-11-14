@@ -433,11 +433,11 @@ show "T" {
 "#,
         );
         // Two background effects overlap; the layer still earns 10s, not 14.
-        assert_eq!(analysis.per_layer_seconds[&EffectLayer::Background], 10.0);
-        assert_eq!(analysis.per_layer_seconds[&EffectLayer::Foreground], 6.0);
+        assert_eq!(analysis.per_layer_seconds[&EffectLayer::BACKGROUND], 10.0);
+        assert_eq!(analysis.per_layer_seconds[&EffectLayer::FOREGROUND], 6.0);
         assert!(!analysis
             .per_layer_seconds
-            .contains_key(&EffectLayer::Midground));
+            .contains_key(&EffectLayer::MIDGROUND));
     }
 
     #[test]

@@ -56,7 +56,7 @@ fn test_get_active_effects_returns_correct_effects() {
         None,
         None,
     );
-    effect2.layer = EffectLayer::Foreground;
+    effect2.layer = EffectLayer::FOREGROUND;
 
     engine.start_effect(effect1).unwrap();
     engine.start_effect(effect2).unwrap();
@@ -68,9 +68,9 @@ fn test_get_active_effects_returns_correct_effects() {
 
     // Verify we can read effect properties
     let e1 = active_effects.get("effect1").unwrap();
-    assert_eq!(e1.layer, EffectLayer::Background);
+    assert_eq!(e1.layer, EffectLayer::BACKGROUND);
     let e2 = active_effects.get("effect2").unwrap();
-    assert_eq!(e2.layer, EffectLayer::Foreground);
+    assert_eq!(e2.layer, EffectLayer::FOREGROUND);
 }
 
 #[test]
@@ -541,28 +541,28 @@ fn test_get_layer_masters_default_to_one() {
     let engine = EffectEngine::new();
 
     // All layers should default to 1.0
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 1.0).abs() < 0.01);
-    assert!((engine.get_layer_intensity_master(EffectLayer::Midground) - 1.0).abs() < 0.01);
-    assert!((engine.get_layer_intensity_master(EffectLayer::Foreground) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_intensity_master(EffectLayer::MIDGROUND) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_intensity_master(EffectLayer::FOREGROUND) - 1.0).abs() < 0.01);
 
-    assert!((engine.get_layer_speed_master(EffectLayer::Background) - 1.0).abs() < 0.01);
-    assert!((engine.get_layer_speed_master(EffectLayer::Midground) - 1.0).abs() < 0.01);
-    assert!((engine.get_layer_speed_master(EffectLayer::Foreground) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_speed_master(EffectLayer::BACKGROUND) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_speed_master(EffectLayer::MIDGROUND) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_speed_master(EffectLayer::FOREGROUND) - 1.0).abs() < 0.01);
 }
 
 #[test]
 fn test_get_layer_masters_after_setting() {
     let mut engine = EffectEngine::new();
 
-    engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
-    engine.set_layer_speed_master(EffectLayer::Midground, 2.0);
+    engine.set_layer_intensity_master(EffectLayer::BACKGROUND, 0.5);
+    engine.set_layer_speed_master(EffectLayer::MIDGROUND, 2.0);
 
-    assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.5).abs() < 0.01);
-    assert!((engine.get_layer_speed_master(EffectLayer::Midground) - 2.0).abs() < 0.01);
+    assert!((engine.get_layer_intensity_master(EffectLayer::BACKGROUND) - 0.5).abs() < 0.01);
+    assert!((engine.get_layer_speed_master(EffectLayer::MIDGROUND) - 2.0).abs() < 0.01);
 
     // Other layers should still be default
-    assert!((engine.get_layer_intensity_master(EffectLayer::Foreground) - 1.0).abs() < 0.01);
-    assert!((engine.get_layer_speed_master(EffectLayer::Background) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_intensity_master(EffectLayer::FOREGROUND) - 1.0).abs() < 0.01);
+    assert!((engine.get_layer_speed_master(EffectLayer::BACKGROUND) - 1.0).abs() < 0.01);
 }
 
 #[test]
@@ -693,7 +693,7 @@ fn test_active_effects_count_matches_get_active_effects() {
         None,
         None,
     );
-    effect1.layer = EffectLayer::Background;
+    effect1.layer = EffectLayer::BACKGROUND;
 
     let mut effect2 = EffectInstance::new(
         "effect2".to_string(),
@@ -710,7 +710,7 @@ fn test_active_effects_count_matches_get_active_effects() {
         None,
         None,
     );
-    effect2.layer = EffectLayer::Midground;
+    effect2.layer = EffectLayer::MIDGROUND;
 
     engine.start_effect(effect1).unwrap();
     assert_eq!(engine.active_effects_count(), 1);

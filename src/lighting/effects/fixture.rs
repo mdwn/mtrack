@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn apply_brightness_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
-        let result = p.apply_brightness(0.75, EffectLayer::Background, BlendMode::Replace);
+        let result = p.apply_brightness(0.75, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert!(!result.contains_key("dimmer"), "a level, not a channel");
         assert!(!result.contains_key("red"));
         assert!((result[INTENSITY].value - 0.75).abs() < f64::EPSILON);
@@ -1099,11 +1099,11 @@ mod tests {
     #[test]
     fn apply_brightness_is_the_same_level_on_an_rgb_only_fixture() {
         let p = rgb_fixture().profile().clone();
-        let result = p.apply_brightness(0.5, EffectLayer::Background, BlendMode::Replace);
+        let result = p.apply_brightness(0.5, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert!(!result.contains_key("dimmer"));
         // Its blend mode is kept, not turned into a multiply.
         assert_eq!(result[INTENSITY].blend_mode, BlendMode::Replace);
-        assert_eq!(result[INTENSITY].layer, EffectLayer::Background);
+        assert_eq!(result[INTENSITY].layer, EffectLayer::BACKGROUND);
     }
 
     // ── apply_color ──────────────────────────────────────────────────
@@ -1112,7 +1112,7 @@ mod tests {
     fn apply_color_rgb() {
         let p = rgb_fixture().profile().clone();
         let color = Color::new(255, 128, 0);
-        let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
+        let result = p.apply_color(color, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert!((result["red"].value - 1.0).abs() < f64::EPSILON);
         assert!((result["green"].value - 128.0 / 255.0).abs() < 0.01);
         assert!((result["blue"].value - 0.0).abs() < f64::EPSILON);
@@ -1127,7 +1127,7 @@ mod tests {
             b: 255,
             w: Some(200),
         };
-        let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
+        let result = p.apply_color(color, EffectLayer::BACKGROUND, BlendMode::Replace);
         assert!(result.contains_key("white"));
         assert!((result["white"].value - 200.0 / 255.0).abs() < 0.01);
     }
@@ -1150,14 +1150,14 @@ mod tests {
     #[test]
     fn apply_strobe_dedicated_channel() {
         let p = full_fixture().profile().clone();
-        let result = p.apply_strobe(0.5, EffectLayer::Foreground, BlendMode::Replace, 1.0, None);
+        let result = p.apply_strobe(0.5, EffectLayer::FOREGROUND, BlendMode::Replace, 1.0, None);
         assert!(result.contains_key("strobe"));
     }
 
     #[test]
     fn apply_strobe_zero_crossfade_returns_empty() {
         let p = full_fixture().profile().clone();
-        let result = p.apply_strobe(0.5, EffectLayer::Foreground, BlendMode::Replace, 0.0, None);
+        let result = p.apply_strobe(0.5, EffectLayer::FOREGROUND, BlendMode::Replace, 0.0, None);
         assert!(result.is_empty());
     }
 
@@ -1166,7 +1166,7 @@ mod tests {
         let p = rgb_fixture().profile().clone();
         let result = p.apply_strobe(
             0.0,
-            EffectLayer::Foreground,
+            EffectLayer::FOREGROUND,
             BlendMode::Replace,
             1.0,
             Some(1.0),
@@ -1181,14 +1181,14 @@ mod tests {
     #[test]
     fn apply_pulse_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
-        let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
+        let result = p.apply_pulse(0.8, EffectLayer::MIDGROUND, BlendMode::Multiply);
         assert!(result.contains_key(INTENSITY));
     }
 
     #[test]
     fn apply_pulse_rgb_multiplication() {
         let p = rgb_fixture().profile().clone();
-        let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
+        let result = p.apply_pulse(0.8, EffectLayer::MIDGROUND, BlendMode::Multiply);
         assert!(result.contains_key(INTENSITY));
     }
 
@@ -1197,14 +1197,14 @@ mod tests {
     #[test]
     fn apply_chase_dedicated_dimmer() {
         let p = rgb_dimmer_fixture().profile().clone();
-        let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
+        let result = p.apply_chase(0.5, EffectLayer::FOREGROUND, BlendMode::Replace);
         assert!(result.contains_key(INTENSITY));
     }
 
     #[test]
     fn apply_chase_rgb_is_a_level_not_rgb_channels() {
         let p = rgb_fixture().profile().clone();
-        let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
+        let result = p.apply_chase(0.5, EffectLayer::FOREGROUND, BlendMode::Replace);
 
         // A chase is a brightness mask. Writing it into RGB would make the chase value
         // the colour (always white) and zero every inactive fixture on the layer.
@@ -1224,7 +1224,7 @@ mod tests {
         // A lifting blend cannot be expressed as a multiplier, so the mask goes
         // into the colour channels with the blend intact: the active fixture
         // brightens toward white, an inactive one (mask 0) screens to no change.
-        let result = p.apply_chase(1.0, EffectLayer::Foreground, BlendMode::Screen);
+        let result = p.apply_chase(1.0, EffectLayer::FOREGROUND, BlendMode::Screen);
         for channel in ["red", "green", "blue"] {
             let state = result.get(channel).expect(channel);
             assert_eq!(state.value, 1.0);
@@ -1232,12 +1232,12 @@ mod tests {
         }
         assert!(!result.contains_key(INTENSITY));
 
-        let bed = ChannelState::new(0.4, EffectLayer::Background, BlendMode::Replace);
-        let inactive = p.apply_chase(0.0, EffectLayer::Foreground, BlendMode::Screen);
+        let bed = ChannelState::new(0.4, EffectLayer::BACKGROUND, BlendMode::Replace);
+        let inactive = p.apply_chase(0.0, EffectLayer::FOREGROUND, BlendMode::Screen);
         assert_eq!(bed.blend_with(*inactive.get("red").unwrap()).value, 0.4);
 
         // Overlay would darken a dim bed where the mask is zero; it lifts instead.
-        let overlay = p.apply_chase(0.0, EffectLayer::Foreground, BlendMode::Overlay);
+        let overlay = p.apply_chase(0.0, EffectLayer::FOREGROUND, BlendMode::Overlay);
         assert_eq!(overlay.get("red").unwrap().blend_mode, BlendMode::Screen);
     }
 

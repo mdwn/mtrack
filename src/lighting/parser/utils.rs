@@ -16,7 +16,7 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::effects::{
-    BlendMode, Color, EffectLayer, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
+    BlendMode, Color, EffectLayer, LayerSet, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
 };
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
@@ -98,31 +98,15 @@ pub(crate) fn unquote(pair: &Pair<Rule>) -> String {
     unquoted(pair.as_str()).to_string()
 }
 
-/// Each layer and its keyword, as the grammar writes it: the one table
-/// both ways are read off.
-pub(crate) const LAYER_KEYWORDS: [(EffectLayer, &str); 3] = [
-    (EffectLayer::Background, "background"),
-    (EffectLayer::Midground, "midground"),
-    (EffectLayer::Foreground, "foreground"),
-];
-
-/// The layer a `layer:` keyword names.
-pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
-    LAYER_KEYWORDS
-        .iter()
-        .find(|(_, k)| *k == value)
-        .map(|(layer, _)| *layer)
+/// The layer a `layer:` name denotes in the given set.
+pub(crate) fn parse_layer_in(layers: &LayerSet, value: &str) -> Option<EffectLayer> {
+    layers.parse(value)
 }
 
-impl EffectLayer {
-    /// The layer's keyword, as the grammar writes it.
-    pub fn keyword(self) -> &'static str {
-        LAYER_KEYWORDS
-            .iter()
-            .find(|(layer, _)| *layer == self)
-            .map(|(_, k)| *k)
-            .expect("every layer has a keyword")
-    }
+/// The layer a `layer:` name denotes in the default set. The seam for a
+/// configured set: callers that have one use [`parse_layer_in`].
+pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
+    parse_layer_in(LayerSet::standard(), value)
 }
 
 /// Each blend mode and its keyword, as the grammar writes it: the one

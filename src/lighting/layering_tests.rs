@@ -97,7 +97,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_dim_50.layer = EffectLayer::Midground;
+        mid_dim_50.layer = EffectLayer::MIDGROUND;
         mid_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_50).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -116,7 +116,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        fg_dim_50.layer = EffectLayer::Foreground;
+        fg_dim_50.layer = EffectLayer::FOREGROUND;
         fg_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_50).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -135,7 +135,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_dim_100.layer = EffectLayer::Midground;
+        mid_dim_100.layer = EffectLayer::MIDGROUND;
         mid_dim_100.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_100).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -192,7 +192,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        fg_dim_50.layer = EffectLayer::Foreground;
+        fg_dim_50.layer = EffectLayer::FOREGROUND;
         fg_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_50).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -211,7 +211,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_dim_50.layer = EffectLayer::Midground;
+        mid_dim_50.layer = EffectLayer::MIDGROUND;
         mid_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_50).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -230,7 +230,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        fg_dim_100.layer = EffectLayer::Foreground;
+        fg_dim_100.layer = EffectLayer::FOREGROUND;
         fg_dim_100.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_100).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -284,7 +284,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_dim.layer = EffectLayer::Midground;
+        mid_dim.layer = EffectLayer::MIDGROUND;
         mid_dim.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -338,7 +338,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_red.layer = EffectLayer::Midground;
+        mid_red.layer = EffectLayer::MIDGROUND;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -392,7 +392,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_red.layer = EffectLayer::Midground;
+        mid_red.layer = EffectLayer::MIDGROUND;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -413,7 +413,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        fg_green.layer = EffectLayer::Foreground;
+        fg_green.layer = EffectLayer::FOREGROUND;
         fg_green.blend_mode = BlendMode::Replace;
         engine.start_effect(fg_green).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -467,7 +467,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_red.layer = EffectLayer::Midground;
+        mid_red.layer = EffectLayer::MIDGROUND;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -521,7 +521,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        fg_red.layer = EffectLayer::Foreground;
+        fg_red.layer = EffectLayer::FOREGROUND;
         fg_red.blend_mode = BlendMode::Replace;
         engine.start_effect(fg_red).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -540,7 +540,7 @@ mod layering_behavior_tests {
             None,
             None,
         );
-        mid_dim.layer = EffectLayer::Midground;
+        mid_dim.layer = EffectLayer::MIDGROUND;
         mid_dim.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();
@@ -609,7 +609,7 @@ mod layering_show_regression {
             None,
             None,
         );
-        static_blue.layer = EffectLayer::Background;
+        static_blue.layer = EffectLayer::BACKGROUND;
         static_blue.blend_mode = BlendMode::Replace;
         engine.start_effect(static_blue).unwrap();
         let _ = engine.update(Duration::from_millis(1), None).unwrap();
@@ -628,7 +628,7 @@ mod layering_show_regression {
             None,
             None,
         );
-        dimmer_50.layer = EffectLayer::Midground;
+        dimmer_50.layer = EffectLayer::MIDGROUND;
         dimmer_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(dimmer_50).unwrap();
         let cmds = engine.update(Duration::from_millis(1), None).unwrap();

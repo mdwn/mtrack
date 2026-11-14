@@ -314,7 +314,7 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
         .start_effect(effect("blue", &[("blue", 1.0)], true))
         .unwrap();
     let mut half = effect("half", &[("dimmer", 0.5)], false);
-    half.layer = EffectLayer::Midground;
+    half.layer = EffectLayer::MIDGROUND;
     half.blend_mode = BlendMode::Multiply;
     incoming.start_effect(half).unwrap();
 

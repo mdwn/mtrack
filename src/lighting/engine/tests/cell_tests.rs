@@ -139,7 +139,7 @@ fn a_per_cell_chase_runs_along_the_cells_over_the_bed() {
         None,
     );
     chase.per_cell = true;
-    chase.layer = EffectLayer::Midground;
+    chase.layer = EffectLayer::MIDGROUND;
     engine.start_effect(chase).unwrap();
     assert_eq!(
         engine.get_active_effects()["chase"].target_fixtures,

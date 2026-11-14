@@ -22,6 +22,7 @@
 //!
 //! The types' TypeScript declarations are generated from them (`tsify`).
 
+use crate::lighting::effects::LayerSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -432,7 +433,7 @@ fn cue_layout(
                 .enumerate()
                 .map(move |(i, effect)| EffectLayout {
                     kind: EffectKind::of(&effect.effect_type),
-                    layer: effect.layer.unwrap_or(DEFAULT_LAYER).keyword().to_string(),
+                    layer: LayerSet::standard().display_name(effect.layer.unwrap_or(DEFAULT_LAYER)),
                     groups: effect.groups.clone(),
                     start_ms: ms(placed.time),
                     end_ms: ms(placed.time.saturating_add(effect.total_duration())),

@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn new_defaults_layer_and_blend() {
         let inst = make_instance(static_effect(Duration::from_secs(5)));
-        assert_eq!(inst.layer, EffectLayer::Background);
+        assert_eq!(inst.layer, EffectLayer::BACKGROUND);
         assert_eq!(inst.blend_mode, BlendMode::Replace);
         assert_eq!(inst.priority, 0);
         assert!(inst.enabled);

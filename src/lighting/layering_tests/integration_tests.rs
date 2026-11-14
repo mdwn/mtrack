@@ -40,7 +40,7 @@ fn test_layering_demo() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -53,7 +53,7 @@ fn test_layering_demo() {
             curve: DimmerCurve::Linear,
         },
         vec!["rgb_par_1".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -64,7 +64,7 @@ fn test_layering_demo() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -165,7 +165,7 @@ fn test_multiple_effects_simultaneous() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -205,7 +205,7 @@ fn test_multiple_effects_simultaneous() {
             "fixture_3".to_string(),
             "fixture_4".to_string(),
         ],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -359,7 +359,7 @@ fn test_astera_pixelblock_real_behavior() {
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -389,7 +389,7 @@ fn test_astera_pixelblock_real_behavior() {
             curve: DimmerCurve::Linear,
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -491,7 +491,7 @@ fn test_permanent_vs_temporary_effects() {
         None,
         None,
     );
-    static_effect.layer = EffectLayer::Foreground;
+    static_effect.layer = EffectLayer::FOREGROUND;
     static_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(static_effect).unwrap();
@@ -518,7 +518,7 @@ fn test_permanent_vs_temporary_effects() {
         None,
         None,
     );
-    background_effect.layer = EffectLayer::Background;
+    background_effect.layer = EffectLayer::BACKGROUND;
     background_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(background_effect).unwrap();
@@ -603,7 +603,7 @@ fn test_grandma_style_fade_out() {
         None,
         None,
     );
-    blue_effect.layer = EffectLayer::Background;
+    blue_effect.layer = EffectLayer::BACKGROUND;
     blue_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(blue_effect).unwrap();
@@ -630,7 +630,7 @@ fn test_grandma_style_fade_out() {
         Some(Duration::from_secs(0)), // hold_time
         Some(Duration::from_secs(2)), // down_time
     );
-    fade_out_effect.layer = EffectLayer::Foreground;
+    fade_out_effect.layer = EffectLayer::FOREGROUND;
     fade_out_effect.blend_mode = BlendMode::Replace;
 
     engine.start_effect(fade_out_effect).unwrap();
@@ -782,7 +782,7 @@ fn test_real_layering_show_file() {
                 format!("dsl_effect_{:?}", effect.effect_type),
                 effect.effect_type.clone(),
                 effect.groups.clone(),
-                effect.layer.unwrap_or(EffectLayer::Background),
+                effect.layer.unwrap_or(EffectLayer::BACKGROUND),
                 effect.blend_mode.unwrap_or(BlendMode::Replace),
             );
 
@@ -907,7 +907,7 @@ fn test_layering_show_effect_execution() {
                 format!("dsl_effect_{:?}", effect.effect_type),
                 effect.effect_type.clone(),
                 effect.groups.clone(),
-                effect.layer.unwrap_or(EffectLayer::Background),
+                effect.layer.unwrap_or(EffectLayer::BACKGROUND),
                 effect.blend_mode.unwrap_or(BlendMode::Replace),
             );
 
@@ -1002,7 +1002,7 @@ fn test_custom_rgb_dimming() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -1036,7 +1036,7 @@ fn test_custom_rgb_dimming() {
             curve: DimmerCurve::Linear,
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Replace,
     );
 
@@ -1163,7 +1163,7 @@ fn test_software_strobing_rgb_only_fixture() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_only_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -1240,7 +1240,7 @@ fn test_software_strobing_with_layering() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -1252,7 +1252,7 @@ fn test_software_strobing_with_layering() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -1309,7 +1309,7 @@ fn test_software_strobing_simple() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -1371,7 +1371,7 @@ fn test_software_strobing_frequency_zero() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -1383,7 +1383,7 @@ fn test_software_strobing_frequency_zero() {
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -1453,7 +1453,7 @@ fn test_full_layering_show_sequence_with_replace() {
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
     engine.start_effect(static_blue).unwrap();
@@ -1468,7 +1468,7 @@ fn test_full_layering_show_sequence_with_replace() {
             curve: DimmerCurve::Linear,
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
     engine.start_effect(dimmer_effect).unwrap();
@@ -1503,7 +1503,7 @@ fn test_full_layering_show_sequence_with_replace() {
             duration: Duration::from_secs(10),
         },
         vec!["back_wash".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Replace,
     );
     engine.start_effect(color_cycle).unwrap();
@@ -1518,7 +1518,7 @@ fn test_full_layering_show_sequence_with_replace() {
             curve: DimmerCurve::Linear,
         },
         vec!["back_wash".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Multiply,
     );
     engine.start_effect(back_dimmer).unwrap();
@@ -1533,7 +1533,7 @@ fn test_full_layering_show_sequence_with_replace() {
             duration: Duration::from_secs(7), // 1s up + 5s hold + 1s down
         },
         vec!["back_wash".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
     engine.start_effect(pulse_effect).unwrap();
@@ -1579,7 +1579,7 @@ fn test_full_layering_show_sequence_with_replace() {
             duration: Duration::from_secs(2), // 2 second fade out
         },
         vec!["front_wash".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Replace,
     );
 
@@ -1597,7 +1597,7 @@ fn test_full_layering_show_sequence_with_replace() {
             duration: Duration::from_secs(2), // 2 second fade out
         },
         vec!["back_wash".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Replace,
     );
 
@@ -1684,7 +1684,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string(), "fixture2".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     );
 
@@ -1697,7 +1697,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             curve: DimmerCurve::Linear,
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -1710,7 +1710,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Midground,
+        EffectLayer::MIDGROUND,
         BlendMode::Multiply,
     );
 
@@ -1721,7 +1721,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
-        EffectLayer::Foreground,
+        EffectLayer::FOREGROUND,
         BlendMode::Overlay,
     );
 
@@ -1750,7 +1750,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background, // Same layer as background_static
+        EffectLayer::BACKGROUND, // Same layer as background_static
         BlendMode::Replace,
     );
 
@@ -1761,7 +1761,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
-        EffectLayer::Foreground, // Same layer as foreground_strobe
+        EffectLayer::FOREGROUND, // Same layer as foreground_strobe
         BlendMode::Replace,
     );
 
@@ -1789,7 +1789,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background,
+        EffectLayer::BACKGROUND,
         BlendMode::Replace,
     )
     .with_priority(100);

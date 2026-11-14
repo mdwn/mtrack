@@ -140,7 +140,7 @@ fn slot(name: &str) -> Option<String> {
         "chase_transitions" => alternatives(CHASE_TRANSITIONS.iter().map(|(_, w)| *w)),
         "curves" => alternatives(v.curves),
         "easings" => alternatives(v.easings),
-        "layers" => alternatives(v.layers),
+        "layers" => alternatives(v.layers.iter().map(String::as_str)),
         "blend_modes" => alternatives(v.blend_modes),
         "layer_commands" => listed(v.layer_commands.iter().map(|c| c.keyword())),
         "layer_command_params" => listed(LayerCommandParam::ALL.iter().map(|(_, w)| *w)),
@@ -207,14 +207,15 @@ mod tests {
         let words = v
             .layers
             .iter()
-            .chain(&v.blend_modes)
-            .chain(&v.curves)
-            .chain(&v.easings)
-            .chain(&v.cycle_directions)
-            .chain(&v.chase_directions)
-            .chain(&v.chase_patterns)
-            .chain(COMMON_PARAMS.iter())
-            .chain(CYCLE_TRANSITIONS.iter().map(|(_, w)| w));
+            .map(String::as_str)
+            .chain(v.blend_modes.iter().copied())
+            .chain(v.curves.iter().copied())
+            .chain(v.easings.iter().copied())
+            .chain(v.cycle_directions.iter().copied())
+            .chain(v.chase_directions.iter().copied())
+            .chain(v.chase_patterns.iter().copied())
+            .chain(COMMON_PARAMS.iter().copied())
+            .chain(CYCLE_TRANSITIONS.iter().map(|(_, w)| *w));
         for word in words {
             assert!(text.contains(&format!("`{word}`")), "{word} missing");
         }

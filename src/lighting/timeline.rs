@@ -1191,7 +1191,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
-                    layer: Some(EffectLayer::Foreground),
+                    layer: Some(EffectLayer::FOREGROUND),
                     intensity: None,
                     speed: None,
                 }],
@@ -1204,7 +1204,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Freeze,
-                    layer: Some(EffectLayer::Background),
+                    layer: Some(EffectLayer::BACKGROUND),
                     intensity: None,
                     speed: None,
                 }],
@@ -1217,7 +1217,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Master,
-                    layer: Some(EffectLayer::Midground),
+                    layer: Some(EffectLayer::MIDGROUND),
                     intensity: Some(0.5),
                     speed: Some(2.0),
                 }],
@@ -1240,7 +1240,7 @@ mod tests {
         );
         assert_eq!(
             result0.layer_commands().next().unwrap().1.layer,
-            Some(EffectLayer::Foreground)
+            Some(EffectLayer::FOREGROUND)
         );
 
         // Second cue: freeze command
@@ -1252,7 +1252,7 @@ mod tests {
         );
         assert_eq!(
             result1.layer_commands().next().unwrap().1.layer,
-            Some(EffectLayer::Background)
+            Some(EffectLayer::BACKGROUND)
         );
 
         // Third cue: master command with intensity and speed
@@ -1310,7 +1310,7 @@ mod tests {
             effects: vec![effect],
             layer_commands: vec![LayerCommand {
                 command_type: LayerCommandType::Master,
-                layer: Some(EffectLayer::Background),
+                layer: Some(EffectLayer::BACKGROUND),
                 intensity: Some(0.75),
                 speed: None,
             }],
@@ -1602,7 +1602,7 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: Duration::from_secs(60),
             },
-            layer: Some(EffectLayer::Background),
+            layer: Some(EffectLayer::BACKGROUND),
             blend_mode: None,
             up_time: None,
             hold_time: None,
@@ -1621,7 +1621,7 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: Duration::from_secs(60),
             },
-            layer: Some(EffectLayer::Foreground),
+            layer: Some(EffectLayer::FOREGROUND),
             blend_mode: None,
             up_time: None,
             hold_time: None,
@@ -1644,7 +1644,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
-                    layer: Some(EffectLayer::Foreground),
+                    layer: Some(EffectLayer::FOREGROUND),
                     intensity: None,
                     speed: None,
                 }],
@@ -1681,14 +1681,14 @@ mod tests {
         // Verify the bg effect is present with 12s elapsed
         let bg = update
             .values()
-            .find(|(e, _)| e.layer == EffectLayer::Background);
+            .find(|(e, _)| e.layer == EffectLayer::BACKGROUND);
         assert!(bg.is_some(), "Background effect should be present");
         assert_eq!(bg.unwrap().1, Duration::from_secs(12));
 
         // Verify the new fg effect is present with 2s elapsed (started at @10s)
         let fg = update
             .values()
-            .find(|(e, _)| e.layer == EffectLayer::Foreground);
+            .find(|(e, _)| e.layer == EffectLayer::FOREGROUND);
         assert!(fg.is_some(), "Foreground effect should be present");
         assert_eq!(fg.unwrap().1, Duration::from_secs(2));
     }
