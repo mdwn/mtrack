@@ -17,8 +17,16 @@ import { type Page } from "@playwright/test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { card } from "../support/locators";
 import { lightingClientAt } from "../support/player-client";
-import type { VenueList } from "../../src/gen/rules/mtrack_rules";
-import { api, expect, status, synthGdtf, synthMvr, test } from "./harness";
+import {
+  expect,
+  status,
+  synthGdtf,
+  synthMvr,
+  test,
+  venueList,
+  venueOf,
+  venuePatch,
+} from "./harness";
 
 // The Lighting area against the real binary: each journey does what a user
 // does, then checks what persisted — through a fresh page load, the API and
@@ -216,11 +224,7 @@ test.describe("A new venue", () => {
       .click();
     await expect(page.locator(".editor-form")).toHaveCount(0);
 
-    const got = await api<{
-      venue: {
-        fixtures: Record<string, { universe: number; start_channel: number }>;
-      };
-    }>(project, "/lighting/venues/club");
+    const got = await venueOf(project, "club");
     const patch = Object.entries(got.venue.fixtures)
       .map(([name, f]) => [name, f.universe, f.start_channel])
       .sort();
@@ -231,7 +235,7 @@ test.describe("A new venue", () => {
     ]);
     // The file the save created, as the listing reports it: a new venue
     // is a `.venue` by the one rule for new files.
-    const listed = await api<VenueList>(project, "/lighting/venues");
+    const listed = await venueList(project);
     expect(listed.owners.club).toEqual({
       file: "club.venue",
       editable: true,
@@ -306,9 +310,7 @@ test.describe("A fixture's mode", () => {
     expect(lineOf(file, "B1")).toContain('mode "Mover 16bit"');
 
     // And from the server's own reading of it.
-    const got = await api<{
-      venue: { fixtures: Record<string, { mode?: string }> };
-    }>(project, "/lighting/venues/house");
+    const got = await venueOf(project, "house");
     expect(got.venue.fixtures.B1.mode).toBe("Mover 16bit");
   });
 });
@@ -395,10 +397,7 @@ test.describe("MVR import", () => {
     await page.getByTestId("mvr-do-import").click();
     await expect(page.getByTestId("mvr-done")).toBeVisible();
 
-    const venues = await api<{ venues: Record<string, unknown> }>(
-      project,
-      "/lighting/venues",
-    );
+    const venues = await venueList(project);
     const name = Object.keys(venues.venues).find((v) => v !== "house")!;
     expect(name).toBeTruthy();
     const types = await lightingClientAt(project.url).listFixtureTypes({});
@@ -518,10 +517,7 @@ test.describe("A GDTF copied into the library by hand", () => {
     expect(fs.readdirSync(`${project.dir}/lighting/fixture_types`)).toEqual([]);
 
     const settled = async () => {
-      const patch = await api<{ spans: { footprint: number | null }[] }>(
-        project,
-        "/lighting/venues/house/patch",
-      );
+      const patch = await venuePatch(project, "house");
       expect(patch.spans.map((s) => s.footprint)).toEqual([4, 5]);
       await expect
         .poll(

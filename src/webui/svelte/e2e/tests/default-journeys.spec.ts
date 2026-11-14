@@ -13,12 +13,19 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
+import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import {
   LightingService,
   PlayerService,
 } from "../../src/gen/player/v1/player_pb";
 import { getConfigReply, savedReply } from "../support/config-rpc";
-import { savedTypeRequest } from "../support/lighting-rpc";
+import {
+  savedTypeRequest,
+  savedVenueRequest,
+  venueDetailReply,
+  venueListReply,
+  venueSavedReply,
+} from "../support/lighting-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
 import { MVR_INSPECTION } from "../mock-server/test-data";
@@ -50,19 +57,6 @@ const json = (body: unknown, status = 200) => ({
   contentType: "application/json",
   body: JSON.stringify(body),
 });
-
-/** Catches every PUT/POST/DELETE whose URL matches; GETs pass through. */
-async function catchWrites(page: Page, url: RegExp | string) {
-  const writes: Request[] = [];
-  await page.route(url, (route) => {
-    if (route.request().method() === "GET") return route.fallback();
-    writes.push(route.request());
-    return route.fulfill(
-      json({ status: "saved", version: "v2", venue_error: null }),
-    );
-  });
-  return writes;
-}
 
 test.describe("Fixture types", () => {
   test("a new channel-map type with the defaults: the name is required, then the default channel is sent", async ({
@@ -151,8 +145,8 @@ function richVenue(name: string) {
         universe: 1,
         start_channel: 1,
         tags: ["front", "wash"],
-        position: [-2, 3.5, 4.2],
-        rotation: [0, 0, 180],
+        position: [-2, 3.5, 4.2] as Vec3,
+        rotation: [0, 0, 180] as Vec3,
         beam_angle: 60,
         mode: "Mover 16bit",
       },
@@ -167,30 +161,37 @@ function richVenue(name: string) {
         beam_angle: null,
       },
     },
-    focus_points: { drummer: [0, 2.8, 1.4] },
-    source: { mvr: "lighting/library/rig.mvr", origin: [0, -3.5, 0] },
+    focus_points: { drummer: [0, 2.8, 1.4] as Vec3 },
+    source: {
+      mvr: "lighting/library/rig.mvr",
+      origin: [0, -3.5, 0] as Vec3,
+    },
   };
 }
 
-/** Serves one venue in the list (and by name), and catches its writes. */
+/** Serves one venue in the list (and by name), and records its writes. */
 async function routeVenueList(page: Page, venue: ReturnType<typeof richVenue>) {
-  await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
-    route.fulfill(
-      json({
-        venues: { [venue.name]: venue },
-        errors: [],
-        versions: { [venue.name]: "v1" },
-      }),
-    ),
+  const rpc = await mockRpc(page);
+  rpc.unary(
+    LightingService.method.listVenues,
+    venueListReply({
+      venues: { [venue.name]: venue },
+      owners: {},
+      errors: [],
+      versions: { [venue.name]: "v1" },
+    }),
   );
-  await page.route(
-    new RegExp(`/api/lighting/venues/${venue.name}(\\?.*)?$`),
-    (r) =>
-      r.request().method() === "GET"
-        ? r.fulfill(json({ venue, dsl: "", version: "v1" }))
-        : r.fallback(),
+  rpc.unary(
+    LightingService.method.getVenue,
+    venueDetailReply({ venue, dsl: "", version: "v1" }),
   );
-  return catchWrites(page, /\/api\/lighting\/venues\/[^/?]+(\?.*)?$/);
+  rpc.unary(LightingService.method.saveVenue, (request) =>
+    venueSavedReply({ name: request.name, version: "v2" }),
+  );
+  rpc.unary(LightingService.method.deleteVenue, (request) => ({
+    name: request.name,
+  }));
+  return rpc;
 }
 
 test.describe("Venues", () => {
@@ -198,7 +199,8 @@ test.describe("Venues", () => {
     page,
   }) => {
     const venue = richVenue(unique("rig"));
-    const writes = await routeVenueList(page, venue);
+    const rpc = await routeVenueList(page, venue);
+    const writes = () => rpc.calls(LightingService.method.saveVenue);
     await page.goto("/#/lighting/venues");
     await page.getByTestId(`venue-edit-${venue.name}`).click();
     await expect(page.getByTestId("venue-fixture-row")).toHaveCount(2);
@@ -206,10 +208,9 @@ test.describe("Venues", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await expect.poll(() => writes.length).toBe(1);
-    expect(writes[0].method()).toBe("PUT");
-    expect(writes[0].headers()["if-match"]).toBe("v1");
-    const body = writes[0].postDataJSON();
+    await expect.poll(() => writes().length).toBe(1);
+    expect(writes()[0].expectedRevision).toBe("v1");
+    const body = savedVenueRequest(writes()[0]);
     expect(body.fixtures).toEqual([
       { ...venue.fixtures.Spot },
       { ...venue.fixtures.Par, mode: null },
@@ -222,7 +223,8 @@ test.describe("Venues", () => {
     page,
   }) => {
     const venue = richVenue(unique("rig"));
-    const writes = await routeVenueList(page, venue);
+    const rpc = await routeVenueList(page, venue);
+    const writes = () => rpc.calls(LightingService.method.saveVenue);
     await page.goto("/#/lighting/venues");
     await page.getByTestId(`venue-edit-${venue.name}`).click();
     await page.locator("#venue-name").fill(`${venue.name}-b`);
@@ -230,26 +232,30 @@ test.describe("Venues", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await expect.poll(() => writes.length).toBe(1);
+    await expect.poll(() => writes().length).toBe(1);
     // The server moves or renames the one file: nothing is deleted after.
     await page.waitForTimeout(300);
-    expect(writes).toHaveLength(1);
-    expect(writes[0].method()).toBe("PUT");
-    const url = new URL(writes[0].url());
-    expect(url.pathname).toBe(`/api/lighting/venues/${venue.name}-b`);
-    expect(url.searchParams.get("from")).toBe(venue.name);
+    expect(writes()).toHaveLength(1);
+    expect(rpc.calls(LightingService.method.deleteVenue)).toHaveLength(0);
+    expect(writes()[0].name).toBe(`${venue.name}-b`);
+    expect(writes()[0].from).toBe(venue.name);
     // The old venue's file is what is written, at the version it was read.
-    expect(writes[0].headers()["if-match"]).toBe("v1");
-    expect(
-      writes[0].postDataJSON().fixtures.map((f: { name: string }) => f.name),
-    ).toEqual(["Spot", "Par"]);
+    expect(writes()[0].expectedRevision).toBe("v1");
+    expect(savedVenueRequest(writes()[0]).fixtures.map((f) => f.name)).toEqual([
+      "Spot",
+      "Par",
+    ]);
   });
 
-  test("Delete, confirmed, sends a DELETE and nothing else", async ({
+  test("Delete, confirmed, sends a DeleteVenue and nothing else", async ({
     page,
   }) => {
     const venue = richVenue(unique("rig"));
-    const writes = await routeVenueList(page, venue);
+    const rpc = await routeVenueList(page, venue);
+    const writes = () =>
+      rpc.allCalls.filter(
+        (c) => c.method === "SaveVenue" || c.method === "DeleteVenue",
+      );
     await page.goto("/#/lighting/venues");
     await card(page, venue.name)
       .getByRole("button", { name: "Delete" })
@@ -258,10 +264,10 @@ test.describe("Venues", () => {
       .locator(".dialog-overlay")
       .getByRole("button", { name: "Confirm" })
       .click();
-    await expect.poll(() => writes.length).toBe(1);
-    expect(writes[0].method()).toBe("DELETE");
-    expect(new URL(writes[0].url()).pathname).toBe(
-      `/api/lighting/venues/${venue.name}`,
+    await expect.poll(() => writes().length).toBe(1);
+    expect(writes()[0].method).toBe("DeleteVenue");
+    expect(rpc.calls(LightingService.method.deleteVenue)[0].name).toBe(
+      venue.name,
     );
   });
 });
@@ -270,31 +276,23 @@ test.describe("Venues", () => {
 async function openPlan(page: Page, venue: ReturnType<typeof richVenue>) {
   let current = structuredClone(venue);
   const puts: Record<string, unknown>[] = [];
-  await page.route(
-    new RegExp(`/api/lighting/venues/${venue.name}(\\?.*)?$`),
-    (r) => {
-      if (r.request().method() === "PUT") {
-        current = { ...current, ...r.request().postDataJSON() };
-        puts.push(r.request().postDataJSON());
-        return r.fulfill(json({ status: "saved", venue_error: null }));
-      }
-      return r.fulfill(
-        json({
-          venue: {
-            ...current,
-            fixtures: Array.isArray(current.fixtures)
-              ? Object.fromEntries(
-                  (current.fixtures as { name: string }[]).map((f) => [
-                    f.name,
-                    f,
-                  ]),
-                )
-              : current.fixtures,
-          },
-          dsl: "",
-        }),
-      );
-    },
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const body = savedVenueRequest(request);
+    current = {
+      ...current,
+      ...body,
+      fixtures: Object.fromEntries(body.fixtures.map((f) => [f.name, f])),
+    } as unknown as typeof current;
+    puts.push({
+      fixtures: body.fixtures,
+      focus_points: body.focus_points,
+      source: body.source,
+    });
+    return venueSavedReply({ name: request.name });
+  });
+  rpc.unary(LightingService.method.getVenue, () =>
+    venueDetailReply({ venue: current, dsl: "", version: "v1" }),
   );
   await page.goto(`/?wsId=${venue.name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
@@ -342,7 +340,7 @@ test.describe("The Venues plan", () => {
     await expect.poll(() => puts.length).toBe(1);
     const fixtures = byName(puts[0]);
     expect(fixtures.Spot).toEqual(venue.fixtures.Spot);
-    expect(fixtures.Par).toEqual(venue.fixtures.Par);
+    expect(fixtures.Par).toEqual({ ...venue.fixtures.Par, mode: null });
     expect(puts[0].focus_points).toEqual(venue.focus_points);
     expect(puts[0].source).toEqual(venue.source);
   });
@@ -359,7 +357,7 @@ test.describe("The Venues plan", () => {
     expect(points.drummer).toEqual(venue.focus_points.drummer);
     const fixtures = byName(puts[0]);
     expect(fixtures.Spot).toEqual(venue.fixtures.Spot);
-    expect(fixtures.Par).toEqual(venue.fixtures.Par);
+    expect(fixtures.Par).toEqual({ ...venue.fixtures.Par, mode: null });
   });
 });
 

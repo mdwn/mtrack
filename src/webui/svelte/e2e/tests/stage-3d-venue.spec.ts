@@ -13,6 +13,10 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { LightingService } from "../../src/gen/player/v1/player_pb";
+import type { VenueScene } from "../../src/gen/rules/mtrack_rules";
+import { venueSceneReply } from "../support/lighting-rpc";
+import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // Plot | 3D on the venue's stage card: the picture changes in place; the
@@ -37,7 +41,7 @@ const BUILT_IN = {
 };
 
 /** "club" as its file reads: one fixture placed, two not. */
-const CLUB_SCENE = {
+const CLUB_SCENE: VenueScene = {
   fixtures: {
     A: {
       tags: [],
@@ -45,6 +49,7 @@ const CLUB_SCENE = {
       mode: null,
       position: [-1, 2, 3],
       rotation: [0, 0, 0],
+      beam_angle: null,
       rig: null,
     },
     B: {
@@ -53,6 +58,7 @@ const CLUB_SCENE = {
       mode: null,
       position: null,
       rotation: null,
+      beam_angle: null,
       rig: null,
     },
     C: {
@@ -61,6 +67,7 @@ const CLUB_SCENE = {
       mode: null,
       position: null,
       rotation: null,
+      beam_angle: null,
       rig: null,
     },
   },
@@ -76,9 +83,12 @@ const CLUB_SCENE = {
 async function withCurrentVenue(page: Page, path: string) {
   const wsId = `s3dv-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
   let sceneReads = 0;
-  await page.route(/\/api\/lighting\/venues\/club\/scene(\?.*)?$/, (r) => {
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getVenueScene, (request) => {
+    // Only "club" is answered here; any other venue is the mock server's.
+    if (request.name !== "club") return undefined;
     sceneReads++;
-    return r.fulfill({ json: CLUB_SCENE });
+    return venueSceneReply(CLUB_SCENE);
   });
   await page.goto(`/?wsId=${wsId}${path}`);
   await sendStage(page, wsId, BUILT_IN);

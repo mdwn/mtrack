@@ -14,7 +14,7 @@
 
 import { type Page } from "@playwright/test";
 import { card } from "../support/locators";
-import { api, expect, synthGdtf, test } from "./harness";
+import { expect, synthGdtf, test, venueOf } from "./harness";
 
 // The venue form against the real binary: a save shows on the page at once,
 // and a row chooses its own mode.
@@ -123,9 +123,7 @@ test.describe("A mode per fixture in the form", () => {
       '  fixture "Fixture 3" Brick mode "8: RGBS" @ 1:10',
       '  fixture "Fixture 4" Brick mode "8: RGBS" @ 1:14',
     ]);
-    const got = await api<{
-      venue: { fixtures: Record<string, { mode?: string }> };
-    }>(project, "/lighting/venues/mix");
+    const got = await venueOf(project, "mix");
     expect(got.venue.fixtures["Fixture 2"].mode).toBe("Mover 16bit");
 
     await page.reload();

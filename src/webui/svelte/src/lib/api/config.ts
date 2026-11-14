@@ -22,7 +22,6 @@ import type {
   Controller,
   FileSaved,
   FitReport,
-  Fixture,
   FixtureSettingsData,
   FixtureType,
   FixtureTypeDeleted,
@@ -39,7 +38,6 @@ import type {
   MvrImportAnswer,
   MvrInspection,
   MvrKeep,
-  MvrKept,
   NoiseFloor,
   PlaylistDetail,
   PlaylistInfo,
@@ -54,7 +52,6 @@ import type {
   FixtureTypeSaved,
   StoreSnapshot,
   Vec3,
-  Venue,
   VenueDetail,
   VenueError,
   VenueList,
@@ -62,6 +59,7 @@ import type {
   VenueSaved,
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { configClient, lightingClient, playerClient } from "../grpc/client";
 import {
   mapAudioDevices,
@@ -86,12 +84,22 @@ import {
   mapFixtureTypeGdtf,
   mapFixtureTypeList,
   mapFixtureTypeSaved,
+  mapAimPoints,
   mapGroups,
+  mapMvrExportSummary,
   mapReadiness,
   mapSettingsSaved,
+  mapVenueDetail,
+  mapVenueList,
+  mapVenuePatch,
+  mapVenueSaved,
+  mapVenueScene,
   saveFixtureSettingsRequest,
   saveFixtureTypeRequest,
+  saveVenueRequest,
+  type VenueBody,
 } from "../grpc/lighting";
+import { BadAnswerError } from "../lighting/answer";
 import {
   callError,
   mapPlaylistDetail,
@@ -100,16 +108,7 @@ import {
   type PlaylistSettings,
 } from "../grpc/library";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
-import {
-  get,
-  post,
-  put,
-  del,
-  uploadFile,
-  uploadFiles,
-  apiError,
-  versionedError,
-} from "./rest";
+import { get, uploadFile, uploadFiles, apiError } from "./rest";
 export { ConflictError } from "./rest";
 
 /** Describes a device's channel count without overstating what is known. */
@@ -518,11 +517,17 @@ export async function fetchMvrExportSummary(
   venue: string,
   dirs: MvrDirs = {},
 ): Promise<MvrExportSummary> {
-  const res = await get(
-    `/lighting/mvr/export/summary?${exportParams(venue, {}, dirs)}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to summarize the export");
-  return res.json();
+  try {
+    return mapMvrExportSummary(
+      await lightingClient.getMvrExportSummary({
+        venue,
+        venuesDir: dirs.venuesDir || undefined,
+        fixtureTypesDir: dirs.fixtureTypesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to summarize the export");
+  }
 }
 
 /** Downloads a venue as an MVR: the archive as a blob. A GET, so it writes
@@ -558,27 +563,27 @@ export async function keepMvrExport(
   options: { file: string; layersFromTags: boolean; overwrite?: boolean },
   dirs: MvrDirs = {},
 ): Promise<KeepResult> {
-  const params = exportParams(
-    venue,
-    {
+  try {
+    const kept = await lightingClient.keepMvrExport({
+      venue,
       file: options.file,
-      layers_from_tags: String(options.layersFromTags),
-      overwrite: options.overwrite ? "true" : undefined,
-    },
-    dirs,
-  );
-  const res = await post(`/lighting/mvr/export/keep?${params}`);
-  if (res.status === 409) {
-    const body = await res.json().catch(() => ({}));
-    return {
-      status: "exists",
-      existing:
-        typeof body.existing === "string" ? body.existing : options.file,
-    };
+      layersFromTags: options.layersFromTags,
+      overwrite: options.overwrite ?? false,
+      venuesDir: dirs.venuesDir || undefined,
+      fixtureTypesDir: dirs.fixtureTypesDir || undefined,
+    });
+    switch (kept.outcome.case) {
+      case "kept":
+        return { status: "kept", path: kept.outcome.value };
+      case "existing":
+        return { status: "exists", existing: kept.outcome.value };
+      default:
+        throw new BadAnswerError("a kept export");
+    }
+  } catch (e) {
+    if (e instanceof BadAnswerError) throw e;
+    throw callError(e, "Failed to keep a copy of the export");
   }
-  if (!res.ok) throw await apiError(res, "Failed to keep a copy of the export");
-  const body: MvrKept = await res.json();
-  return { status: "kept", path: body.kept };
 }
 
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam
@@ -588,19 +593,21 @@ export async function addAimPoints(
   dirs: MvrDirs = {},
   version?: string,
 ): Promise<AimPoints> {
-  const params = new URLSearchParams();
-  if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
-  if (dirs.fixtureTypesDir)
-    params.set("fixture_types_dir", dirs.fixtureTypesDir);
-  const query = params.toString();
-  const res = await post(
-    `/lighting/venues/${encodeURIComponent(venue)}/aim-points${query ? `?${query}` : ""}`,
-    undefined,
-    version ? { "If-Match": version } : undefined,
-  );
-  if (!res.ok) throw await versionedError(res, "Failed to add aim points");
+  let added: AimPoints;
+  try {
+    added = mapAimPoints(
+      await lightingClient.addVenueAimPoints({
+        name: venue,
+        venuesDir: dirs.venuesDir || undefined,
+        fixtureTypesDir: dirs.fixtureTypesDir || undefined,
+        expectedRevision: version || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to add aim points");
+  }
   venueChanged(venue);
-  return res.json();
+  return added;
 }
 
 export async function fetchFixtureType(
@@ -681,20 +688,6 @@ export async function postFixtureSettings(
     venueChanged(null);
   }
   return saved;
-}
-
-/** The query of a venue save: its directory, and the old name when the
- *  save renames (the server moves or renames the one file). */
-function saveParams(
-  dir: string | undefined,
-  from: string | null | undefined,
-  extra: Record<string, string> = {},
-): string {
-  const params = new URLSearchParams(extra);
-  if (dir) params.set("dir", dir);
-  if (from) params.set("from", from);
-  const query = params.toString();
-  return query ? `?${query}` : "";
 }
 
 export async function saveFixtureType(
@@ -817,57 +810,56 @@ const VENUES_TIMEOUT_MS = 10_000;
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. Gives up after `VENUES_TIMEOUT_MS`. */
 export async function fetchVenues(dir?: string): Promise<VenueList> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await get(
-    `/lighting/venues${params}`,
-    AbortSignal.timeout(VENUES_TIMEOUT_MS),
-  );
-  if (!res.ok) throw await apiError(res, "Failed to fetch venues");
-  return res.json();
+  const signal = AbortSignal.timeout(VENUES_TIMEOUT_MS);
+  try {
+    return mapVenueList(
+      await lightingClient.listVenues({ dir: dir || undefined }, { signal }),
+    );
+  } catch (e) {
+    // The caller tells a list that never came from one that was refused.
+    if (signal.aborted) {
+      throw new DOMException("The venue list did not arrive", "TimeoutError");
+    }
+    throw callError(e, "Failed to fetch venues");
+  }
 }
 
 export async function fetchVenue(
   name: string,
   dir?: string,
 ): Promise<VenueDetail> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await get(
-    `/lighting/venues/${encodeURIComponent(name)}${params}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to fetch venue");
-  return res.json();
+  try {
+    return mapVenueDetail(
+      await lightingClient.getVenue({ name, dir: dir || undefined }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to fetch venue");
+  }
 }
 
 export async function saveVenue(
   name: string,
-  data: {
-    /** Each as the venue serves it, a `null` mode or beam angle for none
-     *  (the server reads null and absent alike). */
-    fixtures: (Omit<Fixture, "mode" | "beam_angle"> & {
-      mode?: string | null;
-      beam_angle?: number | null;
-    })[];
-    focus_points?: Venue["focus_points"];
-    source?: Venue["source"];
-  },
+  data: VenueBody,
   dir?: string,
   version?: string,
   /** The venue's old name: the save renames it. */
   from?: string | null,
 ): Promise<SavedVenue> {
-  const params = saveParams(dir, from);
-  const res = await put(
-    `/lighting/venues/${encodeURIComponent(name)}${params}`,
-    JSON.stringify(data),
-    version ? { "If-Match": version } : undefined,
-  );
-  if (!res.ok) throw await versionedError(res, "Failed to save venue");
+  let saved: VenueSaved;
+  try {
+    saved = mapVenueSaved(
+      await lightingClient.saveVenue(
+        saveVenueRequest(name, data, { dir, from, version }),
+      ),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to save venue");
+  }
   // A rename changes two venues' views: every one is stale.
   venueChanged(from && from !== name ? null : name);
-  const body: Partial<VenueSaved> = await res.json().catch(() => ({}));
   return {
-    version: body.version ?? null,
-    venueError: body.venue_error ?? null,
+    version: saved.version ?? null,
+    venueError: saved.venue_error ?? null,
   };
 }
 
@@ -884,15 +876,17 @@ export async function fetchVenuePatch(
   dir?: string,
   fixtureTypesDir?: string,
 ): Promise<VenuePatch> {
-  const params = new URLSearchParams();
-  if (dir) params.set("dir", dir);
-  if (fixtureTypesDir) params.set("fixture_types_dir", fixtureTypesDir);
-  const query = params.toString();
-  const res = await get(
-    `/lighting/venues/${encodeURIComponent(name)}/patch${query ? `?${query}` : ""}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to read the venue's patch");
-  return res.json();
+  try {
+    return mapVenuePatch(
+      await lightingClient.getVenuePatch({
+        name,
+        dir: dir || undefined,
+        fixtureTypesDir: fixtureTypesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    throw callError(e, "Failed to read the venue's patch");
+  }
 }
 
 /** What the 3D view draws for a venue, from its files: the stage
@@ -905,25 +899,29 @@ export async function fetchVenueScene(
   dir?: string,
   fixtureTypesDir?: string,
 ): Promise<VenueScene> {
-  const params = new URLSearchParams();
-  if (dir) params.set("dir", dir);
-  if (fixtureTypesDir) params.set("fixture_types_dir", fixtureTypesDir);
-  const query = params.toString();
-  const res = await get(
-    `/lighting/venues/${encodeURIComponent(name)}/scene${query ? `?${query}` : ""}`,
-  );
-  if (res.status === 404)
-    throw new VenueNotFoundError((await apiError(res, "")).message);
-  if (!res.ok) throw await apiError(res, "Failed to read the venue's scene");
-  return res.json();
+  try {
+    return mapVenueScene(
+      await lightingClient.getVenueScene({
+        name,
+        dir: dir || undefined,
+        fixtureTypesDir: fixtureTypesDir || undefined,
+      }),
+    );
+  } catch (e) {
+    const err = callError(e, "Failed to read the venue's scene");
+    if (e instanceof ConnectError && e.code === Code.NotFound) {
+      throw new VenueNotFoundError(err.message);
+    }
+    throw err;
+  }
 }
 
 export async function deleteVenue(name: string, dir?: string): Promise<void> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await del(
-    `/lighting/venues/${encodeURIComponent(name)}${params}`,
-  );
-  if (!res.ok) throw await apiError(res, "Failed to delete venue");
+  try {
+    await lightingClient.deleteVenue({ name, dir: dir || undefined });
+  } catch (e) {
+    throw callError(e, "Failed to delete venue");
+  }
   venueChanged(name);
 }
 

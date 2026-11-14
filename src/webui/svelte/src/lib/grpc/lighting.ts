@@ -50,6 +50,16 @@ import {
   type SaveFixtureTypeSettingsRequestSchema,
   type SaveFixtureTypeResponse,
   type DeleteFixtureTypeResponse,
+  type AddVenueAimPointsResponse,
+  type LightingFixture,
+  type LightingVenue,
+  type ListVenuesResponse,
+  type MvrExportSummary as MvrExportSummaryMessage,
+  type SaveVenueRequestSchema,
+  type SaveVenueResponse,
+  type VenueDetail as VenueDetailMessage,
+  type VenuePatch as VenuePatchMessage,
+  type VenueScene as VenueSceneMessage,
   type LightingVenueError,
   type LightingFit,
   type LightingPreview,
@@ -66,6 +76,7 @@ import {
   type StartFixtureTestRequestSchema,
 } from "../../gen/player/v1/player_pb";
 import type {
+  AimPoints,
   Capability,
   Check,
   CheckKey,
@@ -88,6 +99,7 @@ import type {
   GdtfMode,
   Height,
   LightingGroup,
+  MvrExportSummary,
   Preview,
   PreviewEffect,
   PreviewEvaluation,
@@ -105,7 +117,13 @@ import type {
   TestUnavailable,
   TestWarning,
   Vec3,
+  Venue,
+  VenueDetail,
   VenueError,
+  VenueList,
+  VenuePatch,
+  VenueSaved,
+  VenueScene,
   Want,
   Warning,
 } from "../../gen/rules/mtrack_rules";
@@ -1016,6 +1034,240 @@ export function saveFixtureSettingsRequest(
       : FixtureStrobeCurve.UNSPECIFIED,
     write: body.write,
     venueRevisions: body.venue_versions ?? {},
+  };
+}
+
+// ---- Venues ----
+
+function point(v: LightingVec3): Vec3 {
+  return [v.x, v.y, v.z];
+}
+
+function optionalPoint(v: LightingVec3 | undefined): Vec3 | null {
+  return v ? point(v) : null;
+}
+
+function venueFixture(f: LightingFixture): Venue["fixtures"][string] {
+  const fixture: Venue["fixtures"][string] = {
+    name: f.name,
+    fixture_type: f.fixtureType,
+    universe: f.universe,
+    start_channel: f.startChannel,
+    tags: [...f.tags],
+    position: optionalPoint(f.position),
+    rotation: optionalPoint(f.rotation),
+  };
+  // Present only when the venue says it, as the venue always served them.
+  if (f.mode !== undefined) fixture.mode = f.mode;
+  if (f.beamAngle !== undefined) fixture.beam_angle = f.beamAngle;
+  return fixture;
+}
+
+/** A venue as the pages hold it. */
+export function mapVenue(v: LightingVenue): Venue {
+  return {
+    name: v.name,
+    fixtures: Object.fromEntries(
+      Object.entries(v.fixtures).map(([name, f]) => [name, venueFixture(f)]),
+    ),
+    focus_points: Object.fromEntries(
+      Object.entries(v.focusPoints).map(([name, p]) => [name, point(p)]),
+    ),
+    source: v.source
+      ? {
+          mvr: v.source.mvr,
+          origin: v.source.origin ? point(v.source.origin) : [0, 0, 0],
+        }
+      : null,
+  };
+}
+
+/** The venues of a directory with their files and revisions (the pages
+ *  call a revision `version`), and the files that did not read. */
+export function mapVenueList(r: ListVenuesResponse): VenueList {
+  return {
+    venues: Object.fromEntries(
+      Object.entries(r.venues).map(([name, v]) => [name, mapVenue(v)]),
+    ),
+    owners: Object.fromEntries(
+      Object.entries(r.owners).map(([name, o]) => [
+        name,
+        { file: o.file, editable: o.editable, reason: o.reason ?? null },
+      ]),
+    ),
+    errors: r.errors.map((e) => ({ file: e.file, error: e.error })),
+    versions: { ...r.revisions },
+  };
+}
+
+/** A venue with its file's text and revision. */
+export function mapVenueDetail(d: VenueDetailMessage): VenueDetail {
+  if (!d.venue) throw new BadAnswerError("a venue");
+  return { venue: mapVenue(d.venue), dsl: d.dsl, version: d.revision };
+}
+
+/** What a venue save answers (`status` is always `saved`). */
+export function mapVenueSaved(r: SaveVenueResponse): VenueSaved {
+  return {
+    status: "saved",
+    name: r.name,
+    reloaded: r.reloaded,
+    version: r.revision,
+    venue_error: venueError(r.venueError),
+  };
+}
+
+/** What a venue save writes: its fixtures as rows (each as the venue
+ *  serves it, a `null` mode or beam angle for none), its focus points and
+ *  its provenance. */
+export interface VenueBody {
+  fixtures: (Omit<Venue["fixtures"][string], "mode" | "beam_angle"> & {
+    mode?: string | null;
+    beam_angle?: number | null;
+  })[];
+  focus_points?: Venue["focus_points"];
+  source?: Venue["source"];
+}
+
+function vec(
+  v: Vec3 | null | undefined,
+): { x: number; y: number; z: number } | undefined {
+  return v ? { x: v[0], y: v[1], z: v[2] } : undefined;
+}
+
+/** The call for a venue save: `from` the old name of a rename, `version`
+ *  the revision the venue was read at (none is not checked). */
+export function saveVenueRequest(
+  name: string,
+  data: VenueBody,
+  opts: { dir?: string; from?: string | null; version?: string } = {},
+): MessageInitShape<typeof SaveVenueRequestSchema> {
+  return {
+    name,
+    from: opts.from || undefined,
+    dir: opts.dir || undefined,
+    expectedRevision: opts.version || undefined,
+    body: {
+      case: "form",
+      value: {
+        fixtures: data.fixtures.map((f) => ({
+          name: f.name,
+          fixtureType: f.fixture_type,
+          universe: f.universe,
+          startChannel: f.start_channel,
+          tags: f.tags ?? [],
+          position: vec(f.position),
+          rotation: vec(f.rotation),
+          mode: f.mode ?? undefined,
+          beamAngle: f.beam_angle ?? undefined,
+        })),
+        focusPoints: Object.fromEntries(
+          Object.entries(data.focus_points ?? {}).map(([n, p]) => [
+            n,
+            { x: p[0], y: p[1], z: p[2] },
+          ]),
+        ),
+        source: data.source
+          ? { mvr: data.source.mvr, origin: vec(data.source.origin) }
+          : undefined,
+      },
+    },
+  };
+}
+
+/** The addresses a venue's fixtures occupy, and the findings on them. */
+export function mapVenuePatch(p: VenuePatchMessage): VenuePatch {
+  return {
+    spans: p.spans.map((s) => ({
+      fixture: s.fixture,
+      universe: s.universe,
+      address: s.address,
+      footprint: s.footprint ?? null,
+      type: s.fixtureType,
+      mode: s.mode ?? null,
+    })),
+    overlaps: p.overlaps.map((o) => ({
+      first: o.first,
+      second: o.second,
+      first_gang: [...o.firstGang],
+      second_gang: [...o.secondGang],
+      universe: o.universe,
+      from: o.from,
+      to: o.to,
+    })),
+    overruns: p.overruns.map((o) => ({
+      fixture: o.fixture,
+      universe: o.universe,
+      address: o.address,
+      footprint: o.footprint,
+      last: o.last,
+    })),
+  };
+}
+
+/** What the 3D view draws for a venue from its files. */
+export function mapVenueScene(s: VenueSceneMessage): VenueScene {
+  if (!s.venue) throw new BadAnswerError("a venue's scene");
+  return {
+    fixtures: Object.fromEntries(
+      Object.entries(s.fixtures).map(([name, f]) => [
+        name,
+        {
+          tags: [...f.tags],
+          type: f.fixtureType,
+          position: optionalPoint(f.position),
+          rotation: optionalPoint(f.rotation),
+          beam_angle: f.beamAngle ?? null,
+          rig: f.rig ?? null,
+          mode: f.mode ?? null,
+        },
+      ]),
+    ),
+    venue: {
+      name: s.venue.name,
+      focus_points: Object.fromEntries(
+        Object.entries(s.venue.focusPoints).map(([name, p]) => [
+          name,
+          point(p),
+        ]),
+      ),
+      scenery: s.venue.scenery ?? null,
+      scenery_error: s.venue.sceneryError ?? null,
+    },
+  };
+}
+
+/** The focus points an aim point addition made. */
+export function mapAimPoints(a: AddVenueAimPointsResponse): AimPoints {
+  return {
+    created: a.created.map((c) => {
+      if (!c.point) throw new BadAnswerError("an aim point");
+      return { name: c.name, fixture: c.fixture, point: point(c.point) };
+    }),
+    reloaded: a.reloaded,
+    version: a.revision,
+    venue_error: venueError(a.venueError),
+  };
+}
+
+/** What an MVR export would hold, and the name a download would carry. */
+export function mapMvrExportSummary(
+  s: MvrExportSummaryMessage,
+): MvrExportSummary {
+  return {
+    file_name: s.fileName,
+    venue: s.venue,
+    output: s.output,
+    fixtures: s.fixtures,
+    focus_points: s.focusPoints,
+    embedded_gdtfs: [...s.embeddedGdtfs],
+    generated_gdtfs: { ...s.generatedGdtfs },
+    positioned_fixtures: s.positionedFixtures,
+    fixed_fixtures: s.fixedFixtures.map((f) => ({
+      name: f.name,
+      focus: f.focus ?? null,
+    })),
+    warnings: [...s.warnings],
   };
 }
 

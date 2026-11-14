@@ -28,6 +28,7 @@ import { LightingService } from "../../src/gen/player/v1/player_pb";
 import {
   fixtureTypeInfoReply,
   fixtureTypeListReply,
+  venueListReply,
 } from "../support/lighting-rpc";
 import { card } from "../support/locators";
 import { mockRpc } from "../support/rpc";
@@ -70,9 +71,8 @@ const venues = {
 
 /** Serves `venues` as the listing. */
 async function routeVenues(page: Page) {
-  await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
-    route.fulfill({ json: venues }),
-  );
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.listVenues, venueListReply(venues));
 }
 
 test.describe("A venue whose file is not its alone", () => {

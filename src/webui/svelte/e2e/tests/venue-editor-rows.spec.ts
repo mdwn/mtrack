@@ -14,13 +14,18 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { LightingService } from "../../src/gen/player/v1/player_pb";
-import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import {
+  fixtureTypeListReply,
+  savedVenueRequest,
+  typeEntry,
+  venueSavedReply,
+} from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 
 // The venue editor's rows: a new row continues the patch and has a name, and
 // a row that cannot be saved blocks the save instead of being dropped. Every
-// answer is routed per test (page.route); the shared mock is untouched, and
-// every PUT is caught here, never reaching it.
+// answer is given per test (mockRpc); the shared mock is untouched, and
+// every save is caught here, never reaching it.
 
 interface Put {
   fixtures: {
@@ -51,14 +56,9 @@ async function setUp(page: Page) {
       errors: [],
     }),
   );
-  await page.route(/\/api\/lighting\/venues\/[^/?]+(\?.*)?$/, (route) => {
-    if (route.request().method() !== "PUT") return route.fallback();
-    puts.push(route.request().postDataJSON());
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ status: "saved", venue_error: null }),
-    });
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    puts.push(savedVenueRequest(request));
+    return venueSavedReply({ name: request.name });
   });
   await page.goto("/#/lighting/venues");
   await page.getByRole("button", { name: "New Venue" }).click();

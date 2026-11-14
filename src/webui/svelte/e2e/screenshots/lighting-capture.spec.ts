@@ -42,6 +42,10 @@ import {
   readinessReply,
   settingsSavedReply,
   testOptionsReply,
+  venueDetailReply,
+  venueListReply,
+  venuePatchReply,
+  venueSavedReply,
 } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import type {
@@ -716,13 +720,15 @@ async function rig(page: Page, status: StatusExtras = {}) {
   rpc.unary(LightingService.method.getFixtureTestOptions, (req) =>
     testOptionsReply(testOptions(req.fixtureType || BRICK) as TestOptions),
   );
-  await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
-    json(route, {
+  rpc.unary(
+    LightingService.method.listVenues,
+    venueListReply({
       venues: {
         house: {
           name: "house",
           fixtures: Object.fromEntries(fixtures.map((f) => [f.name, f])),
-          groups: {},
+          focus_points: {},
+          source: null,
         },
         club: {
           name: "club",
@@ -733,15 +739,21 @@ async function rig(page: Page, status: StatusExtras = {}) {
               universe: 1,
               start_channel: 1,
               tags: ["wash", "front"],
+              position: null,
+              rotation: null,
             },
           },
-          groups: {},
+          focus_points: {},
+          source: null,
         },
       },
+      owners: {},
+      errors: [],
     }),
   );
-  await page.route(/\/api\/lighting\/venues\/house\/patch(\?.*)?$/, (route) =>
-    json(route, {
+  rpc.unary(
+    LightingService.method.getVenuePatch,
+    venuePatchReply({
       spans: fixtures.map((f) => ({
         fixture: f.name,
         universe: f.universe,
@@ -764,10 +776,9 @@ async function rig(page: Page, status: StatusExtras = {}) {
       overruns: [],
     }),
   );
-  await page.route(/\/api\/lighting\/venues\/house(\?.*)?$/, (route) => {
-    if (route.request().method() !== "GET")
-      return json(route, { status: "saved", venue_error: null });
-    return json(route, {
+  rpc.unary(
+    LightingService.method.getVenue,
+    venueDetailReply({
       venue: {
         name: "house",
         fixtures: Object.fromEntries(fixtures.map((f) => [f.name, f])),
@@ -775,8 +786,12 @@ async function rig(page: Page, status: StatusExtras = {}) {
         source: null,
       },
       dsl: "",
-    });
-  });
+      version: "v1",
+    }),
+  );
+  rpc.unary(LightingService.method.saveVenue, (req) =>
+    venueSavedReply({ name: req.name }),
+  );
 }
 
 let counter = 0;

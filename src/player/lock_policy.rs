@@ -166,6 +166,14 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "GetFixtureType"),
     (Grpc, "GetFixtureTypeGdtfDetails"),
     (Grpc, "GetFixtureTypeSettings"),
+    // The venues' reads, and the MVR export's summary (it writes nothing).
+    // Saving, deleting, adding aim points and keeping an export stay locked
+    // out, as the PUT, DELETE and POST routes were.
+    (Grpc, "ListVenues"),
+    (Grpc, "GetVenue"),
+    (Grpc, "GetVenuePatch"),
+    (Grpc, "GetVenueScene"),
+    (Grpc, "GetMvrExportSummary"),
     // Web: the pure read that happens to be a POST (the MVR inspector, which
     // writes nothing).
     (Web, "POST /lighting/mvr/inspect"),
@@ -206,8 +214,11 @@ mod tests {
 
     #[test]
     fn web_gets_are_open_and_other_methods_are_listed() {
-        assert!(open_while_locked(Web, "GET /lighting/venues/{name}"));
+        assert!(open_while_locked(Web, "GET /lighting/assets/{*path}"));
         assert!(open_while_locked(Web, "POST /lighting/mvr/inspect"));
+        assert!(!open_while_locked(Web, "POST /lighting/mvr/import"));
+        // The routes that moved to LightingService are no longer listed.
+        assert!(!open_while_locked(Web, "POST /lighting/mvr/export/keep"));
         assert!(!open_while_locked(Web, "PUT /lighting/venues/{name}"));
         // The routes that moved to LightingService are no longer listed.
         assert!(!open_while_locked(Web, "POST /lighting/validate"));
@@ -269,6 +280,11 @@ mod tests {
             "GetFixtureType",
             "GetFixtureTypeGdtfDetails",
             "GetFixtureTypeSettings",
+            "ListVenues",
+            "GetVenue",
+            "GetVenuePatch",
+            "GetVenueScene",
+            "GetMvrExportSummary",
         ] {
             assert!(open_while_locked(Grpc, open), "{open}");
         }
@@ -279,6 +295,10 @@ mod tests {
             "SaveFixtureType",
             "DeleteFixtureType",
             "SaveFixtureTypeSettings",
+            "SaveVenue",
+            "DeleteVenue",
+            "AddVenueAimPoints",
+            "KeepMvrExport",
         ] {
             assert!(!open_while_locked(Grpc, locked), "{locked}");
         }

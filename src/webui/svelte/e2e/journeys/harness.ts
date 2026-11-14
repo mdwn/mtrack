@@ -38,8 +38,14 @@ import {
 } from "../../src/gen/player/v1/player_pb";
 import type { Status } from "../../src/gen/rules/mtrack_rules";
 import { mapSongList } from "../../src/lib/grpc/library";
+import {
+  mapVenueDetail,
+  mapVenueList,
+  mapVenuePatch,
+  mapVenueScene,
+} from "../../src/lib/grpc/lighting";
 import { mapWatchEvent } from "../../src/lib/grpc/watch";
-import { playerClientAt } from "../support/player-client";
+import { lightingClientAt, playerClientAt } from "../support/player-client";
 import { dataFrame } from "../support/stage-stream";
 
 /** The repository root (this file is src/webui/svelte/e2e/journeys/). */
@@ -372,7 +378,6 @@ export function status(project: Project): Promise<Status> {
   return readStatus(project.url);
 }
 
-/** GET a JSON API path of the project. */
 /** The player's song library as the song pages see it: the songs that
  *  loaded, and those that failed (`ListSongs`). */
 export async function songList(project: Project) {
@@ -381,11 +386,27 @@ export async function songList(project: Project) {
   );
 }
 
-export async function api<T = Record<string, unknown>>(
-  project: Project,
-  rel: string,
-): Promise<T> {
-  const res = await fetch(`${project.url}/api${rel}`);
-  if (!res.ok) throw new Error(`GET ${rel}: ${res.status} ${await res.text()}`);
-  return res.json() as Promise<T>;
+/** The venues of the project's venues directory, with their files, as the
+ *  Venues page holds them (`ListVenues`). */
+export async function venueList(project: Project) {
+  return mapVenueList(await lightingClientAt(project.url).listVenues({}));
+}
+
+/** One venue of the project, as the pages hold it (`GetVenue`). */
+export async function venueOf(project: Project, name: string) {
+  return mapVenueDetail(await lightingClientAt(project.url).getVenue({ name }));
+}
+
+/** The addresses a venue's fixtures occupy (`GetVenuePatch`). */
+export async function venuePatch(project: Project, name: string) {
+  return mapVenuePatch(
+    await lightingClientAt(project.url).getVenuePatch({ name }),
+  );
+}
+
+/** What the 3D view draws for a venue from its file (`GetVenueScene`). */
+export async function venueScene(project: Project, name: string) {
+  return mapVenueScene(
+    await lightingClientAt(project.url).getVenueScene({ name }),
+  );
 }

@@ -28,7 +28,7 @@ use crate::webui::wire::mvr::{
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -37,12 +37,12 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use super::lighting_api::{
-    content_version, if_match_version, lighting_dir, project_root, reload_if_current_venue,
-    resolve_lighting_dir, stale_venue_response, validate_lighting_name, venue_error_after_save,
-    LightingDir, VENUE_WRITES,
+    content_version, lighting_dir, project_root, reload_if_current_venue, resolve_lighting_dir,
+    stale_venue_response, validate_lighting_name, venue_error_of, LightingDir, VENUE_WRITES,
 };
+use super::lighting_writes::Answer;
 use crate::lighting;
-use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
+use crate::lighting::export::MvrExportOptions;
 use crate::lighting::import::MvrImportOptions;
 use crate::lighting::types::Vec3;
 
@@ -151,16 +151,15 @@ fn parse_origin(text: &str) -> Result<Vec3, Response> {
 
 /// A directory the caller named, or this host's, proven to stay in the
 /// project. Returns the project-relative string the library functions take.
-#[allow(clippy::result_large_err)]
 fn checked_dir(
-    state: &WebUiState,
+    config_path: &std::path::Path,
     requested: Option<&str>,
     which: LightingDir,
-) -> Result<String, Response> {
+) -> Result<String, Answer> {
     // The config read once: the directory, then proven to stay in the
     // project as named.
-    let dir = lighting_dir(&state.config_path, requested, which)?;
-    resolve_lighting_dir(&state.config_path, Some(&dir), which)?;
+    let dir = lighting_dir(config_path, requested, which)?;
+    resolve_lighting_dir(config_path, Some(&dir), which)?;
     Ok(dir)
 }
 
@@ -171,11 +170,15 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
         name: form.field("name").map(str::to_string),
         origin_mm: form.field("origin").map(parse_origin).transpose()?,
         fixture_types_dir: checked_dir(
-            state,
+            &state.config_path,
             form.field("fixture_types_dir"),
             LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, form.field("venues_dir"), LightingDir::Venues)?,
+        venues_dir: checked_dir(
+            &state.config_path,
+            form.field("venues_dir"),
+            LightingDir::Venues,
+        )?,
         keep: match form.field("keep") {
             Some(text) => serde_json::from_str(text).map_err(|e| {
                 bad_request(format!(
@@ -307,8 +310,8 @@ pub(super) async fn import_mvr(
         Imported::Report(report) => report,
     };
     let venue = report.plan.venue_name.clone();
-    let reloaded = reload_if_current_venue(&state, &venue).await;
-    let venue_error = venue_error_after_save(&state, &venue, &venues_path).await;
+    let reloaded = reload_if_current_venue(&state.player, &venue).await;
+    let venue_error = venue_error_of(&state.player, &state.config_path, &venue, &venues_path).await;
     let answer = MvrImportAnswer {
         write: true,
         plan: None,
@@ -325,7 +328,19 @@ enum Imported {
     Report(lighting::import::MvrImport),
 }
 
-/// Query for the export endpoints.
+/// What an export is asked for.
+#[derive(Default)]
+pub(crate) struct ExportAsk {
+    pub venue: String,
+    /// One layer per first tag.
+    pub layers_from_tags: bool,
+    /// The archive's file name (bare, `.mvr`); default `<venue>.mvr`.
+    pub file: Option<String>,
+    pub venues_dir: Option<String>,
+    pub fixture_types_dir: Option<String>,
+}
+
+/// Query for the export download.
 #[derive(serde::Deserialize)]
 pub(super) struct ExportQuery {
     venue: String,
@@ -333,52 +348,62 @@ pub(super) struct ExportQuery {
     layers_from_tags: Option<bool>,
     /// The archive's file name (bare, `.mvr`); default `<venue>.mvr`.
     file: Option<String>,
-    /// `keep_export` only: replace a file already in `lighting/export/`.
-    overwrite: Option<bool>,
     venues_dir: Option<String>,
     fixture_types_dir: Option<String>,
 }
 
-#[allow(clippy::result_large_err)]
-fn export_options(state: &WebUiState, query: &ExportQuery) -> Result<MvrExportOptions, Response> {
-    validate_lighting_name(&query.venue)?;
+impl From<ExportQuery> for ExportAsk {
+    fn from(query: ExportQuery) -> Self {
+        ExportAsk {
+            venue: query.venue,
+            layers_from_tags: query.layers_from_tags.unwrap_or(false),
+            file: query.file,
+            venues_dir: query.venues_dir,
+            fixture_types_dir: query.fixture_types_dir,
+        }
+    }
+}
+
+fn export_options(
+    config_path: &std::path::Path,
+    ask: &ExportAsk,
+) -> Result<MvrExportOptions, Answer> {
+    validate_lighting_name(&ask.venue)?;
     Ok(MvrExportOptions {
-        output: query.file.clone().filter(|f| !f.trim().is_empty()),
-        layers_from_tags: query.layers_from_tags.unwrap_or(false),
+        output: ask.file.clone().filter(|f| !f.trim().is_empty()),
+        layers_from_tags: ask.layers_from_tags,
         fixture_types_dir: checked_dir(
-            state,
-            query.fixture_types_dir.as_deref(),
+            config_path,
+            ask.fixture_types_dir.as_deref(),
             LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, query.venues_dir.as_deref(), LightingDir::Venues)?,
-        ..MvrExportOptions::for_venue(&query.venue)
+        venues_dir: checked_dir(config_path, ask.venues_dir.as_deref(), LightingDir::Venues)?,
+        ..MvrExportOptions::for_venue(&ask.venue)
     })
 }
 
-/// GET /api/lighting/mvr/export/summary?venue=&layers_from_tags=&file= —
-/// what an export would contain, computed without writing or sending the
+/// What an export would contain, computed without writing or sending the
 /// archive: the export report (fixtures, positioned fixtures, focus points,
 /// GDTFs embedded and generated, warnings, and every positioned fixed
 /// fixture with the focus point it links to) plus `file_name`, the name the
 /// download would carry. The dialog reads it before the user downloads.
-pub(super) async fn export_summary(
-    State(state): State<WebUiState>,
-    Query(query): Query<ExportQuery>,
-) -> impl IntoResponse {
-    let options = export_options(&state, &query)?;
-    let project = project_root(&state.config_path)?;
-    let (_, report) = super::helpers::spawn_blocking_io("summarize MVR export", move || {
+pub(crate) async fn export_summary(
+    config_path: &std::path::Path,
+    ask: &ExportAsk,
+) -> Result<MvrExportSummary, Answer> {
+    let options = export_options(config_path, ask)?;
+    let project = project_root(config_path)?;
+    let (_, report) = super::helpers::blocking_answer("summarize MVR export", move || {
         Ok::<_, String>(
             lighting::export::export_mvr_bytes(&options, &project).map_err(|e| e.to_string()),
         )
     })
     .await?
-    .map_err(bad_request)?;
-    let summary = MvrExportSummary {
+    .map_err(Answer::bad)?;
+    Ok(MvrExportSummary {
         file_name: report.output.clone(),
         export: report,
-    };
-    Ok::<_, Response>((StatusCode::OK, Json(summary)).into_response())
+    })
 }
 
 /// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file= — the
@@ -389,7 +414,7 @@ pub(super) async fn export_mvr(
     State(state): State<WebUiState>,
     Query(query): Query<ExportQuery>,
 ) -> impl IntoResponse {
-    let options = export_options(&state, &query)?;
+    let options = export_options(&state.config_path, &query.into())?;
     let project = project_root(&state.config_path)?;
     let (bytes, report) = super::helpers::spawn_blocking_io("export MVR", move || {
         Ok::<_, String>(
@@ -416,19 +441,18 @@ pub(super) async fn export_mvr(
     Ok::<_, Response>(response)
 }
 
-/// POST /api/lighting/mvr/export/keep?venue=&layers_from_tags=&file=&overwrite=
-/// — writes the archive under `lighting/export/` (the CLI's location) and
-/// names it in `kept`. An existing file is left alone with a 409 naming it,
-/// unless `overwrite=true`. It goes through the lock guard: it writes.
-pub(super) async fn keep_export(
-    State(state): State<WebUiState>,
-    Query(query): Query<ExportQuery>,
-) -> impl IntoResponse {
-    let options = export_options(&state, &query)?;
-    let project = project_root(&state.config_path)?;
-    let overwrite = query.overwrite.unwrap_or(false);
+/// Writes the archive under `lighting/export/` (the CLI's location) and
+/// names it. An existing file is left alone, and named in
+/// [`Kept::Exists`], unless `overwrite`. It writes, so the lock guards it.
+pub(crate) async fn keep_export(
+    config_path: &std::path::Path,
+    ask: &ExportAsk,
+    overwrite: bool,
+) -> Result<Kept, Answer> {
+    let options = export_options(config_path, ask)?;
+    let project = project_root(config_path)?;
     // Built once: the bytes the download would carry are the bytes written.
-    let result = super::helpers::spawn_blocking_io("keep MVR export", move || {
+    let result = super::helpers::blocking_answer("keep MVR export", move || {
         Ok::<_, String>(
             (|| {
                 let (bytes, report) = lighting::export::export_mvr_bytes(&options, &project)?;
@@ -442,25 +466,20 @@ pub(super) async fn keep_export(
     })
     .await?;
     match result {
-        Ok(report) => Ok::<_, Response>(
-            (
-                StatusCode::OK,
-                Json(MvrKept {
-                    kept: report.output,
-                }),
-            )
-                .into_response(),
-        ),
-        Err(KeepError::Exists(existing)) => Ok((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": format!("{EXPORT_DIR}/{existing} already exists"),
-                "existing": existing,
-            })),
-        )
-            .into_response()),
-        Err(KeepError::Failed(message)) => Err(bad_request(message)),
+        Ok(report) => Ok(Kept::Kept(MvrKept {
+            kept: report.output,
+        })),
+        Err(KeepError::Exists(existing)) => Ok(Kept::Exists(existing)),
+        Err(KeepError::Failed(message)) => Err(Answer::bad(message)),
     }
+}
+
+/// How a keep ended.
+pub(crate) enum Kept {
+    /// Written.
+    Kept(MvrKept),
+    /// A file of that name was already there and was left alone; its name.
+    Exists(String),
 }
 
 /// Why a kept export was not written.
@@ -496,42 +515,31 @@ fn content_disposition(file_name: &str) -> String {
     format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
-/// Query for the aim-point action.
-#[derive(serde::Deserialize, Default)]
-pub(super) struct AimQuery {
-    venues_dir: Option<String>,
-    fixture_types_dir: Option<String>,
-}
-
-/// POST /api/lighting/venues/{name}/aim-points — for each fixed fixture
-/// (no pan or tilt) with a position that the export would not link to a
-/// focus point (its rest beam passes more than a degree from every one),
-/// adds a focus point `<fixture> aim` where the rest beam meets the deck
-/// (z = 0), or 3 m along the beam when it does not meet the deck within
-/// 50 m. Fixtures with no position are skipped. The points are added to the
-/// venue file in place — positions, rotations, tags, provenance and comments
-/// untouched — and the running engine reloads the venue if it is playing it.
-/// An `If-Match` version, when sent, must be the venue file's current one
-/// (409 otherwise). Answers `{created: [{name, fixture, point}], reloaded,
-/// version}`.
-pub(super) async fn add_aim_points(
-    State(state): State<WebUiState>,
-    Path(name): Path<String>,
-    Query(query): Query<AimQuery>,
-    headers: axum::http::HeaderMap,
-) -> impl IntoResponse {
-    validate_lighting_name(&name)?;
-    let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), LightingDir::Venues)?;
-    let fixture_types_dir = checked_dir(
-        &state,
-        query.fixture_types_dir.as_deref(),
-        LightingDir::FixtureTypes,
-    )?;
-    let project = project_root(&state.config_path)?;
+/// Adds the venue's aim points: for each fixed fixture (no pan or tilt)
+/// with a position that the export would not link to a focus point (its rest
+/// beam passes more than a degree from every one), a focus point
+/// `<fixture> aim` where the rest beam meets the deck (z = 0), or 3 m along
+/// the beam when it does not meet the deck within 50 m. Fixtures with no
+/// position are skipped. The points are added to the venue file in place —
+/// positions, rotations, tags, provenance and comments untouched — and the
+/// running engine reloads the venue if it is playing it. An `expected`
+/// version, when given, must be the venue file's current one (409,
+/// `conflict`, otherwise).
+pub(crate) async fn add_aim_points(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &std::path::Path,
+    name: &str,
+    venues_dir: Option<&str>,
+    fixture_types_dir: Option<&str>,
+    expected: Option<String>,
+) -> Result<AimPoints, Answer> {
+    validate_lighting_name(name)?;
+    let venues_dir = checked_dir(config_path, venues_dir, LightingDir::Venues)?;
+    let fixture_types_dir = checked_dir(config_path, fixture_types_dir, LightingDir::FixtureTypes)?;
+    let project = project_root(config_path)?;
     let venues_path = project.join(&venues_dir);
-    let venue_name = name.clone();
-    let expected = if_match_version(&headers);
-    let outcome = super::helpers::spawn_blocking_io("add aim points", move || {
+    let venue_name = name.to_string();
+    let outcome = super::helpers::blocking_answer("add aim points", move || {
         Ok::<_, String>(add_aim_points_blocking(
             &project,
             &venue_name,
@@ -543,18 +551,16 @@ pub(super) async fn add_aim_points(
     .await?;
     let (created, version) = match outcome {
         Ok(done) => done,
-        Err(AimError::Stale(current)) => {
-            return Err(stale_venue_response(&name, Some(current)).into())
-        }
-        Err(AimError::Message(e)) => return Err(bad_request(e)),
-        Err(AimError::Refused(r)) => return Err(r.into()),
+        Err(AimError::Stale(current)) => return Err(stale_venue_response(name, Some(current))),
+        Err(AimError::Message(e)) => return Err(Answer::bad(e)),
+        Err(AimError::Refused(r)) => return Err(r),
     };
     let reloaded = if created.is_empty() {
         false
     } else {
-        reload_if_current_venue(&state, &name).await
+        reload_if_current_venue(player, name).await
     };
-    let venue_error = venue_error_after_save(&state, &name, &venues_path).await;
+    let venue_error = venue_error_of(player, config_path, name, &venues_path).await;
     let created = created
         .into_iter()
         .map(|(name, fixture, point)| AimPoint {
@@ -563,13 +569,12 @@ pub(super) async fn add_aim_points(
             point,
         })
         .collect();
-    let answer = AimPoints {
+    Ok(AimPoints {
         created,
         reloaded,
         version,
         venue_error,
-    };
-    Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response())
+    })
 }
 
 /// The points created: (focus point name, fixture, position).
@@ -694,7 +699,7 @@ fn add_aim_points_blocking(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::super::router;
     use super::super::test_helpers::*;
     use super::*;
@@ -717,7 +722,7 @@ mod test {
 <FocusPoint name="Drummer"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6300,1400}</Matrix></FocusPoint>
 </ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
 
-    fn synthetic_mvr(with_deck: bool) -> Vec<u8> {
+    pub(crate) fn synthetic_mvr(with_deck: bool) -> Vec<u8> {
         let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let glb = crate::lighting::import::scene_view::test_glb([-3.0, 0.0, -4.0], [3.0, 0.5, 0.0]);
         let scene = if with_deck {
@@ -789,6 +794,12 @@ mod test {
             )
             .await
             .unwrap()
+    }
+
+    /// The synthetic MVR imported as `kellys` through the web import (a
+    /// route that stays on HTTP), for the calls that act on its venue.
+    pub(crate) async fn import_kellys(state: super::super::super::server::WebUiState) {
+        imported(&router().with_state(state)).await;
     }
 
     #[tokio::test]
@@ -1132,84 +1143,11 @@ mod test {
         );
     }
 
-    async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let text = response_body(response).await;
-        (status, serde_json::from_str(&text).unwrap_or_default())
-    }
-
     #[tokio::test]
-    async fn keeping_an_export_is_a_post_that_will_not_replace_without_overwrite() {
+    async fn the_export_download_sets_its_headers_and_writes_nothing() {
         let (state, dir) = test_state();
         let app = router().with_state(state);
         imported(&app).await;
-        let kept = dir.path().join("lighting/export/tour.mvr");
-        let uri = "/lighting/mvr/export/keep?venue=kellys&file=tour.mvr";
-
-        let (status, body) = post_empty(&app, uri).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["kept"], "lighting/export/tour.mvr");
-        assert!(crate::lighting::mvr::parse_archive(&std::fs::read(&kept).unwrap()).is_ok());
-
-        // A second keep leaves the file alone and names it.
-        std::fs::write(&kept, b"mine").unwrap();
-        let (status, body) = post_empty(&app, uri).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["existing"], "tour.mvr");
-        assert_eq!(std::fs::read(&kept).unwrap(), b"mine");
-
-        let (status, _) = post_empty(&app, &format!("{uri}&overwrite=true")).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_ne!(std::fs::read(&kept).unwrap(), b"mine");
-    }
-
-    #[tokio::test]
-    async fn keeping_an_export_is_refused_while_locked() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state.clone());
-        imported(&app).await;
-        state.player.set_locked(true);
-        let app = axum::Router::new()
-            .nest("/api", super::super::guarded_router(&state))
-            .with_state(state);
-        let (status, _) = post_empty(&app, "/api/lighting/mvr/export/keep?venue=kellys").await;
-        assert_eq!(status, StatusCode::LOCKED);
-        assert!(!dir.path().join("lighting/export").exists());
-    }
-
-    #[tokio::test]
-    async fn export_summary_says_what_is_linked_and_download_sets_its_headers() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-
-        let response = get(&app, "/lighting/mvr/export/summary?venue=kellys").await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["file_name"], "kellys.mvr");
-        // "Lost" is a TODO comment, not a fixture of the venue.
-        assert_eq!(body["fixtures"], 2);
-        assert_eq!(body["positioned_fixtures"], 2);
-        assert_eq!(body["focus_points"], 1);
-        assert_eq!(body["embedded_gdtfs"].as_array().unwrap().len(), 1);
-        let fixed = body["fixed_fixtures"].as_array().unwrap();
-        assert_eq!(fixed.len(), 2);
-        assert!(fixed.iter().all(|f| f["focus"].is_null()), "{body}");
-        assert!(
-            !dir.path().join("lighting/export").exists(),
-            "a summary must not write"
-        );
 
         let response = get(
             &app,
@@ -1258,248 +1196,6 @@ mod test {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[tokio::test]
-    async fn aim_points_hit_the_deck_fall_back_to_three_meters_and_skip_the_linked() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let venue_path = dir.path().join("lighting/venues/kellys.venue");
-        // Brick 1 hangs at (-2, 2.5, 4.2) straight down: the deck is at
-        // its feet. Tilt Brick 2 to point level (rotation about Y): its
-        // beam never meets the deck. Both are fixed fixtures.
-        let original = std::fs::read_to_string(&venue_path).unwrap();
-        let tilted = original
-            .lines()
-            .map(|line| {
-                if line.contains("\"Brick 2\"") {
-                    let (core, comment) = match line.split_once("  # ") {
-                        Some((core, comment)) => (core, format!("  # {comment}")),
-                        None => (line, String::new()),
-                    };
-                    let core = core.split(" rotation ").next().unwrap();
-                    format!("{core} rotation (0, 90, 0){comment}")
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        std::fs::write(&venue_path, &tilted).unwrap();
-
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/venues/kellys/aim-points")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        let created = body["created"].as_array().unwrap();
-        assert_eq!(created.len(), 2, "{body}");
-        let by_fixture = |name: &str| created.iter().find(|c| c["fixture"] == name).unwrap();
-        // Straight down from (-2, 2.5, 4.2) lands on the deck under it.
-        assert_eq!(by_fixture("Brick 1")["name"], "Brick 1 aim");
-        assert_eq!(by_fixture("Brick 1")["point"], json!([-2.0, 2.5, 0.0]));
-        // Level beam: 3 m along it. R = Ry(90): the mounting's -Z becomes -X.
-        let level = by_fixture("Brick 2")["point"].as_array().unwrap().clone();
-        assert!(
-            (level[0].as_f64().unwrap() - (2.0 - 3.0)).abs() < 1e-6,
-            "{level:?}"
-        );
-        assert!((level[2].as_f64().unwrap() - 4.2).abs() < 1e-6, "{level:?}");
-
-        // Comments and provenance are still in the file; the points read
-        // back and the export now links both bricks.
-        let after = std::fs::read_to_string(&venue_path).unwrap();
-        assert!(after.contains("# TODO fixture \"Lost\""), "{after}");
-        assert!(after.contains("imported from mvr("), "{after}");
-        assert!(after.contains("focus \"Brick 1 aim\""), "{after}");
-        let response = get(&app, "/lighting/mvr/export/summary?venue=kellys").await;
-        let summary: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        assert!(
-            summary["fixed_fixtures"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|f| f["focus"].is_string()),
-            "{summary}"
-        );
-
-        // Nothing left to link: a second call creates nothing and leaves
-        // the file alone.
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/venues/kellys/aim-points")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert!(body["created"].as_array().unwrap().is_empty(), "{body}");
-        assert_eq!(std::fs::read_to_string(&venue_path).unwrap(), after);
-    }
-
-    #[tokio::test]
-    async fn aim_points_against_a_stale_version_are_refused_and_change_nothing() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let before = std::fs::read_to_string(&path).unwrap();
-
-        let post = |version: String| {
-            app.clone().oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/venues/kellys/aim-points")
-                    .header("if-match", version)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-        };
-        let response = post("not-the-version".to_string()).await.unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-
-        let response = post(super::content_version(before.as_bytes()))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            body["version"].as_str().unwrap(),
-            super::content_version(after.as_bytes())
-        );
-    }
-
-    async fn post_aim(app: &axum::Router) -> (StatusCode, serde_json::Value) {
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/venues/kellys/aim-points")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        (
-            status,
-            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
-        )
-    }
-
-    #[tokio::test]
-    async fn aim_points_are_refused_for_a_venue_whose_file_is_not_its_alone() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let shared = format!(
-            "{}venue \"annex\" {{\n}}\n",
-            std::fs::read_to_string(&path).unwrap()
-        );
-        std::fs::write(&path, &shared).unwrap();
-
-        let (status, body) = post_aim(&app).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["read_only"], true);
-        assert_eq!(body["file"], "kellys.venue");
-        assert_eq!(body["others"], json!(["annex"]));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), shared);
-    }
-
-    #[tokio::test]
-    async fn aim_points_move_a_light_venue_to_its_venue_file() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let venues = dir.path().join("lighting/venues");
-        let text = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
-        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
-        std::fs::write(venues.join("kellys.light"), &text).unwrap();
-
-        let (status, body) = post_aim(&app).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(!body["created"].as_array().unwrap().is_empty(), "{body}");
-        assert!(!venues.join("kellys.light").exists());
-        let after = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
-        assert!(after.contains("focus \""), "{after}");
-    }
-
-    #[tokio::test]
-    async fn tagging_an_imported_venue_through_the_venue_save_keeps_its_todo_lines() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let before = std::fs::read_to_string(&path).unwrap();
-        assert!(before.contains("# TODO fixture \"Lost\""), "{before}");
-
-        // What the UI does: read the venue, change a tag, PUT it back as JSON.
-        let response = get(&app, "/lighting/venues/kellys").await;
-        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        let mut venue = got["venue"].clone();
-        let fixtures: Vec<serde_json::Value> = venue["fixtures"]
-            .as_object()
-            .unwrap()
-            .values()
-            .cloned()
-            .map(|mut f| {
-                if f["name"] == "Brick 1" {
-                    f["tags"] = json!(["wash"]);
-                }
-                f
-            })
-            .collect();
-        venue["fixtures"] = json!(fixtures);
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/venues/kellys")
-                    .header("content-type", "application/json")
-                    .body(Body::from(venue.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            after.contains("tags (\"wash\")") || after.contains("\"wash\""),
-            "{after}"
-        );
-        assert!(after.contains("# TODO fixture \"Lost\""), "{after}");
-        assert!(after.contains("# Seeded from Kellys.mvr"), "{after}");
-        assert!(after.contains("# layer \"Front Truss\""), "{after}");
-        assert!(after.contains("imported from mvr("), "{after}");
-        // Brick 2 was not touched, so its line is byte for byte as imported.
-        let line = |text: &str| {
-            text.lines()
-                .find(|l| l.contains("\"Brick 2\""))
-                .unwrap()
-                .to_string()
-        };
-        assert_eq!(line(&before), line(&after));
-    }
-
     /// The imported venue with `mode "<mode>"` written onto one fixture's
     /// line, after its type, as a hand edit would put it.
     /// `text` with the mode on `fixture`'s line changed to `mode` — what a
@@ -1529,27 +1225,6 @@ mod test {
             .find(|l| l.contains(&format!("fixture \"{fixture}\"")))
             .unwrap_or_else(|| panic!("no line for {fixture} in {text}"))
             .to_string()
-    }
-
-    #[tokio::test]
-    async fn aim_points_keep_a_fixture_s_mode() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        // A fixed mode: still a fixed fixture (a mover's mode would take it
-        // out of the aim-point set).
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let moded = std::fs::read_to_string(&path).unwrap();
-        assert!(line_of(&moded, "Brick 1").contains("mode \"8: RGBS\""));
-
-        let (status, body) = post_empty(&app, "/lighting/venues/kellys/aim-points").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("focus \"Brick 1 aim\""), "{after}");
-        assert!(
-            line_of(&after, "Brick 1").contains("mode \"8: RGBS\""),
-            "{after}"
-        );
     }
 
     #[tokio::test]
@@ -1600,56 +1275,6 @@ mod test {
             line_of(&after, "Brick 1").contains("mode \"Mover 16bit\""),
             "{after}"
         );
-    }
-
-    #[tokio::test]
-    async fn a_json_venue_save_keeps_every_fixture_s_mode() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        imported(&app).await;
-        let path = dir.path().join("lighting/venues/kellys.venue");
-        let moded = with_line_mode(
-            &std::fs::read_to_string(&path).unwrap(),
-            "Brick 2",
-            "Mover 16bit",
-        );
-        std::fs::write(&path, &moded).unwrap();
-
-        // What the plan and the inspector do: read, change another fixture,
-        // PUT the whole venue back as JSON.
-        let response = get(&app, "/lighting/venues/kellys").await;
-        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        let mut venue = got["venue"].clone();
-        assert_eq!(venue["fixtures"]["Brick 2"]["mode"], "Mover 16bit");
-        let fixtures: Vec<serde_json::Value> = venue["fixtures"]
-            .as_object()
-            .unwrap()
-            .values()
-            .cloned()
-            .map(|mut f| {
-                if f["name"] == "Brick 1" {
-                    f["position"] = json!([-1.0, 2.5, 4.2]);
-                }
-                f
-            })
-            .collect();
-        venue["fixtures"] = json!(fixtures);
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri("/lighting/venues/kellys")
-                    .header("content-type", "application/json")
-                    .body(Body::from(venue.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(line_of(&after, "Brick 2"), line_of(&moded, "Brick 2"));
-        assert!(after.contains("position (-1, 2.5, 4.2)"), "{after}");
     }
 
     #[test]

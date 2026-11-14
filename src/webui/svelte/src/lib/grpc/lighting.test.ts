@@ -16,20 +16,32 @@ import { describe, expect, it } from "vitest";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
+  AddVenueAimPointsResponseSchema,
   FixtureStrobeCurve,
   FixtureTypeFile,
   FixtureTypeSettingsSchema,
   LightingFitSchema,
   LightingReadinessSchema,
+  ListVenuesResponseSchema,
+  MvrExportSummarySchema,
+  SaveVenueRequestSchema,
   StartFixtureTestRequestSchema,
+  VenueDetailSchema,
+  VenueSceneSchema,
 } from "../../gen/player/v1/player_pb";
 import { BadAnswerError } from "../lighting/answer";
 import {
+  mapAimPoints,
   mapFit,
   mapFixtureSettings,
+  mapMvrExportSummary,
   mapReadiness,
+  mapVenueDetail,
+  mapVenueList,
+  mapVenueScene,
   saveFixtureSettingsRequest,
   saveFixtureTypeRequest,
+  saveVenueRequest,
   startFixtureTestRequest,
   testCallError,
   TestRefused,
@@ -215,5 +227,230 @@ describe("a fixture's settings", () => {
         create(FixtureTypeSettingsSchema, { strobeCurve: 99 as never }),
       ),
     ).toThrow(BadAnswerError);
+  });
+});
+
+describe("a venue", () => {
+  const fixtureMsg = {
+    name: "B1",
+    fixtureType: "Brick",
+    universe: 2,
+    startChannel: 17,
+    tags: ["wash"],
+    position: { x: 1, y: 2, z: 3 },
+  };
+
+  it("reads as the page holds it: a mode and a beam angle only where the venue says them", () => {
+    const list = mapVenueList(
+      create(ListVenuesResponseSchema, {
+        venues: {
+          Club: {
+            name: "Club",
+            fixtures: {
+              B1: { ...fixtureMsg, mode: "8: RGBS", beamAngle: 45 },
+              B2: { ...fixtureMsg, name: "B2" },
+            },
+            focusPoints: { drummer: { x: 0, y: 2.8, z: 1.4 } },
+            source: { mvr: "a.mvr", origin: { x: 0, y: -3.5, z: 0 } },
+          },
+        },
+        owners: { Club: { file: "club.venue", editable: true } },
+        errors: [{ file: "bad.light", error: "no" }],
+        revisions: { Club: "r1" },
+      }),
+    );
+    const club = list.venues.Club;
+    expect(club.fixtures.B1).toEqual({
+      name: "B1",
+      fixture_type: "Brick",
+      universe: 2,
+      start_channel: 17,
+      tags: ["wash"],
+      position: [1, 2, 3],
+      rotation: null,
+      mode: "8: RGBS",
+      beam_angle: 45,
+    });
+    // Absent, not null: the venue serves them only when it has them.
+    expect("mode" in club.fixtures.B2).toBe(false);
+    expect("beam_angle" in club.fixtures.B2).toBe(false);
+    expect(club.focus_points).toEqual({ drummer: [0, 2.8, 1.4] });
+    expect(club.source).toEqual({ mvr: "a.mvr", origin: [0, -3.5, 0] });
+    expect(list.owners.Club).toEqual({
+      file: "club.venue",
+      editable: true,
+      reason: null,
+    });
+    expect(list.errors).toEqual([{ file: "bad.light", error: "no" }]);
+    expect(list.versions).toEqual({ Club: "r1" });
+  });
+
+  it("a venue with no provenance has none", () => {
+    const detail = mapVenueDetail(
+      create(VenueDetailSchema, {
+        venue: { name: "V" },
+        dsl: "text",
+        revision: "r2",
+      }),
+    );
+    expect(detail).toEqual({
+      venue: { name: "V", fixtures: {}, focus_points: {}, source: null },
+      dsl: "text",
+      version: "r2",
+    });
+    expect(() => mapVenueDetail(create(VenueDetailSchema, {}))).toThrow(
+      BadAnswerError,
+    );
+  });
+
+  it("is saved as rows, with the revision it was read at and the old name of a rename", () => {
+    const request = create(
+      SaveVenueRequestSchema,
+      saveVenueRequest(
+        "Club",
+        {
+          fixtures: [
+            {
+              name: "B1",
+              fixture_type: "Brick",
+              universe: 1,
+              start_channel: 1,
+              tags: [],
+              position: [1, 2, 3],
+              rotation: null,
+              mode: null,
+              beam_angle: 60,
+            },
+          ],
+          focus_points: { p: [0, 1, 2] },
+          source: { mvr: "a.mvr", origin: [0, 0, 1] },
+        },
+        { dir: "rig", from: "Old", version: "r1" },
+      ),
+    );
+    expect([
+      request.name,
+      request.from,
+      request.dir,
+      request.expectedRevision,
+    ]).toEqual(["Club", "Old", "rig", "r1"]);
+    if (request.body.case !== "form") throw new Error("not a form");
+    const form = request.body.value;
+    expect(form.fixtures[0].position).toMatchObject({ x: 1, y: 2, z: 3 });
+    expect(form.fixtures[0].rotation).toBeUndefined();
+    expect(form.fixtures[0].mode).toBeUndefined();
+    expect(form.fixtures[0].beamAngle).toBe(60);
+    expect(form.focusPoints.p).toMatchObject({ x: 0, y: 1, z: 2 });
+    expect(form.source?.origin).toMatchObject({ x: 0, y: 0, z: 1 });
+
+    const bare = create(
+      SaveVenueRequestSchema,
+      saveVenueRequest("Club", { fixtures: [] }),
+    );
+    expect([bare.from, bare.dir, bare.expectedRevision]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("is drawn from its file with the rig and the mode each fixture has", () => {
+    const scene = mapVenueScene(
+      create(VenueSceneSchema, {
+        fixtures: {
+          A: {
+            tags: ["x"],
+            fixtureType: "Brick",
+            position: { x: 1, y: 2, z: 3 },
+            beamAngle: 45,
+            rig: "abc/rig.json",
+            mode: "8: RGBS",
+          },
+          B: { fixtureType: "Par" },
+        },
+        venue: {
+          name: "s",
+          focusPoints: { dj: { x: 0, y: 3, z: 1 } },
+          scenery: "scenery/s.json",
+        },
+      }),
+    );
+    expect(scene.fixtures.A).toEqual({
+      tags: ["x"],
+      type: "Brick",
+      position: [1, 2, 3],
+      rotation: null,
+      beam_angle: 45,
+      rig: "abc/rig.json",
+      mode: "8: RGBS",
+    });
+    expect(scene.fixtures.B).toMatchObject({
+      position: null,
+      beam_angle: null,
+      rig: null,
+      mode: null,
+    });
+    expect(scene.venue).toEqual({
+      name: "s",
+      focus_points: { dj: [0, 3, 1] },
+      scenery: "scenery/s.json",
+      scenery_error: null,
+    });
+    expect(() => mapVenueScene(create(VenueSceneSchema, {}))).toThrow(
+      BadAnswerError,
+    );
+  });
+
+  it("aim points and an export's summary read as the dialog holds them", () => {
+    const aim = mapAimPoints(
+      create(AddVenueAimPointsResponseSchema, {
+        created: [
+          { name: "B aim", fixture: "B", point: { x: 2, y: 2.5, z: 0 } },
+        ],
+        reloaded: true,
+        revision: "r3",
+      }),
+    );
+    expect(aim).toEqual({
+      created: [{ name: "B aim", fixture: "B", point: [2, 2.5, 0] }],
+      reloaded: true,
+      version: "r3",
+      venue_error: null,
+    });
+    expect(
+      mapAimPoints(
+        create(AddVenueAimPointsResponseSchema, {
+          venueError: { venue: "v", fixture: "F", reason: "r" },
+        }),
+      ).venue_error,
+    ).toEqual({ venue: "v", fixture: "F", reason: "r" });
+    expect(() =>
+      mapAimPoints(
+        create(AddVenueAimPointsResponseSchema, { created: [{ name: "x" }] }),
+      ),
+    ).toThrow(BadAnswerError);
+
+    const summary = mapMvrExportSummary(
+      create(MvrExportSummarySchema, {
+        fileName: "kellys.mvr",
+        venue: "kellys",
+        output: "lighting/export/kellys.mvr",
+        fixtures: 2,
+        focusPoints: 1,
+        embeddedGdtfs: ["A.gdtf"],
+        generatedGdtfs: { "G.gdtf": "Par" },
+        positionedFixtures: 2,
+        fixedFixtures: [{ name: "Brick 1", focus: "Drummer" }, { name: "B2" }],
+        warnings: ["w"],
+      }),
+    );
+    expect(summary.fixed_fixtures).toEqual([
+      { name: "Brick 1", focus: "Drummer" },
+      { name: "B2", focus: null },
+    ]);
+    expect(summary.generated_gdtfs).toEqual({ "G.gdtf": "Par" });
+    expect([summary.file_name, summary.fixtures, summary.focus_points]).toEqual(
+      ["kellys.mvr", 2, 1],
+    );
   });
 });

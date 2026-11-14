@@ -752,8 +752,9 @@ mod test {
     /// other services, behind the same lock: a write is refused while the
     /// player is locked, a read reaches its handler, and the REST routes it
     /// replaced (the light show files, their validation and evaluation, the
-    /// readiness, fit and groups, the fixture test, and the fixture types and
-    /// their settings) are gone.
+    /// readiness, fit and groups, the fixture test, the fixture types and
+    /// their settings, and the venues and the MVR export's summary and keep)
+    /// are gone.
     #[tokio::test]
     async fn lighting_service_is_a_grpc_web_service_behind_the_lock() {
         use prost::Message;
@@ -854,6 +855,51 @@ mod test {
         )
         .await;
         assert!(!listed.contains("locked"), "{listed}");
+        // The venues: the writes are refused, the reads are not.
+        for (method, message) in [
+            ("SaveVenue", pb::SaveVenueRequest::default().encode_to_vec()),
+            (
+                "DeleteVenue",
+                pb::DeleteVenueRequest::default().encode_to_vec(),
+            ),
+            (
+                "AddVenueAimPoints",
+                pb::AddVenueAimPointsRequest::default().encode_to_vec(),
+            ),
+            (
+                "KeepMvrExport",
+                pb::KeepMvrExportRequest::default().encode_to_vec(),
+            ),
+        ] {
+            assert!(
+                call(method, message).await.contains("locked"),
+                "{method} while locked"
+            );
+        }
+        for (method, message) in [
+            (
+                "ListVenues",
+                pb::ListVenuesRequest::default().encode_to_vec(),
+            ),
+            ("GetVenue", pb::GetVenueRequest::default().encode_to_vec()),
+            (
+                "GetVenuePatch",
+                pb::GetVenuePatchRequest::default().encode_to_vec(),
+            ),
+            (
+                "GetVenueScene",
+                pb::GetVenueSceneRequest::default().encode_to_vec(),
+            ),
+            (
+                "GetMvrExportSummary",
+                pb::GetMvrExportSummaryRequest::default().encode_to_vec(),
+            ),
+        ] {
+            let read = call(method, message).await;
+            // This server's player has no config store, or the name is
+            // refused first: the call reached its handler, not the lock.
+            assert!(!read.contains("locked"), "{method}: {read}");
+        }
         // FAILED_PRECONDITION (9) is for the lock and for a refusal alike:
         // the message tells them apart.
         let read = call(
@@ -921,6 +967,15 @@ mod test {
             ("GET", "/api/lighting/fixture-types/Par/gdtf"),
             ("GET", "/api/lighting/fixture-types/Par/settings"),
             ("POST", "/api/lighting/fixture-types/Par/settings"),
+            ("GET", "/api/lighting/venues"),
+            ("GET", "/api/lighting/venues/Hall"),
+            ("PUT", "/api/lighting/venues/Hall"),
+            ("DELETE", "/api/lighting/venues/Hall"),
+            ("GET", "/api/lighting/venues/Hall/patch"),
+            ("GET", "/api/lighting/venues/Hall/scene"),
+            ("POST", "/api/lighting/venues/Hall/aim-points"),
+            ("GET", "/api/lighting/mvr/export/summary"),
+            ("POST", "/api/lighting/mvr/export/keep"),
         ] {
             let resp = client
                 .request(method.parse().unwrap(), format!("{base_url}{path}"))

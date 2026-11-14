@@ -15,14 +15,22 @@
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
 import { LightingService } from "../../src/gen/player/v1/player_pb";
-import { fixtureTypeListReply, typeEntry } from "../support/lighting-rpc";
+import { Code, ConnectError } from "@connectrpc/connect";
+import {
+  fixtureTypeListReply,
+  savedVenueRequest,
+  typeEntry,
+  venueDetailReply,
+  venueListReply,
+  venueSavedReply,
+} from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The Venues page's plot for a venue that is not the current one: it shows
 // that venue's file (not live), and place / arrange / aim save to that venue
-// through the same venue save, against the file's version. Every test routes
-// its own venue API, with a per-test venue name, so nothing depends on state
+// through the same venue save, against the file's version. Every test answers
+// its own venue calls, with a per-test venue name, so nothing depends on state
 // another test left in the shared mock server.
 
 interface FixtureBody {
@@ -61,9 +69,10 @@ const BRICK_TYPE = typeEntry("brick", {
   extension: "fixture",
 });
 
-/** An in-memory venues directory behind `page.route`: the list, each venue's
- *  GET, and PUT with the version check the server makes (409 on a stale
- *  `If-Match`). `bump(name)` is another writer changing a file. */
+/** An in-memory venues directory behind `mockRpc`: the list, each venue's
+ *  read, and the save with the revision check the server makes (ABORTED on a
+ *  stale `expected_revision`). `bump(name)` is another writer changing a
+ *  file. */
 async function routeVenues(
   page: Page,
   initial: Record<string, VenueBody> = {},
@@ -84,80 +93,49 @@ async function routeVenues(
     };
   };
 
-  await page.route(/\/api\/lighting\/venues(\?.*)?$/, async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        venues: Object.fromEntries(
-          [...files.keys()].map((n) => [n, asVenue(n)]),
-        ),
-        errors: [],
-        versions: Object.fromEntries(
-          [...files.keys()].map((n) => [n, versionOf(n)]),
-        ),
-      }),
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.listVenues, () =>
+    venueListReply({
+      venues: Object.fromEntries([...files.keys()].map((n) => [n, asVenue(n)])),
+      owners: {},
+      errors: [],
+      versions: Object.fromEntries(
+        [...files.keys()].map((n) => [n, versionOf(n)]),
+      ),
+    }),
+  );
+  rpc.unary(LightingService.method.getVenue, (request) => {
+    const name = request.name;
+    if (!files.has(name)) {
+      throw new ConnectError(`Venue not found: ${name}`, Code.NotFound);
+    }
+    return venueDetailReply({
+      venue: asVenue(name),
+      dsl: "",
+      version: versionOf(name),
     });
   });
-  await page.route(
-    /\/api\/lighting\/venues\/([^/?]+)(\?.*)?$/,
-    async (route) => {
-      const request = route.request();
-      const name = decodeURIComponent(
-        new URL(request.url()).pathname.split("/").pop()!,
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const name = request.name;
+    const ifMatch = request.expectedRevision;
+    const current = files.get(name);
+    if (ifMatch && (!current || versionOf(name) !== ifMatch)) {
+      throw new ConnectError(
+        "changed since you loaded it",
+        Code.Aborted,
+        current ? { "x-current-version": versionOf(name) } : undefined,
       );
-      if (request.method() === "PUT") {
-        const ifMatch = request.headers()["if-match"];
-        const current = files.get(name);
-        if (ifMatch && (!current || versionOf(name) !== ifMatch)) {
-          await route.fulfill({
-            status: 409,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: "changed since you loaded it",
-              conflict: true,
-              version: current ? versionOf(name) : null,
-            }),
-          });
-          return;
-        }
-        const body = request.postDataJSON() as VenueBody;
-        puts.push({ name, ifMatch, body: structuredClone(body) });
-        files.set(name, { body, version: (current?.version ?? 0) + 1 });
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            status: "saved",
-            name,
-            reloaded: false,
-            version: versionOf(name),
-          }),
-        });
-        return;
-      }
-      if (request.method() !== "GET") return route.fallback();
-      if (!files.has(name)) {
-        await route.fulfill({
-          status: 404,
-          contentType: "application/json",
-          body: JSON.stringify({ error: `Venue not found: ${name}` }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          venue: asVenue(name),
-          dsl: "",
-          version: versionOf(name),
-        }),
-      });
-    },
-  );
-  const rpc = await mockRpc(page);
+    }
+    const { fixtures, focus_points, source } = savedVenueRequest(request);
+    const body: VenueBody = {
+      fixtures: fixtures as FixtureBody[],
+      focus_points: focus_points ?? {},
+      source: source ?? null,
+    };
+    puts.push({ name, ifMatch, body: structuredClone(body) });
+    files.set(name, { body, version: (current?.version ?? 0) + 1 });
+    return venueSavedReply({ name, version: versionOf(name) });
+  });
   rpc.unary(
     LightingService.method.listFixtureTypes,
     fixtureTypeListReply({

@@ -98,14 +98,8 @@ inside() {
 unit_is() { # unit_is <unit> <is-active|is-enabled> -> prints the state
     $SUDO systemctl --machine="$MACHINE" "$2" "$1" 2>/dev/null | head -n 1 || true
 }
-# The web UI's API, from inside the image. Prints the body; empty on failure.
-api() { # api <path> [curl args...]
-    local path="$1"
-    shift
-    inside curl -sS -m 15 "$@" "http://127.0.0.1:8080/api$path" || true
-}
 # A call to the player's gRPC services over gRPC-Web, from inside the image:
-# status and the lock are there, not under /api. In the text form a call is
+# the web UI's calls are all there. In the text form a call is
 # base64 both ways, which curl carries; grpcweb.py builds the request and
 # reads the answer. A stream never ends, so curl's timeout is how one stops.
 # A method of PlayerService is named as it is; another service's with its
@@ -318,12 +312,13 @@ saved="$(rpc LightingService/SaveFixtureType save-fixture-type 15 BootCheckPar '
 }' | "$HERE/grpcweb.py" saved-fixture-type 2>/dev/null || true)"
 expect "$saved" BootCheckPar \
     "a fixture type saves" "a fixture type does not save: '$saved'"
-saved="$(api /lighting/venues/boot-check -X PUT -H 'content-type: application/json' \
-    -d '{"fixtures":[{"name":"A","fixture_type":"BootCheckPar","universe":1,"start_channel":1,"tags":[]}]}')"
-expect "$(field "$saved" 'd["status"]')" saved "a venue saves" "a venue does not save: $saved"
-patch="$(api /lighting/venues/boot-check/patch)"
-expect "$(field "$patch" 'd["spans"][0]["footprint"]')" 3 \
-    "the venue reads back with its fixture resolved" "the venue does not read back: $patch"
+saved="$(rpc LightingService/SaveVenue save-venue 15 boot-check A BootCheckPar 1 1 \
+    | "$HERE/grpcweb.py" saved-venue 2>/dev/null || true)"
+expect "$saved" boot-check "a venue saves" "a venue does not save: '$saved'"
+footprint="$(rpc LightingService/GetVenuePatch venue-patch 15 boot-check \
+    | "$HERE/grpcweb.py" venue-footprint 2>/dev/null || true)"
+expect "$footprint" 3 \
+    "the venue reads back with its fixture resolved" "the venue does not read back: footprint '$footprint'"
 owner="$(inside stat -c '%U' /var/lib/mtrack/lighting/venues | tr -d '\r' || true)"
 expect "$owner" mtrack "what it wrote is under /var/lib/mtrack, as mtrack" \
     "/var/lib/mtrack/lighting/venues is owned by '$owner'"

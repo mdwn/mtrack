@@ -801,7 +801,8 @@ profile files, the device lists, the audio device test, the trigger calibration,
 restart, and a song's config, files, waveform and tempo guess with the browsing and importing of
 songs, which are `ConfigService` calls; the light show files with their validation and evaluation, the
 Lighting overview's readiness checks, the Fit shows page, the groups a cue can target, the
-fixture test and the fixture types with their GDTF details and settings, which are `LightingService` calls; and so does everything the page watches: the `Watch` stream
+fixture test, the fixture types with their GDTF details and settings, and the venues with the MVR
+export's summary and keep, which are `LightingService` calls; and so does everything the page watches: the `Watch` stream
 carries the playback status, log lines, the waveform, show reload notices and the build, hardware
 and controller status (one stream per tab), and the light view (the stage plot and 3D) reads the
 `WatchStage` stream, opened when a page first shows the stage (see [gRPC](grpc.md)). There is no

@@ -18,15 +18,19 @@ import { LightingService } from "../../src/gen/player/v1/player_pb";
 import {
   fixtureTypeGdtfReply,
   fixtureTypeListReply,
+  savedVenueRequest,
   typeEntry,
+  venueDetailReply,
+  venuePatchReply,
+  venueSavedReply,
 } from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { sendStage } from "../support/stage";
 
 // The venue inspector's mode select and patch strip (venue-exchange design
-// §21). Every test routes its own venue file, fixture types, archive and
-// patch with `page.route` under a per-test venue name, so nothing depends
-// on state another test left in the shared mock server.
+// §21). Every test answers its own venue file, fixture types, archive and
+// patch with `mockRpc` under a per-test venue name, so nothing depends on
+// state another test left in the shared mock server.
 
 interface FixtureBody {
   name: string;
@@ -102,53 +106,49 @@ let counter = 0;
 async function routeAll(page: Page, name: string, initial: VenueBody) {
   let current = structuredClone(initial);
   const puts: VenueBody[] = [];
-  const json = (body: unknown) => ({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify(body),
-  });
-  await page.route(
-    new RegExp(`/api/lighting/venues/${name}(\\?.*)?$`),
-    async (route) => {
-      if (route.request().method() === "PUT") {
-        current = route.request().postDataJSON();
-        puts.push(structuredClone(current));
-        return route.fulfill(json({ status: "saved", venue_error: null }));
-      }
-      return route.fulfill(
-        json({
-          venue: {
-            name,
-            fixtures: Object.fromEntries(
-              current.fixtures.map((f) => [f.name, f]),
-            ),
-            focus_points: current.focus_points,
-            source: null,
-          },
-          dsl: "",
-        }),
-      );
-    },
-  );
-  await page.route(
-    new RegExp(`/api/lighting/venues/${name}/patch(\\?.*)?$`),
-    (route) =>
-      route.fulfill(
-        json({
-          spans: current.fixtures.map((f) => ({
-            fixture: f.name,
-            universe: f.universe,
-            address: f.start_channel,
-            footprint: f.mode ? FOOTPRINT[f.mode] : null,
-            type: f.fixture_type,
-            mode: f.mode ?? null,
-          })),
-          overlaps: [],
-          overruns: [],
-        }),
-      ),
-  );
   const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.getVenue, () =>
+    venueDetailReply({
+      venue: {
+        name,
+        fixtures: Object.fromEntries(
+          current.fixtures.map((f) => [
+            f.name,
+            { ...f, mode: f.mode ?? undefined },
+          ]),
+        ),
+        focus_points: current.focus_points,
+        source: null,
+      },
+      dsl: "",
+      version: "v1",
+    }),
+  );
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const { name: saved, ...body } = savedVenueRequest(request);
+    void saved;
+    current = {
+      fixtures: body.fixtures as FixtureBody[],
+      focus_points: body.focus_points ?? {},
+      source: null,
+    };
+    puts.push(structuredClone(current));
+    return venueSavedReply({ name });
+  });
+  rpc.unary(LightingService.method.getVenuePatch, () =>
+    venuePatchReply({
+      spans: current.fixtures.map((f) => ({
+        fixture: f.name,
+        universe: f.universe,
+        address: f.start_channel,
+        footprint: f.mode ? FOOTPRINT[f.mode] : null,
+        type: f.fixture_type,
+        mode: f.mode ?? null,
+      })),
+      overlaps: [],
+      overruns: [],
+    }),
+  );
   rpc.unary(
     LightingService.method.listFixtureTypes,
     fixtureTypeListReply({

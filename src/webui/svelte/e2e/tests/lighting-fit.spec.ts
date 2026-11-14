@@ -20,12 +20,17 @@ import {
 } from "../../src/gen/player/v1/player_pb";
 import { FIT } from "../mock-server/test-data";
 import { getConfigReply, savedReply } from "../support/config-rpc";
-import { fitReply } from "../support/lighting-rpc";
+import {
+  fitReply,
+  savedVenueRequest,
+  venueDetailReply,
+  venueSavedReply,
+} from "../support/lighting-rpc";
 import { mockRpc } from "../support/rpc";
 import { openWithStage, sendStage } from "../support/stage";
 
-// Every test routes its own fit facts, venue file and profile with
-// `page.route`, so no test depends on state another one left in the shared
+// Every test answers its own fit facts, venue file and profile with
+// `mockRpc`, so no test depends on state another one left in the shared
 // mock server.
 
 type FitFacts = typeof FIT;
@@ -72,36 +77,23 @@ async function routeVenue(page: Page) {
     source: { mvr: "imports/rig.mvr", origin: [1, 2, 3] },
   };
   const puts: VenueBody[] = [];
-  await page.route(
-    /\/api\/lighting\/venues\/fit-venue(\?.*)?$/,
-    async (route) => {
-      const request = route.request();
-      if (request.method() === "PUT") {
-        puts.push(request.postDataJSON());
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "saved" }),
-        });
-        return;
-      }
-      const fixtures = Object.fromEntries(
-        original.fixtures.map((f) => [f.name, f]),
-      );
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          venue: {
-            name: "fit-venue",
-            fixtures,
-            focus_points: original.focus_points,
-            source: original.source,
-          },
-          dsl: "",
-        }),
-      });
-    },
+  const rpc = await mockRpc(page);
+  rpc.unary(LightingService.method.saveVenue, (request) => {
+    const { fixtures, focus_points, source } = savedVenueRequest(request);
+    puts.push({ fixtures, focus_points, source } as unknown as VenueBody);
+    return venueSavedReply({ name: request.name });
+  });
+  rpc.unary(LightingService.method.getVenue, () =>
+    venueDetailReply({
+      venue: {
+        name: "fit-venue",
+        fixtures: Object.fromEntries(original.fixtures.map((f) => [f.name, f])),
+        focus_points: original.focus_points,
+        source: original.source,
+      } as unknown as Parameters<typeof venueDetailReply>[0]["venue"],
+      dsl: "",
+      version: "v1",
+    }),
   );
   return { original, puts };
 }
@@ -254,7 +246,11 @@ test.describe("Lighting: Fit shows", () => {
       ]);
     }
     // ... nothing else about any fixture moved, ...
+    // (A mode or a beam angle a row does not have is null on the wire, as
+    // it is in the proto: unset.)
     const stripTags = (f: VenueBody["fixtures"][number]) => ({
+      mode: null,
+      beam_angle: null,
       ...f,
       tags: undefined,
     });
@@ -433,7 +429,9 @@ test.describe("Lighting: Fit shows", () => {
     expect(points.drummer.every((n) => Number.isFinite(n))).toBe(true);
     // Placing is over, and the fixtures were not touched.
     await expect(page.getByTestId("fit-placing")).toHaveCount(0);
-    expect(puts[0].fixtures).toEqual(original.fixtures);
+    expect(puts[0].fixtures).toEqual(
+      original.fixtures.map((f) => ({ mode: null, beam_angle: null, ...f })),
+    );
   });
 
   test("Place on plan can be cancelled", async ({ page }) => {
