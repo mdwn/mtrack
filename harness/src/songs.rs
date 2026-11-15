@@ -86,6 +86,8 @@ pub struct SongSpec {
     pub midi: Option<MidiSpec>,
     /// Optional lighting shows.
     pub lighting: Vec<LightingSpec>,
+    /// The song's own `palette:` overrides, slot to colour, in order.
+    pub palette: Vec<(String, String)>,
 }
 
 /// A generated MIDI file with events at known positions.
@@ -220,6 +222,7 @@ impl SongSpec {
             duration_secs,
             midi: None,
             lighting: Vec::new(),
+            palette: Vec::new(),
         }
     }
 
@@ -259,6 +262,12 @@ impl SongSpec {
     /// Adds a lighting show to this song.
     pub fn with_lighting(mut self, show: LightingSpec) -> SongSpec {
         self.lighting.push(show);
+        self
+    }
+
+    /// Recolours one of its shows' palette slots for this song.
+    pub fn with_palette(mut self, slot: &str, colour: &str) -> SongSpec {
+        self.palette.push((slot.to_string(), colour.to_string()));
         self
     }
 
@@ -310,6 +319,13 @@ impl SongSpec {
             for show in &self.lighting {
                 let _ = writeln!(out, "  - name: \"{}\"", show.name);
                 let _ = writeln!(out, "    file: \"{}\"", show.file);
+            }
+        }
+
+        if !self.palette.is_empty() {
+            out.push_str("palette:\n");
+            for (slot, colour) in &self.palette {
+                let _ = writeln!(out, "  {slot}: \"{colour}\"");
             }
         }
 

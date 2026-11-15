@@ -80,6 +80,8 @@ pub struct ProfileSpec {
     /// Whether to emit a `trigger:` block with one audio input, which makes
     /// the player build a trigger engine and open an input stream.
     pub trigger: bool,
+    /// The `dmx.lighting.layers` list; the player's default set when absent.
+    pub layers: Option<Vec<String>>,
 }
 
 impl ProfileSpec {
@@ -97,6 +99,7 @@ impl ProfileSpec {
             lighting: false,
             venue: None,
             trigger: false,
+            layers: None,
         }
     }
 
@@ -122,6 +125,12 @@ impl ProfileSpec {
     /// [`ProjectBuilder::lighting_file`]) instead of the generated one.
     pub fn with_venue(mut self, venue: &str) -> ProfileSpec {
         self.venue = Some(venue.to_string());
+        self
+    }
+
+    /// Configures the lighting layers, bottom first.
+    pub fn with_layers(mut self, layers: &[&str]) -> ProfileSpec {
+        self.layers = Some(layers.iter().map(|l| l.to_string()).collect());
         self
     }
 
@@ -299,6 +308,9 @@ impl ProfileSpec {
             "    current_venue: \"{}\"",
             self.venue.as_deref().unwrap_or(VENUE_NAME)
         );
+        if let Some(layers) = &self.layers {
+            let _ = writeln!(out, "    layers: [{}]", layers.join(", "));
+        }
         out.push_str("    directories:\n");
         out.push_str("      fixture_types: lighting/fixture_types\n");
         out.push_str("      venues: lighting/venues\n");
@@ -413,6 +425,8 @@ pub struct ProjectBuilder {
     /// Extra files under the project root: fixture types and venues a
     /// check brings itself, beside the generated ones.
     lighting_files: Vec<(String, String)>,
+    /// Palette overrides on the main playlist's entries, by song name.
+    entry_palettes: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl ProjectBuilder {
@@ -423,6 +437,7 @@ impl ProjectBuilder {
             playlist: Vec::new(),
             extra_config: BTreeMap::new(),
             lighting_files: Vec::new(),
+            entry_palettes: BTreeMap::new(),
         }
     }
 
@@ -460,6 +475,15 @@ impl ProjectBuilder {
     /// Sets a top-level `mtrack.yaml` key.
     pub fn config_key(mut self, key: &str, value: &str) -> ProjectBuilder {
         self.extra_config.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Recolours a palette slot on one song's entry in the main playlist.
+    pub fn entry_palette(mut self, song: &str, slot: &str, colour: &str) -> ProjectBuilder {
+        self.entry_palettes
+            .entry(song.to_string())
+            .or_default()
+            .push((slot.to_string(), colour.to_string()));
         self
     }
 
@@ -505,7 +529,17 @@ impl ProjectBuilder {
         };
         let mut playlist = String::from("kind: playlist\nsongs:\n");
         for name in &playlist_names {
-            let _ = writeln!(playlist, "- \"{}\"", escape(name));
+            match self.entry_palettes.get(name) {
+                Some(palette) => {
+                    let _ = writeln!(playlist, "- song: \"{}\"\n  palette:", escape(name));
+                    for (slot, colour) in palette {
+                        let _ = writeln!(playlist, "    {slot}: \"{colour}\"");
+                    }
+                }
+                None => {
+                    let _ = writeln!(playlist, "- \"{}\"", escape(name));
+                }
+            }
         }
         std::fs::write(root.join("playlists").join("playlist.yaml"), playlist)?;
 

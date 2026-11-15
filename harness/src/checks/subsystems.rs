@@ -610,8 +610,10 @@ pub async fn a_reload_during_init_leaves_no_stray_trigger_engine() -> CheckOutco
         // because the trigger key was removed.
         let profile = read_profile_file(&mut client, "01-e2e").await?;
         let mut without_trigger = profile.clone();
+        // `null`, as the profile editor sends it: a save keeps any section it
+        // leaves out (#524), so leaving `trigger` out would keep the trigger.
         if let Some(object) = without_trigger.as_object_mut() {
-            object.remove("trigger");
+            object.insert("trigger".to_string(), serde_json::Value::Null);
         }
 
         // First save: unchanged content, but the write path reloads regardless,
@@ -754,8 +756,10 @@ pub async fn disabling_triggers_by_file_takes_effect() -> CheckOutcome {
 
     // `["profile"]`, not the whole body — see the sibling check.
     let mut profile = read_profile_file(&mut client, "01-e2e").await?;
+    // `null`, as the profile editor sends it: a save keeps any section it
+    // leaves out (#524), so leaving `trigger` out would keep the trigger.
     if let Some(object) = profile.as_object_mut() {
-        object.remove("trigger");
+        object.insert("trigger".to_string(), serde_json::Value::Null);
     }
     check!(
         profile.get("audio").is_some(),
