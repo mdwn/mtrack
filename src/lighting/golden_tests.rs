@@ -706,6 +706,8 @@ fn every_colour_is_the_same_colour_on_rgb_and_cmy_fixtures() {
         "static color: \"#ffc0cb\"",
         "static color: rgb(255, 192, 203)",
         "static color: \"pink\"",
+        "static color: cmy(0%, 25%, 20%)",
+        "static color: \"cmyk(0%, 25%, 20%, 10%)\"",
         "static red: 100%, green: 0.753, blue: 0.796",
         "static red: 100%",
         "static green: 100%",
@@ -749,4 +751,24 @@ fn every_colour_is_the_same_colour_on_rgb_and_cmy_fixtures() {
         &[Duration::from_millis(1000)],
     )[0];
     assert_eq!(&pink[2..5], &[0, 63, 52], "pink");
+}
+
+/// A colour given in CMY is the colour it prints as, on every fixture: on
+/// an RGB fixture the RGB it converts to, on a CMY head the inks as written
+/// (to the byte), and so from a palette slot too.
+#[test]
+fn a_cmy_colour_is_its_inks_on_a_cmy_head_and_their_rgb_on_an_rgb_fixture() {
+    const RGB_PAR: &str = "fixture_type \"CmySpot\" {\n  channel \"dimmer\" @ 1\n  \
+                           channel \"red\" @ 2\n  channel \"green\" @ 3\n  channel \"blue\" @ 4\n}\n";
+    let show = "palette {\n    accent: cmy(0%, 25%, 20%)\n}\n\nshow \"s\" {\n    @00:00.000\n    \
+                spots: static color: palette.accent, duration: 10s\n}\n";
+    let at = [Duration::from_millis(1000)];
+    let rgb = frames_for(RGB_PAR, show, &at)[0];
+    let cmy = cmy_frames(show, &at)[0];
+    assert_eq!(&rgb[2..5], &[255, 191, 204], "the RGB it prints as");
+    assert_eq!(
+        &cmy[2..5],
+        &[0, 64, 51],
+        "the inks as written: 25% and 20% of 255"
+    );
 }

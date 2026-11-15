@@ -80,7 +80,7 @@ pub(super) fn read(pair: Pair<Rule>) -> Result<Palette, Box<dyn Error>> {
         let color = parse_color_string(&written).ok_or_else(|| {
             format!(
                 "line {line}: palette slot '{name}': invalid color '{}' (expected #RRGGBB, \
-                 rgb(r, g, b) or a color name)",
+                 rgb(r, g, b), cmy(c%, m%, y%), cmyk(c%, m%, y%, k%) or a color name)",
                 written.trim_matches('"')
             )
         })?;
@@ -182,7 +182,7 @@ pub fn declared_slots<'a>(shows: impl IntoIterator<Item = &'a LightShow>) -> Pal
 
 /// The colours a song or playlist entry overrides, as written in its YAML
 /// (slot to colour string), read with the DSL's colour parser, so
-/// `"#2040ff"`, `rgb(…)` and the names all work. A colour that does not
+/// `"#2040ff"`, `rgb(…)`, `cmy(…)`, `cmyk(…)` and the names all work. A colour that does not
 /// read is an error naming its slot.
 pub fn parse_overrides(
     written: &BTreeMap<String, String>,
@@ -195,7 +195,7 @@ pub fn parse_overrides(
                 .ok_or_else(|| {
                     format!(
                         "palette slot '{slot}': invalid color '{value}' (expected #RRGGBB, \
-                         rgb(r, g, b) or a color name)"
+                         rgb(r, g, b), cmy(c%, m%, y%), cmyk(c%, m%, y%, k%) or a color name)"
                     )
                 })
         })

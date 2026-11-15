@@ -60,7 +60,7 @@ lighting:
 
 # (Optional) Recolour the palette slots the song's .light files declare, without editing
 # the shows. A slot is named alone, and takes any colour the lighting DSL reads: "#2040ff",
-# rgb(32, 64, 255) or a name. A slot not named keeps the show's colour. See "Palettes" in
+# rgb(32, 64, 255), cmy(0%, 25%, 20%) or a name. A slot not named keeps the show's colour. See "Palettes" in
 # the Lighting chapter.
 palette:
   primary: "#2040ff"
@@ -196,7 +196,7 @@ notification_audio:
 
 A `.light` file can name its colours in a [`palette { }` block](../lighting/cueing.md#palettes).
 A song's `palette:` recolours those slots for the song: each key is a slot, each value a colour
-(`"#2040ff"`, `rgb(32, 64, 255)` or a colour name; quote a hex colour, since a bare `#` starts a
+(`"#2040ff"`, `rgb(32, 64, 255)`, `cmy(0%, 25%, 20%)` or `cmyk(...)`, or a colour name; quote a hex colour, since a bare `#` starts a
 comment). It is mostly for trying a look without touching the show; a [playlist
 entry](../getting-started/playlists.md#palette-overrides) can recolour the song for one playlist.
 

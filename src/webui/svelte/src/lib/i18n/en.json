@@ -1613,7 +1613,7 @@
   "palette.removeSlot": "Remove slot {slot}",
   "palette.usedBy": "{slot} is still used by:",
   "palette.error.bad_name": "A slot name starts with a letter or an underscore and holds only letters, digits, dashes and underscores.",
-  "palette.error.bad_color": "That is not a color the lighting file can read (#rrggbb, rgb(r, g, b) or a name).",
+  "palette.error.bad_color": "That is not a color the lighting file can read (#rrggbb, rgb(r, g, b), cmy(c%, m%, y%) or a name).",
   "palette.error.exists": "A slot named {slot} already exists.",
   "palette.error.unknown": "There is no slot named {slot}.",
   "palette.error.in_use": "Slot {slot} cannot be removed while effects use it.",

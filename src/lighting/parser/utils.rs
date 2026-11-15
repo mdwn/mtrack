@@ -254,10 +254,37 @@ pub(crate) fn parse_color_string(value: &str) -> Option<Color> {
             }
         }
         None
+    } else if let Some(inks) = clean_value
+        .strip_prefix("cmyk(")
+        .or_else(|| clean_value.strip_prefix("cmy("))
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        cmyk_to_color(inks, clean_value.starts_with("cmyk("))
     } else {
         // Named color — delegate to the canonical Color::from_name
         Color::from_name(clean_value).ok()
     }
+}
+
+/// The colour `cmy(c, m, y)` or `cmyk(c, m, y, k)` prints as: each ink a
+/// percentage, 0% to 100%, black darkening all three. `inks` is what is
+/// between the parentheses; `None` for anything else.
+fn cmyk_to_color(inks: &str, with_black: bool) -> Option<Color> {
+    let parts = inks
+        .split(',')
+        .map(|part| {
+            let percent: f64 = part.trim().strip_suffix('%')?.parse().ok()?;
+            (0.0..=100.0).contains(&percent).then_some(percent / 100.0)
+        })
+        .collect::<Option<Vec<f64>>>()?;
+    let (inks, black) = match (with_black, parts.as_slice()) {
+        (false, [c, m, y]) => ([*c, *m, *y], 0.0),
+        (true, [c, m, y, k]) => ([*c, *m, *y], *k),
+        _ => return None,
+    };
+    let [r, g, b] =
+        inks.map(|ink| crate::lighting::channels::dmx_byte(255.0 * (1.0 - ink) * (1.0 - black)));
+    Some(Color { r, g, b, w: None })
 }
 
 /// Parse measure/beat notation (e.g., "@12/1" or "@12/1.5")
@@ -370,7 +397,11 @@ pub(crate) fn parse_color_parameter(pair: Pair<Rule>) -> Result<String, Box<dyn 
             Rule::hex_color => {
                 return Ok(inner_pair.as_str().to_string());
             }
-            Rule::rgb_color => {
+            Rule::rgb_color
+            | Rule::cmy_color
+            | Rule::cmyk_color
+            | Rule::quoted_cmy_color
+            | Rule::quoted_cmyk_color => {
                 return Ok(inner_pair.as_str().to_string());
             }
             Rule::named_color => {
@@ -391,6 +422,38 @@ pub(crate) fn parse_generic_parameter(pair: Pair<Rule>) -> Result<String, Box<dy
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── cmy() and cmyk() ────────────────────────────────────────────
+
+    #[test]
+    fn cmy_and_cmyk_read_as_the_rgb_they_print_as() {
+        let rgb = |text: &str| parse_color_string(text).map(|c| (c.r, c.g, c.b));
+        assert_eq!(rgb("cmy(0%, 25%, 20%)"), Some((255, 191, 204)), "pink");
+        assert_eq!(
+            rgb("cmy(0%,24.7%,20.4%)"),
+            Some((255, 192, 203)),
+            "web pink"
+        );
+        assert_eq!(rgb("\"cmyk(0%, 25%, 20%, 0%)\""), Some((255, 191, 204)));
+        assert_eq!(rgb("cmy(0%, 100%, 100%)"), Some((255, 0, 0)), "red");
+        assert_eq!(rgb("cmyk(0%, 0%, 0%, 100%)"), Some((0, 0, 0)), "black");
+        assert_eq!(rgb("cmyk(0%, 0%, 0%, 50%)"), Some((128, 128, 128)));
+        assert_eq!(rgb("cmy(100%, 100%, 100%)"), Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn a_cmy_that_does_not_read_is_no_colour() {
+        for text in [
+            "cmy(0%, 25%)",
+            "cmy(0%, 25%, 20%, 0%)",
+            "cmyk(0%, 25%, 20%)",
+            "cmy(0, 25, 20)",
+            "cmy(0%, 125%, 20%)",
+            "cmy(-5%, 0%, 0%)",
+        ] {
+            assert!(parse_color_string(text).is_none(), "{text}");
+        }
+    }
 
     // ── parse_percentage_to_f64 ────────────────────────────────────
 

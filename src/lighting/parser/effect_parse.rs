@@ -47,7 +47,8 @@ fn color_to_normalized_params(color: &Color) -> (f64, f64, f64) {
 fn parse_color_value(value: &str) -> Result<crate::lighting::effects::Color, Box<dyn Error>> {
     parse_color_string(value).ok_or_else(|| {
         format!(
-            "Invalid color '{}' (expected #RRGGBB, rgb(r, g, b) or a color name)",
+            "Invalid color '{}' (expected #RRGGBB, rgb(r, g, b), cmy(c%, m%, y%), \
+             cmyk(c%, m%, y%, k%) or a color name)",
             value.trim_matches('"')
         )
         .into()

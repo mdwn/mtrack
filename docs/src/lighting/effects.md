@@ -26,7 +26,9 @@ is twice a second, `1beat` is once a beat.
 
 **Colors.** `color` takes a named color in quotes — `"red"`, `"green"`, `"blue"`, `"white"`,
 `"black"`, `"yellow"`, `"cyan"`, `"magenta"`, `"orange"`, `"purple"`, `"pink"` — a hex color (`#FF8800`,
-quoted or not), or `rgb(255, 128, 0)`.
+quoted or not), `rgb(255, 128, 0)`, or the inks it prints with: `cmy(0%, 25%, 20%)`, or
+`cmyk(0%, 25%, 20%, 10%)` with black. A CMY colour is read as the RGB it prints as, so it is the
+same colour on every fixture: an RGB fixture gets that RGB, and a CMY head the inks as written.
 
 ## Effect Types
 
@@ -35,7 +37,7 @@ quoted or not), or `rgb(255, 128, 0)`.
 Sets fixed parameter values for fixtures. Useful for solid colors, fixed dimmer levels, or any unchanging state.
 
 **Parameters:**
-- `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), RGB (`rgb(255,0,0)`), or a
+- `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), RGB (`rgb(255,0,0)`), CMY (`cmy(0%, 100%, 100%)`, `cmyk(...)`), or a
   slot of the file's [palette](cueing.md#palettes) (`palette.primary`)
 - `dimmer` or `intensity`: Dimmer level (0-100% or 0.0-1.0)
 - `red`, `green`, `blue`, `white`: Individual color channel levels (0-100% or 0.0-1.0)
