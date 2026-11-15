@@ -462,6 +462,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and 422). The routes had no version to check and the RPCs add none: the last save wins, as it
   did. See [gRPC](docs/src/interfaces/grpc.md).
 
+## [0.18.4] - 2026-11-14
+
+Upgrade notes: what an existing setup can notice. Each is described in full below.
+
+- **A cue plays on the fixtures in its group that can do it.** A group that mixes kinds of
+  fixture now plays a cue on every fixture that can take it, where one fixture that could not
+  used to drop the cue for the whole group. Most visibly, a `color` cue on a group holding a
+  dimmer-only fixture lights the rest of the group again (it went dark in 0.18.0 to 0.18.3), and
+  the dimmer-only fixture takes the cue's level.
+- **A CMY head shows the colour a cue names.** A cue naming some of red, green and blue and not
+  the others (`red: 100%`) showed white on a fixture with cyan, magenta and yellow flags; it now
+  shows the same colour as on an RGB fixture. Colours given whole (`color:`) look as before, up to
+  one step of a flag at half levels.
+
+### Fixed
+
+- **A fixture that cannot do a cue sits it out; the rest of the group plays it.** 0.18.0 began
+  refusing a whole effect when any one of its fixtures lacked what it needs, and counted a
+  `static` naming red, green or blue as needing all three. So a `color` cue on a group with a
+  dimmer-only fixture was dropped for every fixture in the group, and a fixture with only some
+  colour channels (a mover with just `red`) got nothing from such a cue. Colour cycles, rainbows,
+  strobes, chases and moves were refused for the whole group the same way. A fixture is now left
+  out only of a cue it cannot do, and a cue is refused only when none of its group can, which is
+  what the lint's `capability-gap` already reports. A `static` plays on any fixture that has one
+  of the channels it sets: its level reaches a fixture with a dimmer or colour channels.
+- **Every colour is the same colour on RGB and CMY fixtures.** A CMY fixture's flag left alone is
+  open, that primary at full, where an RGB fixture's channel left alone is dark, so a cue naming
+  some primaries and not others looked different on the two. A primary a cue does not name is now
+  none of it on a CMY head too (its flag closed); flags a show sets itself (`cyan: 40%`) are
+  driven as written. Each flag is the exact complement of the byte an RGB fixture is sent, so
+  pink (255, 192, 203) is cyan 0, magenta 63, yellow 52.
+
 ## [0.18.3] - 2026-11-13
 
 Upgrade notes: what an existing setup can notice. Each is described in full below. Run
