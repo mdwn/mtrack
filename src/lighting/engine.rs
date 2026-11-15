@@ -1013,6 +1013,9 @@ impl EffectEngine {
         // Validate effect: against the rig, where there is one.
         if !self.rigless {
             validation::validate_effect(self.fixtures.as_map(), &effect)?;
+            // Fixtures that cannot do the effect sit it out; the rest play it.
+            effect.target_fixtures =
+                validation::validate_effect_compatibility(self.fixtures.as_map(), &effect)?;
         }
         self.capture_start_poses(&mut effect);
         self.take_heads(&effect);

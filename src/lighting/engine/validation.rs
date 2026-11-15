@@ -35,9 +35,6 @@ pub(crate) fn validate_effect(
         }
     }
 
-    // Validate effect compatibility with fixture special cases
-    validate_effect_compatibility(fixture_registry, effect)?;
-
     // Validate effect parameters
     match &effect.effect_type {
         EffectType::Static { parameters, .. } => {
@@ -99,31 +96,46 @@ fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> F
     FixtureInfo::new(name.to_string(), 1, 1, fixture_type.to_string(), ch, None)
 }
 
-/// Refuses an effect that asks of a fixture what it has not got, by the
-/// rule lint reports it by ([`Want::of`], [`Want::met_by`]): a strobe
-/// needs a strobe channel, a dimmer or colour channels, a colour cue
-/// colour channels, a dimmer or pulse a dimmer or colour channels, a
-/// move pan or tilt.
+/// The targets an effect keeps: those that can do what it asks, by the rule
+/// lint reports it by ([`Want::of`], [`Want::met_by`]) -- a strobe needs a
+/// strobe channel, a dimmer or colour channels; a colour cycle or rainbow
+/// colour channels; a dimmer or pulse a dimmer or colour channels; a move
+/// pan or tilt.
+///
+/// A fixture that cannot is left out and the rest of the group plays the
+/// cue, as lint has it (a gap is a finding only when no fixture in the
+/// group can). The effect is refused only when none of its targets can.
+///
+/// A static is never refused: each fixture takes whichever of its channels
+/// it has, so a dimmer-only fixture takes the level of a `color` cue and a
+/// fixture with only a red channel takes its red.
 pub(crate) fn validate_effect_compatibility(
     fixture_registry: &HashMap<String, FixtureInfo>,
     effect: &EffectInstance,
-) -> Result<(), EffectError> {
-    let Some(want) = Want::of(&effect.effect_type) else {
-        return Ok(());
+) -> Result<Vec<String>, EffectError> {
+    let want = match &effect.effect_type {
+        EffectType::Static { .. } => None,
+        other => Want::of(other),
     };
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture_info) = fixture_registry.get(fixture_name) {
-            if !want.met_by(fixture_info) {
-                return Err(EffectError::Parameter(format!(
-                    "{} effect not compatible with fixture '{}': it needs {}",
-                    effect_keyword(&effect.effect_type),
-                    fixture_name,
-                    want.what()
-                )));
-            }
-        }
+    let Some(want) = want else {
+        return Ok(effect.target_fixtures.clone());
+    };
+    // A fixture not in the registry is `validate_effect`'s to report.
+    let capable: Vec<String> = effect
+        .target_fixtures
+        .iter()
+        .filter(|name| fixture_registry.get(*name).is_none_or(|f| want.met_by(f)))
+        .cloned()
+        .collect();
+    match effect.target_fixtures.first() {
+        Some(first) if capable.is_empty() => Err(EffectError::Parameter(format!(
+            "{} effect not compatible with fixture '{}': it needs {}",
+            effect_keyword(&effect.effect_type),
+            first,
+            want.what()
+        ))),
+        _ => Ok(capable),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -349,24 +361,24 @@ mod tests {
         }
     }
 
-    /// A static naming a colour needs colour channels; one naming none
-    /// asks nothing. A dimmer and a pulse need a dimmer or colour channels.
+    /// A static is never refused: each fixture takes the channels it has.
+    /// A dimmer and a pulse need a dimmer or colour channels.
     #[test]
-    fn a_colour_needs_colour_channels_and_a_level_a_dimmer_or_colour() {
+    fn a_static_is_never_refused_and_a_level_needs_a_dimmer_or_colour() {
         let registry = registry_with(vec![dimmer_fixture("d1"), strobe_fixture("s1")]);
         let red = make_effect_instance(
             EffectType::Static {
-                parameters: [("red".to_string(), 1.0)].into_iter().collect(),
+                parameters: [("red".to_string(), 1.0), ("dimmer".to_string(), 1.0)]
+                    .into_iter()
+                    .collect(),
                 duration: Duration::from_secs(5),
             },
-            vec!["d1"],
+            vec!["d1", "s1"],
         );
-        let error = validate_effect_compatibility(&registry, &red)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("it needs colour channels (RGB or CMY)"),
-            "{error}"
+        assert_eq!(
+            validate_effect_compatibility(&registry, &red).unwrap(),
+            vec!["d1".to_string(), "s1".to_string()],
+            "a colour cue keeps every target; each takes what it can"
         );
         let level = make_effect_instance(
             EffectType::Static {
@@ -390,6 +402,36 @@ mod tests {
             .to_string();
         assert!(
             error.contains("pulse effect not compatible with fixture 's1': it needs a dimmer or colour channels"),
+            "{error}"
+        );
+    }
+
+    /// One fixture that cannot do a cue sits it out; the rest of the group
+    /// plays it. Only a group where none can is refused.
+    #[test]
+    fn an_incapable_fixture_sits_out_and_the_rest_play() {
+        let registry = registry_with(vec![rgb_fixture("par1"), dimmer_fixture("d1")]);
+        let cycle = |targets: Vec<&str>| {
+            make_effect_instance(
+                EffectType::ColorCycle {
+                    colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+                    speed: TempoAwareSpeed::Fixed(1.0),
+                    direction: CycleDirection::Forward,
+                    transition: CycleTransition::Snap,
+                    duration: Duration::from_secs(5),
+                },
+                targets,
+            )
+        };
+        assert_eq!(
+            validate_effect_compatibility(&registry, &cycle(vec!["par1", "d1"])).unwrap(),
+            vec!["par1".to_string()]
+        );
+        let error = validate_effect_compatibility(&registry, &cycle(vec!["d1"]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cycle effect not compatible with fixture 'd1'"),
             "{error}"
         );
     }
