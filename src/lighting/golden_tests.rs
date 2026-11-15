@@ -766,5 +766,9 @@ fn a_cmy_colour_is_its_inks_on_a_cmy_head_and_their_rgb_on_an_rgb_fixture() {
     let rgb = frames_for(RGB_PAR, show, &at)[0];
     let cmy = cmy_frames(show, &at)[0];
     assert_eq!(&rgb[2..5], &[255, 191, 204], "the RGB it prints as");
-    assert_eq!(&cmy[2..5], &[0, 64, 51], "the inks as written: 25% and 20% of 255");
+    assert_eq!(
+        &cmy[2..5],
+        &[0, 64, 51],
+        "the inks as written: 25% and 20% of 255"
+    );
 }
