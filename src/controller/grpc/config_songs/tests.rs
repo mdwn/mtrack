@@ -1476,6 +1476,36 @@ async fn bulk_import_creates_songs_and_skips_folders_with_configs() {
     assert!(p.state.player.songs().get("Alpha").is_ok());
 }
 
+/// A folder whose show draws on a layer the player configures is imported:
+/// the show is read against the player's layers, not the defaults.
+#[tokio::test]
+async fn bulk_import_reads_shows_against_the_players_layers() {
+    let p = project();
+    p.state.player.set_layers(
+        crate::lighting::effects::LayerSet::new(
+            ["background", "midground", "foreground", "sparkle"]
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let song = p.root().join("songs/Spark");
+    std::fs::create_dir_all(&song).unwrap();
+    std::fs::write(song.join("track.wav"), create_test_wav()).unwrap();
+    std::fs::write(
+        song.join("show.light"),
+        "show \"Spark\" {\n    @00:00.000\n    \
+         front_wash: static color: \"red\", duration: 1s, layer: sparkle\n}\n",
+    )
+    .unwrap();
+
+    let imported = p.bulk("/songs").await.unwrap();
+    assert!(imported.failed.is_empty(), "{:?}", imported.failed);
+    assert_eq!(imported.created, ["Spark"]);
+    assert!(song.join("song.yaml").exists());
+}
+
 /// The bulk import passes over a hidden directory.
 #[tokio::test]
 async fn bulk_import_passes_over_hidden_dirs() {

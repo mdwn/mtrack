@@ -27,8 +27,8 @@ These talk to the player's gRPC server (`-H host:port`); see [gRPC Control](../i
 
 | Command | What it does |
 |---|---|
-| `mtrack songs <path> [--init]` | Lists and checks the songs under a directory. See [Song Configuration](../configuration/song-config.md). |
-| `mtrack playlist <songs> <playlist>` | Checks a playlist against the songs. |
+| `mtrack songs <path> [--init] [--config <project>]` | Lists and checks the songs under a directory. With `--config` (a project directory or its `mtrack.yaml`), light shows are read against the lighting layers that host's profile configures, else the defaults. See [Song Configuration](../configuration/song-config.md). |
+| `mtrack playlist <songs> <playlist> [--config <project>]` | Checks a playlist against the songs, its shows read against the project's layers as for `songs`. |
 | `mtrack verify <mtrack.yaml>` | Checks the songs against the player config (`--check`, `--hostname`). |
 | `mtrack devices`, `mtrack midi-devices` | Lists audio or MIDI devices. See [Discovering Devices](../getting-started/devices.md). |
 | `mtrack test-audio <mtrack.yaml>` | Opens the configured audio device silently and confirms it streams. |

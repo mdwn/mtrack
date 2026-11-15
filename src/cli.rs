@@ -119,6 +119,10 @@ enum Commands {
         /// Initialize song directories with YAML files containing default values.
         #[arg(long)]
         init: bool,
+        /// A project directory or its mtrack.yaml. Light shows are read against the
+        /// lighting layers this host's profile configures; without it, the defaults.
+        #[arg(short, long)]
+        config: Option<String>,
     },
     /// Lists where an upgrade changes how a project's lighting shows look.
     ///
@@ -159,6 +163,10 @@ enum Commands {
         repository_path: String,
         /// The path to the playlist.
         playlist_path: String,
+        /// A project directory or its mtrack.yaml. Light shows are read against the
+        /// lighting layers this host's profile configures; without it, the defaults.
+        #[arg(short, long)]
+        config: Option<String>,
     },
     /// Start will start the multitrack player.
     Start {
@@ -513,7 +521,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Songs { path, init } => local::songs(&path, init)?,
+        Commands::Songs { path, init, config } => local::songs(&path, init, config.as_deref())?,
         Commands::BrightnessChanges { project, hostname } => {
             local::brightness_changes(&project, hostname)?
         }
@@ -527,7 +535,8 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         Commands::Playlist {
             repository_path,
             playlist_path,
-        } => local::playlist(&repository_path, &playlist_path)?,
+            config,
+        } => local::playlist(&repository_path, &playlist_path, config.as_deref())?,
         Commands::Start {
             path,
             playlist_path,
@@ -1097,7 +1106,7 @@ mod tests {
         fn parse_songs_command() {
             let cli = Cli::try_parse_from(["mtrack", "songs", "/path/to/songs"]).unwrap();
             match cli.command {
-                Commands::Songs { path, init } => {
+                Commands::Songs { path, init, .. } => {
                     assert_eq!(path, "/path/to/songs");
                     assert!(!init);
                 }
@@ -1330,6 +1339,7 @@ mod tests {
                 Commands::Playlist {
                     repository_path,
                     playlist_path,
+                    ..
                 } => {
                     assert_eq!(repository_path, "/path/to/songs");
                     assert_eq!(playlist_path, "playlist.yaml");

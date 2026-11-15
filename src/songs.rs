@@ -2222,13 +2222,15 @@ impl Songs {
 /// a new config in each song folder under `start_path` that has none to keep
 /// ([`new_songs`]), its song named by [`new_songs`]' rule. The number of song
 /// folders found, written or left as they are.
-pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
+/// Lighting files a folder holds are parsed against `layers`, the player's:
+/// a show naming one of its configured layers is not refused as unknown.
+pub fn initialize_songs(start_path: &Path, layers: &LayerSet) -> Result<usize, Box<dyn Error>> {
     let found = new_songs(start_path, HashSet::new())?;
     for dir in &found.kept {
         info!(dir = %dir.display(), "Song folder has a config; leaving it");
     }
     for song in &found.new {
-        song.write()?;
+        song.write(layers)?;
     }
     let num_songs_found = found.kept.len() + found.new.len();
     info!("Found {num_songs_found} songs");
@@ -2313,10 +2315,10 @@ pub struct NewSong {
 }
 
 impl NewSong {
-    /// Writes the default config of the folder ([`Song::initialize`]),
-    /// under the song's name.
-    pub fn write(&self) -> Result<(), Box<dyn Error>> {
-        let mut config = Song::initialize(&self.dir)?.get_config();
+    /// Writes the default config of the folder ([`Song::initialize_in`]
+    /// `layers`, the player's), under the song's name.
+    pub fn write(&self, layers: &LayerSet) -> Result<(), Box<dyn Error>> {
+        let mut config = Song::initialize_in(layers, &self.dir)?.get_config();
         config.set_name(&self.name);
         config
             .save(&self.config_path)
@@ -3144,7 +3146,7 @@ mod test {
             0,
             "Expected no song in a newly created directory with one wav file."
         );
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
         assert_eq!(num_songs, 1, "Expected to find one song configuration.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.list();
@@ -3169,7 +3171,7 @@ mod test {
     }
 
     fn check_second_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
         assert_eq!(num_songs, 2, "Expected to find two song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -3186,7 +3188,7 @@ mod test {
     }
 
     fn check_third_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
         assert_eq!(num_songs, 3, "Expected to find three song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -3207,7 +3209,7 @@ mod test {
     }
 
     fn check_fourth_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
         assert_eq!(num_songs, 4, "Expected to find four song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -3227,7 +3229,7 @@ mod test {
     }
 
     fn check_fifth_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
         assert_eq!(num_songs, 5, "Expected to find five song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -4453,7 +4455,10 @@ sections:
             vec![vec![1_i32, 2, 3, 4, 5]],
             44100,
         )?;
-        initialize_songs(tempdir.path())?;
+        initialize_songs(
+            tempdir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
         let songs = get_all_songs(tempdir.path())?;
         assert_eq!(songs.len(), 1);
         Ok(())
@@ -4581,7 +4586,10 @@ sections:
         let tempdir = tempfile::tempdir()?;
         // Create a regular file at the top level (not a directory)
         fs::write(tempdir.path().join("readme.txt"), "hello")?;
-        let count = initialize_songs(tempdir.path())?;
+        let count = initialize_songs(
+            tempdir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
         assert_eq!(count, 0);
         Ok(())
     }
@@ -4653,7 +4661,7 @@ sections:
         }
         let dirs = super::song_dirs(root);
         // On main, init failed here: it read each folder under the root.
-        let count = initialize_songs(root);
+        let count = initialize_songs(root, crate::lighting::effects::LayerSet::standard());
         let locked = super::song_dirs(&root.join("Locked"));
         // The player's loader still fails on it, as on main.
         let loaded = get_all_songs(root);
@@ -4700,7 +4708,10 @@ sections:
         let other_kind = "kind: playlist\nsongs: []\n";
         fs::write(root.join("songs/Odd/song.yaml"), other_kind)?;
 
-        assert_eq!(initialize_songs(root)?, 4);
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            4
+        );
 
         assert_eq!(
             fs::read_to_string(root.join("songs/Foo/song.yaml"))?,
@@ -4752,7 +4763,10 @@ sections:
         let before = get_all_songs(root)?;
         assert!(before.failure("Outro").is_some(), "Outro fails to load");
 
-        assert_eq!(initialize_songs(root)?, 6);
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            6
+        );
 
         let name = |dir: &str| -> Result<String, Box<dyn Error>> {
             Ok(
@@ -4854,7 +4868,10 @@ sections:
         std::os::unix::fs::symlink(&outside, root.join("Song"))?;
 
         assert_eq!(super::song_dirs(&root)?, Vec::<PathBuf>::new());
-        assert_eq!(initialize_songs(&root)?, 0);
+        assert_eq!(
+            initialize_songs(&root, crate::lighting::effects::LayerSet::standard())?,
+            0
+        );
         assert!(!outside.join("song.yaml").exists());
         Ok(())
     }
@@ -4873,7 +4890,10 @@ sections:
         crate::testutil::write_wav(root.join("Pl/Inner/t.wav"), vec![vec![1_i32, 2]], 44100)?;
 
         assert_eq!(super::song_dirs(root)?, [root.join("Pl/Inner")]);
-        assert_eq!(initialize_songs(root)?, 1);
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            1
+        );
         assert_eq!(fs::read_to_string(root.join("Pl/song.yaml"))?, playlist);
         assert!(root.join("Pl/Inner/song.yaml").exists());
         Ok(())
@@ -5863,7 +5883,10 @@ pilot:
 
         // Create a valid song.
         create_mono_song(temp_dir.path())?;
-        initialize_songs(temp_dir.path())?;
+        initialize_songs(
+            temp_dir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
 
         // Create an invalid song with kind: song.
         let broken_dir = create_song_dir(temp_dir.path(), "broken-song")?;

@@ -25,6 +25,7 @@ use tracing::info;
 use crate::audio::format::SampleFormat;
 use crate::calibrate;
 use crate::config;
+use crate::lighting::effects::LayerSet;
 use crate::lighting::parser::parse_light_file;
 use crate::lighting::validation::validate_groups;
 use crate::playlist::Playlist;
@@ -65,15 +66,49 @@ fn apply_thread_priority() {
     }
 }
 
-pub fn songs(path: &str, init: bool) -> Result<(), Box<dyn Error>> {
+/// The lighting layers the project at `config` (a directory or its
+/// mtrack.yaml) gives this host, else the defaults when none is named. A
+/// config named and unreadable is an error: reading on with the defaults
+/// would refuse a show for naming a layer the player has.
+fn cli_layers(config: Option<&str>) -> Result<LayerSet, Box<dyn Error>> {
+    let Some(config) = config else {
+        return Ok(LayerSet::default());
+    };
+    let config_path = super::migrate::resolve_config_path(config);
+    let player_config = config::Player::deserialize(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    Ok(player_config.layer_set())
+}
+
+/// `result`, an error that names an unknown layer saying the layers read
+/// were the defaults when no config was given: the project's may have it.
+fn with_layers_hint<T>(
+    result: Result<T, Box<dyn Error>>,
+    config: Option<&str>,
+) -> Result<T, Box<dyn Error>> {
+    result.map_err(|e| {
+        if config.is_none() && e.to_string().contains("unknown layer") {
+            format!(
+                "{e}\n(read against the default layers: pass --config with the project \
+                 directory to use the layers its profile configures)"
+            )
+            .into()
+        } else {
+            e
+        }
+    })
+}
+
+pub fn songs(path: &str, init: bool, config: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let layers = cli_layers(config)?;
     if init {
         info!("Initializing songs");
-        songs::initialize_songs(Path::new(path))?;
+        with_layers_hint(songs::initialize_songs(Path::new(path), &layers), config)?;
     } else {
         info!("Not initializing songs");
     }
 
-    let songs = songs::get_all_songs(Path::new(path))?;
+    let songs = songs::get_all_songs_with_defaults(Path::new(path), false, &layers)?;
 
     if songs.is_empty() {
         println!("No songs found in {}.", path);
@@ -169,8 +204,13 @@ fn brightness_changes_report(
     Ok((out, total))
 }
 
-pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dyn Error>> {
-    let songs = songs::get_all_songs(Path::new(repository_path))?;
+pub fn playlist(
+    repository_path: &str,
+    playlist_path: &str,
+    config: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let layers = cli_layers(config)?;
+    let songs = songs::get_all_songs_with_defaults(Path::new(repository_path), false, &layers)?;
     let playlist = Playlist::new(
         "playlist",
         &config::Playlist::deserialize(Path::new(playlist_path))?,
@@ -1259,10 +1299,80 @@ mod tests {
     mod songs_tests {
         use super::*;
 
+        /// A project whose profile adds a fourth layer, `sparkle`, and in its
+        /// songs folder a song whose show draws on it: its folder holds a
+        /// track and the show, and no config.
+        pub(super) fn project_with_a_fourth_layer() -> tempfile::TempDir {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tmp.path().join("mtrack.yaml"),
+                "songs: songs\n\
+                 dmx:\n  \
+                   universes:\n    - universe: 1\n      name: main\n  \
+                   lighting:\n    \
+                     layers: [background, midground, foreground, sparkle]\n",
+            )
+            .unwrap();
+            let song_dir = tmp.path().join("songs/Spark");
+            std::fs::create_dir_all(&song_dir).unwrap();
+            crate::testutil::write_wav(
+                song_dir.join("track.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            std::fs::write(
+                song_dir.join("show.light"),
+                "show \"Spark\" {\n    @00:00.000\n    \
+                 front_wash: static color: \"red\", duration: 1s, layer: sparkle\n}\n",
+            )
+            .unwrap();
+            tmp
+        }
+
+        #[test]
+        fn init_reads_shows_against_the_configured_layers() {
+            let tmp = project_with_a_fourth_layer();
+            let songs_dir = tmp.path().join("songs");
+            songs(
+                songs_dir.to_str().unwrap(),
+                true,
+                Some(tmp.path().to_str().unwrap()),
+            )
+            .unwrap();
+            assert!(songs_dir.join("Spark/song.yaml").exists());
+        }
+
+        /// The control: without the config the show's layer is unknown, so
+        /// the same folder is refused, which is what `--config` is for.
+        #[test]
+        fn init_without_the_config_refuses_a_configured_layer() {
+            let tmp = project_with_a_fourth_layer();
+            let songs_dir = tmp.path().join("songs");
+            let err = songs(songs_dir.to_str().unwrap(), true, None).unwrap_err();
+            assert!(err.to_string().contains("unknown layer 'sparkle'"), "{err}");
+            assert!(err.to_string().contains("pass --config"), "{err}");
+            assert!(!songs_dir.join("Spark/song.yaml").exists());
+        }
+
+        /// A config named and unreadable stops the command, rather than
+        /// reading on with the default layers.
+        #[test]
+        fn an_unreadable_config_is_an_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let err = songs(
+                tmp.path().to_str().unwrap(),
+                false,
+                Some("/nonexistent/project"),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("cannot read"), "{err}");
+        }
+
         #[test]
         fn empty_directory_reports_no_songs() {
             let tmp = tempfile::tempdir().unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1282,7 +1392,7 @@ mod tests {
                 44100,
             )
             .unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1296,14 +1406,14 @@ mod tests {
                 44100,
             )
             .unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), true, None).is_ok());
             // init should have created a song.yaml
             assert!(song_dir.join("song.yaml").exists());
         }
 
         #[test]
         fn nonexistent_path_returns_error() {
-            assert!(songs("/nonexistent/path/to/songs", false).is_err());
+            assert!(songs("/nonexistent/path/to/songs", false, None).is_err());
         }
 
         #[test]
@@ -1341,7 +1451,7 @@ mod tests {
             .unwrap();
 
             // This exercises the track dedup via HashSet and sorting
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1365,7 +1475,7 @@ mod tests {
             )
             .unwrap();
 
-            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), true, None).is_ok());
             assert!(song1_dir.join("song.yaml").exists());
             assert!(song2_dir.join("song.yaml").exists());
         }
@@ -1385,22 +1495,51 @@ mod tests {
                 44100,
             )
             .unwrap();
-            crate::songs::initialize_songs(tmp.path()).unwrap();
+            crate::songs::initialize_songs(tmp.path(), &LayerSet::default()).unwrap();
 
             let playlist_path = tmp.path().join("playlist.yaml");
             std::fs::write(&playlist_path, "songs:\n- Cool Song\n").unwrap();
 
             assert!(playlist(
                 tmp.path().to_str().unwrap(),
-                playlist_path.to_str().unwrap()
+                playlist_path.to_str().unwrap(),
+                None
             )
             .is_ok());
+        }
+
+        /// A playlist naming a song whose show draws on a configured layer
+        /// is checked against the project's layers when given its config.
+        #[test]
+        fn reads_shows_against_the_configured_layers() {
+            let tmp = super::songs_tests::project_with_a_fourth_layer();
+            let songs_dir = tmp.path().join("songs");
+            std::fs::write(
+                songs_dir.join("Spark/song.yaml"),
+                "kind: song\nname: Spark\nlighting:\n  - file: show.light\n\
+                 tracks:\n  - name: track\n    file: track.wav\n",
+            )
+            .unwrap();
+            let playlist_path = tmp.path().join("playlist.yaml");
+            std::fs::write(&playlist_path, "songs:\n- Spark\n").unwrap();
+            let (songs_dir, playlist_path) =
+                (songs_dir.to_str().unwrap(), playlist_path.to_str().unwrap());
+
+            playlist(songs_dir, playlist_path, Some(tmp.path().to_str().unwrap())).unwrap();
+            // The control: read with the defaults the song does not load, so
+            // the playlist names a song that is not there.
+            assert!(playlist(songs_dir, playlist_path, None).is_err());
         }
 
         #[test]
         fn invalid_playlist_path() {
             let tmp = tempfile::tempdir().unwrap();
-            assert!(playlist(tmp.path().to_str().unwrap(), "/nonexistent/playlist.yaml").is_err());
+            assert!(playlist(
+                tmp.path().to_str().unwrap(),
+                "/nonexistent/playlist.yaml",
+                None
+            )
+            .is_err());
         }
     }
 
@@ -1768,7 +1907,7 @@ dmx:
                 )
                 .unwrap();
             }
-            crate::songs::initialize_songs(&songs_dir).unwrap();
+            crate::songs::initialize_songs(&songs_dir, &LayerSet::default()).unwrap();
             songs_dir
         }
 
