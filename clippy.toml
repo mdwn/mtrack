@@ -1,0 +1,19 @@
+# Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+disallowed-methods = [
+    # Counts from the start of the input on every call, so one per effect line
+    # made a long show's parse quadratic (#788: 5 s for a Pi's library). Use
+    # `Pair::line_col`, which reads the parse's line index.
+    { path = "pest::position::Position::line_col", reason = "walks the whole input on each call; use Pair::line_col" },
+]

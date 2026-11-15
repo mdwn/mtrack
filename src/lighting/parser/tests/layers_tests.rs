@@ -76,7 +76,8 @@ fn an_unknown_layer_fails_the_load_with_its_name_position_and_the_players_layers
     let error = parse_light_shows(&source).unwrap_err().to_string();
     assert!(error.contains("unknown layer 'accents'"), "{error}");
     assert!(error.contains("line 3"), "{error}");
-    assert!(error.contains("column"), "{error}");
+    // `layer:` starts at column 45 of `    all: static color: "red", duration: 1s, layer: accents`.
+    assert!(error.contains("(column 45)"), "{error}");
     assert!(
         error.contains("background, midground, foreground"),
         "{error}"
