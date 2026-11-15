@@ -102,12 +102,14 @@ with a test (`test/app/network_scan_test.dart`, `test/ui/network_scan_test.dart`
   blocks next to it follow, outward, each upward, made lazily and never held as a list. Ports: 43234
   and the remembered player's port if it differs (`sweepPorts`), all ports of a host before the next
   host.
-- Pace: `NetworkSweep` runs `sweepConcurrency` (256) attempts at once with `NetworkProbe.canConnect`
-  (plain TCP connect, closed at once), `sweepOwnBlockTimeout` (400 ms) to connect in the phone's own
-  /24 and `sweepAttemptTimeout` (200 ms) elsewhere. There is no fixed deadline: it runs until every
-  address is tried, or for `sweepMaxDuration` (5 minutes) at most. The numbers are to be tuned from
-  measurement on a phone. Progress (addresses tried of the total) reaches the screen at most ten
-  times a second. When a scan ends the session logs one line (`mtrack scan: ...`) with the network
+- Pace: `NetworkSweep` tries each address with `NetworkProbe.canConnect` (plain TCP connect, closed
+  at once), giving each `sweepAttemptTimeout` (1 s). The phone's own /24 starts at once; every other
+  address starts at `sweepAddressesPerSecond` (256 a second, a token bucket refilled by a timer),
+  with `sweepConcurrency` (512) attempts in flight at most, which is room, not the limit. A /16 takes
+  about 4 min 16 s; `sweepMaxDuration` (10 minutes) is the safety limit. The pace is measured: the
+  phone's kernel keeps 1,024 neighbour entries and goes silent past about 450 new addresses a second
+  (a Pixel, 2026-11-15; see `design/wifi_discovery_design.md`). Progress (addresses tried of the
+  total) reaches the screen at most ten times a second. When a scan ends the session logs one line (`mtrack scan: ...`) with the network
   size, counts, time, why it ended and the failures by kind (`NetworkProbe.takeDiagnostics`); no
   other machine's address is in it.
 - Confirming: a host that accepts the connection is connected to as a player with
@@ -367,8 +369,8 @@ on a device:
   the allowlist expects (`wlan0` on Android, `en0` on iOS), including on Android versions that restrict
   reading interfaces, and with a VPN up (the Pixel runs Tailscale: that the VPN's address is never
   taken and the sweep's sockets still reach the LAN); that the netmask lookup (`getifaddrs` over `dart:ffi`)
-  works on Android and iOS; that 256 connects at a time, 400 ms in the phone's /24 and 200 ms elsewhere
-  are enough to find a player on a real access point without upsetting it, and how long a /16 takes; a guest network with client isolation (every address silent, "No players
+  works on Android and iOS; that 256 new addresses a second (measured on one Pixel, a /16 in about 4
+  minutes) finds a player on other phones and on iOS, whose neighbour table limits are not measured; a guest network with client isolation (every address silent, "No players
   found on this network."); Wi-Fi off and mobile data only (the not-scannable line); a network that is
   a /16 or bigger; and, on iOS, that the sweep needs no prompt beyond
   the local network one already shown.

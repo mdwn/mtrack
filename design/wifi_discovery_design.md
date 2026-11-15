@@ -117,12 +117,28 @@ Recommended: **A**, with these limits:
   but not masks), and falls back to a /24 when it cannot. A network bigger
   than a /16 is swept only in the /16 around the phone, at most 65,536
   addresses. The phone's own /24 comes first, then the blocks next to it,
-  outward. 256 attempts at once, 400 ms each in the phone's own /24 and 200
-  ms in the rest. There is no fixed deadline: it runs until every address is
-  tried, with five minutes as a safety limit, and a **Stop scanning** button
+  outward. The phone's own /24 is tried at once. Every other address is
+  started at 256 a second, each given a second to connect: about 1 second
+  for a /24, 4 for a /22, 16 for a /20 and a little over 4 minutes for a
+  /16. There is no fixed deadline: it runs until every address is tried,
+  with ten minutes as a safety limit, and a **Stop scanning** button
   replaces the scan button while it runs. When it covered less than the
-  whole network the screen says how much it did. These numbers are to be set
-  from measurement on the Pixel.
+  whole network the screen says how much it did.
+  The pace is set by measurement. On a Pixel on a real /16 (2026-11-15) a
+  sweep that started hundreds of addresses at once found the player only
+  because its block happened to be swept first; swept farthest-first at the
+  same pace it was missed (0 open, and only 2 of the 32 or so machines that
+  refuse were seen). The phone's kernel keeps at most 1,024 neighbour (ARP)
+  entries, and an address that never answers holds its entry for about 2.3
+  s (three asks, 752 ms apart). Sampled during a sweep, the table sat pinned
+  at 1,024, nearly all of it unanswered. Above roughly 450 new addresses a
+  second the table is full and attempts fail silently as timeouts,
+  including attempts to machines that are there. So going faster made the
+  scan miss players. The pace is therefore on new addresses, not on
+  attempts in flight (512 is only room enough for the pace to be the limit),
+  and the second given each address lets a machine that missed the kernel's
+  first ask answer the second, 750 ms later. The 1,024 is the Linux default
+  and was read on one phone; other Android phones and iOS are not measured.
 - Port 43234, and the port of a remembered player if it differs.
 - An address that accepts the connection is asked for the standard gRPC
   health check of `player.v1.PlayerService`, then `GetNetworkInfo` for its
@@ -215,8 +231,8 @@ leaves the app working.
   (`getifaddrs`, over `dart:ffi`) and sweeps that network, own /24 first and
   outward, up to the /16 around the phone. When the mask cannot be read it
   sweeps a /24, as before. Not yet run on a phone: whether the lookup works
-  on Android and iOS, and what pace a /16 can bear (256 at once, 400 and 200
-  ms), are to be set from measurement on the Pixel.
+  on Android and iOS is not yet checked. The pace a /16 can bear is
+  measured (section 3.2): 256 new addresses a second.
 
 ## 9. Decisions
 

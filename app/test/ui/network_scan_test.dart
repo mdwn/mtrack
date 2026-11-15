@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
+import 'package:mtrack_remote/src/app/network_scan.dart';
 import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/ui/widgets.dart';
 
@@ -115,7 +116,7 @@ void main() {
         expect(find.textContaining('of 65,533 addresses'), findsOneWidget);
         expect(find.textContaining('Scanning… '), findsOneWidget);
         expect(h.probe!.listings, 1);
-        expect(h.probe!.maxInFlight, 256);
+        expect(h.probe!.maxInFlight, inInclusiveRange(256, sweepConcurrency));
         await h.tester.tap(button('Stop scanning'));
         await h.settle();
         expect(h.probe!.inFlight, 0);
@@ -163,8 +164,8 @@ void main() {
         ];
         await h.tester.tap(button('Scan this network'));
         await h.settle();
-        for (var i = 0; i < 90; i++) {
-          await h.advance(const Duration(seconds: 1));
+        for (var i = 0; i < 55; i++) {
+          await h.advance(const Duration(seconds: 5));
         }
         expect(
           find.text(

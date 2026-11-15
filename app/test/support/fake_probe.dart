@@ -40,6 +40,13 @@ class FakeProbe implements NetworkProbe {
   /// The timeout each attempt was given.
   final List<Duration> timeouts = [];
 
+  /// When set, the time (as the test sees it) each attempt started is
+  /// recorded in [startTimes].
+  Duration Function()? clock;
+
+  /// When each attempt started, parallel to [attempts]; only with [clock].
+  final List<Duration> startTimes = [];
+
   /// Attempts under way now, and the most there ever were at once.
   int inFlight = 0;
   int maxInFlight = 0;
@@ -72,6 +79,10 @@ class FakeProbe implements NetworkProbe {
   }) {
     attempts.add('$host:$port');
     timeouts.add(timeout);
+    final now = clock;
+    if (now != null) {
+      startTimes.add(now());
+    }
     inFlight++;
     if (inFlight > maxInFlight) {
       maxInFlight = inFlight;

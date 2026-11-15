@@ -592,7 +592,7 @@ void main() {
     group('pace', () {
       const wide = LocalAddress('wlan0', '192.168.1.20', prefixLength: 16);
 
-      scenario('never has more than 256 attempts in flight, and uses them', (
+      scenario('never has more than 512 attempts in flight, and tries all', (
         h,
         _,
       ) {
@@ -600,31 +600,26 @@ void main() {
         h.probe!.addresses = const [wide];
         h.session.scanNetwork();
         h.settle();
-        h.elapse(const Duration(minutes: 2));
-        expect(h.probe!.maxInFlight, 256);
+        h.elapse(const Duration(minutes: 5));
+        expect(h.probe!.maxInFlight, lessThanOrEqualTo(sweepConcurrency));
         expect(h.probe!.attempts, hasLength(65533));
         expect(h.probe!.attempts.toSet(), hasLength(65533));
         expect(h.session.networkScan, NetworkScan.none);
       });
 
-      scenario('gives the phone\'s own /24 400 ms and the rest 200 ms', (h, _) {
+      scenario('gives every address 1 s, the phone\'s own /24 first', (h, _) {
         h.probe!.addresses = const [wide];
         h.session.scanNetwork();
         h.settle();
-        h.elapse(const Duration(minutes: 2));
+        h.elapse(const Duration(minutes: 5));
         final timeouts = h.probe!.timeouts;
         expect(timeouts, hasLength(65533));
+        expect(timeouts.every((t) => t == sweepAttemptTimeout), isTrue);
+        expect(sweepAttemptTimeout, const Duration(seconds: 1));
+        expect(sweepConcurrency, 512);
+        expect(sweepAddressesPerSecond, 256);
+        expect(sweepMaxDuration, const Duration(minutes: 10));
         // Own block: .0 to .255 less the phone.
-        expect(
-          timeouts.take(255).every((t) => t == sweepOwnBlockTimeout),
-          isTrue,
-        );
-        expect(
-          timeouts.skip(255).every((t) => t == sweepAttemptTimeout),
-          isTrue,
-        );
-        expect(sweepOwnBlockTimeout, const Duration(milliseconds: 400));
-        expect(sweepAttemptTimeout, const Duration(milliseconds: 200));
         expect(
           h.probe!.attempts.take(255).every((a) => a.startsWith('192.168.1.')),
           isTrue,
@@ -632,11 +627,11 @@ void main() {
         expect(h.probe!.attempts[255], '192.168.0.1:43234');
       });
 
-      scenario('on a quiet /24 tries all at once and ends in 400 ms', (h, _) {
+      scenario('on a quiet /24 tries all at once and ends in 1 s', (h, _) {
         h.probe!.open.clear();
         h.session.scanNetwork();
         h.settle();
-        h.elapse(const Duration(milliseconds: 300));
+        h.elapse(const Duration(milliseconds: 900));
         expect(h.session.networkScan, NetworkScan.scanning);
         expect(h.probe!.maxInFlight, 253);
         h.elapse(const Duration(milliseconds: 200));
@@ -678,7 +673,7 @@ void main() {
         h.elapse(const Duration(seconds: 5));
         expect(h.session.scanTotal, 65533);
         expect(h.session.scanTried, inExclusiveRange(0, 65533));
-        h.elapse(const Duration(minutes: 2));
+        h.elapse(const Duration(minutes: 5));
         expect(h.session.scanTried, 65533);
         expect(h.session.scanPartial, isFalse);
       });
@@ -689,11 +684,169 @@ void main() {
         ];
         h.session.scanNetwork();
         h.settle();
-        h.elapse(const Duration(minutes: 2));
+        h.elapse(const Duration(minutes: 5));
         expect(h.session.scanTotal, 65533);
         expect(h.session.scanPartial, isTrue);
         expect(h.session.scanCutShort, isFalse);
         expect(h.probe!.attempts.every((a) => a.startsWith('10.20.')), isTrue);
+      });
+
+      NetworkSweep pacedSweep(
+        FakeProbe probe, {
+        String phone = '192.168.1.20',
+        int prefix = 16,
+        List<int> ports = const [43234],
+      }) => NetworkSweep(
+        probe: probe,
+        wifi: _NoWifi(),
+        plan: SweepPlan(phone, prefix),
+        ports: ports,
+        onFound: (_) {},
+      );
+
+      test('starts the phone\'s own block at once, unpaced', () {
+        fakeAsync((async) {
+          final probe = FakeProbe()..clock = () => async.elapsed;
+          final sweep = pacedSweep(probe);
+          sweep.run();
+          async.flushMicrotasks();
+          // The own block (255 hosts of the /16 less the phone) before any
+          // time passes, and a first eighth of a second's worth beyond it.
+          final own = SweepPlan('192.168.1.20', 16).ownBlockCount;
+          expect(own, 255);
+          expect(
+            probe.startTimes.where((t) => t == Duration.zero).length,
+            greaterThanOrEqualTo(own),
+          );
+          expect(
+            probe.attempts.take(own).every((a) => a.startsWith('192.168.1.')),
+            isTrue,
+          );
+          sweep.cancel();
+          async.flushMicrotasks();
+        });
+      });
+
+      test('starts no more than 256 new addresses in any second', () {
+        fakeAsync((async) {
+          final probe = FakeProbe()..clock = () => async.elapsed;
+          final sweep = pacedSweep(probe);
+          sweep.run();
+          async.elapse(const Duration(seconds: 30));
+          async.flushMicrotasks();
+          final own = SweepPlan('192.168.1.20', 16).ownBlockCount;
+          final times = probe.startTimes.skip(own).toList();
+          expect(times.length, greaterThan(256 * 25));
+          // A window of a second opening at every start.
+          var end = 0;
+          for (var i = 0; i < times.length; i++) {
+            if (end < i) {
+              end = i;
+            }
+            while (end < times.length &&
+                times[end] < times[i] + const Duration(seconds: 1)) {
+              end++;
+            }
+            expect(end - i, lessThanOrEqualTo(sweepAddressesPerSecond));
+          }
+          sweep.cancel();
+          async.flushMicrotasks();
+        });
+      });
+
+      test('a /16 is done in about 256 s, with no timer left', () {
+        fakeAsync((async) {
+          final probe = FakeProbe();
+          final sweep = pacedSweep(probe);
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
+          async.elapse(const Duration(seconds: 250));
+          async.flushMicrotasks();
+          expect(summary, isNull);
+          async.elapse(const Duration(seconds: 10));
+          async.flushMicrotasks();
+          expect(summary, isNotNull);
+          expect(summary!.end, SweepEnd.done);
+          expect(summary!.tried, 65533);
+          expect(probe.attempts, hasLength(65533));
+          expect(async.pendingTimers, isEmpty);
+        });
+      });
+
+      test('a /22 takes about 4 s and a /24 about 1 s', () {
+        fakeAsync((async) {
+          for (final (prefix, seconds) in [(24, 1), (22, 4)]) {
+            final probe = FakeProbe();
+            final sweep = pacedSweep(probe, prefix: prefix);
+            SweepSummary? summary;
+            sweep.run().then((s) => summary = s);
+            async.elapse(Duration(seconds: seconds - 1));
+            async.flushMicrotasks();
+            expect(summary, isNull, reason: '/$prefix is still going');
+            async.elapse(const Duration(seconds: 3));
+            async.flushMicrotasks();
+            expect(summary?.end, SweepEnd.done, reason: '/$prefix is done');
+          }
+          expect(async.pendingTimers, isEmpty);
+        });
+      });
+
+      test('stopping while waiting for tokens lets every waiter go', () {
+        fakeAsync((async) {
+          final probe = FakeProbe();
+          final sweep = pacedSweep(probe);
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
+          async.elapse(const Duration(seconds: 3));
+          async.flushMicrotasks();
+          expect(summary, isNull);
+          final before = probe.attempts.length;
+          sweep.cancel();
+          async.flushMicrotasks();
+          expect(summary!.end, SweepEnd.stopped);
+          async.elapse(const Duration(seconds: 5));
+          async.flushMicrotasks();
+          expect(probe.attempts.length, before);
+          expect(probe.inFlight, 0);
+          expect(async.pendingTimers, isEmpty);
+        });
+      });
+
+      test('a second port on a host needs no token', () {
+        fakeAsync((async) {
+          final probe = FakeProbe()..clock = () => async.elapsed;
+          final sweep = pacedSweep(
+            probe,
+            phone: '10.0.0.20',
+            prefix: 22,
+            ports: const [43234, 50051],
+          );
+          sweep.run();
+          async.elapse(const Duration(seconds: 3));
+          async.flushMicrotasks();
+          final own = SweepPlan('10.0.0.20', 22).ownBlockCount * 2;
+          // Past the own block, a host's two attempts start together, and
+          // the hosts are 256 a second, so 512 attempts.
+          final paced = probe.attempts.length - own;
+          expect(paced, greaterThan(0));
+          for (var i = own; i + 1 < probe.attempts.length; i += 2) {
+            expect(probe.attempts[i].endsWith(':43234'), isTrue);
+            expect(probe.attempts[i + 1].endsWith(':50051'), isTrue);
+            expect(probe.startTimes[i + 1], probe.startTimes[i]);
+          }
+          // Two ports a host: 256 hosts is 512 attempts a second. (The first
+          // second is the own block holding most of the 512 in flight.)
+          final inThirdSecond = probe.startTimes
+              .where(
+                (t) =>
+                    t >= const Duration(seconds: 2) &&
+                    t < const Duration(seconds: 3),
+              )
+              .length;
+          expect(inThirdSecond, 512);
+          sweep.cancel();
+          async.flushMicrotasks();
+        });
       });
 
       test('stops trying at the time limit and abandons what is in flight', () {
@@ -706,7 +859,6 @@ void main() {
             plan: SweepPlan('192.168.1.20', 16),
             ports: const [43234],
             onFound: found.add,
-            ownBlockTimeout: const Duration(seconds: 3),
             attemptTimeout: const Duration(seconds: 3),
             maxDuration: const Duration(seconds: 8),
           );
@@ -770,12 +922,12 @@ void main() {
           );
           SweepSummary? summary;
           sweep.run().then((s) => summary = s);
-          async.elapse(const Duration(seconds: 1));
+          async.elapse(const Duration(seconds: 3));
           async.flushMicrotasks();
-          expect(calls.length, lessThanOrEqualTo(11));
+          expect(calls.length, lessThanOrEqualTo(31));
           expect(calls.length, greaterThan(3));
           expect(calls.first, (0, 65533));
-          async.elapse(const Duration(minutes: 2));
+          async.elapse(const Duration(minutes: 5));
           async.flushMicrotasks();
           expect(summary!.end, SweepEnd.done);
           expect(calls.last, (65533, 65533));

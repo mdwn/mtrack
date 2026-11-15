@@ -19,19 +19,37 @@ import '../protocol/player_client.dart';
 import 'ports.dart';
 import 'wifi_address.dart';
 
-/// How many connection attempts a sweep has in flight at once.
-const int sweepConcurrency = 256;
+/// How many connection attempts a sweep has in flight at once, at most. It
+/// is no longer what sets the pace ([sweepAddressesPerSecond] is); it only
+/// has to be big enough that the limiter is: 256 addresses a second, each
+/// held up to [sweepAttemptTimeout] (1 s), on up to two ports, is 512.
+const int sweepConcurrency = 512;
 
-/// How long one attempt on an address in the phone's own /24 may take to
-/// connect: the likeliest place for a player, so the patient one.
-const Duration sweepOwnBlockTimeout = Duration(milliseconds: 400);
+/// How many new addresses a sweep starts a second outside the phone's own
+/// /24 block. The phone's kernel keeps at most 1,024 neighbour (ARP)
+/// entries, and an address that never answers holds its entry for about
+/// 2.3 s (three asks, 752 ms apart). Measured on a Pixel on a real /16
+/// (2026-11-15): sampled during a sweep, the table sat pinned at 1,024,
+/// nearly all of it unanswered. Above roughly 450 new addresses a second the
+/// table fills and attempts fail silently as timeouts, machines that are
+/// there included: swept farthest-first at a faster pace, a player was
+/// missed. 256 a second stays well under that.
+const int sweepAddressesPerSecond = 256;
 
-/// How long one attempt on any other address may take to connect.
-const Duration sweepAttemptTimeout = Duration(milliseconds: 200);
+/// How long one attempt may take to connect, on any address. With the pace
+/// set by [sweepAddressesPerSecond], a longer wait costs no throughput. The
+/// kernel asks again for an address about every 750 ms, so a second gives a
+/// machine that missed the first ask a second chance.
+const Duration sweepAttemptTimeout = Duration(seconds: 1);
 
 /// When the sweep gives up trying addresses, whatever is left. A safety
-/// limit: a network of 65,000 addresses is meant to finish well inside it.
-const Duration sweepMaxDuration = Duration(minutes: 5);
+/// limit: a /16 (65,533 addresses at [sweepAddressesPerSecond]) takes about
+/// 4 min 16 s, well inside it.
+const Duration sweepMaxDuration = Duration(minutes: 10);
+
+// How often the pace limiter adds to its tokens: eight times a second, so
+// the addresses a second are handed out in eighths.
+const Duration _paceRefill = Duration(milliseconds: 125);
 
 /// The shortest prefix swept: a /16, 65,536 addresses. A bigger network is
 /// swept only in the /16 around the phone.
@@ -303,7 +321,7 @@ class NetworkSweep {
     required this.onFound,
     this.onProgress,
     this.concurrency = sweepConcurrency,
-    this.ownBlockTimeout = sweepOwnBlockTimeout,
+    this.addressesPerSecond = sweepAddressesPerSecond,
     this.attemptTimeout = sweepAttemptTimeout,
     this.maxDuration = sweepMaxDuration,
     this.progressInterval = sweepProgressInterval,
@@ -333,10 +351,10 @@ class NetworkSweep {
   /// Attempts in flight at once, at most.
   final int concurrency;
 
-  /// How long an attempt on the phone's own /24 may take.
-  final Duration ownBlockTimeout;
+  /// New addresses started a second outside the phone's own /24 block.
+  final int addressesPerSecond;
 
-  /// How long an attempt on any other address may take.
+  /// How long an attempt may take.
   final Duration attemptTimeout;
 
   /// When the sweep stops trying new addresses.
@@ -357,6 +375,17 @@ class NetworkSweep {
   final Set<String> _asked = {};
   Timer? _limitTimer;
   Timer? _progressTimer;
+  // The pace limiter: tokens to start a new address, added by a periodic
+  // timer (no clock is read), and the workers waiting for one.
+  Timer? _paceTimer;
+  int _tokens = 0;
+  late final int _tokensPerRefill = math.max(
+    1,
+    addressesPerSecond * _paceRefill.inMilliseconds ~/ 1000,
+  );
+  final List<Completer<void>> _tokenWaiters = [];
+  // Attempts are handed out one at a time, in order; see [_take].
+  Future<void> _turn = Future<void>.value();
   bool _sweeping = false;
   bool _sweepEnded = false;
   bool _timedOut = false;
@@ -396,15 +425,18 @@ class NetworkSweep {
     });
     _report();
     _progressTimer = Timer.periodic(progressInterval, (_) => _report());
+    if (plan.total > plan.ownBlockCount) {
+      _tokens = _tokensPerRefill;
+      _paceTimer = Timer.periodic(_paceRefill, (_) => _refill());
+    }
     Future<void> worker() async {
-      while (!stopped && !_sweepEnded && attempts.moveNext()) {
-        final attempt = attempts.current;
-        final open = await probe.canConnect(
-          attempt.host,
-          attempt.port,
-          timeout: attempt.own ? ownBlockTimeout : attemptTimeout,
-          cancelled: _abandon.future,
-        );
+      while (!stopped && !_sweepEnded) {
+        final started = await _start(attempts);
+        if (started == null) {
+          break;
+        }
+        final attempt = started.attempt;
+        final open = await started.open;
         if (stopped || _sweepEnded) {
           break;
         }
@@ -424,20 +456,91 @@ class NetworkSweep {
           _limitTimer = null;
           _progressTimer?.cancel();
           _progressTimer = null;
+          _stopPacing();
           _report();
           _maybeFinish();
         });
     return _finished.future;
   }
 
-  // Every host in turn with all its ports, the phone's own block marked.
-  Iterable<({String host, int port, bool own})> _attempts() sync* {
+  // Every host in turn with all its ports. An attempt is [paced] when it is
+  // the first port of a host outside the phone's own block: starting it
+  // needs a token. The other ports of the host ride on that one.
+  Iterable<({String host, int port, bool paced})> _attempts() sync* {
     var index = 0;
     for (final host in plan.hosts) {
       final own = index++ < plan.ownBlockCount;
+      var first = true;
       for (final port in ports) {
-        yield (host: host, port: port, own: own);
+        yield (host: host, port: port, paced: !own && first);
+        first = false;
       }
+    }
+  }
+
+  // Starts the next attempt, or gives null when there are none or the sweep
+  // is over. The starting is done one at a time, in order, so that a host
+  // waiting for its token holds back the attempts after it, its own other
+  // ports included.
+  Future<({({String host, int port, bool paced}) attempt, Future<bool> open})?>
+  _start(Iterator<({String host, int port, bool paced})> attempts) {
+    final next = _turn.then((_) async {
+      if (stopped || _sweepEnded || !attempts.moveNext()) {
+        return null;
+      }
+      final attempt = attempts.current;
+      if (attempt.paced) {
+        await _token();
+        if (stopped || _sweepEnded) {
+          return null;
+        }
+      }
+      final open = probe.canConnect(
+        attempt.host,
+        attempt.port,
+        timeout: attemptTimeout,
+        cancelled: _abandon.future,
+      );
+      return (attempt: attempt, open: open);
+    });
+    _turn = next.then((_) {});
+    return next;
+  }
+
+  // Completes when a token is to hand, and takes it. Also completes, with
+  // none taken, when pacing is over: the caller looks at whether the sweep
+  // ended.
+  Future<void> _token() {
+    if (_sweepEnded) {
+      return Future<void>.value();
+    }
+    if (_tokens > 0 && _tokenWaiters.isEmpty) {
+      _tokens--;
+      return Future<void>.value();
+    }
+    final waiter = Completer<void>();
+    _tokenWaiters.add(waiter);
+    return waiter.future;
+  }
+
+  // One refill of the bucket. Tokens not spent are capped at one refill, so
+  // a lull is not followed by a burst.
+  void _refill() {
+    _tokens = math.min(_tokensPerRefill, _tokens + _tokensPerRefill);
+    while (_tokens > 0 && _tokenWaiters.isNotEmpty) {
+      _tokens--;
+      _tokenWaiters.removeAt(0).complete();
+    }
+  }
+
+  // Pacing is over: the timer is cancelled and every waiter let go.
+  void _stopPacing() {
+    _paceTimer?.cancel();
+    _paceTimer = null;
+    final waiters = List.of(_tokenWaiters);
+    _tokenWaiters.clear();
+    for (final waiter in waiters) {
+      waiter.complete();
     }
   }
 
@@ -459,6 +562,7 @@ class NetworkSweep {
     if (!_abandon.isCompleted) {
       _abandon.complete();
     }
+    _stopPacing();
   }
 
   /// Ends the sweep now: attempts are abandoned with their sockets closed,
@@ -536,6 +640,7 @@ class NetworkSweep {
     _limitTimer?.cancel();
     _progressTimer?.cancel();
     _progressTimer = null;
+    _stopPacing();
     if (!_finished.isCompleted) {
       final SweepEnd end;
       if (stopped) {
