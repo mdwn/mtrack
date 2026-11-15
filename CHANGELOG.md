@@ -198,6 +198,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows everything. It works on the gRPC port and, over gRPC-Web, on the web UI's port, and is open
   while the player is locked. It is not allowed over Bluetooth, which has `WatchStatus`'s compact
   status. See [gRPC](docs/src/interfaces/grpc.md).
+- **Colours in CMY**: wherever a colour goes (`color:`, a cycle's colours, a palette slot, a
+  song's or playlist entry's `palette:`), `cmy(0%, 25%, 20%)` gives it as the inks it prints
+  with, and `cmyk(0%, 25%, 20%, 10%)` adds black. It is read as the RGB it prints as, so it is the
+  same colour on every fixture: an RGB fixture gets that RGB, a CMY head the inks as written. See
+  [Effects](docs/src/lighting/effects.md).
 
 ### Changed
 

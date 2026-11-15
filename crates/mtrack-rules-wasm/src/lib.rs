@@ -916,7 +916,7 @@ pub fn vocabulary(layers: Option<Vec<String>>) -> lighting::parser::edit::Vocabu
     lighting::parser::edit::vocabulary(&layers)
 }
 
-/// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)` or a name,
+/// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)`, `cmy(...)`, `cmyk(...)` or a name,
 /// quoted or not), as `#rrggbb`; `None` for text that is no colour.
 #[wasm_bindgen]
 pub fn color_hex(text: &str) -> Option<String> {

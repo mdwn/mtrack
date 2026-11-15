@@ -264,7 +264,8 @@ songs:
 - Another Red Song
 ```
 
-- Each key is a slot and each value a colour: `"#2040ff"`, `rgb(32, 64, 255)` or a colour name.
+- Each key is a slot and each value a colour: `"#2040ff"`, `rgb(32, 64, 255)`, `cmy(0%, 25%, 20%)`
+  (or `cmyk(...)`) or a colour name.
   A slot not named keeps its colour, whether the show's or the song's own.
 - **Order.** A slot is the show's default, then the song's own `palette:` over it, then the
   entry's over that. The later wins, slot by slot.

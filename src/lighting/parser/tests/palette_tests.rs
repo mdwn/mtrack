@@ -605,3 +605,26 @@ fn an_inline_loop_names_the_files_palette_slots() {
     .unwrap_err();
     assert!(err.contains("palette slot 'nope' is not declared"), "{err}");
 }
+
+/// A song's or playlist entry's override takes a colour in CMY as it does
+/// one in RGB: the colour it prints as.
+#[test]
+fn an_override_takes_a_cmy_colour() {
+    let written: std::collections::BTreeMap<String, String> = [
+        ("primary".to_string(), "cmy(0%, 25%, 20%)".to_string()),
+        ("accent".to_string(), "cmyk(0%, 0%, 0%, 50%)".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let read = crate::lighting::parser::palette::parse_overrides(&written).unwrap();
+    let rgb = |slot: &str| read.get(slot).map(|c| (c.r, c.g, c.b));
+    assert_eq!(rgb("primary"), Some((255, 191, 204)));
+    assert_eq!(rgb("accent"), Some((128, 128, 128)));
+
+    let bad: std::collections::BTreeMap<String, String> =
+        [("primary".to_string(), "cmy(0, 25, 20)".to_string())]
+            .into_iter()
+            .collect();
+    let error = crate::lighting::parser::palette::parse_overrides(&bad).unwrap_err();
+    assert!(error.contains("cmy(c%, m%, y%)"), "{error}");
+}

@@ -192,8 +192,12 @@ bare_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 color_parameter = { 
     quoted_hex_color |
     quoted_rgb_color |
+    quoted_cmyk_color |
+    quoted_cmy_color |
     hex_color | 
     rgb_color | 
+    cmyk_color |
+    cmy_color |
     named_color
 }
 
@@ -202,11 +206,22 @@ hex_color = @{ "#" ~ ASCII_HEX_DIGIT{6} }
 // RGB color with optional spaces after commas - make atomic to control whitespace
 rgb_color = @{ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" }
 
+// Subtractive colour, each component a percentage of ink: `cmy(0%, 25%, 20%)`
+// is pink. `cmyk` adds black, which darkens all three. Read as the RGB it
+// prints as, so it is the same colour on every fixture.
+cmy_percent = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "%" }
+cmy_color = @{ "cmy(" ~ cmy_percent ~ "," ~ " "? ~ cmy_percent ~ "," ~ " "? ~ cmy_percent ~ ")" }
+cmyk_color = @{ "cmyk(" ~ cmy_percent ~ "," ~ " "? ~ cmy_percent ~ "," ~ " "? ~ cmy_percent ~ "," ~ " "? ~ cmy_percent ~ ")" }
+
 named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple" | "pink") ~ "\"" }
 
 quoted_hex_color = @{ "\"" ~ hex_color ~ "\"" }
 
 quoted_rgb_color = @{ "\"" ~ rgb_color ~ "\"" }
+
+quoted_cmy_color = @{ "\"" ~ cmy_color ~ "\"" }
+
+quoted_cmyk_color = @{ "\"" ~ cmyk_color ~ "\"" }
 
 // Time-based parameters (duration, fade, etc.) all use the same format
 // Supports absolute time (ms, s) and musical time (beats, measures)

@@ -339,7 +339,8 @@ show "Main" {
 
 - The block sits at file scope, beside `tempo` and `sequence`. Separate the slots with a line
   break or a comma. A slot name is an identifier (`primary`, `back-light`), and its value is any
-  colour a `color:` takes: a quoted name, a hex colour or `rgb(r, g, b)`.
+  colour a `color:` takes: a quoted name, a hex colour, `rgb(r, g, b)` or `cmy(c%, m%, y%)`
+(`cmyk` with black).
 - A file has at most one `palette` block; a second is an error. A slot declared twice in a block
   is an error too.
 - `palette.<slot>` stands wherever a colour does: a `color:` on a `static` or a `cycle` (once for
