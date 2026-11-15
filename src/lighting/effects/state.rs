@@ -276,7 +276,11 @@ impl FixtureState {
         crate::lighting::channels::CMY_OF_RGB
             .map(|(rgb, cmy)| {
                 let state = self.channels.get(rgb).filter(|_| subtractive)?;
-                Some((cmy, 1.0 - state.value))
+                // The complement of the byte an RGB fixture is sent, so the
+                // two agree to the byte (each rounding its own half would
+                // not: 50% is 128 there and would be 128 here).
+                let byte = crate::lighting::channels::dmx_byte(state.value * 255.0);
+                Some((cmy, f64::from(255 - byte) / 255.0))
             })
             .into_iter()
             .flatten()
