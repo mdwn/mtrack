@@ -105,11 +105,13 @@ cd "$PROJECT_ROOT" || { echo "Cannot enter $PROJECT_ROOT" >&2; exit 1; }
 # both ends of the report. The checks do not drive the UI, so this warns
 # rather than fails: the UI simply is not what this run vetted.
 SVELTE_DIR="$PROJECT_ROOT/src/webui/svelte"
-# The same hash as the Makefile's FRONTEND_HASH, so its stamp compares:
-# generated src/gen left out, as it is there.
+# The Makefile's own FRONTEND_HASH, asked of make rather than copied here: a
+# copy fell behind when the hash took in the rules crate (#650), and from then
+# on every run warned, a fresh UI included.
 ui_hash() {
-    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" -type f -not -path "$SVELTE_DIR/src/gen/*" \
-        2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin
+    # shellcheck disable=SC2016 # $(FRONTEND_HASH) is make's to expand, not the shell's
+    make -s --no-print-directory -C "$PROJECT_ROOT" \
+        --eval 'print-frontend-hash: ; @echo $(FRONTEND_HASH)' print-frontend-hash 2>/dev/null
 }
 if [[ "$SKIP_BUILD" != "true" ]] && command -v npm >/dev/null 2>&1; then
     echo "=== Building the web UI ==="
