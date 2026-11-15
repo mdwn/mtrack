@@ -1029,7 +1029,9 @@ mod tests {
 
     #[test]
     fn a_playlist_can_change_the_show_or_turn_it_off() -> Result<(), Box<dyn Error>> {
-        let (dir, engine) = ambient_engine(BLUE, ("0s", "0s", "300ms"))?;
+        // A fade out long enough that a slow runner still reads it fading:
+        // at 300 ms, CI read the first frame 120 ms in, past a threshold.
+        let (dir, engine) = ambient_engine(BLUE, ("0s", "0s", "2s"))?;
         std::fs::write(dir.path().join("green.light"), GREEN)?;
         engine.idle_ambient(None, false);
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
@@ -1051,9 +1053,13 @@ mod tests {
         // One with none fades it out.
         engine.idle_ambient(Some(&config::ambient::PlaylistAmbient::Off), false);
         assert!(engine.ambient_status().is_none());
+        // Fading, not cut: still green.
         let first = tick(&engine);
-        assert!(first.1 > 200.0, "fades from green: {first:?}");
-        sleep(Duration::from_millis(350));
+        assert!(
+            first.0 == 0.0 && first.1 > 0.0 && first.2 == 0.0,
+            "fades from green: {first:?}"
+        );
+        sleep(Duration::from_millis(2100));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
         Ok(())
     }

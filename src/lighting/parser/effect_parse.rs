@@ -466,7 +466,11 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect,
                             .find(|p| p.as_rule() == Rule::parameter_value)
                             .and_then(|value| value.into_inner().next())
                             .filter(|value| value.as_rule() == Rule::palette_ref);
-                        let param_pair_span = param_pair.as_span();
+                        // From the pair's line index: a span's own
+                        // `line_col` counts from the start of the file, and
+                        // on every effect line of a long show that made
+                        // parsing quadratic (5 s for a Pi's library).
+                        let param_col = param_pair.line_col().1;
                         let (key, mut value) = super::utils::parse_parameter(param_pair)?;
                         musical.record(&key, &value);
                         if let Some(reference) = reference {
@@ -485,11 +489,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect,
                                 color_parameters.push(value);
                             }
                             "layer" => {
-                                let (_, col) = param_pair_span.start_pos().line_col();
-                                layer = Some(
-                                    parse_layer_in(ctx.layers, &value)
-                                        .ok_or_else(|| unknown_layer(ctx.layers, &value, col))?,
-                                );
+                                layer =
+                                    Some(parse_layer_in(ctx.layers, &value).ok_or_else(|| {
+                                        unknown_layer(ctx.layers, &value, param_col)
+                                    })?);
                             }
                             "blend_mode" => {
                                 blend_mode = Some(
