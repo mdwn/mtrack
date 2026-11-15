@@ -324,7 +324,11 @@ Notes:
   a show's colours directly. A mover with CMY flags — `cyan`, `magenta` and
   `yellow`, which is how GDTF's `ColorSub_C/M/Y` import — takes the same
   colours as their complement: `color: "red"` opens cyan fully and closes
-  magenta and yellow. Its state (the stage views, MCP `evaluate_show` and
+  magenta and yellow. Every colour is the same colour on both: each flag is
+  the exact complement of the byte an RGB fixture is sent (pink, 255, 192,
+  203, is cyan 0, magenta 63, yellow 52), and a primary a cue does not name
+  is none of it, as on an RGB fixture, so `red: 100%` alone is red. A show
+  that sets the flags itself (`cyan: 40%`) drives them as written. Its state (the stage views, MCP `evaluate_show` and
   `get_fixture_state`) shows those flags as the head is sent them, not the
   red, green and blue a show named. A fixture with both red, green and blue
   and cyan, magenta and yellow mixes additively: each is a colour of its own.
@@ -1021,7 +1025,7 @@ verify-light-show` check syntax, and the latter with `--config` the group names,
 |---|---|
 | `unused-parameter` | A parameter the effect does not read (`dimmer` on a `cycle`, a misspelling), accepted and dropped |
 | `empty-group` | A group that resolves to no fixtures in the current venue, so its cues do nothing |
-| `capability-gap` | An effect needs a channel (color, strobe, pan/tilt) that none of the group's fixtures has |
+| `capability-gap` | An effect needs a channel (color, strobe, pan/tilt) that none of the group's fixtures has. When only some lack it, those sit the cue out and the rest play it; a static plays on any fixture that has one of the channels it sets |
 | `unconfigured-universe` | A venue fixture on a universe with no output under `dmx.universes` in the active profile |
 | `unbound-focus-point` | A `move` aims at a focus point the current venue does not define |
 | `move-without-positions` | A `move` at a focus point on movers the venue has not placed; they snap to pan 0 / tilt 0 |
