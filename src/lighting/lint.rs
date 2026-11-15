@@ -139,6 +139,34 @@ impl Want {
     }
 }
 
+/// Whether `fixture` can do what an effect of `effect_type` asks: the rule
+/// the engine leaves a fixture out of an effect by. An effect with a
+/// [`Want`] needs a fixture that meets it. A static sets channels, so it
+/// needs a fixture that takes any of them: its level by a dimmer or colour
+/// channels, any other channel by having it. A static setting nothing asks
+/// nothing.
+pub fn can_do(effect_type: &EffectType, fixture: &crate::lighting::effects::FixtureInfo) -> bool {
+    match effect_type {
+        EffectType::Static { parameters, .. } => {
+            parameters.is_empty()
+                || parameters.keys().any(|channel| match channel.as_str() {
+                    "dimmer" => Want::Dimmer.met_by(fixture),
+                    other => fixture.takes_channel(other),
+                })
+        }
+        other => Want::of(other).is_none_or(|want| want.met_by(fixture)),
+    }
+}
+
+/// What an effect of `effect_type` needs of a fixture ([`can_do`]), in
+/// words, for a refusal.
+pub fn what_it_needs(effect_type: &EffectType) -> &'static str {
+    match effect_type {
+        EffectType::Static { .. } => "one of the channels it sets",
+        other => Want::of(other).map_or("nothing", Want::what),
+    }
+}
+
 /// The focus points a `move` aims at: its `to`, and its `from` when it has
 /// one. Nothing for any other effect.
 pub fn focus_targets(effect_type: &EffectType) -> impl Iterator<Item = &str> {

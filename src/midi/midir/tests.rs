@@ -1453,13 +1453,15 @@ mod run_playback_tests {
         ];
         let sent = &sender.sent;
         assert_eq!(sent.len(), expected.len(), "{sent:?}");
-        // Timed from the first note: wall-clock playback on a loaded
-        // runner (CI runs these under coverage) starts tens of
-        // milliseconds late. Restarting on the MIDI's length instead
-        // would put the second and third passes 400 ms early.
-        let first = sent[0].0;
+        // On the song's clock, which every pass restarts on: a note may be
+        // late (a loaded runner, under coverage on CI, has started the
+        // playback thread 125 ms late, which timing from the first note
+        // read as the later passes being early) but never early.
+        // Restarting on the MIDI's length instead would put the second and
+        // third passes 400 ms early.
         for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
-            assert!((at - first - want_at).abs() < 0.1, "{sent:?}");
+            let late = at - want_at;
+            assert!((-0.02..0.25).contains(&late), "{sent:?}");
             assert_eq!(*note, want_note, "{sent:?}");
         }
     }

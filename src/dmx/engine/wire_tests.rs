@@ -141,12 +141,13 @@ fn an_ended_effects_channels_read_as_the_wire_holds_them() -> Result<(), Box<dyn
     }
     let state = state(&engine);
     let wash = &state["wash"];
-    // The CMY head shows red: cyan open, magenta and yellow (levels)
-    // released to open with the effect that set them; the gobo and zoom,
-    // which nothing writes now, hold where it left them.
+    // The CMY head shows red, as the RGB par does: cyan open, and the
+    // green and blue the cue does not name none of them, magenta and
+    // yellow closed. The gobo and zoom, which nothing writes now, hold
+    // where it left them.
     assert_eq!(
         (wash["cyan"], wash["magenta"], wash["yellow"]),
-        (0, 0, 0),
+        (0, 255, 255),
         "the flags as the wire holds them"
     );
     assert_eq!((wash["gobo"], wash["zoom"]), (128, 102));
