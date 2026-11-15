@@ -206,6 +206,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows everything. It works on the gRPC port and, over gRPC-Web, on the web UI's port, and is open
   while the player is locked. It is not allowed over Bluetooth, which has `WatchStatus`'s compact
   status. See [gRPC](docs/src/interfaces/grpc.md).
+- **Palettes: a show's colours named in one place, and recoloured per song and per playlist
+  entry**: a `palette { }` block in a `.light` file names its colours as slots
+  (`primary: "#c01020"`), and an effect or a sequence argument says `palette.primary` where it
+  would write the colour. A song's `song.yaml` and a playlist entry can each carry a `palette:`
+  that recolours slots without editing the show: a slot's colour is the show's default, then the
+  song's, then the entry's, slot by slot. The colours are settled as the song starts and hold for
+  that play. A slot a file does not declare, a second `palette` block, a slot declared twice or a
+  colour that does not read is an error with its place; an override naming a slot none of the
+  song's shows declares is logged and changes nothing. An included file's palette serves its own
+  sequences and joins the including file's, whose colours win. A show with no palette plays as
+  before. In gRPC, a playlist entry's `settings.palette` is the entry's override: `SavePlaylist`
+  keeps an entry's palette when its settings carry none, so a client that does not know palettes
+  drops none. `GetPlaylist` returns the slots of each song's shows (`song_palettes`, with
+  `with_library` or `with_palettes`), and a detailed `ListSongs` each song's (`palette`). See
+  [Cueing](docs/src/lighting/cueing.md#palettes),
+  [Song Configuration](docs/src/configuration/song-config.md) and
+  [Playlists](docs/src/getting-started/playlists.md#palette-overrides).
+- **Palettes in the web UI and the phone app**: the show editor has a Palette card for each
+  `.light` file, to add, recolour, rename and remove slots. A rename rewrites every use, and
+  removing a slot still in use is refused with the uses listed. A colour field offers the
+  file's slots as well as a colour. The song editor's Lighting tab sets the song's overrides
+  beside each slot's show colour. The playlist editor sets an entry's (**Colors for this song**)
+  and shows **Colors across the set**, each slot's colour song by song in play order, marking
+  overrides and overrides of slots a song does not have. The phone app's entry sheet has a
+  **Colours** section that shows each slot and where its colour comes from, sets the entry's
+  colour from a grid or a hex code, resets it, and removes an override of a slot the song does
+  not have. A save that leaves the colours alone sends them back as they were read.
+- **The lighting layers are configured**: a profile's `dmx.lighting.layers` lists the layers
+  effects are drawn on, bottom to top, between one and sixteen names
+  (`[background, midground, foreground, accents, blinders]`). Left out, it is the three there
+  have always been, and a save does not add it. `layer:`, `clear`, `freeze`, `unfreeze` and
+  `master` take the player's names, and a show naming a layer the player does not have fails to
+  load with the layer, its place and the player's layers. A saved change reloads the engine and
+  the songs' shows; a change that removes or renames a layer a loaded show uses is refused,
+  naming the shows (`FAILED_PRECONDITION` over gRPC). The Groups page edits the list, the
+  timeline draws one lane per layer and an effect's layer is a dropdown of them. `mtrack songs`
+  and `mtrack playlist` take `--config <project>` to read shows against a project's layers, and
+  the stage stream's `StageLayout` names them (`layers`). See
+  [Lighting Configuration](docs/src/lighting/configuration.md#layers).
 - **Colours in CMY**: wherever a colour goes (`color:`, a cycle's colours, a palette slot, a
   song's or playlist entry's `palette:`), `cmy(0%, 25%, 20%)` gives it as the inks it prints
   with, and `cmyk(0%, 25%, 20%, 10%)` adds black. It is read as the RGB it prints as, so it is the
