@@ -98,6 +98,7 @@ const WORLD_LEVEL: &[&str] = &[
     "malformed_show_is_rejected",
     "song_lighting_produces_cues",
     "lighting_effects_activate_during_playback",
+    "a_colour_is_the_same_colour_on_an_rgb_par_and_a_cmy_head",
 ];
 
 /// Whether this check's negative control only substitutes the asserted value.
@@ -456,6 +457,13 @@ pub fn all() -> Vec<Check> {
             "A player configured with four layers must play a show that uses the fourth,\n  \
              with the fourth above the third.",
             dmx_output::a_configured_fourth_layer_plays_on_top
+        ),
+        entry!(
+            "dmx-output",
+            "a_colour_is_the_same_colour_on_an_rgb_par_and_a_cmy_head",
+            "A colour must look the same on an RGB par and a CMY head: the head's flags\n  \
+             exactly the complement of the par's bytes, for hex, named and cmy() colours.",
+            dmx_output::a_colour_is_the_same_colour_on_an_rgb_par_and_a_cmy_head
         ),
     ]
 }
