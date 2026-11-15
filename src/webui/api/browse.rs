@@ -252,9 +252,11 @@ pub(crate) async fn bulk_import(
     // no new song is named as one of them.
     let taken = super::helpers::player_song_names(player);
     let songs_root = songs_dir(player);
-    let scan =
-        tokio::task::spawn_blocking(move || import_song_dirs(&dir_canonical, &songs_root, taken))
-            .await;
+    let layers = player.layers();
+    let scan = tokio::task::spawn_blocking(move || {
+        import_song_dirs(&dir_canonical, &songs_root, taken, &layers)
+    })
+    .await;
 
     let (created, skipped, failed) = match scan {
         Ok(Ok(result)) => result,
@@ -284,10 +286,12 @@ pub(crate) async fn bulk_import(
 /// ([`songs::new_songs`]), named past the songs in `taken` and those
 /// configured under `songs_root` too; one with a config is skipped. Each is
 /// reported by its path below `root`. An unreadable `root` is an error.
+/// Lighting files are parsed against `layers`, the player's.
 fn import_song_dirs(
     root: &std::path::Path,
     songs_root: &std::path::Path,
     taken: std::collections::HashSet<String>,
+    layers: &crate::lighting::effects::LayerSet,
 ) -> std::io::Result<(Vec<String>, Vec<String>, Vec<ImportFailure>)> {
     let found = songs::new_songs(root, songs::taken_song_names(songs_root, taken))?;
     let display_name = |dir: &std::path::Path| {
@@ -300,7 +304,7 @@ fn import_song_dirs(
     let mut created: Vec<String> = Vec::new();
     let mut failed: Vec<ImportFailure> = Vec::new();
     for song in &found.new {
-        match song.write() {
+        match song.write(layers) {
             Ok(()) => created.push(display_name(&song.dir)),
             Err(e) => failed.push(ImportFailure {
                 name: display_name(&song.dir),

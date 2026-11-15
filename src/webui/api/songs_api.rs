@@ -912,6 +912,7 @@ pub(super) async fn ensure_song_config(
     song_dir: &std::path::Path,
 ) -> Result<Option<String>, SongError> {
     let taken = taken_names(player);
+    let layers = player.layers();
     let (songs_path, song_dir) = (songs_path.to_path_buf(), song_dir.to_path_buf());
     // Off the async worker: the names configured under the songs root are
     // a walk of the whole tree, and the new config a scan of the audio.
@@ -919,7 +920,7 @@ pub(super) async fn ensure_song_config(
         let song = songs::new_song(&songs_path, &song_dir, taken).map_err(|e| e.to_string())?;
         match song {
             Some(song) => song
-                .write()
+                .write(&layers)
                 .map(|()| Some(song.name))
                 .map_err(|e| e.to_string()),
             None => Ok(None),

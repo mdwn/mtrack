@@ -517,4 +517,6 @@ song already configured there, has that name, it is named by its path below
 taken too. Audio files are used as tracks (stereo and multichannel
 files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
 prefixed with `dmx_` are treated as MIDI DMX light shows. `.light` files are auto-detected as
-DSL lighting shows.
+DSL lighting shows. They are read against the default lighting layers unless the project is passed with
+`--config` (`mtrack songs --init --config . songs`): in a project that configures its own
+layers, a show that uses one of them is otherwise refused as naming an unknown layer.
