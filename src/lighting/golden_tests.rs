@@ -665,3 +665,19 @@ fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
         f[3]
     );
 }
+
+/// A mover with a red channel but no green or blue takes a `red:` cue:
+/// its dimmer goes up and its red with it, alongside the move (what the
+/// rig's mover checks drive; 0.18.0 to 0.18.3 refused the cue outright).
+#[test]
+fn a_red_only_mover_takes_a_red_cue_while_it_moves() {
+    let mover =
+        "fixture_type \"CmySpot\" {\n  channel \"pan\"    @ 1 fine 2 range -270deg..270deg\n  \
+                 channel \"tilt\"   @ 3 fine 4 range -135deg..135deg\n  channel \"dimmer\" @ 5\n  \
+                 channel \"red\"    @ 6\n}\n";
+    let show = "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 10s\n    \
+                @00:00.000\n    spots: move from_pan: -60deg, pan: 60deg, tilt: 0deg, duration: 6s, easing: linear\n}\n";
+    let frame = &frames_for(mover, show, &[Duration::from_millis(1000)])[0];
+    assert_eq!((frame[5], frame[6]), (255, 255), "dimmer and red");
+    assert_ne!(frame[1], 0, "and the head is moving");
+}

@@ -535,3 +535,99 @@ fn test_validate_effect_timing_negative_duration() {
     // Should succeed with valid timing
     assert!(engine.start_effect(effect).is_ok());
 }
+
+/// A colour cue on a group that mixes an RGB par with a dimmer-only
+/// fixture plays on both: the par shows the colour, the dimmer takes the
+/// level. Refusing the cue for the whole group because one fixture has no
+/// colour channels left the group dark (0.18.0 to 0.18.3).
+#[test]
+fn a_colour_cue_on_a_mixed_group_plays_on_every_fixture() {
+    let mut engine = EffectEngine::new();
+    let channels = |names: &[(&str, u16)]| -> HashMap<String, u16> {
+        names.iter().map(|(n, o)| (n.to_string(), *o)).collect()
+    };
+    engine.register_fixture(FixtureInfo::new(
+        "par".to_string(),
+        1,
+        1,
+        "Par".to_string(),
+        channels(&[("red", 1), ("green", 2), ("blue", 3)]),
+        None,
+    ));
+    engine.register_fixture(FixtureInfo::new(
+        "dim".to_string(),
+        1,
+        10,
+        "Dimmer".to_string(),
+        channels(&[("dimmer", 1)]),
+        None,
+    ));
+    let parameters: HashMap<String, f64> = [
+        ("red".to_string(), 1.0),
+        ("green".to_string(), 0.0),
+        ("blue".to_string(), 0.0),
+        ("dimmer".to_string(), 0.5),
+    ]
+    .into_iter()
+    .collect();
+    let effect = EffectInstance::new(
+        "wash".to_string(),
+        EffectType::Static {
+            parameters,
+            duration: Duration::from_secs(5),
+        },
+        vec!["par".to_string(), "dim".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect).unwrap();
+
+    let commands = engine.update(Duration::from_millis(100), None).unwrap();
+    let at = |channel: u16| {
+        commands
+            .iter()
+            .find(|c| c.channel == channel)
+            .map(|c| c.value)
+    };
+    assert_eq!(
+        (at(1), at(2), at(3)),
+        (Some(128), Some(0), Some(0)),
+        "the par shows red at the cue's level"
+    );
+    assert_eq!(at(10), Some(128), "the dimmer-only fixture takes the level");
+}
+
+/// A colour cycle on a mixed group cycles the fixtures that have colour;
+/// the one without sits it out rather than refusing the cue for all.
+#[test]
+fn a_colour_cycle_on_a_mixed_group_skips_only_the_fixture_without_colour() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("par", 1, 1));
+    engine.register_fixture(FixtureInfo::new(
+        "dim".to_string(),
+        1,
+        20,
+        "Dimmer".to_string(),
+        [("dimmer".to_string(), 1)].into_iter().collect(),
+        None,
+    ));
+    let effect = EffectInstance::new(
+        "cycle".to_string(),
+        EffectType::ColorCycle {
+            colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+            duration: Duration::from_secs(5),
+        },
+        vec!["par".to_string(), "dim".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect).unwrap();
+    let active = engine.get_active_effects();
+    let targets = &active.get("cycle").unwrap().target_fixtures;
+    assert_eq!(targets, &vec!["par".to_string()]);
+}
