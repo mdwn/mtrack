@@ -93,12 +93,23 @@ with a test (`test/app/network_scan_test.dart`, `test/ui/network_scan_test.dart`
   A public or carrier-grade NAT (100.64/10) address, no Wi-Fi interface, or an interface list that
   cannot be read gives "This phone is not on a network it can scan. Join the player's Wi-Fi, or
   enter an address." and no traffic.
-- A /24: `sweepHosts` is `a.b.c.1` to `a.b.c.254` less the phone's own address (253), whatever the
-  real netmask. Ports: 43234 and the remembered player's port if it differs (`sweepPorts`).
-- Pace: `NetworkSweep` runs 32 workers, each trying one `host:port` at a time with
-  `NetworkProbe.canConnect` (plain TCP connect, closed at once) and 400 ms to connect. 253 hosts on
-  one port is 8 rounds, 3.2 s; on two ports 6.4 s. The sweep stops trying addresses at 8 s whatever
-  is left, and the whole scan, confirmations included, ends at 12 s.
+- The phone's network, and no more than its /16: `LocalAddress.prefixLength` is the real netmask,
+  read with `getifaddrs` over `dart:ffi` (`lib/src/platform/interface_prefixes.dart`; `dart:io` gives
+  no masks) and attached to the `NetworkInterface.list` addresses by interface name and address. When
+  it cannot be read the sweep is a /24, as before. `SweepPlan` (`network_scan.dart`) is the hosts of
+  that network less the network and broadcast addresses and the phone: a network bigger than a /16
+  is clamped to the /16 around the phone (65,533 addresses), the phone's own /24 comes first and the
+  blocks next to it follow, outward, each upward, made lazily and never held as a list. Ports: 43234
+  and the remembered player's port if it differs (`sweepPorts`), all ports of a host before the next
+  host.
+- Pace: `NetworkSweep` runs `sweepConcurrency` (256) attempts at once with `NetworkProbe.canConnect`
+  (plain TCP connect, closed at once), `sweepOwnBlockTimeout` (400 ms) to connect in the phone's own
+  /24 and `sweepAttemptTimeout` (200 ms) elsewhere. There is no fixed deadline: it runs until every
+  address is tried, or for `sweepMaxDuration` (5 minutes) at most. The numbers are to be tuned from
+  measurement on a phone. Progress (addresses tried of the total) reaches the screen at most ten
+  times a second. When a scan ends the session logs one line (`mtrack scan: ...`) with the network
+  size, counts, time, why it ended and the failures by kind (`NetworkProbe.takeDiagnostics`); no
+  other machine's address is in it.
 - Confirming: a host that accepts the connection is connected to as a player with
   `WifiLink.connect` (1.5 s) and asked `GetNetworkInfo` (1.5 s), four at a time and at most sixteen
   in all. Only a host that does both is listed, named by its host name (its address if the name is
@@ -109,9 +120,12 @@ with a test (`test/app/network_scan_test.dart`, `test/ui/network_scan_test.dart`
   is back if the advert row goes. A scan row connects with `connectToScanned` and is remembered by
   its address and its name (`RememberedPlayer.byAddress`), with no service name.
 - Stopping: the sweep is cancelled and its sockets closed when any player is chosen or typed, when
-  the phase leaves `noPlayer` (a remembered player connecting), and on dispose. The button is
-  disabled and reads "Scanning…" while it runs. A scan ends by itself, with "No players found on this
-  network." when it found none; no dialog is ever shown.
+  the phase leaves `noPlayer` (a remembered player connecting), and on dispose. While it runs the
+  button reads "Stop scanning" and `Session.stopNetworkScan` ends it, keeping the players found; a
+  line shows "Scanning… N of M addresses". A scan ends by itself, with "No players found on this
+  network." when it found none; after one that did not cover the whole network a line says so
+  ("Stopped after N of M addresses." or "Scanned N addresses around this phone; this network is
+  bigger."). No dialog is ever shown.
 - No new permission or plugin: `dart:io` sockets are not subject to `network_security_config.xml`
   (which covers the platform's HTTP stack), as a typed IP address already shows.
 
@@ -352,11 +366,11 @@ on a device:
   against a fake): that `NetworkInterface.list` on the phone returns the Wi-Fi interface under the name
   the allowlist expects (`wlan0` on Android, `en0` on iOS), including on Android versions that restrict
   reading interfaces, and with a VPN up (the Pixel runs Tailscale: that the VPN's address is never
-  taken and the sweep's sockets still reach the LAN); that 32 connects at a time and 400 ms are
-  enough to find a player on a real access point without upsetting it, and the sweep ends in
-  the time the numbers say; a guest network with client isolation (every address silent, "No players
+  taken and the sweep's sockets still reach the LAN); that the netmask lookup (`getifaddrs` over `dart:ffi`)
+  works on Android and iOS; that 256 connects at a time, 400 ms in the phone's /24 and 200 ms elsewhere
+  are enough to find a player on a real access point without upsetting it, and how long a /16 takes; a guest network with client isolation (every address silent, "No players
   found on this network."); Wi-Fi off and mobile data only (the not-scannable line); a network that is
-  a /16, where only the phone's /24 is seen; and, on iOS, that the sweep needs no prompt beyond
+  a /16 or bigger; and, on iOS, that the sweep needs no prompt beyond
   the local network one already shown.
 - Keeping the screen on while connected (`wakelock_plus`), and releasing it in the background.
 - Haptics on Play and Stop, and the feel of the 600 ms hold under a real finger.

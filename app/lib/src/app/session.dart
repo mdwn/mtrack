@@ -316,6 +316,11 @@ class Session extends ChangeNotifier {
   List<FoundPlayer> _scanFound = const [];
   NetworkSweep? _sweep;
   int _sweepEpoch = 0;
+  int _scanTried = 0;
+  int _scanTotal = 0;
+  bool _scanClamped = false;
+  bool _scanCutShort = false;
+  bool _scanStopAsked = false;
 
   bool _foreground = true;
   bool? _wakeAsked;
@@ -503,6 +508,22 @@ class Session extends ChangeNotifier {
         WifiEntry(p, scanned: true),
   ];
 
+  /// How many addresses the scan under way (or the last one) has tried.
+  int get scanTried => _scanTried;
+
+  /// How many addresses the scan under way (or the last one) is to try; 0
+  /// until it knows.
+  int get scanTotal => _scanTotal;
+
+  /// True when the last scan ended without having covered the phone's whole
+  /// network: it was stopped or ran out of time, or the network is bigger
+  /// than the part around the phone that is scanned.
+  bool get scanPartial => _scanCutShort || _scanClamped;
+
+  /// True when the last scan was stopped, by the person or by the time
+  /// limit, before it had tried every address.
+  bool get scanCutShort => _scanCutShort;
+
   /// Whether this session can scan the network: it has the means to.
   bool get canScanNetwork => _probe != null && _wifi != null;
 
@@ -638,9 +659,11 @@ class Session extends ChangeNotifier {
   }
 
   /// Sweeps the phone's own Wi-Fi network for players, on the person's
-  /// request and never otherwise: the 254 addresses of its /24, only when
-  /// the phone's address there is private. What it finds joins
-  /// [wifiEntries]; [networkScan] says how it went. It ends by itself, and
+  /// request and never otherwise: the network the phone is on, as far as
+  /// it is known and at most the /16 around the phone, only when the phone's
+  /// address there is private. What it finds joins [wifiEntries];
+  /// [networkScan] says how it went, and [scanTried] and [scanTotal] how far
+  /// it has got. It ends by itself, when [stopNetworkScan] is called, and
   /// when a player is chosen. Does nothing while one is running.
   Future<void> scanNetwork() async {
     final probe = _probe;
@@ -655,6 +678,11 @@ class Session extends ChangeNotifier {
     final epoch = ++_sweepEpoch;
     _networkScan = NetworkScan.scanning;
     _scanFound = const [];
+    _scanTried = 0;
+    _scanTotal = 0;
+    _scanClamped = false;
+    _scanCutShort = false;
+    _scanStopAsked = false;
     _notify();
     bool stale() => _disposed || _sweepEpoch != epoch;
     List<LocalAddress> locals;
@@ -666,7 +694,7 @@ class Session extends ChangeNotifier {
     if (stale()) {
       return;
     }
-    final phone = scannableWifiAddress(locals);
+    final phone = scannableWifiLocal(locals);
     if (phone == null) {
       _networkScan = NetworkScan.notScannable;
       _notify();
@@ -681,11 +709,30 @@ class Session extends ChangeNotifier {
     if (stale()) {
       return;
     }
+    if (_scanStopAsked) {
+      _networkScan = NetworkScan.idle;
+      _notify();
+      return;
+    }
+    final plan = SweepPlan(phone.address, phone.prefixLength);
+    probe.takeDiagnostics();
+    final started = _monotonic();
+    _scanTotal = plan.total;
+    _scanClamped = plan.clamped;
     final sweep = NetworkSweep(
       probe: probe,
       wifi: wifi,
-      hosts: sweepHosts(phone),
+      plan: plan,
       ports: sweepPorts(remembered),
+      elapsed: () => _monotonic() - started,
+      onProgress: (tried, total) {
+        if (stale()) {
+          return;
+        }
+        _scanTried = tried;
+        _scanTotal = total;
+        _notify();
+      },
       onFound: (found) {
         if (stale()) {
           return;
@@ -701,13 +748,36 @@ class Session extends ChangeNotifier {
       },
     );
     _sweep = sweep;
-    await sweep.run();
+    final summary = await sweep.run();
     if (stale()) {
       return;
     }
     _sweep = null;
+    _scanTried = summary.tried;
+    _scanTotal = summary.total;
+    _scanCutShort = summary.end != SweepEnd.done;
     _networkScan = _scanFound.isEmpty ? NetworkScan.none : NetworkScan.found;
+    // One line for the log: what was swept, never who was found.
+    final seconds = (summary.elapsed.inMilliseconds / 1000).toStringAsFixed(1);
+    final why = probe.takeDiagnostics();
+    debugPrint(
+      'mtrack scan: /${plan.prefix} clamped=${plan.clamped} '
+      'tried=${summary.tried}/${summary.total} open=${summary.accepted} '
+      'players=${summary.confirmed} ${seconds}s ended=${summary.end.name}'
+      '${why.isEmpty ? '' : ' $why'}',
+    );
     _notify();
+  }
+
+  /// Stops the scan of the network that is under way, keeping the players
+  /// found so far. [networkScan] goes to found or none, and [scanCutShort]
+  /// is true. Does nothing when no scan is running.
+  void stopNetworkScan() {
+    if (_networkScan != NetworkScan.scanning) {
+      return;
+    }
+    _scanStopAsked = true;
+    _sweep?.cancel();
   }
 
   // Ends a scan of the network and forgets what it found.
@@ -716,6 +786,10 @@ class Session extends ChangeNotifier {
     _sweep?.cancel();
     _sweep = null;
     _scanFound = const [];
+    _scanTried = 0;
+    _scanTotal = 0;
+    _scanClamped = false;
+    _scanCutShort = false;
     _networkScan = NetworkScan.idle;
   }
 

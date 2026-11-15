@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 import 'dart:async';
+import 'dart:math' as math;
 
 import '../protocol/player_channel.dart';
 import '../protocol/player_client.dart';
@@ -19,16 +20,26 @@ import 'ports.dart';
 import 'wifi_address.dart';
 
 /// How many connection attempts a sweep has in flight at once.
-const int sweepConcurrency = 32;
+const int sweepConcurrency = 256;
 
-/// How long one attempt may take to connect.
-const Duration sweepAttemptTimeout = Duration(milliseconds: 400);
+/// How long one attempt on an address in the phone's own /24 may take to
+/// connect: the likeliest place for a player, so the patient one.
+const Duration sweepOwnBlockTimeout = Duration(milliseconds: 400);
 
-/// When the sweep stops trying addresses, whatever is left.
-const Duration sweepDeadline = Duration(seconds: 8);
+/// How long one attempt on any other address may take to connect.
+const Duration sweepAttemptTimeout = Duration(milliseconds: 200);
 
-/// When the whole scan ends, confirmations included.
-const Duration scanDeadline = Duration(seconds: 12);
+/// When the sweep gives up trying addresses, whatever is left. A safety
+/// limit: a network of 65,000 addresses is meant to finish well inside it.
+const Duration sweepMaxDuration = Duration(minutes: 5);
+
+/// The shortest prefix swept: a /16, 65,536 addresses. A bigger network is
+/// swept only in the /16 around the phone.
+const int sweepWidestPrefix = 16;
+
+/// The least a progress callback is called, so the screen is not redrawn for
+/// every address.
+const Duration sweepProgressInterval = Duration(milliseconds: 100);
 
 /// How many addresses that accepted a connection are asked who they are;
 /// the rest are not looked at. (A network where everything accepts is not
@@ -89,28 +100,143 @@ bool isScannableAddress(String address) {
 /// on the Wi-Fi interface ([isWifiInterface]) and private
 /// ([isScannableAddress]). Null when there is none, which is to say the phone
 /// is not on a network it may scan.
-String? scannableWifiAddress(Iterable<LocalAddress> addresses) {
+LocalAddress? scannableWifiLocal(Iterable<LocalAddress> addresses) {
   for (final local in addresses) {
     if (isWifiInterface(local.interface) && isScannableAddress(local.address)) {
-      return local.address;
+      return local;
     }
   }
   return null;
 }
 
-/// The addresses to sweep for a phone at [phone]: the 254 hosts of
-/// `a.b.c.0/24` (`.1` to `.254`) less the phone's own, whatever the real
-/// netmask is. Empty when [phone] is not an IPv4 address.
-List<String> sweepHosts(String phone) {
-  final o = _octets(phone);
-  if (o == null) {
-    return const [];
+/// Just the address of [scannableWifiLocal].
+String? scannableWifiAddress(Iterable<LocalAddress> addresses) =>
+    scannableWifiLocal(addresses)?.address;
+
+/// The addresses to sweep for a phone: its network, as far as it is known,
+/// less the network and broadcast addresses and the phone itself.
+///
+/// The network is the phone's address under its prefix length, a /24 when
+/// that is not known, and no wider than a /16 (when it is, [clamped] says so
+/// and the /16 around the phone is used). The order is the phone's own /24
+/// block first, then the blocks next to it, outward by distance (the one
+/// below, the one above, two below, ...), each block upward. [hosts] is made
+/// as it is read: a /16 is never held as a list.
+class SweepPlan {
+  SweepPlan._({
+    required this.prefix,
+    required this.clamped,
+    required this.total,
+    required this.ownBlockCount,
+    required this._phone,
+    required this._low,
+    required this._high,
+  });
+
+  /// A plan for a phone at [phone] (dotted IPv4) on a network with
+  /// [prefixLength], null when not known. Empty for anything that is not an
+  /// IPv4 address.
+  factory SweepPlan(String phone, int? prefixLength) {
+    final o = _octets(phone);
+    if (o == null) {
+      return SweepPlan._empty();
+    }
+    final address = (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
+    var prefix = prefixLength ?? 24;
+    if (prefix < 0 || prefix > 32) {
+      prefix = 24;
+    }
+    var clamped = false;
+    if (prefix < sweepWidestPrefix) {
+      prefix = sweepWidestPrefix;
+      clamped = true;
+    }
+    final size = 1 << (32 - prefix);
+    final base = address & ~(size - 1) & 0xFFFFFFFF;
+    // The hosts: all but the network and broadcast addresses. A /31 has two
+    // and no such addresses; a /32 has none beyond the phone.
+    final int low;
+    final int high;
+    if (prefix >= 32) {
+      low = 1;
+      high = 0;
+    } else if (prefix == 31) {
+      low = base;
+      high = base + 1;
+    } else {
+      low = base + 1;
+      high = base + size - 2;
+    }
+    final phoneIn = address >= low && address <= high;
+    final total = high < low ? 0 : high - low + 1 - (phoneIn ? 1 : 0);
+    final ownLow = math.max(low, address & ~0xFF & 0xFFFFFFFF);
+    final ownHigh = math.min(high, (address | 0xFF) & 0xFFFFFFFF);
+    final own = ownHigh < ownLow ? 0 : ownHigh - ownLow + 1 - (phoneIn ? 1 : 0);
+    return SweepPlan._(
+      prefix: prefix,
+      clamped: clamped,
+      total: total,
+      ownBlockCount: own,
+      phone: address,
+      low: low,
+      high: high,
+    );
   }
-  return [
-    for (var host = 1; host <= 254; host++)
-      if (host != o[3]) '${o[0]}.${o[1]}.${o[2]}.$host',
-  ];
+
+  SweepPlan._empty()
+    : prefix = 32,
+      clamped = false,
+      total = 0,
+      ownBlockCount = 0,
+      _phone = 0,
+      _low = 1,
+      _high = 0;
+
+  /// The prefix length swept: the one given, or 24, or 16 when clamped.
+  final int prefix;
+
+  /// Whether the network is bigger than a /16, so only the /16 around the
+  /// phone is swept.
+  final bool clamped;
+
+  /// How many addresses there are to try.
+  final int total;
+
+  /// How many of them come first as the phone's own /24 block: the first
+  /// [ownBlockCount] of [hosts].
+  final int ownBlockCount;
+
+  final int _phone;
+  final int _low;
+  final int _high;
+
+  /// The addresses, in order, made as they are read.
+  Iterable<String> get hosts sync* {
+    if (_high < _low) {
+      return;
+    }
+    final own = _phone >> 8;
+    final firstBlock = _low >> 8;
+    final lastBlock = _high >> 8;
+    for (var d = 0; own - d >= firstBlock || own + d <= lastBlock; d++) {
+      for (final block in d == 0 ? [own] : [own - d, own + d]) {
+        if (block < firstBlock || block > lastBlock) {
+          continue;
+        }
+        final from = math.max(_low, block << 8);
+        final to = math.min(_high, (block << 8) | 0xFF);
+        for (var a = from; a <= to; a++) {
+          if (a != _phone) {
+            yield _dotted(a);
+          }
+        }
+      }
+    }
+  }
 }
+
+String _dotted(int a) =>
+    '${(a >> 24) & 255}.${(a >> 16) & 255}.${(a >> 8) & 255}.${a & 255}';
 
 /// The ports to sweep: the standard one, and [remembered] when it differs.
 List<int> sweepPorts(int? remembered) => [
@@ -118,21 +244,71 @@ List<int> sweepPorts(int? remembered) => [
   if (remembered != null && remembered != defaultGrpcPort) remembered,
 ];
 
-/// One sweep of the hosts of a subnet, and the confirming of what answers.
+/// Why a sweep ended.
+enum SweepEnd {
+  /// Every address was tried.
+  done,
+
+  /// It was stopped: by the person, or because a player was chosen.
+  stopped,
+
+  /// [sweepMaxDuration] ran out first.
+  timeLimit,
+}
+
+/// How a sweep went.
+class SweepSummary {
+  /// A summary of a sweep that [end]ed after [elapsed], having tried [tried]
+  /// of [total] addresses, [accepted] of which (address and port) took a
+  /// connection and [confirmed] of which proved to be players.
+  const SweepSummary({
+    required this.tried,
+    required this.total,
+    required this.accepted,
+    required this.confirmed,
+    required this.elapsed,
+    required this.end,
+  });
+
+  /// Addresses tried to the end on every port.
+  final int tried;
+
+  /// Addresses there were to try.
+  final int total;
+
+  /// Connections accepted, counted by address and port.
+  final int accepted;
+
+  /// Players confirmed.
+  final int confirmed;
+
+  /// How long it took.
+  final Duration elapsed;
+
+  /// Why it ended.
+  final SweepEnd end;
+}
+
+/// One sweep of the hosts of a [SweepPlan], and the confirming of what
+/// answers.
 class NetworkSweep {
   /// A sweep of every host on every port. Each player confirmed is given to
-  /// [onFound].
+  /// [onFound]; how far it has got to [onProgress], at most once every
+  /// [progressInterval].
   NetworkSweep({
     required this.probe,
     required this.wifi,
-    required this.hosts,
+    required this.plan,
     required this.ports,
     required this.onFound,
+    this.onProgress,
     this.concurrency = sweepConcurrency,
+    this.ownBlockTimeout = sweepOwnBlockTimeout,
     this.attemptTimeout = sweepAttemptTimeout,
-    this.deadline = sweepDeadline,
-    this.overall = scanDeadline,
-  });
+    this.maxDuration = sweepMaxDuration,
+    this.progressInterval = sweepProgressInterval,
+    Duration Function()? elapsed,
+  }) : _elapsed = elapsed ?? _stopwatch();
 
   /// How connections are tried.
   final NetworkProbe probe;
@@ -140,8 +316,8 @@ class NetworkSweep {
   /// How a hit is connected to as a player.
   final WifiLink wifi;
 
-  /// The addresses to try.
-  final List<String> hosts;
+  /// The addresses to try, and in what order.
+  final SweepPlan plan;
 
   /// The ports to try on each.
   final List<int> ports;
@@ -150,63 +326,92 @@ class NetworkSweep {
   /// it says none), its address and its port.
   final void Function(FoundPlayer player) onFound;
 
+  /// Called with the addresses tried so far and the total, when that has
+  /// changed. Not after the sweep is cancelled.
+  final void Function(int tried, int total)? onProgress;
+
   /// Attempts in flight at once, at most.
   final int concurrency;
 
-  /// How long an attempt may take.
+  /// How long an attempt on the phone's own /24 may take.
+  final Duration ownBlockTimeout;
+
+  /// How long an attempt on any other address may take.
   final Duration attemptTimeout;
 
   /// When the sweep stops trying new addresses.
-  final Duration deadline;
+  final Duration maxDuration;
 
-  /// When everything ends.
-  final Duration overall;
+  /// The least between two calls of [onProgress].
+  final Duration progressInterval;
+
+  final Duration Function() _elapsed;
 
   // Completes when the sweep is cancelled: nothing more is reported.
   final Completer<void> _cancelled = Completer<void>();
-  // Completes when attempts under way are to be abandoned: on the sweep's
-  // deadline, or on a cancel.
+  // Completes when attempts under way are to be abandoned: on the time
+  // limit, or on a cancel.
   final Completer<void> _abandon = Completer<void>();
-  final Completer<void> _finished = Completer<void>();
+  final Completer<SweepSummary> _finished = Completer<SweepSummary>();
   final List<({String host, int port})> _hits = [];
   final Set<String> _asked = {};
-  Timer? _sweepTimer;
-  Timer? _overallTimer;
+  Timer? _limitTimer;
+  Timer? _progressTimer;
   bool _sweeping = false;
   bool _sweepEnded = false;
+  bool _timedOut = false;
   bool _started = false;
   int _confirming = 0;
   int _confirmed = 0;
+  int _found = 0;
+  int _accepted = 0;
+  int _attemptsDone = 0;
+  int _reported = -1;
 
-  /// Whether the sweep was cancelled or ran out of time.
+  /// Whether the sweep was cancelled.
   bool get stopped => _cancelled.isCompleted;
 
-  /// Runs the sweep. Completes when it is over: everything tried and
-  /// confirmed, the time ran out, or [cancel] was called. Runs once.
-  Future<void> run() {
+  // Addresses whose every port has been tried to the end.
+  int get _tried => math.min(plan.total, _attemptsDone ~/ ports.length);
+
+  /// Runs the sweep. Completes with how it went when it is over: everything
+  /// tried and confirmed, the time limit ran out, or [cancel] was called.
+  /// Runs once.
+  Future<SweepSummary> run() {
     if (_started) {
       return _finished.future;
     }
     _started = true;
-    final attempts = [
-      for (final host in hosts)
-        for (final port in ports) (host: host, port: port),
-    ];
+    if (ports.isEmpty || plan.total == 0) {
+      _sweeping = false;
+      _report();
+      _complete();
+      return _finished.future;
+    }
+    final attempts = _attempts().iterator;
     _sweeping = true;
-    _sweepTimer = Timer(deadline, _stopTrying);
-    _overallTimer = Timer(overall, cancel);
-    var next = 0;
+    _limitTimer = Timer(maxDuration, () {
+      _timedOut = true;
+      _stopTrying();
+    });
+    _report();
+    _progressTimer = Timer.periodic(progressInterval, (_) => _report());
     Future<void> worker() async {
-      while (!stopped && !_sweepEnded && next < attempts.length) {
-        final attempt = attempts[next++];
+      while (!stopped && !_sweepEnded && attempts.moveNext()) {
+        final attempt = attempts.current;
         final open = await probe.canConnect(
           attempt.host,
           attempt.port,
-          timeout: attemptTimeout,
+          timeout: attempt.own ? ownBlockTimeout : attemptTimeout,
           cancelled: _abandon.future,
         );
-        if (open && !stopped && !_sweepEnded) {
-          _hits.add(attempt);
+        if (stopped || _sweepEnded) {
+          break;
+        }
+        _attemptsDone++;
+        if (open) {
+          _accepted++;
+          _hits.add((host: attempt.host, port: attempt.port));
           _confirmNext();
         }
       }
@@ -215,11 +420,36 @@ class NetworkSweep {
     Future.wait([for (var i = 0; i < concurrency; i++) worker()])
         .whenComplete(() {
           _sweeping = false;
-          _sweepTimer?.cancel();
-          _sweepTimer = null;
+          _limitTimer?.cancel();
+          _limitTimer = null;
+          _progressTimer?.cancel();
+          _progressTimer = null;
+          _report();
           _maybeFinish();
         });
     return _finished.future;
+  }
+
+  // Every host in turn with all its ports, the phone's own block marked.
+  Iterable<({String host, int port, bool own})> _attempts() sync* {
+    var index = 0;
+    for (final host in plan.hosts) {
+      final own = index++ < plan.ownBlockCount;
+      for (final port in ports) {
+        yield (host: host, port: port, own: own);
+      }
+    }
+  }
+
+  void _report() {
+    if (stopped) {
+      return;
+    }
+    final tried = _tried;
+    if (tried != _reported) {
+      _reported = tried;
+      onProgress?.call(tried, plan.total);
+    }
   }
 
   // The time for trying addresses is up: what is in flight is abandoned,
@@ -275,6 +505,7 @@ class NetworkSweep {
       if (stopped) {
         return;
       }
+      _found++;
       onFound(
         FoundPlayer(
           name: info.hostname.isNotEmpty ? info.hostname : host,
@@ -302,10 +533,33 @@ class NetworkSweep {
   }
 
   void _complete() {
-    _sweepTimer?.cancel();
-    _overallTimer?.cancel();
+    _limitTimer?.cancel();
+    _progressTimer?.cancel();
+    _progressTimer = null;
     if (!_finished.isCompleted) {
-      _finished.complete();
+      final SweepEnd end;
+      if (stopped) {
+        end = SweepEnd.stopped;
+      } else if (_timedOut) {
+        end = SweepEnd.timeLimit;
+      } else {
+        end = SweepEnd.done;
+      }
+      _finished.complete(
+        SweepSummary(
+          tried: _tried,
+          total: plan.total,
+          accepted: _accepted,
+          confirmed: _found,
+          elapsed: _elapsed(),
+          end: end,
+        ),
+      );
     }
   }
+}
+
+Duration Function() _stopwatch() {
+  final watch = Stopwatch()..start();
+  return () => watch.elapsed;
 }

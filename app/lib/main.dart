@@ -35,7 +35,7 @@ void main() {
     wake: const WakelockScreenWake(),
     wifi: const GrpcWifiLink(),
     browser: const BonsoirPlayerBrowser(),
-    probe: const IoNetworkProbe(),
+    probe: IoNetworkProbe(),
     assetCache: LightingAssetCache(getApplicationCacheDirectory),
   );
   session.start();

@@ -61,6 +61,9 @@ class FakeProbe implements NetworkProbe {
   }
 
   @override
+  String takeDiagnostics() => '';
+
+  @override
   Future<bool> canConnect(
     String host,
     int port, {

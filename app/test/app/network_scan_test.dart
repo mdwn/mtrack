@@ -146,8 +146,22 @@ void main() {
   });
 
   group('the addresses of the sweep', () {
-    test('are the 254 hosts of the /24 less the phone', () {
-      final hosts = sweepHosts('192.168.1.20');
+    List<String> hostsOf(String phone, int? prefix) =>
+        SweepPlan(phone, prefix).hosts.toList();
+
+    /// The same set of addresses, whatever order.
+    void expectBlock(List<String> hosts, String from, String to) {
+      expect(hosts, contains(from));
+      expect(hosts, contains(to));
+    }
+
+    test('a /24 is the 253 hosts less the phone, ascending', () {
+      final plan = SweepPlan('192.168.1.20', 24);
+      final hosts = plan.hosts.toList();
+      expect(plan.total, 253);
+      expect(plan.ownBlockCount, 253);
+      expect(plan.clamped, isFalse);
+      expect(plan.prefix, 24);
       expect(hosts, hasLength(253));
       expect(hosts, isNot(contains('192.168.1.20')));
       expect(hosts, isNot(contains('192.168.1.0')));
@@ -155,34 +169,163 @@ void main() {
       expect(hosts.first, '192.168.1.1');
       expect(hosts.last, '192.168.1.254');
       expect(hosts.toSet(), hasLength(253));
-      expect(hosts.every((h) => h.startsWith('192.168.1.')), isTrue);
     });
 
-    test('with the phone at .1 or .254 still leave 253 and not the phone', () {
-      final first = sweepHosts('10.4.5.1');
-      expect(first, hasLength(253));
-      expect(first, isNot(contains('10.4.5.1')));
-      expect(first, contains('10.4.5.254'));
-      expect(first.first, '10.4.5.2');
-      final last = sweepHosts('10.4.5.254');
-      expect(last, hasLength(253));
-      expect(last, isNot(contains('10.4.5.254')));
-      expect(last, contains('10.4.5.1'));
+    test('no prefix is a /24', () {
+      final plan = SweepPlan('10.4.5.1', null);
+      expect(plan.prefix, 24);
+      expect(plan.total, 253);
+      expect(plan.hosts.first, '10.4.5.2');
+      expect(plan.hosts, contains('10.4.5.254'));
+      expect(SweepPlan('10.4.5.254', null).hosts, contains('10.4.5.1'));
     });
 
-    test('stay in the phone\'s /24 whatever the network is', () {
-      // A /16 or a /8 is swept only around the phone.
-      expect(
-        sweepHosts('10.1.2.3').every((h) => h.startsWith('10.1.2.')),
-        isTrue,
-      );
-      expect(sweepHosts('172.31.9.9'), hasLength(253));
+    test('a /16 starts in the phone\'s block and goes outward', () {
+      final plan = SweepPlan('10.1.100.7', 16);
+      expect(plan.total, 65534 - 1);
+      expect(plan.ownBlockCount, 255);
+      expect(plan.clamped, isFalse);
+      final hosts = plan.hosts.toList();
+      expect(hosts, hasLength(plan.total));
+      expect(hosts.toSet(), hasLength(plan.total));
+      expect(hosts, isNot(contains('10.1.100.7')));
+      expect(hosts, isNot(contains('10.1.0.0')));
+      expect(hosts, isNot(contains('10.1.255.255')));
+      expect(hosts.every((h) => h.startsWith('10.1.')), isTrue);
+      // Own block, .0 to .255 less the phone, ascending.
+      expect(hosts.sublist(0, 255), [
+        for (var i = 0; i < 256; i++)
+          if (i != 7) '10.1.100.$i',
+      ]);
+      // Then the block below, the block above, two below, two above.
+      expect(hosts[255], '10.1.99.0');
+      expect(hosts[255 + 255], '10.1.99.255');
+      expect(hosts[255 + 256], '10.1.101.0');
+      expect(hosts[255 + 512], '10.1.98.0');
+      expect(hosts[255 + 768], '10.1.102.0');
+    });
+
+    test('a phone in the first block of a /16 goes upward only', () {
+      final hosts = hostsOf('172.16.0.9', 16);
+      expect(hosts, isNot(contains('172.16.0.0')));
+      expect(hosts.first, '172.16.0.1');
+      expect(hosts[254], '172.16.1.0');
+      expect(hosts[254 + 256], '172.16.2.0');
+      expect(hosts.last, '172.16.255.254');
+      expect(hosts, hasLength(65534 - 1));
+    });
+
+    test('a phone in the last block of a /16 goes downward only', () {
+      final hosts = hostsOf('172.16.255.9', 16);
+      expect(hosts.first, '172.16.255.0');
+      expect(hosts[254], '172.16.254.0');
+      expect(hosts[254 + 256], '172.16.253.0');
+      expect(hosts.last, '172.16.0.255');
+      expect(hosts, hasLength(65534 - 1));
+      expect(hosts, isNot(contains('172.16.255.255')));
+    });
+
+    test('a /22 is four blocks, its own first', () {
+      final plan = SweepPlan('192.168.5.9', 22);
+      final hosts = plan.hosts.toList();
+      // 192.168.4.0/22 is .4.0 to .7.255.
+      expect(plan.total, 1024 - 2 - 1);
+      expect(hosts, hasLength(plan.total));
+      expect(plan.ownBlockCount, 255);
+      expect(hosts, isNot(contains('192.168.4.0')));
+      expect(hosts, isNot(contains('192.168.7.255')));
+      expectBlock(hosts, '192.168.4.1', '192.168.7.254');
+      expect(hosts.first, '192.168.5.0');
+      // The block below, then the one above, then two above (none below).
+      expect(hosts[255], '192.168.4.1');
+      expect(hosts[255 + 255], '192.168.6.0');
+      expect(hosts[255 + 255 + 256], '192.168.7.0');
+    });
+
+    test('a /20 is sixteen blocks around the phone\'s', () {
+      final plan = SweepPlan('10.0.20.200', 20);
+      // 10.0.16.0/20 is .16.0 to .31.255.
+      expect(plan.total, 4096 - 2 - 1);
+      final hosts = plan.hosts.toList();
+      expect(hosts, hasLength(plan.total));
+      expect(hosts.toSet(), hasLength(plan.total));
+      expect(hosts, isNot(contains('10.0.16.0')));
+      expect(hosts, isNot(contains('10.0.31.255')));
+      expect(hosts.first, '10.0.20.0');
+      expect(hosts[255], '10.0.19.0');
+      expect(hosts[255 + 256], '10.0.21.0');
+    });
+
+    test('a network wider than a /16 is clamped to the /16 of the phone', () {
+      for (final (prefix, phone, start) in [
+        (12, '172.20.30.40', '172.20.'),
+        (8, '10.77.8.9', '10.77.'),
+        (0, '192.168.4.4', '192.168.'),
+      ]) {
+        final plan = SweepPlan(phone, prefix);
+        expect(plan.clamped, isTrue, reason: '/$prefix');
+        expect(plan.prefix, 16);
+        expect(plan.total, 65533, reason: '/$prefix');
+        final hosts = plan.hosts.toList();
+        expect(hosts, hasLength(65533));
+        expect(hosts.every((h) => h.startsWith(start)), isTrue);
+      }
+    });
+
+    test('a /16 itself is not clamped', () {
+      expect(SweepPlan('10.1.2.3', 16).clamped, isFalse);
+    });
+
+    test('a /25 is the half block holding the phone', () {
+      final upper = SweepPlan('192.168.1.200', 25);
+      final hosts = upper.hosts.toList();
+      // 192.168.1.128/25: hosts .129 to .254.
+      expect(upper.total, 126 - 1);
+      expect(upper.ownBlockCount, 125);
+      expect(hosts.first, '192.168.1.129');
+      expect(hosts.last, '192.168.1.254');
+      expect(hosts, isNot(contains('192.168.1.200')));
+      final lower = SweepPlan('192.168.1.20', 25).hosts.toList();
+      expect(lower.first, '192.168.1.1');
+      expect(lower.last, '192.168.1.126');
+      expect(lower, hasLength(125));
+    });
+
+    test('a /30 is the other host', () {
+      expect(hostsOf('192.168.1.5', 30), ['192.168.1.6']);
+      expect(hostsOf('192.168.1.6', 30), ['192.168.1.5']);
+      expect(SweepPlan('192.168.1.5', 30).total, 1);
+    });
+
+    test('a /31 is the other address and a /32 is nothing', () {
+      expect(hostsOf('192.168.1.4', 31), ['192.168.1.5']);
+      expect(hostsOf('192.168.1.5', 31), ['192.168.1.4']);
+      expect(SweepPlan('192.168.1.5', 31).total, 1);
+      expect(hostsOf('192.168.1.5', 32), isEmpty);
+      expect(SweepPlan('192.168.1.5', 32).total, 0);
+      expect(SweepPlan('192.168.1.5', 32).ownBlockCount, 0);
+    });
+
+    test('a prefix that makes no sense is a /24', () {
+      expect(SweepPlan('10.1.2.3', 33).prefix, 24);
+      expect(SweepPlan('10.1.2.3', -1).prefix, 24);
+    });
+
+    test('is made as it is read, not held as a list', () {
+      final plan = SweepPlan('10.1.100.7', 16);
+      expect(plan.hosts.take(3).toList(), [
+        '10.1.100.0',
+        '10.1.100.1',
+        '10.1.100.2',
+      ]);
     });
 
     test('are none for something that is not an IPv4 address', () {
-      expect(sweepHosts('fe80::1'), isEmpty);
-      expect(sweepHosts(''), isEmpty);
-      expect(sweepHosts('1.2.3'), isEmpty);
+      for (final phone in ['fe80::1', '', '1.2.3']) {
+        final plan = SweepPlan(phone, 24);
+        expect(plan.hosts, isEmpty);
+        expect(plan.total, 0);
+      }
     });
 
     test('are tried on the standard port, and the remembered one if it '
@@ -447,56 +590,77 @@ void main() {
     });
 
     group('pace', () {
-      scenario('never has more than 32 attempts in flight, and uses them', (
+      const wide = LocalAddress('wlan0', '192.168.1.20', prefixLength: 16);
+
+      scenario('never has more than 256 attempts in flight, and uses them', (
         h,
         _,
       ) {
+        h.probe!.open.clear();
+        h.probe!.addresses = const [wide];
         h.session.scanNetwork();
         h.settle();
-        h.elapse(quiet);
-        expect(h.probe!.maxInFlight, 32);
-        expect(h.probe!.attempts, hasLength(253));
+        h.elapse(const Duration(minutes: 2));
+        expect(h.probe!.maxInFlight, 256);
+        expect(h.probe!.attempts, hasLength(65533));
+        expect(h.probe!.attempts.toSet(), hasLength(65533));
+        expect(h.session.networkScan, NetworkScan.none);
       });
 
-      scenario('gives each attempt about 400 ms', (h, _) {
+      scenario('gives the phone\'s own /24 400 ms and the rest 200 ms', (h, _) {
+        h.probe!.addresses = const [wide];
         h.session.scanNetwork();
         h.settle();
-        h.elapse(quiet);
+        h.elapse(const Duration(minutes: 2));
+        final timeouts = h.probe!.timeouts;
+        expect(timeouts, hasLength(65533));
+        // Own block: .0 to .255 less the phone.
         expect(
-          h.probe!.timeouts.every(
-            (t) => t == const Duration(milliseconds: 400),
-          ),
+          timeouts.take(255).every((t) => t == sweepOwnBlockTimeout),
           isTrue,
         );
+        expect(
+          timeouts.skip(255).every((t) => t == sweepAttemptTimeout),
+          isTrue,
+        );
+        expect(sweepOwnBlockTimeout, const Duration(milliseconds: 400));
+        expect(sweepAttemptTimeout, const Duration(milliseconds: 200));
+        expect(
+          h.probe!.attempts.take(255).every((a) => a.startsWith('192.168.1.')),
+          isTrue,
+        );
+        expect(h.probe!.attempts[255], '192.168.0.1:43234');
       });
 
-      scenario('on a network that says nothing takes 3.2 s on one port, '
-          'and ends on its own', (h, _) {
+      scenario('on a quiet /24 tries all at once and ends in 400 ms', (h, _) {
         h.probe!.open.clear();
         h.session.scanNetwork();
         h.settle();
-        h.elapse(const Duration(milliseconds: 3100));
+        h.elapse(const Duration(milliseconds: 300));
         expect(h.session.networkScan, NetworkScan.scanning);
+        expect(h.probe!.maxInFlight, 253);
         h.elapse(const Duration(milliseconds: 200));
         expect(h.session.networkScan, NetworkScan.none);
         expect(h.probe!.inFlight, 0);
+        expect(h.session.scanTried, 253);
+        expect(h.session.scanTotal, 253);
+        expect(h.session.scanPartial, isFalse);
       });
 
       scenario(
-        'on a network that says nothing takes 6.4 s on two ports, '
-        'inside the bound',
+        'on two ports tries each host\'s ports one after the other',
         (h, _) {
           h.probe!.open.clear();
           h.session.scanNetwork();
           h.settle();
-          h.elapse(const Duration(milliseconds: 6300));
-          expect(h.session.networkScan, NetworkScan.scanning);
-          h.elapse(const Duration(milliseconds: 200));
+          h.elapse(const Duration(seconds: 3));
           expect(h.session.networkScan, NetworkScan.none);
-          expect(
-            sweepDeadline,
-            greaterThan(const Duration(milliseconds: 6500)),
-          );
+          final attempts = h.probe!.attempts;
+          expect(attempts, hasLength(506));
+          expect(attempts[0], '192.168.1.1:43234');
+          expect(attempts[1], '192.168.1.1:50051');
+          expect(attempts[2], '192.168.1.2:43234');
+          expect(attempts[3], '192.168.1.2:50051');
         },
         player: const RememberedPlayer(
           id: 'wifi:x:50051',
@@ -507,66 +671,170 @@ void main() {
         ),
       );
 
-      test('stops trying at its deadline and abandons what is in flight', () {
+      scenario('knows how many addresses it has covered', (h, _) {
+        h.probe!.addresses = const [wide];
+        h.session.scanNetwork();
+        h.settle();
+        h.elapse(const Duration(seconds: 5));
+        expect(h.session.scanTotal, 65533);
+        expect(h.session.scanTried, inExclusiveRange(0, 65533));
+        h.elapse(const Duration(minutes: 2));
+        expect(h.session.scanTried, 65533);
+        expect(h.session.scanPartial, isFalse);
+      });
+
+      scenario('says a bigger network was only partly scanned', (h, _) {
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '10.20.30.40', prefixLength: 12),
+        ];
+        h.session.scanNetwork();
+        h.settle();
+        h.elapse(const Duration(minutes: 2));
+        expect(h.session.scanTotal, 65533);
+        expect(h.session.scanPartial, isTrue);
+        expect(h.session.scanCutShort, isFalse);
+        expect(h.probe!.attempts.every((a) => a.startsWith('10.20.')), isTrue);
+      });
+
+      test('stops trying at the time limit and abandons what is in flight', () {
         fakeAsync((async) {
           final probe = FakeProbe();
           final found = <FoundPlayer>[];
           final sweep = NetworkSweep(
             probe: probe,
             wifi: _NoWifi(),
-            hosts: sweepHosts('192.168.1.20'),
+            plan: SweepPlan('192.168.1.20', 16),
             ports: const [43234],
             onFound: found.add,
+            ownBlockTimeout: const Duration(seconds: 3),
             attemptTimeout: const Duration(seconds: 3),
-            deadline: const Duration(seconds: 8),
+            maxDuration: const Duration(seconds: 8),
           );
-          var done = false;
-          sweep.run().then((_) => done = true);
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
           async.elapse(const Duration(seconds: 7, milliseconds: 900));
           async.flushMicrotasks();
-          expect(done, isFalse);
+          expect(summary, isNull);
           final before = probe.attempts.length;
-          expect(before, lessThan(253));
+          expect(before, lessThan(65533));
           async.elapse(const Duration(milliseconds: 200));
           async.flushMicrotasks();
-          expect(done, isTrue);
+          expect(summary, isNotNull);
+          expect(summary!.end, SweepEnd.timeLimit);
+          expect(summary!.tried, lessThan(summary!.total));
           expect(probe.inFlight, 0);
           expect(probe.abandoned, greaterThan(0));
           async.elapse(const Duration(seconds: 30));
-          expect(probe.attempts.length, lessThanOrEqualTo(before + 32));
+          expect(probe.attempts.length, lessThanOrEqualTo(before + 256));
           expect(async.pendingTimers, isEmpty);
         });
       });
 
-      test('ends at its overall limit even while players are being '
-          'confirmed', () {
+      test('waits for a player being confirmed before it says it is over', () {
         fakeAsync((async) {
           final probe = FakeProbe()..open.add('192.168.1.5:43234');
           final wifi = _SlowWifi();
-          final found = <FoundPlayer>[];
           final sweep = NetworkSweep(
             probe: probe,
             wifi: wifi,
-            hosts: sweepHosts('192.168.1.20'),
+            plan: SweepPlan('192.168.1.20', 24),
             ports: const [43234],
-            onFound: found.add,
-            overall: const Duration(seconds: 5),
+            onFound: (_) {},
+            maxDuration: const Duration(seconds: 5),
           );
-          var done = false;
-          sweep.run().then((_) => done = true);
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
           async.elapse(const Duration(seconds: 4));
           async.flushMicrotasks();
           expect(wifi.asked, ['192.168.1.5']);
-          expect(done, isFalse);
-          async.elapse(const Duration(seconds: 1, milliseconds: 100));
+          expect(summary, isNull, reason: 'the player is being confirmed');
+          async.elapse(const Duration(seconds: 40));
           async.flushMicrotasks();
-          expect(done, isTrue);
-          expect(found, isEmpty);
-          expect(sweep.stopped, isTrue);
-          async.elapse(const Duration(minutes: 1));
+          expect(summary, isNotNull);
+          expect(summary!.accepted, 1);
+          expect(summary!.end, SweepEnd.done);
+        });
+      });
+
+      test('reports progress at most ten times a second, and the end', () {
+        fakeAsync((async) {
+          final probe = FakeProbe();
+          final calls = <(int, int)>[];
+          final sweep = NetworkSweep(
+            probe: probe,
+            wifi: _NoWifi(),
+            plan: SweepPlan('192.168.1.20', 16),
+            ports: const [43234],
+            onFound: (_) {},
+            onProgress: (tried, total) => calls.add((tried, total)),
+          );
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
+          async.elapse(const Duration(seconds: 1));
           async.flushMicrotasks();
-          expect(found, isEmpty, reason: 'nothing is reported after the end');
-          expect(wifi.disposed, 1, reason: 'a late channel is closed');
+          expect(calls.length, lessThanOrEqualTo(11));
+          expect(calls.length, greaterThan(3));
+          expect(calls.first, (0, 65533));
+          async.elapse(const Duration(minutes: 2));
+          async.flushMicrotasks();
+          expect(summary!.end, SweepEnd.done);
+          expect(calls.last, (65533, 65533));
+          expect(
+            [
+              for (var i = 1; i < calls.length; i++)
+                calls[i].$1 >= calls[i - 1].$1,
+            ].every((up) => up),
+            isTrue,
+          );
+          expect(async.pendingTimers, isEmpty);
+        });
+      });
+
+      test('says how it went when it is over', () {
+        fakeAsync((async) {
+          final probe = FakeProbe()
+            ..open.addAll(['192.168.1.5:43234', '192.168.1.6:43234']);
+          final sweep = NetworkSweep(
+            probe: probe,
+            wifi: _NoWifi(),
+            plan: SweepPlan('192.168.1.20', 24),
+            ports: const [43234],
+            onFound: (_) {},
+            elapsed: () => const Duration(seconds: 7),
+          );
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
+          async.elapse(const Duration(seconds: 3));
+          async.flushMicrotasks();
+          expect(summary!.end, SweepEnd.done);
+          expect(summary!.tried, 253);
+          expect(summary!.total, 253);
+          expect(summary!.accepted, 2);
+          expect(summary!.confirmed, 0);
+          expect(summary!.elapsed, const Duration(seconds: 7));
+        });
+      });
+
+      test('says it was stopped when it is cancelled', () {
+        fakeAsync((async) {
+          final probe = FakeProbe();
+          final sweep = NetworkSweep(
+            probe: probe,
+            wifi: _NoWifi(),
+            plan: SweepPlan('192.168.1.20', 16),
+            ports: const [43234],
+            onFound: (_) {},
+          );
+          SweepSummary? summary;
+          sweep.run().then((s) => summary = s);
+          async.elapse(const Duration(milliseconds: 100));
+          sweep.cancel();
+          async.flushMicrotasks();
+          expect(summary!.end, SweepEnd.stopped);
+          expect(summary!.tried, lessThan(summary!.total));
+          expect(probe.inFlight, 0);
+          async.elapse(const Duration(seconds: 5));
+          expect(async.pendingTimers, isEmpty);
         });
       });
     });
@@ -685,9 +953,12 @@ void main() {
         h.settle();
         h.elapse(const Duration(milliseconds: 500));
         expect(h.wifi!.attempts, ['$ip:43234']);
+        expect(
+          h.session.networkScan,
+          NetworkScan.scanning,
+          reason: 'confirming',
+        );
         h.elapse(const Duration(milliseconds: 1500));
-        expect(h.session.networkScan, NetworkScan.scanning, reason: 'sweeping');
-        h.elapse(quiet);
         expect(h.session.networkScan, NetworkScan.none);
       });
     });
@@ -785,13 +1056,13 @@ void main() {
         h.session.scanNetwork();
         h.settle();
         h.elapse(const Duration(milliseconds: 100));
-        expect(h.probe!.inFlight, 32);
+        expect(h.probe!.inFlight, 253);
         expect(h.session.networkScan, NetworkScan.scanning);
       }
 
       void expectStopped(Harness h) {
         expect(h.probe!.inFlight, 0, reason: 'its sockets are closed');
-        expect(h.probe!.abandoned, 32);
+        expect(h.probe!.abandoned, 253);
         final tried = h.probe!.attempts.length;
         h.elapse(quiet);
         expect(h.probe!.attempts, hasLength(tried), reason: 'it went on');
@@ -823,6 +1094,9 @@ void main() {
 
       scenario('on tapping a scan row', (h, _) {
         h.probe!.open.add('$ip:43234');
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '192.168.1.20', prefixLength: 16),
+        ];
         h.session.scanNetwork();
         h.settle();
         h.elapse(const Duration(milliseconds: 500));
@@ -855,7 +1129,7 @@ void main() {
         h.session.dispose();
         h.settle();
         expect(h.probe!.inFlight, 0);
-        expect(h.probe!.abandoned, 32);
+        expect(h.probe!.abandoned, 253);
       });
 
       scenario('while a player is being confirmed', (h, _) {
@@ -881,13 +1155,72 @@ void main() {
         expect(h.session.networkScan, NetworkScan.idle);
       });
 
+      scenario('by the person keeps what was found and ends as a finished '
+          'scan', (h, _) {
+        h.probe!.open.clear();
+        h.session.scanNetwork();
+        h.settle();
+        h.elapse(const Duration(milliseconds: 100));
+        // Held up so that the sweep is still going when it is stopped.
+        h.session.stopNetworkScan();
+        h.settle();
+        expect(h.probe!.inFlight, 0);
+        h.elapse(quiet);
+        expect(h.session.networkScan, NetworkScan.none);
+        expect(h.session.scanCutShort, isTrue);
+        expect(h.session.scanPartial, isTrue);
+        expect(h.session.scanTotal, 253);
+      });
+
+      scenario('by the person keeps the players already shown', (h, _) {
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '192.168.1.20', prefixLength: 16),
+        ];
+        h.session.scanNetwork();
+        h.settle();
+        h.elapse(const Duration(milliseconds: 500));
+        expect(names(h), ['stage*']);
+        expect(h.session.networkScan, NetworkScan.scanning);
+        h.session.stopNetworkScan();
+        h.settle();
+        expect(names(h), ['stage*']);
+        expect(h.session.networkScan, NetworkScan.found);
+        expect(h.session.scanCutShort, isTrue);
+        expect(h.session.scanTried, lessThan(h.session.scanTotal));
+        final tried = h.probe!.attempts.length;
+        h.elapse(quiet);
+        expect(h.probe!.attempts, hasLength(tried));
+        expect(names(h), ['stage*']);
+        // And it can be asked for again.
+        h.session.scanNetwork();
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.scanning);
+        h.session.stopNetworkScan();
+        h.settle();
+      });
+
+      scenario('with nothing running does nothing', (h, _) {
+        h.session.stopNetworkScan();
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.idle);
+      });
+
+      scenario('asked before the sweep has begun, ends it unbegun', (h, _) {
+        h.session.scanNetwork();
+        h.session.stopNetworkScan();
+        h.settle();
+        h.elapse(quiet);
+        expect(h.session.networkScan, NetworkScan.idle);
+        expect(h.probe!.attempts, isEmpty);
+      });
+
       scenario('pressing again while it runs does nothing', (h, _) {
         startQuiet(h);
         final listings = h.probe!.listings;
         h.session.scanNetwork();
         h.settle();
         expect(h.probe!.listings, listings);
-        expect(h.probe!.inFlight, 32);
+        expect(h.probe!.inFlight, 253);
         expect(h.probe!.abandoned, 0);
       });
 

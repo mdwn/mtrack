@@ -112,9 +112,17 @@ Recommended: **A**, with these limits:
   by itself while the connect screen is open; the sweep does not.
 - Only the phone's own Wi-Fi network, only when its address is private
   (10/8, 172.16/12, 192.168/16), and never over mobile data.
-- A /24 around the phone's address: at most 254 hosts, about 32 at a time,
-  about 400 ms each, so a full sweep is three to four seconds. A bigger
-  network is swept only in the phone's own /24.
+- The phone's own network, as big as it really is: the app reads the
+  netmask of the Wi-Fi interface with `getifaddrs` (Dart gives addresses
+  but not masks), and falls back to a /24 when it cannot. A network bigger
+  than a /16 is swept only in the /16 around the phone, at most 65,536
+  addresses. The phone's own /24 comes first, then the blocks next to it,
+  outward. 256 attempts at once, 400 ms each in the phone's own /24 and 200
+  ms in the rest. There is no fixed deadline: it runs until every address is
+  tried, with five minutes as a safety limit, and a **Stop scanning** button
+  replaces the scan button while it runs. When it covered less than the
+  whole network the screen says how much it did. These numbers are to be set
+  from measurement on the Pixel.
 - Port 43234, and the port of a remembered player if it differs.
 - An address that accepts the connection is asked for the standard gRPC
   health check of `player.v1.PlayerService`, then `GetNetworkInfo` for its
@@ -173,7 +181,7 @@ Unchanged, and worth saying plainly because finding gets easier:
   Someone who does not want it can turn it off, and can bind gRPC to
   loopback (#770), which also turns the advert off.
 - The sweep makes the app the thing that scans. It is held to the phone's
-  own private /24 and to a button for that reason.
+  own private network, at most its /16, and to a button for that reason.
 
 ## 7. Steps
 
@@ -202,8 +210,13 @@ leaves the app working.
   Bonjour, where the same care about the host's name applies.
 - **iOS.** Nothing here has run on an iPhone; the local network prompt and
   a refusal of it are untested, as they are for Wi-Fi today.
-- **The phone's subnet.** Dart gives the phone's addresses but not the
-  network's size, so the sweep assumes /24. On a /16 it sees a corner.
+- **The phone's subnet.** Built: Dart gives the phone's addresses but not
+  the network's size, so the app asks the C library for the netmask
+  (`getifaddrs`, over `dart:ffi`) and sweeps that network, own /24 first and
+  outward, up to the /16 around the phone. When the mask cannot be read it
+  sweeps a /24, as before. Not yet run on a phone: whether the lookup works
+  on Android and iOS, and what pace a /16 can bear (256 at once, 400 and 200
+  ms), are to be set from measurement on the Pixel.
 
 ## 9. Decisions
 

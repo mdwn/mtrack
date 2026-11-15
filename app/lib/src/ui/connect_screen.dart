@@ -90,6 +90,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
             onConnect: () => _connectToAddress(session),
             onScan: session.canScanNetwork ? session.scanNetwork : null,
             scanning: session.networkScan == NetworkScan.scanning,
+            onStop: session.stopNetworkScan,
           ),
         );
       case ConnectionPhase.connecting:
@@ -442,7 +443,10 @@ class _Results extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'Scanning this network…',
+                    session.scanTotal == 0
+                        ? 'Scanning this network…'
+                        : 'Scanning… ${_count(session.scanTried)} of '
+                              '${_count(session.scanTotal)} addresses',
                     style: AppText.body.copyWith(color: colors.muted),
                   ),
                 ),
@@ -456,8 +460,21 @@ class _Results extends StatelessWidget {
               'No players found on this network.',
               style: AppText.body.copyWith(color: colors.muted),
             ),
-          )
-        else if (scan == NetworkScan.notScannable)
+          ),
+        if ((scan == NetworkScan.none || scan == NetworkScan.found) &&
+            session.scanPartial)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              session.scanCutShort
+                  ? 'Stopped after ${_count(session.scanTried)} of '
+                        '${_count(session.scanTotal)} addresses.'
+                  : 'Scanned ${_count(session.scanTotal)} addresses around '
+                        'this phone; this network is bigger.',
+              style: AppText.body.copyWith(color: colors.muted),
+            ),
+          ),
+        if (scan == NetworkScan.notScannable)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Text(
@@ -625,6 +642,7 @@ class _AddressEntry extends StatelessWidget {
     required this.onConnect,
     required this.onScan,
     required this.scanning,
+    required this.onStop,
   });
 
   final TextEditingController controller;
@@ -637,8 +655,11 @@ class _AddressEntry extends StatelessWidget {
   /// Starts a scan of the network; null when this phone cannot scan.
   final VoidCallback? onScan;
 
-  /// Whether a scan is running: the button says so and does nothing.
+  /// Whether a scan is running: the button then stops it.
   final bool scanning;
+
+  /// Stops the scan that is running.
+  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -651,14 +672,12 @@ class _AddressEntry extends StatelessWidget {
               child: ChunkyButton(
                 height: 52,
                 fontSize: 16,
-                label: scanning ? 'Scanning…' : 'Scan this network',
-                semanticLabel: scanning
-                    ? 'Scanning this network'
-                    : 'Scan this network',
+                label: scanning ? 'Stop scanning' : 'Scan this network',
+                semanticLabel: scanning ? 'Stop scanning' : 'Scan this network',
                 fill: colors.surface,
                 borderColor: colors.cyan,
                 foreground: colors.cyan,
-                onPressed: scanning ? null : onScan,
+                onPressed: scanning ? onStop : onScan,
               ),
             ),
             const SizedBox(width: 10),
@@ -712,4 +731,17 @@ class _AddressEntry extends StatelessWidget {
       ],
     );
   }
+}
+
+/// [n] with a comma between thousands: 65,533.
+String _count(int n) {
+  final digits = n.toString();
+  final out = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) {
+      out.write(',');
+    }
+    out.write(digits[i]);
+  }
+  return out.toString();
 }

@@ -98,27 +98,99 @@ void main() {
     );
 
     appTest(
-      'is disabled while scanning, says so, and a second press does nothing',
+      'becomes "Stop scanning" while scanning, with the progress, and a '
+      'second press stops it',
       (h) async {
         setupNetwork(h);
         h.probe!.open.clear();
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '192.168.1.20', prefixLength: 16),
+        ];
         await h.tester.tap(button('Scan this network'));
         await h.settle();
-        await h.advance(const Duration(milliseconds: 100));
-        expect(button('Scanning this network'), findsOneWidget);
-        expect(find.text('Scanning…'), findsOneWidget);
-        expect(find.text('Scanning this network…'), findsOneWidget);
-        final scanning = h.tester.widget<ChunkyButton>(
-          button('Scanning this network'),
-        );
-        expect(scanning.onPressed, isNull);
-        await h.tester.tap(button('Scanning this network'));
-        await h.settle();
+        await h.advance(const Duration(seconds: 2));
+        expect(button('Scan this network'), findsNothing);
+        expect(button('Stop scanning'), findsOneWidget);
+        expect(find.text('Stop scanning'), findsOneWidget);
+        expect(find.textContaining('of 65,533 addresses'), findsOneWidget);
+        expect(find.textContaining('Scanning… '), findsOneWidget);
         expect(h.probe!.listings, 1);
-        expect(h.probe!.maxInFlight, 32);
-        await finishScan(h);
+        expect(h.probe!.maxInFlight, 256);
+        await h.tester.tap(button('Stop scanning'));
+        await h.settle();
+        expect(h.probe!.inFlight, 0);
         expect(button('Scan this network'), findsOneWidget);
-        expect(find.text('Scanning this network…'), findsNothing);
+        expect(find.textContaining('Scanning…'), findsNothing);
+        expect(find.text('No players found on this network.'), findsOneWidget);
+        expect(find.textContaining('Stopped after '), findsOneWidget);
+        expect(find.textContaining(' of 65,533 addresses.'), findsOneWidget);
+      },
+      known: false,
+      withWifi: true,
+      withBrowser: true,
+      withProbe: true,
+    );
+
+    appTest(
+      'stopping keeps the players found so far',
+      (h) async {
+        setupNetwork(h);
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '192.168.1.20', prefixLength: 16),
+        ];
+        await h.tester.tap(button('Scan this network'));
+        await h.settle();
+        await h.advance(const Duration(seconds: 2));
+        expect(find.text('stage'), findsOneWidget);
+        await h.tester.tap(button('Stop scanning'));
+        await h.settle();
+        expect(find.text('stage'), findsOneWidget);
+        expect(find.textContaining('Stopped after '), findsOneWidget);
+        expect(find.textContaining('No players found on this'), findsNothing);
+      },
+      known: false,
+      withWifi: true,
+      withBrowser: true,
+      withProbe: true,
+    );
+
+    appTest(
+      'says when the network was bigger than the part scanned',
+      (h) async {
+        h.probe!.open.clear();
+        h.probe!.addresses = const [
+          LocalAddress('wlan0', '10.20.30.40', prefixLength: 8),
+        ];
+        await h.tester.tap(button('Scan this network'));
+        await h.settle();
+        for (var i = 0; i < 90; i++) {
+          await h.advance(const Duration(seconds: 1));
+        }
+        expect(
+          find.text(
+            'Scanned 65,533 addresses around this phone; this network is '
+            'bigger.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Stopped after'), findsNothing);
+        expect(button('Scan this network'), findsOneWidget);
+      },
+      known: false,
+      withWifi: true,
+      withBrowser: true,
+      withProbe: true,
+    );
+
+    appTest(
+      'says nothing extra when the whole network was scanned',
+      (h) async {
+        h.probe!.open.clear();
+        await h.tester.tap(button('Scan this network'));
+        await finishScan(h);
+        expect(find.text('No players found on this network.'), findsOneWidget);
+        expect(find.textContaining('Stopped after'), findsNothing);
+        expect(find.textContaining('this network is bigger'), findsNothing);
       },
       known: false,
       withWifi: true,
@@ -260,13 +332,18 @@ void main() {
           );
           expect(button('Scan this network'), findsOneWidget);
           expect(button('Enter an address'), findsOneWidget);
+          h.probe!.addresses = const [
+            LocalAddress('wlan0', '192.168.1.20', prefixLength: 16),
+          ];
           await h.tester.tap(button('Scan this network'));
           await h.settle();
-          await h.advance(const Duration(milliseconds: 100));
-          expect(find.text('Scanning this network…'), findsOneWidget);
-          expect(button('Scanning this network'), findsOneWidget);
-          await finishScan(h);
+          await h.advance(const Duration(seconds: 2));
+          expect(find.textContaining('of 65,533 addresses'), findsOneWidget);
+          expect(button('Stop scanning'), findsOneWidget);
+          await h.tester.tap(button('Stop scanning'));
+          await h.settle();
           expect(find.textContaining('the-main-stage'), findsOneWidget);
+          expect(find.textContaining('Stopped after'), findsOneWidget);
           h.probe!.addresses = const [LocalAddress('wlan0', '8.8.8.8')];
           await h.tester.tap(button('Scan this network'));
           await h.settle();

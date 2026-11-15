@@ -305,7 +305,7 @@ abstract class ScreenWake {
 /// An address of the phone and the name of the interface it is on.
 class LocalAddress {
   /// [address], an IPv4 address in dotted form, on the interface [interface].
-  const LocalAddress(this.interface, this.address);
+  const LocalAddress(this.interface, this.address, {this.prefixLength});
 
   /// The interface's name (`wlan0`, `en0`, `rmnet_data1`).
   final String interface;
@@ -313,17 +313,23 @@ class LocalAddress {
   /// The address, as text.
   final String address;
 
+  /// How many leading bits of the address are the network's (24 for a
+  /// netmask of 255.255.255.0), or null when the platform would not say.
+  final int? prefixLength;
+
   @override
   bool operator ==(Object other) =>
       other is LocalAddress &&
       other.interface == interface &&
-      other.address == address;
+      other.address == address &&
+      other.prefixLength == prefixLength;
 
   @override
-  int get hashCode => Object.hash(interface, address);
+  int get hashCode => Object.hash(interface, address, prefixLength);
 
   @override
-  String toString() => '$interface $address';
+  String toString() =>
+      '$interface $address${prefixLength == null ? '' : '/$prefixLength'}';
 }
 
 /// Tries a TCP connection to a host and port. The real one is in
@@ -344,4 +350,9 @@ abstract class NetworkProbe {
     required Duration timeout,
     required Future<void> cancelled,
   });
+
+  /// A short account of why attempts failed since it was last asked (counts
+  /// by kind, never addresses), for the log; empty when there is nothing to
+  /// say. Asking starts the count again.
+  String takeDiagnostics();
 }
