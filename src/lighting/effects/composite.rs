@@ -117,6 +117,9 @@ struct Composite {
     peak: Option<f64>,
     /// No colour anywhere: white at the bottom (design rule 7).
     white_bottom: bool,
+    /// A show set a CMY fixture's flags itself: they are the colour
+    /// beneath, and a primary no effect drives leaves its flag to them.
+    flags: bool,
     top: EffectLayer,
 }
 
@@ -137,6 +140,7 @@ impl Composite {
                     0.0
                 }),
                 white_bottom: false,
+                flags: seed.flags,
                 top: EffectLayer::Background,
             }
         } else {
@@ -146,6 +150,7 @@ impl Composite {
                 driven: [false; 4],
                 peak: None,
                 white_bottom: true,
+                flags: false,
                 top: EffectLayer::Background,
             }
         };
@@ -272,7 +277,11 @@ impl Composite {
     /// The colour channels to write and their values. `takes` is which of
     /// the channels the target has, for the white a colour-less fixture
     /// shows.
-    fn colours(&self, level: &Level, takes: [bool; 4]) -> Vec<(&'static str, f64)> {
+    fn colours(&self, level: &Level, takes: Takes) -> Vec<(&'static str, f64)> {
+        let Takes {
+            channels: takes,
+            cmy,
+        } = takes;
         let relative = |i: usize, by: f64| {
             if by > 0.0 {
                 self.light[i] / by
@@ -281,11 +290,17 @@ impl Composite {
             }
         };
         (0..4)
+            // On a CMY fixture, with colour asked for, a primary nothing
+            // drives goes out as none of it: its flag closed. Left alone
+            // (or released) a flag is open, that primary at full, so `red:
+            // 100%` would show white where an RGB fixture, whose channel
+            // left alone is dark, shows red. Flags a show set itself are
+            // the colour beneath and are left to it.
             .filter(|&i| {
                 if self.white_bottom {
                     takes[i]
                 } else {
-                    self.driven[i]
+                    self.driven[i] || (cmy && takes[i] && !self.flags)
                 }
             })
             .map(|i| {
@@ -300,11 +315,22 @@ impl Composite {
     }
 }
 
-/// Which colour channels a fixture or cell takes: red, green and blue also
-/// on a CMY fixture, which turns them into its flags at output.
-fn takes<V>(channels: &HashMap<String, V>) -> [bool; 4] {
+/// Which colour channels a fixture or cell takes, and whether it mixes
+/// subtractively.
+#[derive(Clone, Copy)]
+struct Takes {
+    /// Red, green and blue also on a CMY fixture, which turns them into
+    /// its flags at output.
+    channels: [bool; 4],
+    cmy: bool,
+}
+
+fn takes<V>(channels: &HashMap<String, V>) -> Takes {
     let cmy = has_cmy(channels);
-    COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy))
+    Takes {
+        channels: COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy)),
+        cmy,
+    }
 }
 
 fn put(state: &mut FixtureState, layer: EffectLayer, name: &str, value: f64) {

@@ -1017,8 +1017,9 @@ show "T" {
     fn a_setting_an_ended_effect_left_reads_as_the_rig_holds_it() {
         // An effect that ends leaves a gobo, a zoom, a focus as it set them:
         // the universe holds a byte until it is sent another. Its levels and
-        // colours go to 0 as it ends (#581): the CMY head's magenta and
-        // yellow open, so `red: 100%` alone shows white, as it is sent.
+        // colours go to 0 as it ends (#581). `red: 100%` alone is red on
+        // the CMY head as on the RGB par: the green and blue it does not
+        // name are none of them, magenta and yellow closed.
         let source = r#"
 show "T" {
     @0.000
@@ -1056,8 +1057,8 @@ show "T" {
                 wash["yellow"],
                 wash["dimmer"]
             ),
-            (0, 0, 0, 255),
-            "open white, as the head is sent"
+            (0, 255, 255, 255),
+            "red, as on the RGB par"
         );
         assert_eq!((wash["gobo"], wash["zoom"]), (128, 102), "held");
         assert!(!wash.contains_key("red"));
@@ -1379,9 +1380,10 @@ show "T" {
         assert_eq!(channel(&results[0], "wash", "cyan"), 0);
     }
 
-    /// On a CMY fixture with nothing opening its flags first: a flag no
-    /// effect drives is open on the wire, so it reads open, and the
-    /// fixture is judged subtractively by the flags the head is sent.
+    /// On a CMY fixture with nothing opening its flags first, a primary a
+    /// cue does not name is none of it, as on an RGB fixture: its flag is
+    /// closed, so the head shows the colour named. A show setting the
+    /// flags itself is left to them.
     #[test]
     fn a_cmy_fixture_with_flags_left_alone_reads_them_open() {
         let fixtures = [fixture_of("wash", &["dimmer", "cyan", "magenta", "yellow"])];
@@ -1400,18 +1402,20 @@ show "T" {
             (result, shown)
         };
         let (red, shown) = at("red: 100%");
-        assert_eq!(red.is_dark(), Some(false), "red alone opens cyan: white");
-        assert_eq!(shown, [1.0, 1.0, 1.0]);
+        assert_eq!(red.is_dark(), Some(false));
+        assert_eq!(shown, [1.0, 0.0, 0.0], "red alone is red");
         let (red_green, shown) = at("red: 100%, green: 100%");
         assert_eq!(red_green.is_dark(), Some(false));
-        assert_eq!(shown, [1.0, 1.0, 1.0], "white");
+        assert_eq!(shown, [1.0, 1.0, 0.0], "yellow");
         let (half_green, shown) = at("red: 100%, green: 50%");
         assert_eq!(half_green.is_dark(), Some(false));
-        assert_eq!(channel(&half_green, "wash", "magenta"), 128);
-        assert_eq!(channel(&half_green, "wash", "yellow"), 0, "blue left open");
+        // Green at 50% is byte 128 on an RGB fixture; magenta is its exact
+        // complement.
+        assert_eq!(channel(&half_green, "wash", "magenta"), 127);
+        assert_eq!(channel(&half_green, "wash", "yellow"), 255, "no blue");
         assert_eq!(
             shown,
-            [1.0, 127.0 / 255.0, 1.0],
+            [1.0, 128.0 / 255.0, 0.0],
             "magenta takes half the green"
         );
         let (cyan, _) = at("cyan: 0%");

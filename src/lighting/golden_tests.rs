@@ -665,3 +665,88 @@ fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
         f[3]
     );
 }
+
+/// A mover with a red channel but no green or blue takes a `red:` cue:
+/// its dimmer goes up and its red with it, alongside the move (what the
+/// rig's mover checks drive; 0.18.0 to 0.18.3 refused the cue outright).
+#[test]
+fn a_red_only_mover_takes_a_red_cue_while_it_moves() {
+    let mover =
+        "fixture_type \"CmySpot\" {\n  channel \"pan\"    @ 1 fine 2 range -270deg..270deg\n  \
+                 channel \"tilt\"   @ 3 fine 4 range -135deg..135deg\n  channel \"dimmer\" @ 5\n  \
+                 channel \"red\"    @ 6\n}\n";
+    let show = "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 10s\n    \
+                @00:00.000\n    spots: move from_pan: -60deg, pan: 60deg, tilt: 0deg, duration: 6s, easing: linear\n}\n";
+    let frame = &frames_for(mover, show, &[Duration::from_millis(1000)])[0];
+    assert_eq!((frame[5], frame[6]), (255, 255), "dimmer and red");
+    assert_ne!(frame[1], 0, "and the head is moving");
+}
+
+/// The same colour on every fixture that mixes one: whatever form a cue
+/// gives it in (a hex value, `rgb()`, a name, the three levels, one level
+/// alone) and whatever the level, a CMY fixture's flags are exactly the
+/// complement of an RGB fixture's bytes, with a dimmer channel and without.
+/// Pink (255, 192, 203) is cyan 0, magenta 63, yellow 52.
+#[test]
+fn every_colour_is_the_same_colour_on_rgb_and_cmy_fixtures() {
+    let pairs = [
+        (
+            "fixture_type \"CmySpot\" {\n  channel \"dimmer\" @ 1\n  channel \"red\" @ 2\n  \
+             channel \"green\" @ 3\n  channel \"blue\" @ 4\n}\n",
+            CMY_SPOT,
+        ),
+        (
+            "fixture_type \"CmySpot\" {\n  channel \"red\" @ 1\n  channel \"green\" @ 2\n  \
+             channel \"blue\" @ 3\n}\n",
+            "fixture_type \"CmySpot\" {\n  channel \"cyan\" @ 1\n  channel \"magenta\" @ 2\n  \
+             channel \"yellow\" @ 3\n}\n",
+        ),
+    ];
+    let cues = [
+        "static color: \"#ffc0cb\"",
+        "static color: rgb(255, 192, 203)",
+        "static color: \"pink\"",
+        "static red: 100%, green: 0.753, blue: 0.796",
+        "static red: 100%",
+        "static green: 100%",
+        "static red: 100%, blue: 50%",
+        "static color: \"#ffc0cb\", dimmer: 50%",
+        "static red: 100%, dimmer: 40%",
+        "cycle color: \"pink\", color: \"orange\", speed: 0.1, duration: 10s, transition: fade",
+    ];
+    for (rgb_type, cmy_type) in pairs {
+        let colour_channels = if rgb_type.contains("dimmer") {
+            2..5
+        } else {
+            1..4
+        };
+        for cue in cues {
+            let cue = if cue.contains("duration") {
+                cue.to_string()
+            } else {
+                format!("{cue}, duration: 10s")
+            };
+            let show = format!("show \"s\" {{\n    @00:00.000\n    spots: {cue}\n}}\n");
+            let at = [Duration::from_millis(1000)];
+            let rgb = frames_for(rgb_type, &show, &at)[0];
+            let cmy = frames_for(cmy_type, &show, &at)[0];
+            let complement: Vec<u8> = colour_channels.clone().map(|c| 255 - rgb[c]).collect();
+            let flags: Vec<u8> = colour_channels.clone().map(|c| cmy[c]).collect();
+            assert_eq!(
+                flags,
+                complement,
+                "{cue}: RGB {:?}",
+                &rgb[colour_channels.clone()]
+            );
+            if colour_channels.start == 2 {
+                assert_eq!(cmy[1], rgb[1], "{cue}: the dimmer");
+            }
+        }
+    }
+    let pink = frames_for(
+        CMY_SPOT,
+        "show \"s\" {\n    @00:00.000\n    spots: static color: \"pink\", duration: 10s\n}\n",
+        &[Duration::from_millis(1000)],
+    )[0];
+    assert_eq!(&pink[2..5], &[0, 63, 52], "pink");
+}
