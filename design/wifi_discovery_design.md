@@ -114,7 +114,7 @@ Recommended: **A**, with these limits:
   (10/8, 172.16/12, 192.168/16), and never over mobile data.
 - A /24 around the phone's address: at most 254 hosts, about 32 at a time,
   about 400 ms each, so a full sweep is three to four seconds. A bigger
-  network is swept only in the phone's own /24.
+  network is swept only in the phone's own /24 (why: §8.1).
 - Port 43234, and the port of a remembered player if it differs.
 - An address that accepts the connection is asked for the standard gRPC
   health check of `player.v1.PlayerService`, then `GetNetworkInfo` for its
@@ -202,8 +202,42 @@ leaves the app working.
   Bonjour, where the same care about the host's name applies.
 - **iOS.** Nothing here has run on an iPhone; the local network prompt and
   a refusal of it are untested, as they are for Wi-Fi today.
-- **The phone's subnet.** Dart gives the phone's addresses but not the
-  network's size, so the sweep assumes /24. On a /16 it sees a corner.
+- **The phone's subnet.** The sweep covers the /24 around the phone and no
+  more, whatever the network's size. That is decided, not left over: see
+  §8.1.
+
+### 8.1 Why the sweep stops at the phone's own /24
+
+Tried on the Pixel on a /16 on 2026-11-15 (#790, not merged). The netmask
+can be read (`getifaddrs` through `dart:ffi`), so sweeping the whole
+network is possible. It is not worth having:
+
+- The phone's kernel keeps 1,024 neighbour (ARP) entries. Every address
+  tried takes one, and an address where nothing is holds it for seconds.
+  When the table is full, attempts on machines that are there are dropped
+  and look like timeouts. Nothing reports it.
+- The test swept far addresses first and the phone's own block last, and
+  counted what it saw there against the truth (one player, about 31
+  machines that refuse):
+
+  | New addresses a second | Player found | Refusals seen of about 31 |
+  |---|---|---|
+  | about 1,250 | no | 2 |
+  | 256 | no | 10 |
+  | 128 | yes | 16 |
+
+- A pace that loses nothing was not found. From how Linux clears the table
+  it would be around 64 a second, which is about 17 minutes for a /16, and
+  that was not measured.
+- A /24 alone is 254 addresses, which the table holds with room to spare,
+  and it is done in seconds.
+- With the screen off the phone cuts the app off from the network; a long
+  sweep then runs to its end and finds nothing.
+
+Decided by Mike on 2026-11-15: "scanning the phone's own block makes sense
+but that's about it". A player elsewhere on a big network is found by mDNS
+or by its address. The 1,024 is the Linux default and was read on one
+phone; iOS was not looked at.
 
 ## 9. Decisions
 
