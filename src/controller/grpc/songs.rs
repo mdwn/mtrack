@@ -926,7 +926,7 @@ fn check_loads(player: &Player, name: &str, dir: &Path, text: &str) -> Result<()
     config
         .validate()
         .map_err(|errors| Status::invalid_argument(errors.join("; ")))?;
-    let song = crate::songs::Song::new(dir, &config)
+    let song = crate::songs::Song::new_in(&player.layers(), dir, &config)
         .map_err(|e| Status::invalid_argument(e.to_string()))?;
     for (playlist_name, playlist) in player.playlists_snapshot() {
         if playlist_name == crate::playlist::ALL_SONGS {
@@ -1966,6 +1966,44 @@ notification_audio:
             );
             // Everything else in the file is as it was.
             super::assert_same_but(FULL, &written(&project), &["loop_crossfade"]);
+        }
+
+        /// A song whose show draws on a layer the player configures is
+        /// checked against the player's layers, not the defaults, so its
+        /// settings can be changed.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_update_reads_the_show_against_the_players_layers() {
+            let project = project().await;
+            project.player.set_layers(
+                crate::lighting::effects::LayerSet::new(
+                    ["background", "midground", "foreground", "sparkle"]
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect(),
+                )
+                .unwrap(),
+            );
+            std::fs::write(
+                song_dir(&project, "Full").join("show.light"),
+                "show \"Full\" {\n    @00:00.000\n    \
+                 front_wash: static color: \"blue\", duration: 2s, layer: sparkle\n}\n",
+            )
+            .unwrap();
+            project.player.reload_songs().await.unwrap();
+            let read = get(&project, "Full").await.unwrap();
+            assert_eq!(read.failure, None);
+            let req = UpdateSongSettingsRequest {
+                name: "Full".into(),
+                expected_revision: read.revision,
+                looping: Some(SongLooping {
+                    loop_playback: true,
+                    crossfade: "6s".into(),
+                    cut: vec![],
+                }),
+                ..Default::default()
+            };
+            let saved = update(&project, req).await.unwrap();
+            assert_eq!(saved.looping.unwrap().crossfade, "6s");
         }
 
         #[tokio::test(flavor = "multi_thread")]
