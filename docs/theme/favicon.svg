@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <title>mtrack</title>
+  <style>
+    .n { fill: #231f20; }
+    @media (prefers-color-scheme: dark) { .n { fill: #ffffff; } }
+  </style>
+  <rect x="0" y="0" width="30" height="30" rx="5" fill="#ef60a3"/>
+  <rect x="35" y="0" width="30" height="30" rx="5" fill="#5ecaea"/>
+  <rect x="70" y="0" width="30" height="30" rx="5" class="n"/>
+  <rect x="0" y="35" width="30" height="30" rx="5" class="n"/>
+  <rect x="35" y="35" width="30" height="30" rx="5" fill="#ef60a3"/>
+  <rect x="70" y="35" width="30" height="30" rx="5" fill="#5ecaea"/>
+  <rect x="0" y="70" width="30" height="30" rx="5" fill="#5ecaea"/>
+  <rect x="35" y="70" width="30" height="30" rx="5" class="n"/>
+  <rect x="70" y="70" width="30" height="30" rx="5" fill="#ef60a3"/>
+</svg>

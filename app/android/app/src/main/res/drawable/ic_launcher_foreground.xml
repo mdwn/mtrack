@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The mtrack mark: design/brand/mtrack-icon.svg, scaled so its 100 units
+     fill the 72dp of an adaptive icon that is always shown. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#ef60a3" android:pathData="M37.008,35.280h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#5ecaea" android:pathData="M50.256,35.280h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#ffffff" android:pathData="M63.504,35.280h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#ffffff" android:pathData="M37.008,48.528h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#ef60a3" android:pathData="M50.256,48.528h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#5ecaea" android:pathData="M63.504,48.528h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#5ecaea" android:pathData="M37.008,61.776h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#ffffff" android:pathData="M50.256,61.776h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+    <path android:fillColor="#ef60a3" android:pathData="M63.504,61.776h7.488a1.728,1.728 0 0 1 1.728,1.728v7.488a1.728,1.728 0 0 1 -1.728,1.728h-7.488a1.728,1.728 0 0 1 -1.728,-1.728v-7.488a1.728,1.728 0 0 1 1.728,-1.728z" />
+</vector>
