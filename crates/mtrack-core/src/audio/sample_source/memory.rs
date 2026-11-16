@@ -16,7 +16,7 @@ use std::sync::Arc;
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 use super::traits::SampleSourceTestExt;
 
 /// A sample source that produces samples from memory.
@@ -114,7 +114,7 @@ impl Clone for MemorySampleSource {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl SampleSourceTestExt for MemorySampleSource {
     fn is_finished(&self) -> bool {
         self.current_index >= self.samples.len()

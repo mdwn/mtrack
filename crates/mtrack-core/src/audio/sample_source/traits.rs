@@ -149,7 +149,7 @@ pub trait ChannelMappedSampleSource: Send + Sync {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 pub trait SampleSourceTestExt {
     /// Check if the source is finished (no more samples)
     fn is_finished(&self) -> bool;

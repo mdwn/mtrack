@@ -32,7 +32,7 @@ use symphonia::default::{get_codecs, get_probe};
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 use super::traits::SampleSourceTestExt;
 
 /// A sample source that reads audio files (WAV, MP3, FLAC, etc.) and provides scaled samples
@@ -651,7 +651,7 @@ impl AudioSampleSource {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 impl SampleSourceTestExt for AudioSampleSource {
     fn is_finished(&self) -> bool {
         self.is_finished

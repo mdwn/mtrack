@@ -79,7 +79,7 @@ pub(crate) struct FixtureRegistry {
     cells: HashMap<String, Vec<String>>,
     /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
     /// Only built during tests for validation; not needed in production.
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     dmx_to_fixture_map: HashMap<(u16, u16), (String, String)>,
 }
 
@@ -88,7 +88,7 @@ impl FixtureRegistry {
         Self {
             fixtures: HashMap::new(),
             cells: HashMap::new(),
-            #[cfg(any(test, feature = "test-util"))]
+            #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
         }
     }
@@ -137,7 +137,7 @@ impl FixtureRegistry {
             }
             self.cells.insert(fixture.name.clone(), names);
         }
-        #[cfg(any(test, feature = "test-util"))]
+        #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
                 if let Some(channel) = fixture.dmx_channel(offset) {
@@ -163,7 +163,7 @@ impl FixtureRegistry {
         &self.fixtures
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
         self.dmx_to_fixture_map.get(&(universe, dmx_channel))
     }
@@ -455,7 +455,7 @@ impl EffectEngine {
     }
 
     /// Look up which fixture and channel a DMX address belongs to (test only).
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
         self.fixtures.lookup_dmx_channel(universe, dmx_channel)
     }
@@ -1688,7 +1688,7 @@ impl EffectEngine {
     }
 
     /// Check if a layer is frozen
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub fn is_layer_frozen(&self, layer: EffectLayer) -> bool {
         self.layer_state.clock(layer).is_frozen()
     }

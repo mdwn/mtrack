@@ -6094,6 +6094,15 @@ pilot:
         assert!(song.metronome.is_some());
     }
 
+    /// A song's summary lasts as long as the song does, whatever its tracks'
+    /// own lengths. The player's gRPC `Song` takes its duration from here.
+    #[test]
+    fn summary_takes_the_songs_duration_not_its_tracks() {
+        let mut song = super::Song::new_for_test("Proto Song", &["kick", "snare"]);
+        song.duration = std::time::Duration::from_secs(90);
+        assert_eq!(song.summary().duration, std::time::Duration::from_secs(90));
+    }
+
     #[test]
     fn sections_getter_returns_all_sections() {
         let song = make_song_with_beat_grid();

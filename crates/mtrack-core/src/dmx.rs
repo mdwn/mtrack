@@ -11,7 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! The values MIDI sets on DMX channels, which a light show's engine reads.
-//! Sending DMX is the player's.
+//! The values MIDI sets on DMX channels, which a light show's engine reads,
+//! with the frame rate and the dimming arithmetic they move by. Sending DMX
+//! is the player's.
 
 pub mod midi_dmx_store;

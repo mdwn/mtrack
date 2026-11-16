@@ -1,2 +1,2 @@
 [default]
-exclude-files = ["src/testutil/*"]
+exclude-files = ["src/testutil/*", "crates/mtrack-core/src/testutil/*"]

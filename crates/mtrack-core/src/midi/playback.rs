@@ -344,7 +344,7 @@ impl PrecomputedMidi {
         PrecomputedMidi { events }
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     /// Returns the slice of events starting from the first event at or after `start_time`.
     pub fn events_from(&self, start_time: Duration) -> &[TimedMidiEvent] {
         let idx = self.events.partition_point(|e| e.time < start_time);

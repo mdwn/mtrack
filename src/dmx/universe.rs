@@ -27,8 +27,9 @@ use crate::lighting::channels::dmx_byte;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
-// The frame rate and the dimming arithmetic the MIDI DMX store shares with
-// the universe threads are `mtrack-core`'s, with the store.
+// The dimming arithmetic the MIDI DMX store shares with the universe threads
+// is `mtrack-core`'s, with the store, and the frame rate it is counted at is
+// kept beside it.
 pub(crate) use super::midi_dmx_store::{
     dim_rate, dim_step, dim_ticks, DEFAULT_DIM_TICKS, FRAMES_PER_SECOND, TARGET_HZ,
 };
