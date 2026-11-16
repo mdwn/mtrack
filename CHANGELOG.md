@@ -277,9 +277,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependencies, for every target and feature, to hold it to that. A log line from the moved code
   names `mtrack_core::…` as its target where it named `mtrack::…`: the default filter
   (`mtrack=info`) takes both, and a filter of your own on a moved module
-  (`RUST_LOG=mtrack::config=debug`) has to name `mtrack_core::config` now. It is not on crates.io:
-  it must be published there before the next `mtrack` release, because crates.io takes no crate
-  whose dependency it does not have.
+  (`RUST_LOG=mtrack::config=debug`) has to name `mtrack_core::config` now. It is
+  published to crates.io with each `mtrack` release, at the same version and just before it,
+  because crates.io takes no crate whose dependency it does not have; it has no stable API of its
+  own.
 - **Songs, playlists and the light show engine are in `mtrack-core` too**: loading a song (its
   config, its audio files' lengths and channels, its click-derived beat grid, its MIDI file and its
   light shows), playlists, the song cache, the effect engine, the timeline of a song's shows and the

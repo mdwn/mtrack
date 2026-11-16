@@ -417,6 +417,10 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: Verify crate packaging file list
       run: cargo package --list --allow-dirty > /dev/null
+    - name: Verify mtrack-core packages
+      run: cargo package -p mtrack-core --locked --allow-dirty
+    - name: Verify mtrack and mtrack-core share a version
+      run: scripts/check-versions.sh
 
   # Verify changelog is in keep-a-changelog format.
   verify-changelog:

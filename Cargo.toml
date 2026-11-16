@@ -87,7 +87,8 @@ pkg-fmt = "tgz"
 bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
 
 [dependencies]
-# The configuration, tempo and light show code that needs no hardware.
+# The configuration, song and light show code that needs no hardware.
+# Released with the player, at its version (scripts/check-versions.sh).
 mtrack-core = { path = "crates/mtrack-core", version = "0.18.1" }
 clap = { version = "4.5.60", features = ["cargo", "derive"] }
 config = "0.15.19"
