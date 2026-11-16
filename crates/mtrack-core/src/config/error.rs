@@ -57,6 +57,11 @@ pub enum ConfigError {
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
+// The player's functions that return this are exempt from clippy's
+// `result_large_err` (clippy.toml says why), so its size is held here: a
+// variant that grows it has to be boxed.
+const _: () = assert!(std::mem::size_of::<ConfigError>() <= 128);
+
 impl ConfigError {
     /// What kind of fault this is: a stale checksum is a precondition the
     /// caller must re-read for; a bad profile index or a config that would

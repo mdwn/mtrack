@@ -141,17 +141,18 @@ jobs:
       run: make fmt-rust-check
 
   # mtrack-core is what the player reads and checks with no hardware. It is
-  # built here by itself, with only its own features, and its dependencies are
-  # read for the audio, MIDI, DMX and Bluetooth libraries the player links:
-  # one of them reaching the crate would build everywhere those are installed.
+  # built and tested here by itself, with only its own features, and its
+  # dependencies are read (for every target and feature) for the audio, MIDI,
+  # DMX and Bluetooth libraries the player links: one of them reaching the
+  # crate would build everywhere those are installed.
   core:
     name: Build mtrack-core without hardware
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
-    - name: Build mtrack-core alone
-      run: cargo check -p mtrack-core --locked
+    - name: Build and test mtrack-core alone
+      run: cargo test -p mtrack-core --locked
     - name: Check mtrack-core links no hardware library
       run: scripts/check-core-deps.sh
 

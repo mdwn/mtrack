@@ -57,8 +57,8 @@ pub use self::dmx::Dmx;
 pub use self::dmx::Universe;
 // Re-exported for the hardware harness, which needs the default port to probe
 // for a running OLA daemon. Gated to match the constant itself, which (with
-// `Dmx::ola_port`) is excluded from test builds; the harness links the
-// non-test build and so still sees it.
+// `Dmx::ola_port`) is left out of this crate's own test build; the player
+// and the harness link the non-test build and so see it.
 #[cfg(not(test))]
 pub use self::dmx::DEFAULT_OLA_PORT;
 pub use self::error::ConfigError;

@@ -259,13 +259,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The player's hardware-free code is a crate of its own, `mtrack-core`** (`crates/mtrack-core`):
   the configuration files' types and loaders, tempo maps, positions, the light show language (its
-  parser, effects and fixture types) and the file helpers they share moved there from `src/`,
-  unchanged, and the player re-exports each module at the path it had, so nothing that uses `mtrack`
-  sees a difference. The crate builds with no audio, MIDI, DMX or Bluetooth library, and CI holds it
-  to that. A log line from the moved code names `mtrack_core::…` as its target where it named
-  `mtrack::…`; the default filter (`mtrack=info`) takes both. It is not on crates.io: it must be
-  published there before the next `mtrack` release, because crates.io takes no crate whose
-  dependency it does not have.
+  parser, effects and fixture types) and the file helpers they share moved there from `src/`. What
+  they do is unchanged; what the player uses across the new boundary became `pub`, and the
+  constructors and write faults its tests use are behind the crate's `test-util` feature. The player
+  re-exports each module at the path it had, so every `mtrack::…` path is still there, and some that
+  were private are now public (`mtrack::config::player`, `mtrack::lighting::parser::utils` and the
+  like). The crate builds with no audio, MIDI, DMX or Bluetooth library, and CI reads its
+  dependencies, for every target and feature, to hold it to that. A log line from the moved code
+  names `mtrack_core::…` as its target where it named `mtrack::…`: the default filter
+  (`mtrack=info`) takes both, and a filter of your own on a moved module
+  (`RUST_LOG=mtrack::config=debug`) has to name `mtrack_core::config` now. It is not on crates.io:
+  it must be published there before the next `mtrack` release, because crates.io takes no crate
+  whose dependency it does not have.
 - **The web UI's light view reads the gRPC stream `WatchStage`**: the stage plot, the 3D view,
   the fixture test and the lighting editor's live plan now take the stage (the venue's fixtures,
   their values, poses and cells) from the same gRPC-Web stream the phone app uses, instead of the

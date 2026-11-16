@@ -24,9 +24,13 @@
 
 set -euo pipefail
 
-HARDWARE='^(cpal|midir|alsa|alsa-sys|ola|bluer|coreaudio-sys|coremidi|libudev-sys|libdbus-sys) '
+# The libraries the player reaches hardware through, on every platform it
+# builds for (`cargo tree -p mtrack --target all` is where the names are from).
+HARDWARE='^(cpal|midir|alsa|alsa-sys|ola|bluer|dbus|libdbus-sys|libudev-sys|coreaudio-rs|coreaudio-sys|coremidi|coremidi-sys|objc2-core-audio|objc2-core-audio-types|objc2-audio-toolbox|objc2-avf-audio|ndk|ndk-sys|oboe|asio-sys|jack) '
 
-tree=$(cargo tree -p mtrack-core -e normal,build --prefix none --locked)
+# Every target and every feature: a dependency for macOS or Windows only, or
+# behind a feature, counts as much as one built here.
+tree=$(cargo tree -p mtrack-core -e normal,build --target all --all-features --prefix none --locked)
 if found=$(grep -E "$HARDWARE" <<<"$tree" | sort -u); then
     echo "mtrack-core depends on a hardware library:" >&2
     echo "$found" >&2

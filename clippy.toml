@@ -22,5 +22,6 @@ disallowed-methods = [
 # that. Clippy measures an enum of the crate it is checking by its largest
 # variant and one from another crate by its whole size, so the player's
 # functions that return it began to trip `result_large_err` when the type
-# moved to mtrack-core, with nothing about it changed.
+# moved to mtrack-core, with nothing about it changed. Its size is held where
+# it is defined instead (crates/mtrack-core/src/config/error.rs).
 large-error-ignored = ["mtrack_core::config::ConfigError"]

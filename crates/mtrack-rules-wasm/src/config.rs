@@ -14,7 +14,7 @@
 //! The player's `crate::config` as the web UI's types see it: the plain
 //! data of a config -- what a file says, a profile's sections, a song's
 //! sections and tracks, a playlist's settings -- each source compiled as it
-//! is in the player. Every `#[path]` here names a player source; the
+//! is in the player. Every `#[path]` here names a source in `mtrack-core`; the
 //! Makefile reads them for the UI build's dependencies.
 
 #[path = "../../mtrack-core/src/config/audio.rs"]
