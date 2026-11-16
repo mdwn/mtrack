@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An icon for mtrack**: the web UI's 3×3 mark on the brand ink is now the phone app's launcher
+  icon (an adaptive icon on Android 8 and up) and the tab icon of the web UI and of the
+  documentation. The masters are SVG in `design/brand/`; `scripts/gen-icons.sh` regenerates the
+  rest. The app showed Flutter's default icon before, and the web UI none.
 - **The player advertises itself over mDNS**: the gRPC controller registers `_mtrack._tcp` (DNS-SD)
   on the port it bound, so a phone on the player's network can find it without an address. The
   instance name is the host name; the TXT records are `v` (the mtrack version) and `web` (the web
