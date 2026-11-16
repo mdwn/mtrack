@@ -53,7 +53,7 @@ impl MemorySampleSource {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 impl MemorySampleSource {
     /// Creates a new memory sample source (test only).
     pub fn new(samples: Vec<f32>, channel_count: u16, sample_rate: u32) -> Self {

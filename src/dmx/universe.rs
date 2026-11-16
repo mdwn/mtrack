@@ -27,15 +27,15 @@ use crate::lighting::channels::dmx_byte;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
+// The dimming arithmetic the MIDI DMX store shares with the universe threads
+// is `mtrack-core`'s, with the store, and the frame rate it is counted at is
+// kept beside it.
+pub(crate) use super::midi_dmx_store::{
+    dim_rate, dim_step, dim_ticks, DEFAULT_DIM_TICKS, FRAMES_PER_SECOND, TARGET_HZ,
+};
 
 /// A DMX universe is 512 channels.
 const UNIVERSE_SIZE: usize = 512;
-
-/// The frames a second the effects loop and the universe threads run at.
-pub(crate) const FRAMES_PER_SECOND: u64 = 44;
-
-/// The target number of updates per second: [`FRAMES_PER_SECOND`].
-pub(crate) const TARGET_HZ: f64 = FRAMES_PER_SECOND as f64;
 
 /// When frame `k` of a run at [`FRAMES_PER_SECOND`] falls, from the run's
 /// start: to the nanosecond below, as a period of 1/44 s is not a whole
@@ -86,39 +86,6 @@ impl FrameClock {
             self.frame = 0;
         }
         self.due()
-    }
-}
-
-/// The ticks a full transition takes before any dimming time is set, and
-/// under none: one, so a write lands next tick.
-pub(crate) const DEFAULT_DIM_TICKS: f64 = 1.0;
-
-/// A MIDI DMX dimming time as the ticks a full transition takes, at
-/// [`TARGET_HZ`]: one tick for none.
-pub(crate) fn dim_ticks(dimming: Duration) -> f64 {
-    if dimming.is_zero() {
-        DEFAULT_DIM_TICKS
-    } else {
-        dimming.as_secs_f64() * TARGET_HZ
-    }
-}
-
-/// What a MIDI DMX channel moves a tick, dimming from `current` to `target`
-/// over `ticks`; over none, infinite (or no number), which [`dim_step`] and
-/// [`dimmed_at`] take to the target at once.
-pub(crate) fn dim_rate(current: f64, target: f64, ticks: f64) -> f64 {
-    (target - current) / ticks
-}
-
-/// Where a MIDI DMX channel at `current`, moving `rate` a tick, is a tick
-/// on: at `target` once there, or at once with no rate (an instant write).
-pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
-    if rate > 0.0 {
-        (current + rate).min(target)
-    } else if rate == 0.0 {
-        target
-    } else {
-        (current + rate).max(target)
     }
 }
 

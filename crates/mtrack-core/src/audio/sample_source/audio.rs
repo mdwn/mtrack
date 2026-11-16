@@ -763,7 +763,7 @@ mod tests {
         // for FLAC's 4096-sample blocks (boundary at 16384, so ~3616 samples of
         // residual). Seeking to the impulse's time must return it essentially
         // immediately; without the trim it would appear ~3616 samples late.
-        let path = std::path::Path::new("assets/seek-marker-44.1k.flac");
+        let path = std::path::Path::new("../../assets/seek-marker-44.1k.flac");
         let marker_sample = 20000.0;
         let start = std::time::Duration::from_secs_f64(marker_sample / 44100.0);
         let mut source = AudioSampleSource::from_file(path, Some(start), 1024).unwrap();
@@ -813,7 +813,7 @@ mod tests {
         let t = 20000usize;
         let k = 2000usize;
         for name in ["seek-tone-44.1k.mp3", "seek-tone-44.1k.ogg"] {
-            let path = std::path::Path::new("assets").join(name);
+            let path = std::path::Path::new("../../assets").join(name);
             let mut lin = AudioSampleSource::from_file(&path, None, 1024).unwrap();
             let rate = lin.sample_rate();
             let linear = read_n(&mut lin, t + k);
@@ -869,7 +869,7 @@ mod tests {
         // normalization convention while still catching any gross conversion bug
         // (wrong sample-format arm, scale, or sign — all far larger than 0.01).
         for name in ["sine440-16bit.wav", "sine440-24bit.wav", "sine440.flac"] {
-            let path = std::path::Path::new("assets").join(name);
+            let path = std::path::Path::new("../../assets").join(name);
             let mut src = AudioSampleSource::from_file(&path, None, 1024).unwrap();
             let got = read_n(&mut src, 4000);
             assert!(
@@ -889,7 +889,7 @@ mod tests {
 
         // Lossy: amplitude/energy check (peak ~amp, RMS ~amp/√2), phase-agnostic.
         for name in ["sine440.mp3", "sine440.ogg", "sine440.aac"] {
-            let path = std::path::Path::new("assets").join(name);
+            let path = std::path::Path::new("../../assets").join(name);
             let mut src = AudioSampleSource::from_file(&path, None, 1024).unwrap();
             let got = read_n(&mut src, 8000);
             // Use the steady middle to avoid encoder priming / edge ramps.

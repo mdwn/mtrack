@@ -13,7 +13,7 @@
 //
 
 pub mod engine;
-pub mod midi_dmx_store;
+pub use mtrack_core::dmx::midi_dmx_store;
 pub mod ola_client;
 pub mod patch_check;
 pub mod universe;

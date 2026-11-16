@@ -11,10 +11,6199 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! What a file in a project is, by its name. Loading a song is the player's.
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{cmp, fmt};
+
+use crate::audio::sample_source::create_sample_source_from_file;
+use crate::audio::SampleFormat;
+use midly::live::LiveEvent;
+use midly::Smf;
+
+use tracing::{debug, info, warn};
+
+use crate::audio::TargetFormat;
+use crate::config;
+use crate::lighting::effects::LayerSet;
+use crate::util::{filename_display, FileStamp};
 
 mod file_kind;
 pub use file_kind::{
     extension_of, has_exact_extension, has_extension, is_yaml_config, FileKind, AUDIO_EXTENSIONS,
     LIGHTING_EXTENSIONS, MIDI_EXTENSIONS, YAML_EXTENSIONS,
 };
+
+/// A resolved DSL lighting show with absolute file path and cached parsed shows.
+///
+/// The parse is kept until the file changes on disk: [`Self::shows`] parses
+/// it again once its modified time or size moves, so an edit made outside mtrack (an
+/// editor, `git pull`), or one the engine's hot reload picked up during a
+/// playback, is what the song plays next rather than the show it was loaded
+/// with (#585).
+pub struct DslLightingShow {
+    /// The absolute path to the DSL file
+    file_path: PathBuf,
+    /// The tempo the show inherits, to parse it again against.
+    tempo_map: Option<crate::tempo::TempoMap>,
+    /// The layers the show is parsed against, again on each reparse.
+    layers: LayerSet,
+    /// The latest parse, and the file's stamp when it was read.
+    parsed: parking_lot::Mutex<ParsedFile>,
+}
+
+/// One parse of a DSL file.
+struct ParsedFile {
+    shows: Arc<crate::lighting::parser::LightShows>,
+    modified: Option<FileStamp>,
+    /// Bumped by every parse after the first, for what is worked out from
+    /// the shows to tell it is stale.
+    version: u64,
+}
+
+impl fmt::Debug for DslLightingShow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DslLightingShow")
+            .field("file_path", &self.file_path)
+            .field("shows", &self.parsed.lock().shows)
+            .finish()
+    }
+}
+
+impl Clone for DslLightingShow {
+    fn clone(&self) -> Self {
+        let parsed = self.parsed.lock();
+        Self {
+            file_path: self.file_path.clone(),
+            tempo_map: self.tempo_map.clone(),
+            layers: self.layers.clone(),
+            parsed: parking_lot::Mutex::new(ParsedFile {
+                shows: parsed.shows.clone(),
+                modified: parsed.modified,
+                version: parsed.version,
+            }),
+        }
+    }
+}
+
+/// The tempo map a song's `.light` files are parsed with: the song's
+/// explicit `tempo:` block if it has one, otherwise one derived from the
+/// click track's beat grid. See [`Song::lighting_tempo_map`].
+fn lighting_tempo(
+    tempo_map: Option<&crate::tempo::TempoMap>,
+    beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+) -> Option<crate::tempo::TempoMap> {
+    tempo_map
+        .cloned()
+        .or_else(|| beat_grid.and_then(|grid| grid.to_tempo_map()))
+}
+
+/// Reads and parses a DSL file.
+fn parse_dsl_file(
+    layers: &LayerSet,
+    file_path: &Path,
+    tempo_map: Option<&crate::tempo::TempoMap>,
+) -> Result<crate::lighting::parser::LightShows, Box<dyn Error>> {
+    let content = crate::util::read_to_string(file_path).map_err(|e| {
+        format!(
+            "Failed to read DSL lighting show {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
+    crate::lighting::parser::parse_light_file(layers, &content, Some(file_path), tempo_map).map_err(
+        |e| {
+            // Prepend the file path to the error, preserving newlines in the original error
+            format!(
+                "Failed to parse DSL lighting show {}:\n{}",
+                file_path.display(),
+                e
+            )
+            .into()
+        },
+    )
+}
+
+impl DslLightingShow {
+    /// Creates a new DSL lighting show, validating that the file exists and can be parsed.
+    pub fn new(
+        layers: &LayerSet,
+        start_path: &Path,
+        config: &config::LightingShow,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let file_path = if config.file().starts_with('/') {
+            PathBuf::from(config.file())
+        } else {
+            start_path.join(config.file())
+        };
+
+        // Validate file exists
+        if !file_path.exists() {
+            return Err(format!(
+                "DSL lighting show file does not exist: {}",
+                file_path.display()
+            )
+            .into());
+        }
+
+        Self::load(layers, file_path, tempo_map)
+    }
+
+    /// Reads and parses the DSL file at `file_path`.
+    pub(crate) fn load(
+        layers: &LayerSet,
+        file_path: PathBuf,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Self, Box<dyn Error>> {
+        // Read before parsing: an edit landing in between is newer than the
+        // time kept, and parsed again next time.
+        let modified = FileStamp::of(&file_path);
+        let shows = parse_dsl_file(layers, &file_path, tempo_map)?;
+        Ok(Self::with_shows(
+            layers, file_path, shows, tempo_map, modified,
+        ))
+    }
+
+    /// A show already parsed from `file_path`, with the file's stamp when
+    /// it was read (`None`: never parsed again).
+    fn with_shows(
+        layers: &LayerSet,
+        file_path: PathBuf,
+        shows: crate::lighting::parser::LightShows,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+        modified: Option<FileStamp>,
+    ) -> Self {
+        Self {
+            file_path,
+            tempo_map: tempo_map.cloned(),
+            layers: layers.clone(),
+            parsed: parking_lot::Mutex::new(ParsedFile {
+                shows: Arc::new(shows),
+                modified,
+                version: 0,
+            }),
+        }
+    }
+
+    /// Gets the absolute file path
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
+    }
+
+    /// Gets the parsed light shows, parsing the file again first if it has
+    /// changed on disk since. A file that no longer parses keeps the last
+    /// good parse (the error is logged once per change), as the engine's
+    /// hot reload does.
+    pub fn shows(&self) -> Arc<crate::lighting::parser::LightShows> {
+        self.refresh().0
+    }
+
+    /// The parse counter: it moves whenever [`Self::shows`] has parsed the
+    /// file again.
+    pub(crate) fn version(&self) -> u64 {
+        self.refresh().1
+    }
+
+    fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
+        let mut parsed = self.parsed.lock();
+        if parsed.modified.is_some() {
+            let modified = FileStamp::of(&self.file_path);
+            if modified.is_some() && modified != parsed.modified {
+                parsed.modified = modified;
+                match parse_dsl_file(&self.layers, &self.file_path, self.tempo_map.as_ref()) {
+                    Ok(shows) => {
+                        info!(
+                            file = %self.file_path.display(),
+                            "Light show changed on disk; parsed again"
+                        );
+                        parsed.shows = Arc::new(shows);
+                        parsed.version += 1;
+                    }
+                    Err(e) => warn!(
+                        file = %self.file_path.display(),
+                        err = %e,
+                        "Light show changed on disk but does not parse; keeping the last good one"
+                    ),
+                }
+            }
+        }
+        (parsed.shows.clone(), parsed.version)
+    }
+}
+
+/// A pilot hint resolved to absolute song times (seconds from song start).
+/// `start_secs` can be negative when a countdown clip begins before the song.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPilotHint {
+    /// Label shown in the UI around the hint position.
+    pub label: String,
+    /// The anchor position (with offset applied).
+    pub at_secs: f64,
+    /// When the hint audio starts (== `at_secs` for label-only hints).
+    pub start_secs: f64,
+    /// When the hint audio ends (== `at_secs` for label-only hints).
+    pub end_secs: f64,
+    /// Resolved absolute path of the hint audio, if any.
+    pub file: Option<PathBuf>,
+}
+
+/// A song with associated tracks for multitrack playback. Can contain:
+/// - An optional MIDI event, which will be played when the song is selected in a playlist.
+/// - An optional MIDI file, which will be played along with the audio tracks.
+pub struct Song {
+    /// The name of the song.
+    name: String,
+    /// The base path of the song (directory containing the song config).
+    base_path: PathBuf,
+    /// Path to the YAML file this song was loaded from, when known. Set by
+    /// [`get_all_songs`] for both directory-layout (`<dir>/song.yaml`) and
+    /// flat-layout (`<dir>/<name>.yaml`) songs so tools that need to read or
+    /// rewrite the exact source file can do so without guessing.
+    config_path: Option<PathBuf>,
+    /// The MIDI event to play when the song is selected in a playlist.
+    midi_event: Option<LiveEvent<'static>>,
+    /// The MIDI playback configuration.
+    midi_playback: Option<MidiPlayback>,
+    /// The light show configurations
+    light_shows: Vec<LightShow>,
+    /// The DSL lighting shows (resolved to absolute paths)
+    dsl_lighting_shows: Vec<DslLightingShow>,
+    /// When the song's lighting is over — the last effect's real end across
+    /// its shows — which is how long a song with no audio plays; with the
+    /// sum of the shows' parse versions it was worked out for, to work it
+    /// out again once a show file is parsed again.
+    lighting_end: parking_lot::Mutex<(u64, Duration)>,
+    /// The number of channels required to play this song.
+    num_channels: u16,
+    /// The sample rate of this song.
+    sample_rate: u32,
+    /// The sample format.
+    sample_format: SampleFormat,
+    /// The total duration of the song.
+    duration: Duration,
+    /// The individual audio tracks.
+    tracks: Vec<Track>,
+    /// Per-song samples configuration.
+    samples_config: config::SamplesConfig,
+    /// The explicit tempo map from the song config, when present.
+    tempo_map: Option<crate::tempo::TempoMap>,
+    /// The metronome configuration, when present.
+    metronome: Option<config::MetronomeConfig>,
+    /// The pilot configuration, when present.
+    pilot: Option<config::PilotConfig>,
+    /// Pilot hints resolved to absolute song times, sorted by anchor.
+    pilot_hints: Vec<ResolvedPilotHint>,
+    /// The song's beat grid: generated from the explicit tempo map when one
+    /// is configured, otherwise derived from click track analysis.
+    beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
+    /// Whether this song should loop when it finishes playing.
+    loop_playback: bool,
+    /// How long consecutive passes of a looping song overlap, resolved
+    /// against the song's length and beat grid. `None` when they do not.
+    loop_crossfade: Option<Duration>,
+    /// Tracks that switch over halfway through the loop crossfade.
+    loop_crossfade_cut: Vec<String>,
+    /// Named sections defined by measure boundaries.
+    sections: Vec<config::Section>,
+    /// Per-song notification audio overrides.
+    notification_audio: Option<config::SongNotificationConfig>,
+    /// The song's own lighting palette overrides, their colours read.
+    palette: HashMap<String, crate::lighting::effects::Color>,
+}
+
+/// Logs a warning for each slot in `overrides` that none of the song's shows
+/// declares. `entry` is the playlist the overrides are from; none for the
+/// song's own. A palette override that names nothing is no reason to refuse
+/// the song.
+pub(crate) fn warn_unknown_palette_slots(
+    song: &str,
+    entry: Option<&str>,
+    overrides: &HashMap<String, crate::lighting::effects::Color>,
+    files: &[DslLightingShow],
+) {
+    if overrides.is_empty() {
+        return;
+    }
+    let shows = shows_in(files);
+    for slot in crate::lighting::parser::unknown_slots(&shows, overrides.keys()) {
+        match entry {
+            None => warn!(
+                song,
+                slot, "the song's palette overrides a slot none of its shows declares"
+            ),
+            Some(playlist) => warn!(
+                song,
+                playlist,
+                slot,
+                "the playlist entry's palette overrides a slot none of the song's shows declares"
+            ),
+        }
+    }
+}
+
+/// A playlist transition's fade resolved to time ([`Song::fade_out_into`],
+/// [`Song::fade_in`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedFade {
+    /// How long the audio fades.
+    pub length: Duration,
+    /// How long the lights cross, for a loop break; zero switches at once.
+    pub lights: Duration,
+    pub curve: crate::audio::crossfade::CrossfadeCurve,
+    /// Tracks that do not fade.
+    pub exclude: Vec<String>,
+}
+
+/// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
+/// symphonia is able to read.
+impl Song {
+    // Create a new song.
+    pub fn new(start_path: &Path, config: &config::Song) -> Result<Song, Box<dyn Error>> {
+        Self::new_in(LayerSet::standard(), start_path, config)
+    }
+
+    /// [`Self::new`], its lighting shows parsed against the player's
+    /// `layers`: a show naming a layer the set lacks fails the song.
+    pub fn new_in(
+        layers: &LayerSet,
+        start_path: &Path,
+        config: &config::Song,
+    ) -> Result<Song, Box<dyn Error>> {
+        let midi_playback = match config.midi_playback() {
+            Some(midi_playback) => Some(MidiPlayback::new(start_path, midi_playback)?),
+            None => None,
+        };
+        let light_shows = match config.light_shows() {
+            Some(light_shows) => light_shows
+                .iter()
+                .map(|light_show| LightShow::new(start_path, light_show))
+                .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
+            None => Vec::default(),
+        };
+        // Calculate the number of channels and sample rate by reading the wav headers of each file.
+        let tracks = config
+            .tracks()
+            .iter()
+            .map(|track| Track::new(start_path, track))
+            .collect::<Result<Vec<Track>, Box<dyn Error>>>()?;
+        let num_channels = u16::try_from(tracks.len())?;
+        let mut sample_rate = 0;
+        let mut max_duration = Duration::ZERO;
+
+        let mut sample_format: Option<SampleFormat> = None;
+        for track in tracks.iter() {
+            // Set the sample rate and formatif it's not already set.
+            if sample_rate == 0 {
+                sample_rate = track.sample_rate;
+            } else if sample_rate != track.sample_rate {
+                // AudioTranscoder handles different sample rates
+            }
+            max_duration = cmp::max(track.duration, max_duration);
+
+            match sample_format {
+                Some(sample_format) => {
+                    if sample_format != track.sample_format {
+                        // AudioTranscoder handles different sample formats
+                    }
+                }
+                None => sample_format = Some(track.sample_format),
+            }
+        }
+
+        if sample_format.is_none() {
+            warn!("no sample format found");
+        }
+
+        // An explicit tempo map is the canonical beat grid source; click
+        // track analysis is the fallback for songs without one.
+        let tempo_map = match config.tempo() {
+            Some(tempo_config) => Some(
+                tempo_config
+                    .to_tempo_map()
+                    .map_err(|e| format!("song {}: invalid tempo config: {}", config.name(), e))?,
+            ),
+            None => None,
+        };
+        let beat_grid = if let Some(tempo_map) = &tempo_map {
+            Some(crate::audio::click_analysis::BeatGrid::from_tempo_map(
+                tempo_map,
+                max_duration,
+            ))
+        } else {
+            Self::analyze_click_track(start_path, &tracks)
+        };
+
+        // A show gets musical timing from its own `tempo` block, else the
+        // song's `tempo:` config, else the click-derived beat grid. Parsing has
+        // to happen here rather than earlier: the grid is what makes the third
+        // option possible, and the parser resolves `@bar/beat` up front.
+        let lighting_tempo = lighting_tempo(tempo_map.as_ref(), beat_grid.as_ref());
+        let dsl_lighting_shows = match config.lighting() {
+            Some(lighting_shows) => lighting_shows
+                .iter()
+                .map(|lighting_show| {
+                    DslLightingShow::new(layers, start_path, lighting_show, lighting_tempo.as_ref())
+                })
+                .collect::<Result<Vec<DslLightingShow>, Box<dyn Error>>>()?,
+            None => Vec::new(),
+        };
+
+        let loop_crossfade =
+            Self::resolve_loop_crossfade(config, max_duration, lighting_tempo.as_ref())?;
+        for name in config.loop_crossfade_cut() {
+            let known = tracks.iter().any(|t| t.name == *name)
+                || config.metronome().is_some_and(|m| m.track == *name)
+                || config.pilot().is_some_and(|p| p.track == *name);
+            if !known {
+                return Err(format!(
+                    "song {}: loop_crossfade_cut names track {name:?}, which the song does not have",
+                    config.name()
+                )
+                .into());
+            }
+        }
+
+        let palette = config
+            .palette_colors()
+            .map_err(|e| format!("song {}: {e}", config.name()))?;
+        warn_unknown_palette_slots(config.name(), None, &palette, &dsl_lighting_shows);
+
+        let pilot_hints = match config.pilot() {
+            Some(pilot) => Self::resolve_pilot_hints(pilot, beat_grid.as_ref(), start_path)
+                .map_err(|e| format!("song {}: {}", config.name(), e))?,
+            None => Vec::new(),
+        };
+
+        Ok(Song {
+            name: config.name().to_string(),
+            base_path: start_path.to_path_buf(),
+            config_path: None,
+            midi_event: config.midi_event()?,
+            midi_playback,
+            light_shows,
+            lighting_end: parking_lot::Mutex::new((0, lighting_end(&dsl_lighting_shows))),
+            dsl_lighting_shows,
+            num_channels,
+            sample_rate,
+            sample_format: sample_format.unwrap_or(SampleFormat::Int),
+            duration: max_duration,
+            tracks,
+            samples_config: config.samples_config(),
+            tempo_map,
+            metronome: config.metronome().cloned(),
+            pilot: config.pilot().cloned(),
+            pilot_hints,
+            beat_grid,
+            loop_playback: config.loop_playback(),
+            loop_crossfade,
+            loop_crossfade_cut: config.loop_crossfade_cut().to_vec(),
+            sections: config.sections().to_vec(),
+            notification_audio: config.notification_audio().cloned(),
+            palette,
+        })
+    }
+
+    /// Resolves pilot hints to absolute song times.
+    ///
+    /// Measure/beat positions require a beat grid; `time` positions work
+    /// without one. Hints with audio files get their placement from the
+    /// file's duration and the configured alignment: `end` (default) makes
+    /// the sample finish exactly at the anchor (start can be negative when
+    /// a countdown begins before the song), `start` begins it there.
+    fn resolve_pilot_hints(
+        pilot: &config::PilotConfig,
+        beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+        start_path: &Path,
+    ) -> Result<Vec<ResolvedPilotHint>, Box<dyn Error>> {
+        use crate::config::pilot::{HintAlign, HintPosition};
+
+        let mut resolved = Vec::with_capacity(pilot.hints.len());
+        for hint in &pilot.hints {
+            let base_secs = match &hint.at {
+                HintPosition::Time { time } => *time,
+                HintPosition::MeasureBeat { measure, beat } => {
+                    let grid = beat_grid.ok_or_else(|| {
+                        format!(
+                            "pilot hint \"{}\": measure positions need a beat grid (add a tempo map or click track)",
+                            hint.label
+                        )
+                    })?;
+                    let measure_idx = (*measure as usize).saturating_sub(1);
+                    let beat_offset = beat.unwrap_or(1).saturating_sub(1) as usize;
+                    let beat_idx = grid
+                        .measure_starts
+                        .get(measure_idx)
+                        .map(|start| start + beat_offset)
+                        .ok_or_else(|| {
+                            format!(
+                                "pilot hint \"{}\": measure {} is out of range",
+                                hint.label, measure
+                            )
+                        })?;
+                    *grid.beats.get(beat_idx).ok_or_else(|| {
+                        format!(
+                            "pilot hint \"{}\": beat {} of measure {} is out of range",
+                            hint.label,
+                            beat.unwrap_or(1),
+                            measure
+                        )
+                    })?
+                }
+            };
+            let at_secs = (base_secs + hint.offset.unwrap_or(0.0)).max(0.0);
+
+            let (start_secs, end_secs, file) = match &hint.file {
+                None => (at_secs, at_secs, None),
+                Some(file) => {
+                    let path = start_path.join(file);
+                    let source = crate::audio::sample_source::create_sample_source_from_file(
+                        &path, None, 1024,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "pilot hint \"{}\": cannot read {}: {}",
+                            hint.label,
+                            path.display(),
+                            e
+                        )
+                    })?;
+                    let clip_secs = source.duration().unwrap_or(Duration::ZERO).as_secs_f64();
+                    match hint.align.unwrap_or(HintAlign::End) {
+                        HintAlign::End => (at_secs - clip_secs, at_secs, Some(path)),
+                        HintAlign::Start => (at_secs, at_secs + clip_secs, Some(path)),
+                    }
+                }
+            };
+
+            resolved.push(ResolvedPilotHint {
+                label: hint.label.clone(),
+                at_secs,
+                start_secs,
+                end_secs,
+                file,
+            });
+        }
+        resolved.sort_by(|a, b| {
+            a.at_secs
+                .partial_cmp(&b.at_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(resolved)
+    }
+
+    /// Analyzes the track named "click" (if any) into a beat grid, caching
+    /// the result alongside the song.
+    fn analyze_click_track(
+        start_path: &Path,
+        tracks: &[Track],
+    ) -> Option<crate::audio::click_analysis::BeatGrid> {
+        tracks
+            .iter()
+            .find(|t| t.name == "click")
+            .and_then(|click_track| {
+                // Try loading from cache first.
+                if let Some(cached) = crate::song_cache::load_cached_beat_grid(
+                    start_path,
+                    &click_track.file,
+                    click_track.file_channel,
+                ) {
+                    return Some(cached);
+                }
+
+                // Analyze and cache the result.
+                let map = crate::audio::click_analysis::analyze_click_track_default(
+                    &click_track.file,
+                    click_track.file_channel,
+                )?;
+
+                if let Err(e) = crate::song_cache::save_beat_grid(
+                    start_path,
+                    &click_track.file,
+                    click_track.file_channel,
+                    &map,
+                ) {
+                    warn!("Failed to cache click tempo map: {}", e);
+                }
+
+                Some(map)
+            })
+    }
+
+    /// Create a song from a directory without a configuration file
+    pub fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
+        Self::initialize_in(LayerSet::standard(), song_directory)
+    }
+
+    /// [`Self::initialize`], the lighting files found parsed against the
+    /// player's `layers`.
+    pub fn initialize_in(
+        layers: &LayerSet,
+        song_directory: &PathBuf,
+    ) -> Result<Self, Box<dyn Error>> {
+        // By name: a directory lists its files in no set order, and a song's
+        // light shows fire same-time cues in the order its files come (#597).
+        let mut song_files: Vec<_> = fs::read_dir(song_directory)?.collect::<Result<_, _>>()?;
+        song_files.sort_by_key(|entry: &fs::DirEntry| entry.file_name());
+        let name = filename_display(song_directory).to_string();
+
+        let mut light_shows = vec![];
+        let mut dsl_lighting_shows = vec![];
+        let mut light_paths: Vec<PathBuf> = vec![];
+        let mut midi_playback = None;
+        let mut tracks = vec![];
+        for entry in song_files {
+            // A hidden file (`.draft.light`, the AppleDouble `._Bass.wav`)
+            // is left out of the new config.
+            if is_hidden(&entry.path()) {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
+                continue;
+            }
+            if !file_type.is_file() {
+                warn!("Song directory {song_directory:?} has an entry '{entry:?}' that is not a regular file. It will be ignored during initialization.");
+                continue;
+            }
+
+            let path = entry.path();
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Unreadable file stem");
+            match FileKind::of(&path) {
+                FileKind::Midi => {
+                    if stem.starts_with("dmx_") {
+                        light_shows.push(LightShow {
+                            universe_name: "default universe".to_string(),
+                            dmx_file: path,
+                            midi_channels: vec![],
+                        });
+                    } else {
+                        midi_playback = Some(MidiPlayback {
+                            file: path,
+                            exclude_midi_channels: vec![],
+                        })
+                    }
+                }
+                FileKind::Lighting => {
+                    // Collected, not parsed: musical timing resolves at parse
+                    // time, and the beat grid that supplies it needs the tracks
+                    // this scan has not finished reading yet.
+                    light_paths.push(path);
+                }
+                FileKind::Audio => {
+                    let mut new_tracks = Track::load_tracks(&path)?;
+                    tracks.append(&mut new_tracks);
+                }
+                FileKind::Directory | FileKind::Other => {
+                    let extension = path.extension().unwrap_or_default().to_string_lossy();
+                    info!("Unknown extension: {extension}. Ignoring file.");
+                }
+            }
+        }
+        // Deduplicate track names by appending numeric suffixes on collision.
+        deduplicate_track_names(&mut tracks);
+
+        // Now that the tracks are known, derive the tempo the shows inherit and
+        // parse them. Same precedence as `Song::new`: a show's own `tempo`
+        // block wins, otherwise the click-derived grid.
+        let beat_grid = Self::analyze_click_track(song_directory, &tracks);
+        let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
+        for path in light_paths {
+            dsl_lighting_shows.push(DslLightingShow::load(
+                layers,
+                path,
+                lighting_tempo.as_ref(),
+            )?);
+        }
+
+        let song = Self {
+            name,
+            base_path: song_directory.clone(),
+            config_path: Some(song_config_file(song_directory)),
+            midi_playback,
+            light_shows,
+            lighting_end: parking_lot::Mutex::new((0, lighting_end(&dsl_lighting_shows))),
+            dsl_lighting_shows,
+            beat_grid,
+            tracks,
+            samples_config: config::SamplesConfig::default(),
+            ..Default::default()
+        };
+        Ok(song)
+    }
+
+    pub fn get_config(&self) -> config::Song {
+        let name = self.name();
+        let midi_event = None;
+        let midi_file = self
+            .midi_playback
+            .as_ref()
+            .map(|midi_playback| filename_display(&midi_playback.file).to_string());
+        let midi_playback = None;
+        let light_shows = match &self.light_shows().len() {
+            0 => None,
+            _ => {
+                let light_shows = self.light_shows();
+                Some(
+                    light_shows
+                        .iter()
+                        .map(|light_show| light_show.get_config())
+                        .collect(),
+                )
+            }
+        };
+        let tracks = self
+            .tracks()
+            .iter()
+            .map(|track| track.get_config())
+            .collect();
+        config::Song::new(
+            name,
+            midi_event,
+            midi_file,
+            midi_playback,
+            light_shows,
+            if self.dsl_lighting_shows.is_empty() {
+                None
+            } else {
+                Some(
+                    self.dsl_lighting_shows
+                        .iter()
+                        .map(|show| {
+                            config::LightingShow::new(
+                                filename_display(show.file_path()).to_string(),
+                            )
+                        })
+                        .collect(),
+                )
+            },
+            tracks,
+            std::collections::HashMap::new(), // No sample overrides when creating from Song
+            Vec::new(),                       // No sample trigger overrides
+        )
+    }
+
+    /// The song's own lighting palette overrides: a slot its shows declare to
+    /// the colour it plays in.
+    pub fn palette(&self) -> &HashMap<String, crate::lighting::effects::Color> {
+        &self.palette
+    }
+
+    /// The palette overrides a play of the song starts with: its own, then
+    /// the playlist entry's `entry` laid over them. A slot's colour is the
+    /// show's default unless one of these names it.
+    pub fn palette_for_play(
+        &self,
+        entry: Option<&HashMap<String, crate::lighting::effects::Color>>,
+    ) -> HashMap<String, crate::lighting::effects::Color> {
+        crate::lighting::parser::layer_overrides(&self.palette, entry)
+    }
+
+    /// The palette slots the song's shows declare, with the default each
+    /// show gives them (before any override), in the order declared.
+    pub fn declared_palette_slots(&self) -> crate::lighting::parser::Palette {
+        let shows = shows_in(self.dsl_lighting_shows());
+        crate::lighting::parser::declared_slots(&shows)
+    }
+
+    /// The slots in `overrides` that none of the song's shows declare,
+    /// sorted.
+    pub fn unknown_palette_slots<'a>(
+        &self,
+        overrides: impl IntoIterator<Item = &'a String>,
+    ) -> Vec<String> {
+        let shows = registered_shows(self);
+        crate::lighting::parser::unknown_slots(&shows, overrides)
+    }
+
+    /// Gets the name of the song.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the base path of the song (directory containing the song config).
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    /// Path to the YAML file this song was loaded from, when known. Returns
+    /// `None` for songs constructed through test helpers or without going
+    /// through [`get_all_songs`].
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
+    }
+
+    /// The YAML file this song is written to: the one it was loaded from, or
+    /// its folder's [`song_config_file`] for one with no such file yet. The one
+    /// answer for every surface that reads or edits a song's YAML; a flat
+    /// `<name>.yaml` song's is that file, not `song.yaml` beside it.
+    pub fn config_path_or_default(&self) -> PathBuf {
+        self.config_path
+            .clone()
+            .unwrap_or_else(|| song_config_file(&self.base_path))
+    }
+
+    /// Gets the per-song samples configuration.
+    pub fn samples_config(&self) -> &config::SamplesConfig {
+        &self.samples_config
+    }
+
+    /// Gets the MIDI event.
+    pub fn midi_event(&self) -> Option<LiveEvent<'static>> {
+        self.midi_event
+    }
+
+    /// Gets the sample format.
+    pub fn sample_format(&self) -> SampleFormat {
+        self.sample_format
+    }
+
+    /// Gets the duration of the song's audio: zero for a song with none.
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// How long the song plays: its audio's duration, or, for a song with no
+    /// audio, when its last lighting effect ends — which is when the DMX
+    /// engine ends such a song. This is what a progress bar and a seek
+    /// bound want; the audio pipeline keeps sizing itself by [`Self::duration`].
+    pub fn length(&self) -> Duration {
+        if self.duration.is_zero() {
+            let version = self
+                .dsl_lighting_shows
+                .iter()
+                .map(DslLightingShow::version)
+                .sum();
+            let mut end = self.lighting_end.lock();
+            if end.0 != version {
+                *end = (version, lighting_end(&self.dsl_lighting_shows));
+            }
+            end.1
+        } else {
+            self.duration
+        }
+    }
+
+    /// Gets the number of channels.
+    pub fn num_channels(&self) -> u16 {
+        self.num_channels
+    }
+
+    /// Gets the MIDI playback info.
+    pub fn midi_playback(&self) -> Option<&MidiPlayback> {
+        self.midi_playback.as_ref()
+    }
+
+    /// Gets the song light shows.
+    pub fn light_shows(&self) -> &[LightShow] {
+        &self.light_shows
+    }
+
+    /// Gets the DSL lighting shows.
+    pub fn dsl_lighting_shows(&self) -> &[DslLightingShow] {
+        &self.dsl_lighting_shows
+    }
+
+    /// Gets the song tracks.
+    pub fn tracks(&self) -> &[Track] {
+        &self.tracks
+    }
+
+    /// The files the song's config names: its tracks, MIDI playback file,
+    /// MIDI DMX light shows and DSL light shows.
+    pub fn named_files(&self) -> impl Iterator<Item = &Path> {
+        self.tracks
+            .iter()
+            .map(Track::file)
+            .chain(self.midi_playback.iter().map(MidiPlayback::file_path))
+            .chain(self.light_shows.iter().map(LightShow::dmx_file_path))
+            .chain(
+                self.dsl_lighting_shows
+                    .iter()
+                    .map(DslLightingShow::file_path),
+            )
+    }
+
+    /// Gets the beat grid (from the explicit tempo map when configured,
+    /// otherwise from click track analysis), if available.
+    pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
+        self.beat_grid.as_ref()
+    }
+
+    /// Gets the explicit tempo map from the song config, if configured.
+    pub fn tempo_map(&self) -> Option<&crate::tempo::TempoMap> {
+        self.tempo_map.as_ref()
+    }
+
+    /// Whether the song has a tempo to drive a beat clock with, short of its
+    /// MIDI file's: an explicit `tempo:` or a click track's beat grid.
+    pub fn has_tempo(&self) -> bool {
+        self.tempo_map.is_some() || self.beat_grid.is_some()
+    }
+
+    /// The beat clock to play with this song, as pulse times from its start:
+    /// its MIDI file's tempo (`sheet`, the file parsed), else its `tempo:`,
+    /// else its click track's, as its lighting is timed. `None` without any.
+    pub fn beat_clock(&self, sheet: Option<&MidiSheet>) -> Option<Vec<Duration>> {
+        // To the song's end, or its MIDI file's, for a song with no audio.
+        let midi_end = sheet
+            .and_then(|sheet| sheet.precomputed.events().last())
+            .map(|event| event.time)
+            .unwrap_or_default();
+        let end = self.length().max(midi_end);
+        // A MIDI file's clock runs on past the file's end at its last tempo.
+        if let Some(tempo) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
+            let ticks = tempo.beat_clock_until(end);
+            if !ticks.is_empty() {
+                return Some(ticks);
+            }
+        }
+        let ticks = self.lighting_tempo_map()?.beat_clock_ticks(end);
+        (!ticks.is_empty()).then_some(ticks)
+    }
+
+    /// The tempo map this song's `.light` files are parsed with: its explicit
+    /// `tempo:` block if it has one, otherwise one derived from the click
+    /// track's beat grid.
+    ///
+    /// Anything that parses a show for this song has to use this and not
+    /// [`Song::tempo_map`] alone — the parser rejects every `@bar`/`beat`
+    /// construct outright without a tempo, so the difference is not a matter
+    /// of accuracy but of whether the show parses at all.
+    pub fn lighting_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
+        lighting_tempo(self.tempo_map.as_ref(), self.beat_grid.as_ref())
+    }
+
+    /// Where a draft of this song's lighting is taken to live, for resolving
+    /// its `include`s: its first `.light` file, or one in its folder.
+    pub fn lighting_draft_path(&self) -> PathBuf {
+        self.dsl_lighting_shows
+            .first()
+            .map(|show| show.file_path().to_path_buf())
+            .unwrap_or_else(|| self.base_path().join("draft.light"))
+    }
+
+    /// Gets the metronome configuration, if configured.
+    pub fn metronome(&self) -> Option<&config::MetronomeConfig> {
+        self.metronome.as_ref()
+    }
+
+    /// Gets the pilot configuration, if configured.
+    pub fn pilot(&self) -> Option<&config::PilotConfig> {
+        self.pilot.as_ref()
+    }
+
+    /// Gets the pilot hints resolved to absolute song times.
+    pub fn pilot_hints(&self) -> &[ResolvedPilotHint] {
+        &self.pilot_hints
+    }
+
+    /// Names of all output tracks this song produces: real audio tracks plus
+    /// virtual tracks (metronome, pilot). These are the names that can appear
+    /// in `track_mappings` and carry per-track gains.
+    /// Resolves the metronome tri-state against the player-wide default:
+    /// `enabled: false` blocks turn the metronome off, absent blocks follow
+    /// the default (a plain default metronome for songs with a tempo map).
+    /// In-memory only; the on-disk config keeps the tri-state.
+    pub fn apply_metronome_default(&mut self, default_enabled: bool) {
+        match &self.metronome {
+            Some(m) if m.enabled == Some(false) => self.metronome = None,
+            Some(_) => {}
+            None if default_enabled && self.tempo_map.is_some() => {
+                self.metronome = Some(config::MetronomeConfig::default());
+            }
+            None => {}
+        }
+    }
+
+    pub fn output_track_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tracks.iter().map(|t| t.name.clone()).collect();
+        if let Some(metronome) = &self.metronome {
+            names.push(metronome.track.clone());
+        }
+        if let Some(pilot) = &self.pilot {
+            names.push(pilot.track.clone());
+        }
+        names
+    }
+
+    /// Returns whether this song should loop when it finishes playing.
+    pub fn loop_playback(&self) -> bool {
+        self.loop_playback
+    }
+
+    /// How long consecutive passes of a looping song overlap: the next pass
+    /// starts this long before the song ends. `None` when a pass starts as
+    /// the last one ends.
+    pub fn loop_crossfade(&self) -> Option<Duration> {
+        self.loop_crossfade.filter(|_| self.loop_playback)
+    }
+
+    /// Tracks that switch over halfway through the loop crossfade instead of
+    /// fading.
+    pub fn loop_crossfade_cut(&self) -> &[String] {
+        &self.loop_crossfade_cut
+    }
+
+    /// Whether the song plays a track called `name`: an audio track, its
+    /// metronome or its pilot.
+    pub fn has_track(&self, name: &str) -> bool {
+        self.tracks.iter().any(|t| t.name == name)
+            || self.metronome.as_ref().is_some_and(|m| m.track == name)
+            || self.pilot.as_ref().is_some_and(|p| p.track == name)
+    }
+
+    /// How this looping song fades out, on a playlist's `fade_out`, when a
+    /// loop break hands over to `next`, which starts underneath it. Beats and
+    /// measures count on `next`'s grid from its first bar -- `1measure` lasts
+    /// its count-in, whatever its tempo and meter -- and fall back to this
+    /// song's own grid when `next` has none. The excluded tracks default to
+    /// the song's `loop_crossfade_cut`. `None` when the song cuts with the
+    /// short default crossfade: a zero length, or a musical one with no grid
+    /// to count it on. A fade longer than the song it plays under, `next` (or
+    /// this song, ending with nothing after it), is cut short to that song.
+    pub fn fade_out_into(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
+        let resolved = self.fade_out_on_grid(fade, next)?;
+        Some(self.cut_short(resolved, next.unwrap_or(self), "fade_out"))
+    }
+
+    /// How the song fades in, on a playlist's `fade_in`, as it starts under
+    /// a song fading out: beats and measures on its own grid from its first
+    /// bar, and no longer than the song. `None` when it starts at full level.
+    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
+        let resolved = self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")?;
+        Some(self.cut_short(resolved, self, "fade_in"))
+    }
+
+    /// Checks `fade`, a playlist entry's `fade_out` for this song handing
+    /// over to `next`, or its `fade_in` (`next` of `None` and `fade_in`
+    /// set): an error when, counted on the grid it will be, it outlasts the
+    /// song it plays under, which [`Song::fade_out_into`] and
+    /// [`Song::fade_in`] would cut short.
+    pub fn check_fade(
+        &self,
+        fade: &config::Fade,
+        next: Option<&Song>,
+        fade_in: bool,
+    ) -> Result<(), String> {
+        let (resolved, under) = if fade_in {
+            let grid = self.lighting_tempo_map();
+            (self.resolve_fade(fade, grid.as_ref(), "fade_in"), self)
+        } else {
+            (self.fade_out_on_grid(fade, next), next.unwrap_or(self))
+        };
+        let Some((resolved, bound)) = resolved.zip(Self::fade_bound(under)) else {
+            return Ok(());
+        };
+        let longest = resolved.length.max(resolved.lights);
+        if longest > bound {
+            return Err(format!(
+                "{} lasts {:.3}s, longer than {} ({:.3}s), which it plays under",
+                fade.length,
+                longest.as_secs_f64(),
+                under.name(),
+                bound.as_secs_f64()
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`Song::fade_out_into`] before it is cut short.
+    fn fade_out_on_grid(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
+        let grid = next
+            .and_then(|next| next.lighting_tempo_map())
+            .or_else(|| self.lighting_tempo_map());
+        let resolved = self.resolve_fade(fade, grid.as_ref(), "fade_out")?;
+        Some(ResolvedFade {
+            exclude: fade
+                .exclude
+                .clone()
+                .unwrap_or_else(|| self.loop_crossfade_cut.clone()),
+            ..resolved
+        })
+    }
+
+    /// The longest a fade playing under `under` may last: the song's length,
+    /// as a loop crossfade is bound by its song. Past it the song a fade
+    /// hands over to is over, and the one fading drones on under whatever
+    /// comes next (#577). `None` for a song with no length to measure by.
+    fn fade_bound(under: &Song) -> Option<Duration> {
+        Some(under.length()).filter(|length| !length.is_zero())
+    }
+
+    /// `fade` no longer than the song it plays under, `under`.
+    fn cut_short(&self, mut fade: ResolvedFade, under: &Song, field: &str) -> ResolvedFade {
+        let Some(bound) = Self::fade_bound(under) else {
+            return fade;
+        };
+        if fade.length.max(fade.lights) > bound {
+            warn!(
+                song = self.name(),
+                under = under.name(),
+                length_ms = fade.length.as_millis() as u64,
+                bound_ms = bound.as_millis() as u64,
+                "{field} is longer than the song it plays under; cutting it short to that"
+            );
+            fade.length = fade.length.min(bound);
+            fade.lights = fade.lights.min(bound);
+        }
+        fade
+    }
+
+    /// A fade's lengths on `grid`, counted from its first bar so any lead-in
+    /// before it is part of the fade. `None` for a zero length, and, with a
+    /// warning, for a musical length with no grid.
+    fn resolve_fade(
+        &self,
+        fade: &config::Fade,
+        grid: Option<&crate::tempo::TempoMap>,
+        field: &str,
+    ) -> Option<ResolvedFade> {
+        let on_grid = |length: config::LoopCrossfade| -> Option<Duration> {
+            let (amount, measures) = match length {
+                config::LoopCrossfade::Time(length) => return Some(length),
+                config::LoopCrossfade::Beats(beats) => (beats, false),
+                config::LoopCrossfade::Measures(measures) => (measures, true),
+            };
+            let tempo = grid?;
+            let bar_one = tempo.start_offset;
+            let after = if measures {
+                tempo.measures_to_duration(amount, bar_one, 0.0)
+            } else {
+                tempo.beats_to_duration(amount, bar_one, 0.0)
+            };
+            Some(bar_one + after)
+        };
+        let Some(length) = on_grid(fade.length) else {
+            warn!(
+                song = self.name(),
+                "{field} is in beats or measures, but there is no beat grid to count it on; \
+                 not fading"
+            );
+            return None;
+        };
+        if length.is_zero() {
+            return None;
+        }
+        let lights = match fade.lights {
+            None => length,
+            Some(lights) => on_grid(lights).unwrap_or(length),
+        };
+        Some(ResolvedFade {
+            length,
+            lights,
+            curve: match fade.curve {
+                config::FadeCurve::EqualPower => {
+                    crate::audio::crossfade::CrossfadeCurve::EqualPower
+                }
+                config::FadeCurve::Linear => crate::audio::crossfade::CrossfadeCurve::Linear,
+            },
+            exclude: fade.exclude.clone().unwrap_or_default(),
+        })
+    }
+
+    /// The loop crossfade a song config asks for, as a length of time ending
+    /// at the end of the song.
+    fn resolve_loop_crossfade(
+        config: &config::Song,
+        song_length: Duration,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Option<Duration>, Box<dyn Error>> {
+        let Some(crossfade) = config
+            .loop_crossfade()
+            .map_err(|e| format!("song {}: {e}", config.name()))?
+        else {
+            return Ok(None);
+        };
+        let musical = |kind: &str| -> Result<&crate::tempo::TempoMap, Box<dyn Error>> {
+            tempo_map.ok_or_else(|| {
+                format!(
+                    "song {}: loop_crossfade in {kind} needs a beat grid (a tempo: block or a \
+                     click track)",
+                    config.name()
+                )
+                .into()
+            })
+        };
+        let length = match crossfade {
+            config::LoopCrossfade::Time(length) => length,
+            config::LoopCrossfade::Beats(beats) => {
+                musical("beats")?.beats_before(beats, song_length)
+            }
+            config::LoopCrossfade::Measures(measures) => {
+                musical("measures")?.measures_before(measures, song_length)
+            }
+        };
+        // At most half the song, so no more than two passes ever overlap.
+        if length > song_length / 2 {
+            return Err(format!(
+                "song {}: loop_crossfade ({:.3}s) can be at most half the song ({:.3}s)",
+                config.name(),
+                length.as_secs_f64(),
+                song_length.as_secs_f64()
+            )
+            .into());
+        }
+        Ok(Some(length))
+    }
+
+    /// Gets the named sections of this song.
+    pub fn sections(&self) -> &[config::Section] {
+        &self.sections
+    }
+
+    /// Gets the per-song notification audio overrides.
+    pub fn notification_audio(&self) -> Option<&config::SongNotificationConfig> {
+        self.notification_audio.as_ref()
+    }
+
+    /// Resolves a named section to absolute time bounds using the beat grid.
+    /// Returns `None` if no beat grid, section not found, or measures out of range.
+    /// Times are returned as `(start_time, end_time)` in Duration.
+    pub fn resolve_section(&self, name: &str) -> Option<(Duration, Duration)> {
+        let section = self.sections.iter().find(|s| s.name == name)?;
+        let grid = self.beat_grid.as_ref()?;
+
+        // Measures are 1-indexed in config, 0-indexed in beat grid. Beats
+        // are 1-based within their measure and may be fractional; omitted
+        // beats mean the measure boundary, matching the pre-beat behavior.
+        let start_measure = section.start_measure.checked_sub(1)?;
+        let end_measure = section.end_measure.checked_sub(1)?;
+
+        let start_secs = grid.beat_time(start_measure, section.start_beat.unwrap_or(1.0))?;
+        // The end bound is exclusive: by default the start of the end
+        // measure; with an end_beat, that beat's time within it.
+        let end_secs = if end_measure < grid.measure_starts.len() {
+            grid.beat_time(end_measure, section.end_beat.unwrap_or(1.0))?
+        } else {
+            // End measure is past the last measure: the end of the last one,
+            // a beat on from its last beat (no later than the song's end), so
+            // a section can end on the song's end.
+            let last = *grid.beats.last()?;
+            let beat = match grid.beats.len() {
+                n if n >= 2 => last - grid.beats[n - 2],
+                _ => 0.0,
+            };
+            let end = last + beat.max(0.0);
+            let duration = self.length().as_secs_f64();
+            if duration > last {
+                end.min(duration)
+            } else {
+                end
+            }
+        };
+
+        // Config validation orders boundaries without the grid in hand, so
+        // it cannot always tell that two positions resolve to the same time
+        // or in the wrong order. Here the grid is available, and a section
+        // that is not a forward range is no section at all: better an
+        // honest "cannot be resolved" from seek and loop_section than a
+        // zero-length range that arms silently and never fires.
+        if start_secs >= end_secs {
+            return None;
+        }
+
+        Some((
+            Duration::from_secs_f64(start_secs),
+            Duration::from_secs_f64(end_secs),
+        ))
+    }
+
+    /// Checks if this song requires transcoding for the given target format
+    pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
+        // Check if any track has different sample rate, format, or bit depth
+        self.tracks.iter().any(|track| {
+            // Use the generic SampleSource infrastructure to check transcoding needs
+            match crate::audio::sample_source::create_sample_source_from_file(
+                &track.file,
+                None,
+                1024,
+            ) {
+                Ok(sample_source) => {
+                    // Create source format from the SampleSource metadata
+                    let source_format = TargetFormat::new(
+                        sample_source.sample_rate(),
+                        track.sample_format,
+                        sample_source.bits_per_sample(),
+                    );
+
+                    if let Ok(source_format) = source_format {
+                        // Check if any format parameter differs
+                        source_format.sample_rate != target_format.sample_rate
+                            || source_format.sample_format != target_format.sample_format
+                            || source_format.bits_per_sample != target_format.bits_per_sample
+                    } else {
+                        true // If we can't create source format, assume transcoding is needed
+                    }
+                }
+                Err(_) => {
+                    // Fallback: assume transcoding is needed if we can't read the file
+                    true
+                }
+            }
+        })
+    }
+
+    /// The duration as `M:SS`, as every surface formats one.
+    pub fn duration_string(&self) -> String {
+        crate::util::duration_minutes_seconds(self.duration)
+    }
+
+    /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.
+    /// Uses the given playback context for target format, buffer size, and optional buffered-source pool.
+    pub fn create_channel_mapped_sources_from(
+        &self,
+        context: &crate::audio::PlaybackContext,
+        start_time: Duration,
+        track_mappings: &HashMap<String, Vec<u16>>,
+    ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
+    {
+        use crate::audio::sample_source::create_channel_mapped_sample_source;
+        use crate::audio::sample_source::create_sample_source_from_file;
+        use crate::audio::sample_source::BufferedSampleSource;
+
+        let mut sources = Vec::new();
+
+        // Group tracks by file (like the old SongSource did)
+        let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
+        for track in &self.tracks {
+            files_to_tracks
+                .entry(track.file.clone())
+                .or_default()
+                .push(track);
+        }
+
+        // Sort files by path to ensure deterministic processing order
+        // This ensures all tracks are processed in the same order every time,
+        // which is critical for synchronization when seeking
+        let mut sorted_files: Vec<_> = files_to_tracks.into_iter().collect();
+        sorted_files.sort_by_key(|(path, _)| path.clone());
+
+        for (file_path, tracks) in sorted_files {
+            // Skip files that end before the start position: seeking them
+            // would fail (symphonia rejects out-of-range seek timestamps),
+            // and they contribute nothing at this offset anyway. This makes
+            // seek work with tracks shorter than the song.
+            if start_time > Duration::ZERO {
+                let file_duration = tracks
+                    .iter()
+                    .map(|t| t.duration)
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                if file_duration <= start_time {
+                    info!(
+                        "Skipping {} at this start position: file ends at {:?}, before {:?}",
+                        file_path.display(),
+                        file_duration,
+                        start_time
+                    );
+                    continue;
+                }
+            }
+
+            // Create the sample source once and reuse it for both metadata and playback
+            // This avoids creating two instances which can cause issues with symphonia's global state
+            let sample_source = create_sample_source_from_file(
+                &file_path,
+                if start_time == Duration::ZERO {
+                    None
+                } else {
+                    Some(start_time)
+                },
+                context.buffer_size,
+            )?;
+
+            // Get the channel count from the source we just created
+            let wav_channels = sample_source.channel_count();
+
+            // Create channel mappings for each channel in the WAV file
+            let mut channel_mappings = Vec::new();
+            for channel in 0..wav_channels {
+                let mut labels = Vec::new();
+
+                // Find tracks that use this channel
+                for track in &tracks {
+                    if track.file_channel == (channel + 1) {
+                        // Check if this track name is in the track mappings
+                        if track_mappings.contains_key(&track.name) {
+                            labels.push(track.name.clone());
+                        }
+                    }
+                }
+
+                channel_mappings.push(labels);
+            }
+
+            let source = create_channel_mapped_sample_source(
+                sample_source,
+                context.target_format.clone(),
+                channel_mappings,
+                context.resampler_type,
+            )?;
+            let source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource> =
+                if let Some(pool) = &context.buffer_fill_pool {
+                    Box::new(BufferedSampleSource::new(
+                        source,
+                        pool.clone(),
+                        context.buffer_size,
+                    ))
+                } else {
+                    source
+                };
+
+            sources.push(source);
+        }
+
+        // Append the virtual metronome track when configured, mapped in the
+        // profile, and a beat grid is available. It synthesizes at the device
+        // sample rate, so no transcoding is needed beyond format conversion.
+        if let Some(metronome) = &self.metronome {
+            if track_mappings.contains_key(&metronome.track) {
+                if let Some(grid) = &self.beat_grid {
+                    let metronome_source = crate::audio::metronome::MetronomeSource::new(
+                        grid,
+                        metronome,
+                        context.metronome_defaults.as_ref(),
+                        &self.base_path,
+                        context.target_format.sample_rate,
+                        start_time,
+                        self.duration,
+                    )?;
+                    let source = create_channel_mapped_sample_source(
+                        Box::new(metronome_source),
+                        context.target_format.clone(),
+                        vec![vec![metronome.track.clone()]],
+                        context.resampler_type,
+                    )?;
+                    sources.push(source);
+                } else {
+                    warn!(
+                        song = self.name.as_str(),
+                        "Metronome configured but no beat grid available (add a tempo map or click track)"
+                    );
+                }
+            }
+        }
+
+        // Append the virtual pilot track when configured, mapped in the
+        // profile, and at least one hint carries audio.
+        if let Some(pilot) = &self.pilot {
+            if track_mappings.contains_key(&pilot.track) {
+                let clips: Vec<crate::audio::pilot::PilotClip> = self
+                    .pilot_hints
+                    .iter()
+                    .filter_map(|hint| {
+                        hint.file
+                            .as_ref()
+                            .map(|path| crate::audio::pilot::PilotClip {
+                                start_secs: hint.start_secs,
+                                path: path.clone(),
+                            })
+                    })
+                    .collect();
+                if !clips.is_empty() {
+                    let pilot_source = crate::audio::pilot::PilotSource::new(
+                        &clips,
+                        context.target_format.sample_rate,
+                        start_time,
+                        self.duration,
+                    )?;
+                    let source = create_channel_mapped_sample_source(
+                        Box::new(pilot_source),
+                        context.target_format.clone(),
+                        vec![vec![pilot.track.clone()]],
+                        context.resampler_type,
+                    )?;
+                    sources.push(source);
+                }
+            }
+        }
+        Ok(sources)
+    }
+
+    /// The song as every surface summarises it; see [`SongSummary`].
+    pub fn summary(&self) -> SongSummary {
+        SongSummary {
+            name: self.name.clone(),
+            duration: self.length(),
+            sections: self.sections.clone(),
+        }
+    }
+}
+
+/// The shows a song registers: every show its `.light` files hold, in file
+/// order and then their order in the file, as the player has them -- the
+/// order same-time cues from different shows fire in. Empty when the song
+/// has no DSL lighting loaded. Their palette slots are the song's: the show's
+/// default, or the colour the song's own `palette:` overrides it with (not a
+/// playlist entry's, which only a play of the song from that entry has).
+pub fn registered_shows(song: &Song) -> Vec<crate::lighting::parser::LightShow> {
+    crate::lighting::parser::resolve_shows(shows_in(song.dsl_lighting_shows()), song.palette())
+}
+
+/// [`registered_shows`] of a song's `.light` files, for a song still being
+/// built from them.
+pub fn shows_in(files: &[DslLightingShow]) -> Vec<crate::lighting::parser::LightShow> {
+    files
+        .iter()
+        .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// A song as every surface summarises it: gRPC's `Song`, MCP's song summary
+/// and details, the web UI's song list and playback status, and the OSC
+/// broadcast render this, so they agree. `duration` is [`Song::length`]:
+/// how long the song plays, its lighting included, which is what a progress
+/// bar and a seek bound want.
+#[derive(Clone, Debug)]
+pub struct SongSummary {
+    pub name: String,
+    pub duration: Duration,
+    pub sections: Vec<crate::config::Section>,
+}
+
+impl fmt::Display for Song {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Name: {}\n  Duration: {}\n  Channels: {}\n  Sample Rate: {}\n  Midi Message: {:?}\n  Midi File:{:?}\n  Tracks: {}",
+            self.name,
+            self.duration_string(),
+            self.num_channels,
+            self.sample_rate,
+            self.midi_event,
+            self.midi_playback.as_ref().map(|midi_playback|&midi_playback.file),
+            self.tracks
+                .iter()
+                .map(|track| track.name.clone())
+                .collect::<Vec<String>>()
+                .join(", "),
+        )
+    }
+}
+
+/// When the song's lighting ends, by the timeline's own reckoning: every
+/// show from every file merged into one timeline, exactly as the DMX
+/// engine plays them, so a `clear` in one file cuts an effect in another
+/// here as it does there. Computed when the song loads, and again once a
+/// `.light` file has changed on disk (see [`Song::length`]).
+fn lighting_end(shows: &[DslLightingShow]) -> Duration {
+    let all = shows_in(shows);
+    if all.is_empty() {
+        return Duration::ZERO;
+    }
+    crate::lighting::timeline::LightingTimeline::new(all).show_end()
+}
+
+impl Default for Song {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            base_path: PathBuf::new(),
+            config_path: None,
+            midi_event: Default::default(),
+            midi_playback: Default::default(),
+            light_shows: Vec::new(),
+            dsl_lighting_shows: Vec::new(),
+            lighting_end: parking_lot::Mutex::new((0, Duration::ZERO)),
+            num_channels: Default::default(),
+            sample_rate: Default::default(),
+            sample_format: SampleFormat::Int,
+            duration: Default::default(),
+            tracks: Default::default(),
+            samples_config: config::SamplesConfig::default(),
+            tempo_map: None,
+            metronome: None,
+            pilot: None,
+            pilot_hints: Vec::new(),
+            beat_grid: None,
+            loop_playback: false,
+            loop_crossfade: None,
+            loop_crossfade_cut: Vec::new(),
+            sections: Vec::new(),
+            notification_audio: None,
+            palette: HashMap::new(),
+        }
+    }
+}
+
+impl Song {
+    /// Creates a Song with the given name and track names for use in tests.
+    /// Avoids the need for real audio files.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test(name: &str, track_names: &[&str]) -> Song {
+        Song {
+            name: name.to_string(),
+            tracks: track_names
+                .iter()
+                .map(|n| Track {
+                    name: n.to_string(),
+                    file: PathBuf::from("/dev/null"),
+                    file_channel: 1,
+                    sample_rate: 44100,
+                    sample_format: SampleFormat::Int,
+                    duration: Duration::ZERO,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Test helper: a song whose tracks last `duration`, for a test that needs
+    /// the song still playing when it looks; a zero-length one has often ended.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test_lasting(name: &str, track_names: &[&str], duration: Duration) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        for track in &mut song.tracks {
+            track.duration = duration;
+        }
+        song.duration = duration;
+        song
+    }
+
+    /// Test helper: a song `duration` long that loops, its passes crossing
+    /// over the last `overlap` of it (its `loop_crossfade`).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test_crossfading(name: &str, duration: Duration, overlap: Duration) -> Song {
+        let mut song = Self::new_for_test_lasting(name, &[], duration);
+        song.loop_playback = true;
+        song.loop_crossfade = Some(overlap);
+        song
+    }
+
+    /// Test helper: a song lasting `duration` with a steady `tempo:` of `bpm`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test_with_tempo(
+        name: &str,
+        track_names: &[&str],
+        duration: Duration,
+        bpm: f64,
+    ) -> Song {
+        let mut song = Self::new_for_test_lasting(name, track_names, duration);
+        song.tempo_map = Some(crate::tempo::TempoMap::new(
+            Duration::ZERO,
+            bpm,
+            crate::tempo::TimeSignature::new(4, 4),
+            vec![],
+        ));
+        song
+    }
+
+    /// Test helper: a looping song with the given track names.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test_looping(name: &str, track_names: &[&str]) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        song.loop_playback = true;
+        song
+    }
+
+    /// Test helper: a song with a beat grid and named sections, for exercising
+    /// section resolution and playhead-section lookup.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test_with_sections(
+        name: &str,
+        track_names: &[&str],
+        beat_grid: crate::audio::click_analysis::BeatGrid,
+        sections: Vec<config::Section>,
+    ) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        song.beat_grid = Some(beat_grid);
+        song.sections = sections;
+        song
+    }
+}
+
+/// Midi playback configuration for the song.
+#[derive(Clone)]
+pub struct MidiPlayback {
+    /// The path to the MIDI file.
+    file: PathBuf,
+
+    /// The MIDI channels to exclude from playback.
+    exclude_midi_channels: Vec<u8>,
+}
+
+impl MidiPlayback {
+    /// Creates a new MIDI playback object.
+    pub fn new(
+        start_path: &Path,
+        config: config::MidiPlayback,
+    ) -> Result<MidiPlayback, Box<dyn Error>> {
+        let file = start_path.join(config.file());
+
+        if !file.exists() {
+            return Err(format!("file {} does not exist", file.display()).into());
+        }
+        Ok(MidiPlayback {
+            file,
+            exclude_midi_channels: config.exclude_midi_channels(),
+        })
+    }
+
+    /// Returns a MIDI sheet for the song.
+    /// Gets the path to the MIDI file.
+    pub fn file_path(&self) -> &Path {
+        &self.file
+    }
+
+    pub fn midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.file)
+    }
+
+    /// Gets the MIDI channels to exclude.
+    pub fn exclude_midi_channels(&self) -> Vec<u8> {
+        self.exclude_midi_channels.clone()
+    }
+}
+
+/// Returns a MIDI sheet for the given file.
+fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
+    let buf: Vec<u8> = fs::read(midi_file)
+        .map_err(|e| format!("Failed to read MIDI file {}: {}", midi_file.display(), e))?;
+    let smf = Smf::parse(&buf)
+        .map_err(|e| format!("Failed to parse MIDI file {}: {}", midi_file.display(), e))?;
+    let ticks_per_beat = match smf.header.timing {
+        midly::Timing::Metrical(tpb) => tpb.as_int(),
+        _ => return Err("timecode-based MIDI timing not supported".into()),
+    };
+    let timing =
+        crate::midi::playback::MidiTiming::of(&smf.tracks, ticks_per_beat, smf.header.format);
+    let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
+        &smf.tracks,
+        &timing,
+        smf.header.format,
+    );
+    // Only a file with explicit tempo events has a tempo of its own to clock.
+    // One without leaves the clock to the song's `tempo:` or click track, or,
+    // with neither, to nobody (`Song::beat_clock`).
+    let beat_clock = (!timing.tempo.is_empty()).then_some(timing);
+    Ok(MidiSheet {
+        precomputed,
+        beat_clock,
+    })
+}
+
+/// A light show for the song.
+#[derive(Clone)]
+pub struct LightShow {
+    /// The name of the universe. Will be matched against the universes configured in the DMX engine
+    /// to determine where (if anywhere) this light show should be sent.
+    universe_name: String,
+
+    /// The associated MIDI file to interpret as DMX to play.
+    dmx_file: PathBuf,
+
+    /// The MIDI channels from this MIDI file to use as lighting data. If none are supplied, all channels
+    /// will be used.
+    midi_channels: Vec<u8>,
+}
+
+impl LightShow {
+    pub fn new(start_path: &Path, config: &config::LightShow) -> Result<LightShow, Box<dyn Error>> {
+        let dmx_file = start_path.join(config.dmx_file());
+
+        if !dmx_file.exists() {
+            return Err(format!("file {} does not exist", dmx_file.display()).into());
+        }
+        Ok(LightShow {
+            universe_name: config.universe_name().to_string(),
+            dmx_file,
+            midi_channels: config.midi_channels(),
+        })
+    }
+
+    /// Gets the absolute file path of the DMX MIDI file.
+    pub fn dmx_file_path(&self) -> &Path {
+        &self.dmx_file
+    }
+
+    /// Gets the universe name associated with the DMX playback.
+    pub fn universe_name(&self) -> String {
+        self.universe_name.clone()
+    }
+
+    /// Returns a MIDI sheet for the DMX file.
+    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.dmx_file)
+    }
+
+    /// Gets the MIDI channels to include.
+    pub fn midi_channels(&self) -> Vec<u8> {
+        self.midi_channels.clone()
+    }
+
+    pub fn get_config(&self) -> config::LightShow {
+        config::LightShow::new(
+            self.universe_name(),
+            filename_display(&self.dmx_file).to_string(),
+            Some(self.midi_channels()),
+        )
+    }
+}
+
+/// Track is an individual audio track to play.
+#[derive(Clone)]
+pub struct Track {
+    /// The name of the audio track.
+    name: String,
+    /// The file that contains the contents of this audio track.
+    file: PathBuf,
+    /// The channel to use in the file for this audio track.
+    file_channel: u16,
+    /// The sample rate of the track.
+    sample_rate: u32,
+    /// The sample format of the track.
+    sample_format: SampleFormat,
+    /// The duration of the track.
+    duration: Duration,
+}
+
+impl Track {
+    /// Creates a new track.
+    pub fn new(start_path: &Path, config: &config::Track) -> Result<Track, Box<dyn Error>> {
+        let track_file = start_path.join(config.file());
+        let file_channel = config.file_channel();
+        let name = config.name();
+
+        let source = create_sample_source_from_file(&track_file, None, 1024).map_err(
+            |e| -> Box<dyn Error> {
+                format!("track \"{}\" (file {}): {}", name, track_file.display(), e).into()
+            },
+        )?;
+
+        // Extract all metadata before the source might be dropped or cause issues
+        let sample_rate = source.sample_rate();
+        let duration = source.duration().unwrap_or(Duration::ZERO);
+        let channel_count = source.channel_count();
+
+        if channel_count > 1 && file_channel.is_none() {
+            return Err(format!(
+                "track {} has more than one channel but file_channel is not specified",
+                name,
+            )
+            .into());
+        }
+        let file_channel = file_channel.unwrap_or(1);
+        if file_channel == 0 {
+            return Err(format!(
+                "track {}: file_channel must be 1 or greater (channels are 1-indexed)",
+                name,
+            )
+            .into());
+        }
+        if file_channel > channel_count {
+            return Err(format!(
+                "track {}: file_channel {} exceeds the file's channel count ({})",
+                name, file_channel, channel_count,
+            )
+            .into());
+        }
+
+        let sample_format = source.sample_format();
+        Ok(Track {
+            name: name.to_string(),
+            file: track_file.clone(),
+            file_channel,
+            sample_rate,
+            sample_format,
+            duration,
+        })
+    }
+
+    pub fn load_tracks(track_path: &PathBuf) -> Result<Vec<Track>, Box<dyn Error>> {
+        let stem = track_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Unreadable file stem");
+        if FileKind::of(track_path) != FileKind::Audio {
+            let extension = track_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("Unreadable file extension");
+            return Err(format!(
+                "Unsupported audio format '.{}' for file '{}'",
+                extension,
+                track_path.display()
+            )
+            .into());
+        }
+        let track_name = crate::util::to_kebab_case(stem);
+        let source = create_sample_source_from_file(track_path, None, 1024).map_err(
+            |e| -> Box<dyn Error> { format!("file {}: {}", track_path.display(), e).into() },
+        )?;
+        let sample_rate = source.sample_rate();
+        let sample_format = source.sample_format();
+        let duration = source.duration().unwrap_or(Duration::ZERO);
+        let tracks = match source.channel_count() {
+            0 => vec![],
+            1 => vec![Track {
+                name: track_name,
+                file: track_path.to_path_buf(),
+                file_channel: 1,
+                sample_rate,
+                sample_format,
+                duration,
+            }],
+            2 => vec![
+                Track {
+                    name: format!("{track_name}-l"),
+                    file: track_path.to_path_buf(),
+                    file_channel: 1,
+                    sample_rate,
+                    sample_format,
+                    duration,
+                },
+                Track {
+                    name: format!("{track_name}-r"),
+                    file: track_path.to_path_buf(),
+                    file_channel: 2,
+                    sample_rate,
+                    sample_format,
+                    duration,
+                },
+            ],
+            _ => (0..source.channel_count())
+                .map(|channel| Track {
+                    name: format!("{track_name}-{}", channel + 1),
+                    file: track_path.to_path_buf(),
+                    file_channel: channel + 1,
+                    sample_rate,
+                    sample_format,
+                    duration,
+                })
+                .collect(),
+        };
+        Ok(tracks)
+    }
+
+    /// Gets the track name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Sets the track name.
+    fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    /// Gets the path to the audio file for this track.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// Gets the channel index within the audio file for this track.
+    pub fn file_channel(&self) -> u16 {
+        self.file_channel
+    }
+
+    pub fn get_config(&self) -> config::Track {
+        config::Track::new(
+            self.name().to_string(),
+            filename_display(&self.file),
+            Some(self.file_channel),
+        )
+    }
+}
+
+/// Renames tracks in-place so that every name is unique. When two or more tracks
+/// share a name, a `-2`, `-3`, … suffix is appended to duplicates (the first
+/// occurrence keeps its original name). Suffixed names are checked against all
+/// existing names to avoid secondary collisions.
+fn deduplicate_track_names(tracks: &mut [Track]) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for track in tracks.iter_mut() {
+        if seen.insert(track.name().to_string()) {
+            continue;
+        }
+        let base = track.name().to_string();
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{}-{}", base, n);
+            if seen.insert(candidate.clone()) {
+                track.set_name(candidate);
+                break;
+            }
+            n += 1;
+        }
+    }
+}
+
+/// Contains a pre-computed MIDI timeline for playback.
+pub struct MidiSheet {
+    pub precomputed: crate::midi::playback::PrecomputedMidi,
+    /// The file's timing, when it has tempo events to drive a beat clock.
+    pub(crate) beat_clock: Option<crate::midi::playback::MidiTiming>,
+}
+
+/// Why [`Songs::get`] has no song for a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SongLookupError {
+    /// No song by that name.
+    NotFound(String),
+    /// The song is there but did not load; `error` says why.
+    FailedToLoad { name: String, error: String },
+}
+
+impl fmt::Display for SongLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SongLookupError::NotFound(name) => write!(f, "unable to find song {name}"),
+            SongLookupError::FailedToLoad { name, error } => {
+                write!(f, "song {name} failed to load: {error}")
+            }
+        }
+    }
+}
+
+impl Error for SongLookupError {}
+
+impl SongLookupError {
+    /// What kind of fault this is, for a transport's code: no such song,
+    /// or a song whose files the caller must fix.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SongLookupError::NotFound(_) => crate::util::FaultKind::NotFound,
+            SongLookupError::FailedToLoad { .. } => crate::util::FaultKind::Invalid,
+        }
+    }
+}
+
+/// A song that failed to load from disk.
+#[derive(Clone, Debug)]
+pub struct SongLoadFailure {
+    name: String,
+    base_path: PathBuf,
+    /// The YAML file that did not load.
+    config_path: PathBuf,
+    error: String,
+}
+
+impl SongLoadFailure {
+    /// Returns the name derived from the song's directory.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the base path of the failed song.
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    /// The YAML file that did not load, as [`Song::config_path_or_default`]
+    /// answers for a song that did.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
+    }
+
+    /// Returns the error message describing the failure.
+    pub fn error(&self) -> &str {
+        &self.error
+    }
+
+    /// Whether the song failed because one of its lighting shows would not
+    /// load — the file is missing, unreadable, or does not parse. A song that
+    /// fails to load takes its shows with it, so this is the only trace of them.
+    pub fn concerns_lighting(&self) -> bool {
+        self.error.contains("DSL lighting show")
+    }
+}
+
+/// A registry of songs for use by the multitrack player.
+#[derive(Clone)]
+pub struct Songs {
+    /// A mapping of the songs in the repository.
+    songs: HashMap<String, Arc<Song>>,
+    /// Songs that failed to load.
+    failures: Vec<SongLoadFailure>,
+}
+
+impl Songs {
+    /// Creates a new songs registry.
+    pub fn new(songs: HashMap<String, Arc<Song>>) -> Songs {
+        Songs {
+            songs,
+            failures: vec![],
+        }
+    }
+
+    /// Creates a new songs registry with load failures.
+    pub fn with_failures(
+        songs: HashMap<String, Arc<Song>>,
+        failures: Vec<SongLoadFailure>,
+    ) -> Songs {
+        Songs { songs, failures }
+    }
+
+    /// Returns true if the song registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.songs.is_empty()
+    }
+
+    /// Gets a song from the song registry. A song whose files are there but
+    /// did not load says why.
+    pub fn get(&self, name: &str) -> Result<Arc<Song>, SongLookupError> {
+        if let Some(song) = self.songs.get(name) {
+            return Ok(Arc::clone(song));
+        }
+        Err(match self.failure(name) {
+            Some(failure) => SongLookupError::FailedToLoad {
+                name: name.to_string(),
+                error: failure.error().to_string(),
+            },
+            None => SongLookupError::NotFound(name.to_string()),
+        })
+    }
+
+    /// Returns an unsorted list of songs in the song registry.
+    pub fn list(&self) -> Vec<Arc<Song>> {
+        self.songs
+            .iter()
+            .map(|song| song.1.clone())
+            .collect::<Vec<Arc<Song>>>()
+    }
+
+    /// Returns a sorted list of the songs in the song registry.
+    pub fn sorted_list(&self) -> Vec<Arc<Song>> {
+        let mut sorted_songs = self.list();
+        sorted_songs.sort_by_key(|song| song.name.clone());
+        sorted_songs
+    }
+
+    /// Returns the length of the songs in the song registry.
+    pub fn len(&self) -> usize {
+        self.songs.len()
+    }
+
+    /// Returns the list of songs that failed to load.
+    pub fn failures(&self) -> &[SongLoadFailure] {
+        &self.failures
+    }
+
+    /// The load failure of the song by `name`, when it failed to load.
+    pub fn failure(&self, name: &str) -> Option<&SongLoadFailure> {
+        self.failures.iter().find(|f| f.name() == name)
+    }
+
+    /// The YAML file the song by `name` was read from, loaded or not:
+    /// where an edit of it is written back. `None` for a song the registry
+    /// has not seen.
+    pub fn config_path(&self, name: &str) -> Option<PathBuf> {
+        match self.get(name) {
+            Ok(song) => Some(song.config_path_or_default()),
+            Err(_) => self.failure(name).map(|f| f.config_path().to_path_buf()),
+        }
+    }
+}
+
+/// Create default song configurations in a repository of song directories:
+/// a new config in each song folder under `start_path` that has none to keep
+/// ([`new_songs`]), its song named by [`new_songs`]' rule. The number of song
+/// folders found, written or left as they are.
+/// Lighting files a folder holds are parsed against `layers`, the player's:
+/// a show naming one of its configured layers is not refused as unknown.
+pub fn initialize_songs(start_path: &Path, layers: &LayerSet) -> Result<usize, Box<dyn Error>> {
+    let found = new_songs(start_path, HashSet::new())?;
+    for dir in &found.kept {
+        info!(dir = %dir.display(), "Song folder has a config; leaving it");
+    }
+    for song in &found.new {
+        song.write(layers)?;
+    }
+    let num_songs_found = found.kept.len() + found.new.len();
+    info!("Found {num_songs_found} songs");
+    Ok(num_songs_found)
+}
+
+/// The song folders under `root`, in name order: each directory below it
+/// that holds an audio track or a MIDI file ([`FileKind`]) that
+/// [`Song::initialize`] takes (a regular file, not a hidden one), or a song
+/// config ([`has_song_config`]). Found at any depth (`artist/album/song`)
+/// below directories that hold none; a song folder is not looked into.
+/// Hidden directories ([`is_hidden`]) and symlinked ones are passed over, and
+/// `root` itself is never one. A subdirectory that cannot be read is passed
+/// over with a warning; an unreadable `root` is an error. The one walk
+/// `songs --init` and the web UI's bulk import take ([`new_songs`]).
+pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    /// The entries of `dir` that are not hidden, in name order, each with
+    /// its type (a symlink's own, not its target's).
+    fn visible_entries(dir: &Path) -> std::io::Result<Vec<(PathBuf, fs::FileType)>> {
+        // codeql[rust/path-injection] dir is the walked root or one below it.
+        let mut entries = fs::read_dir(dir)?
+            .map(|entry| entry.and_then(|entry| Ok((entry.path(), entry.file_type()?))))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.retain(|(path, _)| !is_hidden(path));
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
+    fn walk(entries: Vec<(PathBuf, fs::FileType)>, found: &mut Vec<PathBuf>) {
+        for (dir, _) in entries.into_iter().filter(|(_, kind)| kind.is_dir()) {
+            let entries = match visible_entries(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(dir = %dir.display(), error = %e, "Cannot read a folder; passing over it");
+                    continue;
+                }
+            };
+            let has_media = entries.iter().any(|(path, kind)| {
+                kind.is_file() && matches!(FileKind::of(path), FileKind::Audio | FileKind::Midi)
+            });
+            if has_media || has_song_config(&dir) {
+                found.push(dir);
+            } else {
+                walk(entries, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(visible_entries(root)?, &mut found);
+    Ok(found)
+}
+
+/// The file a new song config for the folder `dir` is written to
+/// ([`song_config_file`]), or `None` when nothing may be written there: it
+/// has a song config ([`has_song_config`]), or a `song.yaml` or `song.yml`
+/// of another kind, which the new config would overwrite. The one guard of
+/// every writer of a new song config: `songs --init`, the bulk import, the
+/// web UI's create-song from a folder and `CreateSong`, and the
+/// config a track upload writes.
+pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
+    let file = song_config_file(dir);
+    (!has_song_config(dir) && !file.exists()).then_some(file)
+}
+
+/// The song folders [`new_songs`] found under a root.
+#[derive(Debug, Default)]
+pub struct SongDirs {
+    /// The folders whose config is kept ([`song_config_to_write`]).
+    pub kept: Vec<PathBuf>,
+    /// The folders given a new config.
+    pub new: Vec<NewSong>,
+}
+
+/// A song folder to give a new config.
+#[derive(Debug)]
+pub struct NewSong {
+    /// The song folder.
+    pub dir: PathBuf,
+    /// The new song's name ([`new_songs`]).
+    pub name: String,
+    /// The file the config is written to ([`song_config_to_write`]).
+    pub config_path: PathBuf,
+}
+
+impl NewSong {
+    /// Writes the default config of the folder ([`Song::initialize_in`]
+    /// `layers`, the player's), under the song's name.
+    pub fn write(&self, layers: &LayerSet) -> Result<(), Box<dyn Error>> {
+        let mut config = Song::initialize_in(layers, &self.dir)?.get_config();
+        config.set_name(&self.name);
+        config
+            .save(&self.config_path)
+            .map_err(|e| format!("Failed to save: {e}"))?;
+        Ok(())
+    }
+}
+
+/// The song folders under `root` ([`song_dirs`]), each with a config to
+/// keep, or new ([`song_config_to_write`]). A new song takes its folder's
+/// name, unless another new song found has that name too, or a song already
+/// configured under `root` has it, loaded or failed
+/// ([`configured_song_names`]), or it is in `taken` (the songs the player
+/// has loaded, for the bulk import); then it takes its path below `root`
+/// (`SongA/stems`), and if that is taken too, the first free ` (2)`,
+/// ` (3)`, …, past the names the other new songs keep. So no two songs are
+/// given one name. The one naming rule of
+/// `songs --init`, the bulk import and a track upload's new song
+/// ([`new_song`]). An unreadable `root` is an error.
+pub fn new_songs(root: &Path, taken: HashSet<String>) -> std::io::Result<SongDirs> {
+    let mut found = SongDirs::default();
+    let mut new = Vec::new();
+    for dir in song_dirs(root)? {
+        match song_config_to_write(&dir) {
+            Some(config_path) => new.push((dir, config_path)),
+            None => found.kept.push(dir),
+        }
+    }
+    found.new = name_new_songs(root, new, taken)?;
+    Ok(found)
+}
+
+/// The song folder `dir` under `root`, to give a new config, named by the
+/// rule of [`new_songs`] as the one new song found: its own name, unless a
+/// song configured under `root` or one in `taken` has it. `None` when it
+/// has a config to keep ([`song_config_to_write`]). Both paths are taken as
+/// the file system has them, for the folder's path below `root`, which a
+/// contested name is given. What a track upload to a new song and the
+/// create-song endpoint write (#674).
+pub fn new_song(
+    root: &Path,
+    dir: &Path,
+    taken: HashSet<String>,
+) -> std::io::Result<Option<NewSong>> {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (root, dir) = (canonical(root), canonical(dir));
+    let Some(config_path) = song_config_to_write(&dir) else {
+        return Ok(None);
+    };
+    Ok(name_new_songs(&root, vec![(dir, config_path)], taken)?.pop())
+}
+
+/// The names no new song may be given: those in `taken` (the songs the
+/// player has loaded or failed) and those configured under `songs_root`
+/// ([`configured_song_names`]). An unreadable `songs_root` is passed over
+/// with a warning, leaving `taken` as it is: the one rule of the bulk
+/// import and a new song with a name asked for.
+pub fn taken_song_names(songs_root: &Path, mut taken: HashSet<String>) -> HashSet<String> {
+    match configured_song_names(songs_root) {
+        Ok(names) => taken.extend(names),
+        Err(e) => warn!(
+            dir = %songs_root.display(),
+            error = %e,
+            "Cannot read the songs folder for its song names"
+        ),
+    }
+    taken
+}
+
+/// The naming rule of [`new_songs`], for the new song folders `new` (each
+/// with the file its config goes to) under `root`.
+fn name_new_songs(
+    root: &Path,
+    new: Vec<(PathBuf, PathBuf)>,
+    mut taken: HashSet<String>,
+) -> std::io::Result<Vec<NewSong>> {
+    let own_name = |dir: &Path| filename_display(dir).to_string();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (dir, _) in &new {
+        *counts.entry(own_name(dir)).or_default() += 1;
+    }
+    taken.extend(configured_song_names(root)?);
+    // Each new song's own name that nothing contests is its, before any
+    // other is given a path or a suffix: a `B (2)/` keeps `B (2)`.
+    let uncontested: HashSet<String> = new
+        .iter()
+        .map(|(dir, _)| own_name(dir))
+        .filter(|own| counts[own] == 1 && !taken.contains(own))
+        .collect();
+    taken.extend(uncontested.iter().cloned());
+    let mut named = Vec::new();
+    for (dir, config_path) in new {
+        let own = own_name(&dir);
+        let name = if !uncontested.contains(&own) {
+            let relative = dir
+                .strip_prefix(root)
+                .unwrap_or(&dir)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            std::iter::once(relative.clone())
+                .chain((2..).map(|n| format!("{relative} ({n})")))
+                .find(|name| !taken.contains(name))
+                .expect("some suffix is free")
+        } else {
+            own
+        };
+        taken.insert(name.clone());
+        named.push(NewSong {
+            dir,
+            name,
+            config_path,
+        });
+    }
+    Ok(named)
+}
+
+/// What a walk of the songs tree does with a folder below its root that it
+/// cannot read ([`song_config_files`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unreadable {
+    /// The walk fails: the player's loader, as it always has.
+    Fail,
+    /// The folder is passed over with a warning: the names init and the
+    /// bulk import read ([`configured_song_names`]).
+    Skip,
+}
+
+/// Every file under `dir` the song loader takes up as a song config
+/// ([`song_yaml`]), in the order it reads them: each directory's entries as
+/// listed, a subdirectory's files where it stands. Hidden directories are
+/// passed over (a hidden config such as `Foo/.song.yaml` is read), and
+/// symlinked ones followed. A folder below `dir` that cannot be read fails
+/// the walk or is passed over with a warning, as `mode` says; an unreadable
+/// `dir` is an error.
+fn song_config_files(dir: &Path, mode: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, mode: Unreadable, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        // codeql[rust/path-injection] dir is the songs directory or one below it.
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                // Skip hidden directories (.git, .claude, etc.).
+                if is_hidden(&path) {
+                    continue;
+                }
+                match (walk(&path, mode, found), mode) {
+                    (Err(e), Unreadable::Skip) => {
+                        warn!(dir = %path.display(), error = %e, "Cannot read a folder; passing over it")
+                    }
+                    (result, _) => result?,
+                }
+            }
+            if song_yaml(&path) != SongYaml::NotOne {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(dir, mode, &mut found)?;
+    Ok(found)
+}
+
+/// The song config the loader reads at `path`: the config, or, for a
+/// `kind: song` file that does not read, the name its failure is recorded
+/// under (its directory's) and why. `None` for a file that is no song's: one
+/// without a `kind` that does not read as a song may be a playlist or other
+/// YAML, skipped silently.
+fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config::ConfigError)>> {
+    let candidate = song_yaml(path);
+    if candidate == SongYaml::NotOne {
+        return None;
+    }
+    match config::Song::deserialize(path) {
+        Ok(song_config) => Some(Ok(song_config)),
+        Err(e) if candidate == SongYaml::Declared => {
+            let name = path
+                .parent()?
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(Err((name, e)))
+        }
+        Err(_) => None,
+    }
+}
+
+/// The song config at `path` is another song's than the one being written
+/// or deleted: [`check_song_config_for`] refuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnotherSongsConfig {
+    /// The file.
+    pub path: PathBuf,
+    /// The song asked for.
+    pub name: String,
+    /// The song the file makes, as the loader names it.
+    pub declares: String,
+}
+
+impl std::fmt::Display for AnotherSongsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The file by its folder and name (`Foo/song.yaml`).
+        let mut shown: Vec<_> = self
+            .path
+            .iter()
+            .rev()
+            .take(2)
+            .map(|c| c.to_string_lossy())
+            .collect();
+        shown.reverse();
+        write!(
+            f,
+            "{} is the config of the song \"{}\", not of \"{}\"; it is left as it is",
+            shown.join("/"),
+            self.declares,
+            self.name
+        )
+    }
+}
+
+impl Error for AnotherSongsConfig {}
+
+/// Whether the config at `path` may be written or deleted as song `name`'s:
+/// not when it is a song config the loader names another song (#680: with
+/// `Foo/song.yaml` declaring `name: Bar`, saving "Foo" fell back to the
+/// folder and overwrote Bar). No file there, a file that is no song's, or
+/// one that does not read and so goes by its folder's name, as the loader
+/// records it, is no other song's. A write whose config declares the same
+/// song the file does (`writing`) is that song's own edit, as after a
+/// rename in the editor, whose page still goes by the old name: taken. A
+/// delete has no such config (`None`). The one rule of the web UI's and
+/// MCP's song writes and deletes.
+pub fn check_song_config_for(
+    path: &Path,
+    name: &str,
+    writing: Option<&str>,
+) -> Result<(), AnotherSongsConfig> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let declares = match read_song_config(path) {
+        None => return Ok(()),
+        Some(Ok(config)) => config.name().to_string(),
+        Some(Err((declares, _))) => declares,
+    };
+    if declares == name || writing == Some(declares.as_str()) {
+        Ok(())
+    } else {
+        Err(AnotherSongsConfig {
+            path: path.to_path_buf(),
+            name: name.to_string(),
+            declares,
+        })
+    }
+}
+
+/// A song name another song holds, refused to a new song or a rename
+/// (#674, #689).
+#[derive(Debug)]
+pub struct SongNameTaken(pub String);
+
+impl std::fmt::Display for SongNameTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a song named \"{}\" already exists; choose another name",
+            self.0
+        )
+    }
+}
+
+impl Error for SongNameTaken {}
+
+/// Whether the config at `path` may be written declaring song `writing`:
+/// not when that gives it a name another song holds, one in `taken` or
+/// configured under `songs_root` ([`taken_song_names`]). A config that
+/// already declares `writing` (a save that keeps the name) is the song's
+/// own; one that declares another, or none there yet, takes the name anew.
+/// The one rule of a new song with a name asked for and a rename, in the
+/// web UI and over MCP.
+pub fn check_song_name_free(
+    path: &Path,
+    writing: &str,
+    songs_root: &Path,
+    taken: HashSet<String>,
+) -> Result<(), SongNameTaken> {
+    let declares = path
+        .is_file()
+        .then(|| read_song_config(path))
+        .flatten()
+        .map(|config| match config {
+            Ok(config) => config.name().to_string(),
+            Err((name, _)) => name,
+        });
+    if declares.as_deref() == Some(writing)
+        || !taken_song_names(songs_root, taken).contains(writing)
+    {
+        Ok(())
+    } else {
+        Err(SongNameTaken(writing.to_string()))
+    }
+}
+
+/// The names the songs configured under `root` have, loaded or failed, as
+/// the loader names them ([`read_song_config`]), read from their configs
+/// without loading the songs. A folder that cannot be read is passed over
+/// with a warning; an unreadable `root` is an error.
+pub fn configured_song_names(root: &Path) -> std::io::Result<HashSet<String>> {
+    Ok(song_config_files(root, Unreadable::Skip)?
+        .iter()
+        .filter_map(|path| match read_song_config(path)? {
+            Ok(config) => Some(config.name().to_string()),
+            Err((name, _)) => Some(name),
+        })
+        .collect())
+}
+
+/// Recurse into the given path and return all valid songs found.
+pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
+    get_all_songs_with_defaults(path, false, LayerSet::standard())
+}
+
+/// Like [`get_all_songs`], applying the player-wide metronome default:
+/// when enabled, songs with a tempo map and no `metronome:` block get a
+/// default metronome (in memory only), and `metronome: { enabled: false }`
+/// blocks resolve to no metronome.
+///
+/// Each song's lighting shows are parsed against the player's `layers`: a
+/// song whose show names a layer the set lacks fails to load, as a show
+/// with any other error does.
+pub fn get_all_songs_with_defaults(
+    path: &Path,
+    default_metronome: bool,
+    layers: &LayerSet,
+) -> Result<Arc<Songs>, Box<dyn Error>> {
+    debug!("Getting songs for directory {path:?}");
+    let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
+    let mut failures: Vec<SongLoadFailure> = Vec::new();
+    // codeql[rust/path-injection] path is the songs directory configured at startup.
+    for path in song_config_files(path, Unreadable::Fail)? {
+        match read_song_config(&path) {
+            None => {}
+            Some(Ok(song_config)) => match path.parent() {
+                Some(parent) => match parent.canonicalize() {
+                    Ok(canonical_parent) => {
+                        match Song::new_in(layers, &canonical_parent, &song_config) {
+                            Ok(mut song) => {
+                                // Record the exact source yaml so MCP read/patch
+                                // tools can target it regardless of layout. The
+                                // path comes from the directory walk above;
+                                // canonicalize for symlink safety. On the rare
+                                // canonicalize race (permission flip / symlink
+                                // rotation) fall back to the un-canonicalized
+                                // path so flat-layout writes don't silently
+                                // retarget to `<base>/song.yaml`.
+                                song.config_path = Some(
+                                    path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                                );
+                                song.apply_metronome_default(default_metronome);
+                                songs.insert(song.name().to_string(), Arc::new(song));
+                            }
+                            Err(e) => {
+                                warn!("Skipping song at {}: {}", path.display(), e);
+                                // Song::new failures are always recorded — the YAML
+                                // parsed as a song but its content is invalid.
+                                failures.push(SongLoadFailure {
+                                    name: song_config.name().to_string(),
+                                    base_path: canonical_parent,
+                                    config_path: path
+                                        .canonicalize()
+                                        .unwrap_or_else(|_| path.to_path_buf()),
+                                    error: format!("{}", e),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Skipping song at {}: failed to canonicalize: {}",
+                            path.display(),
+                            e
+                        );
+                    }
+                },
+                None => {
+                    warn!("Skipping song at {}: no parent directory", path.display());
+                }
+            },
+            // Only `kind: song` files that fail to deserialize are recorded.
+            Some(Err((name, e))) => {
+                if let Some(parent) = path.parent() {
+                    let base_path = parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    warn!("Failed to deserialize song at {}: {}", path.display(), e);
+                    failures.push(SongLoadFailure {
+                        name,
+                        base_path,
+                        config_path: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                        error: format!("{}", e),
+                    });
+                }
+            }
+        }
+    }
+
+    // Remove failures for songs that successfully loaded, and deduplicate
+    // failures by name (a directory with multiple non-media files can produce
+    // multiple failures with the same directory-derived name).
+    failures.retain(|f| !songs.contains_key(f.name()));
+    {
+        let mut seen = std::collections::HashSet::new();
+        failures.retain(|f| seen.insert(f.name().to_string()));
+    }
+
+    Ok(Arc::new(Songs::with_failures(songs, failures)))
+}
+
+/// What a file is to the song loader ([`song_yaml`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SongYaml {
+    /// Not a song's config: not YAML ([`is_yaml_config`]), or another
+    /// `kind` (`kind: playlist`).
+    NotOne,
+    /// `kind: song`: a song's config, recorded as a failed song when it
+    /// does not read.
+    Declared,
+    /// No `kind`: a song's config when it reads as one, else passed over.
+    Untyped,
+}
+
+/// What the file `path` is to the song loader, by its name and `kind:`.
+/// The one rule for the loader and [`is_song_config`].
+fn song_yaml(path: &Path) -> SongYaml {
+    if !is_yaml_config(path) {
+        return SongYaml::NotOne;
+    }
+    match config::peek_kind(path) {
+        Some(config::ConfigKind::Song) => SongYaml::Declared,
+        None => SongYaml::Untyped,
+        Some(_) => SongYaml::NotOne,
+    }
+}
+
+/// Whether the loader takes the file `path` as a song's config
+/// ([`song_yaml`]): `kind: song`, or no `kind` and it reads as a song.
+/// Whatever its name (`album.yaml`, `.song.yaml`).
+fn is_song_config(path: &Path) -> bool {
+    match song_yaml(path) {
+        SongYaml::Declared => true,
+        SongYaml::Untyped => config::Song::deserialize(path).is_ok(),
+        SongYaml::NotOne => false,
+    }
+}
+
+/// Whether `path` is hidden: its name starts with a dot (`.git`,
+/// `.draft.light`), the AppleDouble files macOS writes beside each file on
+/// a disk it does not own (`._Bass.wav`) among them. The one hidden rule:
+/// the songs walk passes over hidden directories, and `songs --init`, the
+/// song files listing and the file browser hidden files and directories.
+pub fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
+}
+
+/// The stem of a song directory's own config file: `song.yaml`, else
+/// `song.yml` ([`song_config_file`]).
+const SONG_CONFIG_STEM: &str = "song";
+
+/// Whether `path` is named as a song directory's config: `song.yaml` or
+/// `song.yml`, exactly as written ([`is_yaml_config`]; `song.YAML` and
+/// `.song.yaml` are not). What the song files listing hides and what MCP
+/// takes for the directory layout.
+pub fn is_song_config_name(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem == SONG_CONFIG_STEM)
+        && is_yaml_config(path)
+}
+
+/// Whether the directory `dir` already holds a song config: a file the
+/// loader takes as a song's ([`is_song_config`]: `song.yml`, `album.yaml`,
+/// `.song.yaml`), or one named `song.yaml` or `song.yml` that does not read
+/// ([`is_song_config_name`]), which is the song's to fix, not to write
+/// over. One that reads as another `kind` (`kind: playlist`) is not one, as
+/// to the loader. Nothing is written beside or over one.
+pub fn has_song_config(dir: &Path) -> bool {
+    crate::util::files_to_look_up(dir).iter().any(|file| {
+        is_song_config(file) || (is_song_config_name(file) && song_yaml(file) != SongYaml::NotOne)
+    })
+}
+
+/// The file the config of the song in `dir` is read from and written to:
+/// its `song.yaml`, else its `song.yml`, else a new `song.yaml`
+/// ([`crate::util::yaml_file_at`]). A new `song.yaml` beside a `Song.yaml`
+/// (a case clash) is still `song.yaml`, as it always was.
+pub fn song_config_file(dir: &Path) -> PathBuf {
+    crate::util::yaml_file_at(dir, SONG_CONFIG_STEM)
+        .map(|file| file.path().to_path_buf())
+        .unwrap_or_else(|_| dir.join(format!("{SONG_CONFIG_STEM}.{}", YAML_EXTENSIONS[0])))
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        error::Error,
+        fs, io,
+        path::{Path, PathBuf},
+    };
+
+    use thiserror::Error;
+
+    use crate::{
+        songs::{get_all_songs, initialize_songs},
+        testutil::write_wav,
+    };
+
+    /// An 8-second, 120 bpm 4/4 song (four bars) with the extra song.yaml
+    /// lines given, loaded.
+    fn looping_song(extra: &str) -> Result<super::Song, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        write_wav(
+            dir.path().join("pad.wav"),
+            vec![vec![0_i32; 8000 * 8]],
+            8000,
+        )?;
+        write_wav(
+            dir.path().join("click.wav"),
+            vec![vec![0_i32; 8000 * 8]],
+            8000,
+        )?;
+        let yaml = format!(
+            "name: loop\ntracks:\n  - name: pad\n    file: pad.wav\n  - name: click\n    \
+             file: click.wav\ntempo:\n  bpm: 120\n  time_signature: 4/4\nloop_playback: true\n{extra}"
+        );
+        fs::write(dir.path().join("song.yaml"), yaml)?;
+        let config = crate::config::Song::deserialize(&dir.path().join("song.yaml"))?;
+        super::Song::new(dir.path(), &config)
+    }
+
+    #[test]
+    fn loop_crossfade_resolves_against_the_songs_end() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        let song = looping_song("loop_crossfade: 1measure\nloop_crossfade_cut: [click]\n")?;
+        assert_eq!(song.duration(), Duration::from_secs(8));
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_secs(2)));
+        assert_eq!(song.loop_crossfade_cut(), ["click".to_string()]);
+
+        let song = looping_song("loop_crossfade: 3beats\n")?;
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(1500)));
+        let song = looping_song("loop_crossfade: 2500ms\n")?;
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(2500)));
+
+        // No crossfade: passes abut.
+        let song = looping_song("")?;
+        assert_eq!(song.loop_crossfade(), None);
+        Ok(())
+    }
+
+    /// A 4-second song with the song.yaml lines given, loaded.
+    fn song_with(yaml: &str) -> Result<super::Song, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        write_wav(dir.path().join("t.wav"), vec![vec![0_i32; 8000 * 4]], 8000)?;
+        fs::write(
+            dir.path().join("song.yaml"),
+            format!("name: s\ntracks:\n  - name: t\n    file: t.wav\n{yaml}"),
+        )?;
+        let config = crate::config::Song::deserialize(&dir.path().join("song.yaml"))?;
+        super::Song::new(dir.path(), &config)
+    }
+
+    /// A fade as a playlist would set it.
+    fn fade(yaml: &str) -> crate::config::Fade {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            fade: crate::config::FadeConfig,
+        }
+        let wrap: Wrap = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("fade: {yaml}"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        wrap.fade.parse("fade_out", true).unwrap()
+    }
+
+    #[test]
+    fn a_fade_out_counts_on_the_incoming_songs_grid() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        let close =
+            |a: Option<Duration>, b: f64| a.is_some_and(|a| (a.as_secs_f64() - b).abs() < 1e-6);
+        let length = |f: Option<super::ResolvedFade>| f.map(|f| f.length);
+        // A prelude with no grid of its own, handing over to a 12/8 song at
+        // 169: one bar is six quarter beats.
+        let prelude = song_with("loop_playback: true\nloop_crossfade_cut: [t]\n")?;
+        let song = song_with("tempo:\n  bpm: 169\n  time_signature: 12/8\n")?;
+        let bar = fade("1measure");
+        let out = length(prelude.fade_out_into(&bar, Some(&song)));
+        assert!(close(out, 6.0 * 60.0 / 169.0), "{out:?}");
+
+        // From the first bar: a lead-in before it is part of the fade.
+        let late = song_with("tempo:\n  bpm: 120\n  time_signature: 4/4\n  start: 0.5\n")?;
+        assert!(close(
+            length(prelude.fade_out_into(&fade("2beats"), Some(&late))),
+            1.5
+        ));
+
+        // Seconds need no grid; zero is no fade.
+        assert_eq!(
+            length(prelude.fade_out_into(&fade("3s"), None)),
+            Some(Duration::from_secs(3))
+        );
+        assert!(prelude.fade_out_into(&fade("0s"), None).is_none());
+
+        // Musical with no grid anywhere: cut, as without the setting.
+        assert!(prelude.fade_out_into(&bar, None).is_none());
+
+        // The excluded tracks default to the loop crossfade's cut ones, and
+        // the lights to the fade's length.
+        let resolved = prelude.fade_out_into(&fade("3s"), None).unwrap();
+        assert_eq!(resolved.exclude, ["t".to_string()]);
+        assert_eq!(resolved.lights, Duration::from_secs(3));
+        let resolved = prelude
+            .fade_out_into(
+                &fade("{length: 3s, curve: linear, exclude: [], lights: 1s}"),
+                None,
+            )
+            .unwrap();
+        assert!(resolved.exclude.is_empty());
+        assert_eq!(resolved.lights, Duration::from_secs(1));
+        assert_eq!(
+            resolved.curve,
+            crate::audio::crossfade::CrossfadeCurve::Linear
+        );
+
+        // A fade-in counts on the song's own grid.
+        assert!(close(length(song.fade_in(&bar)), 6.0 * 60.0 / 169.0));
+        assert!(prelude.fade_in(&bar).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_fade_is_no_longer_than_the_song_it_plays_under() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        // #577: a million measures on the next song's grid made a 33-day
+        // fade, the prelude droning on under everything after it.
+        let prelude = song_with("loop_playback: true\n")?;
+        let song = song_with("tempo:\n  bpm: 120\n  time_signature: 4/4\n")?;
+        let long = fade("1000000measures");
+        let out = prelude.fade_out_into(&long, Some(&song)).unwrap();
+        assert_eq!(out.length, song.length());
+        assert_eq!(out.lights, song.length());
+        let err = prelude.check_fade(&long, Some(&song), false).unwrap_err();
+        assert!(
+            err.contains("1000000measures") && err.contains("longer than s"),
+            "{err}"
+        );
+
+        // One that fits plays as written; with nothing after it, a fade
+        // out is bound by its own song, and a fade in by its own.
+        let bar = fade("1measure");
+        assert_eq!(
+            prelude.fade_out_into(&bar, Some(&song)).unwrap().length,
+            Duration::from_secs(2)
+        );
+        assert!(prelude.check_fade(&bar, Some(&song), false).is_ok());
+        assert!(prelude.check_fade(&fade("5s"), None, false).is_err());
+        assert!(prelude.check_fade(&fade("3s"), None, false).is_ok());
+        assert!(song.check_fade(&fade("3measures"), None, true).is_err());
+        assert_eq!(
+            song.fade_in(&fade("3measures")).unwrap().length,
+            song.length()
+        );
+        // The lights count too.
+        let lights = fade("{length: 1s, lights: 10s}");
+        assert!(prelude.check_fade(&lights, Some(&song), false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn bad_loop_crossfades_fail_the_song() {
+        let err = |extra: &str| looping_song(extra).err().map(|e| e.to_string());
+        assert!(err("loop_crossfade: 3measures\n").is_some_and(|e| e.contains("at most half")));
+        assert!(looping_song("loop_crossfade: 2measures\n").is_ok());
+        assert!(err("loop_crossfade: soon\n").is_some_and(|e| e.contains("invalid length")));
+        assert!(err("loop_crossfade: 1s\nloop_crossfade_cut: [clik]\n")
+            .is_some_and(|e| e.contains("\"clik\"")));
+    }
+
+    fn count_songs(path: &Path) -> Result<usize, TestError> {
+        let songs = get_all_songs(path)?;
+        Ok(songs.len())
+    }
+
+    fn create_song_dir(path: &Path, song_name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let song_path = path.join(song_name);
+        if !fs::exists(&song_path)? {
+            fs::create_dir(&song_path)?;
+        }
+        Ok(song_path)
+    }
+
+    fn create_mono_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "1 Song with mono track")?;
+
+        write_wav(
+            song_path.join("mono_track.wav"),
+            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+            44100,
+        )?;
+
+        Ok(())
+    }
+
+    fn create_stereo_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "2 Song with stereo track")?;
+
+        write_wav(
+            song_path.join("stereo_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+            44100,
+        )?;
+
+        Ok(())
+    }
+
+    fn create_mono_and_stereo_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "3 Song with mono and stereo tracks")?;
+
+        write_wav(
+            song_path.join("mono_track.wav"),
+            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+            44100,
+        )?;
+
+        write_wav(
+            song_path.join("stereo_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+            44100,
+        )?;
+
+        Ok(())
+    }
+
+    fn create_eight_channel_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "4 Song with eight tracks")?;
+
+        write_wav(
+            song_path.join("eight_channels_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![2_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![3_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![4_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![5_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![6_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![7_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![8_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+            44100,
+        )?;
+
+        Ok(())
+    }
+
+    fn create_midi_and_dmx_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "5 Song with MIDI and DMX")?;
+        fs::write(song_path.join("song.mid"), "")?;
+        fs::write(song_path.join("dmx_lightshow.mid"), "")?;
+        Ok(())
+    }
+
+    #[derive(Debug, Error)]
+    enum TestError {
+        #[error("Generic error! {0}")]
+        Generic(#[from] Box<dyn Error>),
+        #[error("I/O error! {0}")]
+        IoError(#[from] io::Error),
+        #[error("No song found")]
+        NoSongFound,
+    }
+
+    #[test]
+    fn test_init() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = temp_dir.path();
+        assert_eq!(
+            count_songs(temp_dir)?,
+            0,
+            "Expected no song in a newly created directory."
+        );
+
+        create_mono_song(temp_dir)?;
+        check_first_song(temp_dir)?;
+
+        create_stereo_song(temp_dir)?;
+        check_second_song(temp_dir)?;
+
+        create_mono_and_stereo_song(temp_dir)?;
+        check_third_song(temp_dir)?;
+
+        create_eight_channel_song(temp_dir)?;
+        check_fourth_song(temp_dir)?;
+
+        create_midi_and_dmx_song(temp_dir)?;
+        check_fifth_song(temp_dir)?;
+
+        Ok(())
+    }
+
+    fn check_first_song(temp_dir: &Path) -> Result<(), TestError> {
+        assert_eq!(
+            count_songs(temp_dir)?,
+            0,
+            "Expected no song in a newly created directory with one wav file."
+        );
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
+        assert_eq!(num_songs, 1, "Expected to find one song configuration.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        let tracks = first_song.tracks();
+        assert_eq!(tracks.len(), 1, "Expected to find one track");
+        assert_eq!(
+            first_song.name(),
+            "1 Song with mono track",
+            "Name is not correct"
+        );
+        assert_eq!(first_song.num_channels, 1, "Unexpected number of channels");
+        let track = tracks.first().unwrap();
+        assert_eq!(track.name, "mono-track", "Unexpected name");
+        assert!(fs::exists(&track.file).unwrap(), "Track file not found");
+        Ok(())
+    }
+
+    fn check_second_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
+        assert_eq!(num_songs, 2, "Expected to find two song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        let second_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(second_song.tracks().len(), 2, "Expected to find two tracks");
+        Ok(())
+    }
+
+    fn check_third_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
+        assert_eq!(num_songs, 3, "Expected to find three song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        let third_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            third_song.tracks().len(),
+            3,
+            "Expected to find three tracks."
+        );
+        Ok(())
+    }
+
+    fn check_fourth_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
+        assert_eq!(num_songs, 4, "Expected to find four song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let fourth_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            fourth_song.tracks().len(),
+            8,
+            "Expected to find eight tracks."
+        );
+        assert_eq!(fourth_song.num_channels, 8, "Unexpected number of channels");
+        Ok(())
+    }
+
+    fn check_fifth_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir, crate::lighting::effects::LayerSet::standard())?;
+        assert_eq!(num_songs, 5, "Expected to find five song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let fifth_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            fifth_song.tracks().len(),
+            0,
+            "Expected to find zero tracks."
+        );
+        assert_eq!(fifth_song.num_channels, 0, "Unexpected number of channels.");
+
+        assert!(
+            fifth_song.midi_playback().is_some(),
+            "Expected song to have MIDI playback."
+        );
+        assert_eq!(
+            fifth_song.light_shows().len(),
+            1,
+            "Expected song to have a light show."
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_wav_formats() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?.keep();
+
+        let i32_samples: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let i32_path = tempdir.join("test_i32.wav");
+        write_wav(i32_path.clone(), vec![i32_samples], 44100)?;
+
+        let f32_samples: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let f32_path = tempdir.join("test_f32.wav");
+        write_wav(f32_path.clone(), vec![f32_samples], 44100)?;
+
+        println!("Both formats work!");
+        Ok(())
+    }
+
+    #[test]
+    fn test_transcoding_detection() {
+        use crate::audio::SampleFormat;
+        use crate::audio::TargetFormat;
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test.wav");
+
+        // Create a test WAV file
+        let samples: Vec<i32> = vec![1000, 2000, 3000, 4000, 5000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
+
+        // Create a test song with the WAV file
+        let song = super::Song {
+            sample_rate: 44100,
+            sample_format: SampleFormat::Int,
+            tracks: vec![super::Track {
+                name: "test".to_string(),
+                file: wav_path,
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: SampleFormat::Int,
+                duration: std::time::Duration::from_secs(1),
+            }],
+            ..Default::default()
+        };
+
+        // Test with same format - should not need transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
+        assert!(!song.needs_transcoding(&target_format));
+
+        // Test with different sample rate - should need transcoding
+        let target_format = TargetFormat::new(48000, SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target_format));
+
+        // Test with different format - should need transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Float, 32).unwrap();
+        assert!(song.needs_transcoding(&target_format));
+    }
+
+    #[test]
+    fn test_no_transcoding_for_identical_formats() {
+        use crate::audio::SampleFormat;
+        use crate::audio::TargetFormat;
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test.wav");
+
+        // Create a test WAV file
+        let samples: Vec<i32> = vec![1000, 2000, 3000, 4000, 5000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
+
+        // Test that identical formats don't trigger transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
+
+        // Create a song with identical format
+        let song = super::Song {
+            sample_rate: 44100,
+            sample_format: SampleFormat::Int,
+            tracks: vec![super::Track {
+                name: "test".to_string(),
+                file: wav_path,
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: SampleFormat::Int,
+                duration: std::time::Duration::from_secs(1),
+            }],
+            ..Default::default()
+        };
+
+        // Should not need transcoding for identical formats
+        assert!(!song.needs_transcoding(&target_format));
+    }
+
+    #[test]
+    fn test_file_io_performance() -> Result<(), Box<dyn Error>> {
+        use crate::testutil::write_wav_with_bits;
+        use std::time::Instant;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+
+        // Create a large WAV file to test I/O performance
+        let sample_rate = 44100;
+        let duration_samples = 1000000; // ~22.7 seconds of audio
+        let amplitude = 0.5;
+
+        println!(
+            "Creating large WAV file with {} samples...",
+            duration_samples
+        );
+
+        // Generate a sine wave
+        let sine_wave: Vec<f32> = (0..duration_samples)
+            .map(|i| {
+                (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                    * amplitude
+            })
+            .collect();
+
+        let samples: Vec<i32> = sine_wave
+            .iter()
+            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
+            .collect();
+
+        // Measure file writing time
+        let wav_path = tempdir.path().join("large_test.wav");
+        let start = Instant::now();
+        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
+        let write_time = start.elapsed();
+
+        println!("File write time: {:?}", write_time);
+        println!(
+            "Write speed: {:.2} MB/s",
+            (duration_samples * 4) as f64 / write_time.as_secs_f64() / 1_000_000.0
+        );
+
+        // Measure file reading time with sample source
+        let start = Instant::now();
+        let mut source =
+            crate::audio::sample_source::create_sample_source_from_file(&wav_path, None, 1024)?;
+        println!(
+            "WAV file spec: {}Hz, {}bit, {}ch",
+            source.sample_rate(),
+            source.bits_per_sample(),
+            source.channel_count()
+        );
+
+        // Read all samples
+        let mut samples_read = 0;
+        while let Ok(Some(_)) = source.next_sample() {
+            samples_read += 1;
+        }
+        let read_time = start.elapsed();
+
+        println!("File read time: {:?}", read_time);
+        println!(
+            "Read speed: {:.2} MB/s",
+            (samples_read * 4) as f64 / read_time.as_secs_f64() / 1_000_000.0
+        );
+        println!("Samples read: {}", samples_read);
+
+        // Measure AudioSampleSource performance
+        let start = Instant::now();
+        let mut wav_source = crate::audio::sample_source::audio::AudioSampleSource::from_file(
+            &wav_path, None, 1024,
+        )?;
+        let mut samples_processed = 0;
+
+        loop {
+            match crate::audio::sample_source::traits::SampleSource::next_sample(&mut wav_source) {
+                Ok(Some(_)) => samples_processed += 1,
+                Ok(None) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let wav_source_time = start.elapsed();
+
+        println!("AudioSampleSource processing time: {:?}", wav_source_time);
+        println!(
+            "AudioSampleSource speed: {:.2} MB/s",
+            (samples_processed * 4) as f64 / wav_source_time.as_secs_f64() / 1_000_000.0
+        );
+        println!("Samples processed: {}", samples_processed);
+
+        // Verify we got the expected number of samples
+        assert_eq!(samples_read, duration_samples);
+        assert_eq!(samples_processed, duration_samples);
+
+        Ok(())
+    }
+
+    // Removed test_buffer_fill_performance - not relevant with Crossbeam channels
+
+    // ── Pure function tests (no I/O) ─────────────────────────────────
+
+    #[test]
+    fn duration_string_zero() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert_eq!(song.duration_string(), "0:00");
+    }
+
+    #[test]
+    fn duration_string_formatted() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(125); // 2:05
+        assert_eq!(song.duration_string(), "2:05");
+    }
+
+    #[test]
+    fn duration_string_exact_minute() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(180); // 3:00
+        assert_eq!(song.duration_string(), "3:00");
+    }
+
+    #[test]
+    fn duration_string_long() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(3661); // 61:01
+        assert_eq!(song.duration_string(), "61:01");
+    }
+
+    #[test]
+    fn song_name() {
+        let song = super::Song::new_for_test("My Song", &["t1"]);
+        assert_eq!(song.name(), "My Song");
+    }
+
+    #[test]
+    fn song_tracks_count() {
+        let song = super::Song::new_for_test("test", &["kick", "snare", "bass"]);
+        assert_eq!(song.tracks().len(), 3);
+        assert_eq!(song.tracks()[0].name, "kick");
+    }
+
+    #[test]
+    fn song_num_channels() {
+        let song = super::Song::new_for_test("test", &["t1", "t2"]);
+        // new_for_test creates tracks with 0 num_channels by default
+        assert_eq!(song.num_channels, 0);
+    }
+
+    #[test]
+    fn song_default_no_midi() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.midi_playback().is_none());
+        assert!(song.midi_event.is_none());
+    }
+
+    #[test]
+    fn song_light_shows_empty() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.light_shows().is_empty());
+    }
+
+    #[test]
+    fn song_dsl_lighting_shows_empty() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.dsl_lighting_shows().is_empty());
+    }
+
+    // ── Songs registry tests ─────────────────────────────────────────
+
+    #[test]
+    fn songs_empty() {
+        let songs = super::Songs::new(std::collections::HashMap::new());
+        assert!(songs.is_empty());
+        assert_eq!(songs.len(), 0);
+        assert!(songs.list().is_empty());
+    }
+
+    #[test]
+    fn songs_get_found() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("Song A", &["t1"])),
+        );
+        let songs = super::Songs::new(map);
+        let song = songs.get("Song A").unwrap();
+        assert_eq!(song.name(), "Song A");
+    }
+
+    #[test]
+    fn songs_get_says_why_a_song_did_not_load() {
+        let songs = super::Songs::with_failures(
+            std::collections::HashMap::new(),
+            vec![super::SongLoadFailure {
+                name: "Broken".to_string(),
+                base_path: std::path::PathBuf::from("/songs/Broken"),
+                config_path: std::path::PathBuf::from("/songs/Broken/song.yaml"),
+                error: "bad lighting".to_string(),
+            }],
+        );
+        let err = songs.get("Broken").err().expect("failed to load");
+        assert_eq!(err.to_string(), "song Broken failed to load: bad lighting");
+        assert_eq!(
+            songs.get("Missing").err().expect("missing").to_string(),
+            "unable to find song Missing"
+        );
+    }
+
+    #[test]
+    fn songs_get_not_found() {
+        let songs = super::Songs::new(std::collections::HashMap::new());
+        assert!(songs.get("nonexistent").is_err());
+    }
+
+    #[test]
+    fn songs_len() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "A".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("A", &["t"])),
+        );
+        map.insert(
+            "B".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("B", &["t"])),
+        );
+        let songs = super::Songs::new(map);
+        assert_eq!(songs.len(), 2);
+        assert!(!songs.is_empty());
+    }
+
+    #[test]
+    fn songs_sorted_list() {
+        let mut map = std::collections::HashMap::new();
+        for name in &["Charlie", "Alpha", "Bravo"] {
+            map.insert(
+                name.to_string(),
+                std::sync::Arc::new(super::Song::new_for_test(name, &["t"])),
+            );
+        }
+        let songs = super::Songs::new(map);
+        let sorted = songs.sorted_list();
+        assert_eq!(sorted[0].name(), "Alpha");
+        assert_eq!(sorted[1].name(), "Bravo");
+        assert_eq!(sorted[2].name(), "Charlie");
+    }
+
+    #[test]
+    fn song_display_no_midi() {
+        let mut song = super::Song::new_for_test("Display Song", &["t1", "t2"]);
+        song.num_channels = 2;
+        song.sample_rate = 44100;
+        song.duration = std::time::Duration::from_secs(65);
+        let display = format!("{song}");
+        assert!(display.contains("Name: Display Song"));
+        assert!(display.contains("Duration: 1:05"));
+        assert!(display.contains("Channels: 2"));
+        assert!(display.contains("Sample Rate: 44100"));
+        assert!(display.contains("Tracks: t1, t2"));
+        assert!(display.contains("Midi Message: None"));
+        assert!(display.contains("Midi File:None"));
+    }
+
+    #[test]
+    fn song_display_with_midi_playback() {
+        let mut song = super::Song::new_for_test("Midi Song", &["bass"]);
+        song.midi_playback = Some(super::MidiPlayback {
+            file: PathBuf::from("/tmp/test.mid"),
+            exclude_midi_channels: vec![],
+        });
+        let display = format!("{song}");
+        assert!(display.contains("Midi File:Some"));
+        assert!(display.contains("test.mid"));
+    }
+
+    #[test]
+    fn song_samples_config_default() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        let config = song.samples_config();
+        assert!(config.samples().is_empty());
+    }
+
+    #[test]
+    fn song_new_from_config_with_midi() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
+                .expect("Failed to deserialize song1.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 1");
+        assert!(song.midi_playback().is_some());
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "track 1");
+        assert!(song.light_shows().is_empty());
+        assert!(song.dsl_lighting_shows().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_with_midi_event() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song2.yaml").as_path())
+                .expect("Failed to deserialize song2.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 2");
+        assert!(song.midi_event().is_some());
+        assert!(song.midi_playback().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_multichannel() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song3.yaml").as_path())
+                .expect("Failed to deserialize song3.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 3");
+        assert_eq!(song.tracks().len(), 2);
+        assert_eq!(song.num_channels(), 2);
+        assert!(song.midi_playback().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_eight_channels() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song4.yaml").as_path())
+                .expect("Failed to deserialize song4.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 4");
+        assert_eq!(song.tracks().len(), 8);
+        assert_eq!(song.num_channels(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_playback_new_file_not_found() {
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("nonexistent.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let err = super::MidiPlayback::new(Path::new("/tmp"), midi_pb)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn midi_playback_midi_sheet_valid() -> Result<(), Box<dyn Error>> {
+        // Create a minimal valid MIDI file
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        // Standard MIDI File: header chunk + one empty track
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, // MThd
+            0x00, 0x00, 0x00, 0x06, // chunk length = 6
+            0x00, 0x00, // format 0
+            0x00, 0x01, // 1 track
+            0x00, 0x60, // 96 ticks per beat
+            0x4D, 0x54, 0x72, 0x6B, // MTrk
+            0x00, 0x00, 0x00, 0x04, // chunk length = 4
+            0x00, 0xFF, 0x2F, 0x00, // delta=0, end of track
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let sheet = playback.midi_sheet()?;
+        // No tempo events in the MIDI file, so beat clock should be None
+        assert!(sheet.beat_clock.is_none());
+        Ok(())
+    }
+
+    mod beat_clock_source_tests {
+        use super::*;
+        use crate::songs::{MidiSheet, Song};
+        use std::time::Duration;
+
+        /// Parses a one-track MIDI file, 96 ticks to the beat, two beats
+        /// long; with a tempo event at `micros_per_beat` when given.
+        fn sheet(micros_per_beat: Option<u32>) -> Result<MidiSheet, Box<dyn Error>> {
+            let tempdir = tempfile::tempdir()?;
+            let mut track: Vec<u8> = Vec::new();
+            if let Some(micros) = micros_per_beat {
+                track.extend([0x00, 0xFF, 0x51, 0x03]);
+                track.extend(&micros.to_be_bytes()[1..]);
+            }
+            // Two beats on, end of track.
+            track.extend([0x81, 0x40, 0xFF, 0x2F, 0x00]);
+            let mut bytes = vec![
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+                0x4D, 0x54, 0x72, 0x6B,
+            ];
+            bytes.extend((track.len() as u32).to_be_bytes());
+            bytes.extend(track);
+            fs::write(tempdir.path().join("test.mid"), &bytes)?;
+            let config = crate::config::Song::new(
+                "test",
+                None,
+                Some("test.mid".to_string()),
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                vec![],
+            );
+            crate::songs::MidiPlayback::new(tempdir.path(), config.midi_playback().unwrap())?
+                .midi_sheet()
+        }
+
+        fn song(tempo_bpm: Option<f64>) -> Song {
+            let mut song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(2));
+            song.tempo_map = tempo_bpm.map(|bpm| {
+                crate::tempo::TempoMap::new(
+                    Duration::ZERO,
+                    bpm,
+                    crate::tempo::TimeSignature::new(4, 4),
+                    vec![],
+                )
+            });
+            song
+        }
+
+        fn pulse(ticks: &[Duration]) -> f64 {
+            (ticks[1] - ticks[0]).as_secs_f64()
+        }
+
+        /// The MIDI file's tempo comes first, over the song's `tempo:`.
+        #[test]
+        fn a_midi_files_tempo_wins_over_the_songs() -> Result<(), Box<dyn Error>> {
+            let sheet = sheet(Some(500_000))?;
+            let ticks = song(Some(60.0)).beat_clock(Some(&sheet)).unwrap();
+            assert!((pulse(&ticks) - 0.5 / 24.0).abs() < 1e-6, "{ticks:?}");
+            Ok(())
+        }
+
+        /// A MIDI file with no tempo of its own leaves the clock to the
+        /// song's `tempo:`, as a song with no MIDI file does.
+        #[test]
+        fn without_a_midi_tempo_the_songs_tempo_drives_it() -> Result<(), Box<dyn Error>> {
+            let sheet = sheet(None)?;
+            for sheet in [Some(&sheet), None] {
+                let ticks = song(Some(60.0)).beat_clock(sheet).unwrap();
+                assert!((pulse(&ticks) - 1.0 / 24.0).abs() < 1e-6, "{ticks:?}");
+                // To the song's end, not the MIDI file's.
+                assert_eq!(ticks.len(), 48, "{ticks:?}");
+            }
+            Ok(())
+        }
+
+        /// A MIDI file's clock runs on to the song's end at its last tempo,
+        /// past where the file stops, as a tempo's clock does.
+        #[test]
+        fn a_midi_files_clock_runs_to_the_songs_end() -> Result<(), Box<dyn Error>> {
+            // The file is a second long at 120 BPM; the song two seconds.
+            let sheet = sheet(Some(500_000))?;
+            let ticks = song(None).beat_clock(Some(&sheet)).unwrap();
+            let last = *ticks.last().unwrap();
+            assert!(
+                last >= Duration::from_millis(1_970) && last < Duration::from_secs(2),
+                "{last:?}"
+            );
+            for pair in ticks.windows(2) {
+                let gap = (pair[1] - pair[0]).as_secs_f64();
+                assert!((gap - 0.5 / 24.0).abs() < 1e-5, "{pair:?}");
+            }
+            Ok(())
+        }
+
+        /// With neither, the click track's beat grid, as the lights use it.
+        #[test]
+        fn without_a_tempo_the_click_track_drives_it() {
+            let mut song = song(None);
+            song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+                beats: (0..8).map(|beat| beat as f64 * 0.25).collect(),
+                measure_starts: vec![0, 4],
+            });
+            let ticks = song.beat_clock(None).unwrap();
+            assert!((pulse(&ticks) - 0.25 / 24.0).abs() < 1e-6, "{ticks:?}");
+            assert!(*ticks.last().unwrap() < Duration::from_secs(2));
+        }
+
+        /// Parses a one-track MIDI file, 96 ticks to the beat, from raw
+        /// track bytes (end of track included).
+        fn sheet_of(track: Vec<u8>) -> Result<MidiSheet, Box<dyn Error>> {
+            let tempdir = tempfile::tempdir()?;
+            let mut bytes = vec![
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+                0x4D, 0x54, 0x72, 0x6B,
+            ];
+            bytes.extend((track.len() as u32).to_be_bytes());
+            bytes.extend(track);
+            fs::write(tempdir.path().join("test.mid"), &bytes)?;
+            let config = crate::config::Song::new(
+                "test",
+                None,
+                Some("test.mid".to_string()),
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                vec![],
+            );
+            crate::songs::MidiPlayback::new(tempdir.path(), config.midi_playback().unwrap())?
+                .midi_sheet()
+        }
+
+        /// A file whose last event is a tempo change (120 BPM, then 60 BPM at
+        /// beat 2, where it ends) clocks the rest of the song at 60, not at
+        /// the 120 it has just left.
+        #[test]
+        fn a_closing_tempo_change_sets_the_tempo_past_the_file() -> Result<(), Box<dyn Error>> {
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // 500_000 us/beat
+                0x81, 0x40, 0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40, // +192: 1_000_000
+                0x00, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(4));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            let last = ticks.len() - 1;
+            let gap = (ticks[last] - ticks[last - 1]).as_secs_f64();
+            assert!(
+                (gap - 1.0 / 24.0).abs() < 1e-5,
+                "extended at {gap}s a pulse"
+            );
+            Ok(())
+        }
+
+        /// A tempo change between the file's last two pulses does not blend
+        /// the two tempos into the clock past the file.
+        #[test]
+        fn a_change_inside_the_last_pulse_is_not_blended() -> Result<(), Box<dyn Error>> {
+            // 96 tpb: a pulse is 4 ticks. 120 BPM, then 60 BPM at tick 190
+            // (between pulses at 188 and 192), file ends at 192.
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // 500_000 us/beat
+                0x81, 0x3E, 0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40, // +190: 1_000_000
+                0x02, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(4));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            let last = ticks.len() - 1;
+            let gap = (ticks[last] - ticks[last - 1]).as_secs_f64();
+            assert!(
+                (gap - 1.0 / 24.0).abs() < 1e-5,
+                "extended at {gap}s a pulse"
+            );
+            Ok(())
+        }
+
+        /// A MIDI file that only declares a tempo, of no length, clocks the
+        /// song at that tempo.
+        #[test]
+        fn a_tempo_only_file_of_no_length_still_clocks() -> Result<(), Box<dyn Error>> {
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, 0x00, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let ticks = song(Some(60.0)).beat_clock(Some(&sheet));
+            assert!(
+                ticks.as_ref().is_some_and(|ticks| ticks.len() > 1),
+                "{ticks:?}"
+            );
+            Ok(())
+        }
+
+        /// The clock past the file's end keeps to its tempo exactly, with no
+        /// drift: a one-beat tempo file at 128 BPM under a five-minute song.
+        #[test]
+        fn past_the_files_end_the_clock_keeps_to_its_tempo() -> Result<(), Box<dyn Error>> {
+            // 468_750 us/beat = 128 BPM; one beat long.
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0x27, 0x0E, 0x60, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(300));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            let k = ticks.len() - 1;
+            let want = k as f64 * 0.468_75 / 24.0;
+            let err = (ticks[k].as_secs_f64() - want).abs();
+            assert!(err < 1e-3, "pulse {k} off by {err}s");
+            Ok(())
+        }
+
+        /// No tempo anywhere: no clock, as before.
+        #[test]
+        fn without_any_tempo_there_is_no_clock() -> Result<(), Box<dyn Error>> {
+            assert!(song(None).beat_clock(None).is_none());
+            assert!(song(None).beat_clock(Some(&sheet(None)?)).is_none());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn midi_sheet_with_tempo_has_beat_clock() -> Result<(), Box<dyn Error>> {
+        // Create a MIDI file with an explicit tempo event
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, // MThd
+            0x00, 0x00, 0x00, 0x06, // chunk length = 6
+            0x00, 0x00, // format 0
+            0x00, 0x01, // 1 track
+            0x00, 0x60, // 96 ticks per beat
+            0x4D, 0x54, 0x72, 0x6B, // MTrk
+            0x00, 0x00, 0x00, 0x0B, // chunk length = 11
+            0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1,
+            0x20, // delta=0, tempo = 500_000 µs (120 BPM)
+            0x60, 0xFF, 0x2F, 0x00, // delta=96, end of track (1 beat later)
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let sheet = playback.midi_sheet()?;
+        // Has tempo events, so beat clock should be Some
+        assert!(sheet.beat_clock.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn midi_playback_exclude_channels() -> Result<(), Box<dyn Error>> {
+        // Create a minimal valid MIDI file for the test
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let excluded = playback.exclude_midi_channels();
+        assert!(excluded.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn light_show_new_file_not_found() {
+        let config = crate::config::LightShow::new(
+            "universe".to_string(),
+            "nonexistent.mid".to_string(),
+            None,
+        );
+        let err = super::LightShow::new(Path::new("/tmp"), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_new_file_not_found() {
+        let config =
+            crate::config::Track::new("test track".to_string(), "nonexistent.wav", Some(1));
+        let err = super::Track::new(Path::new("/tmp"), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("track \"test track\""), "Error: {err}");
+    }
+
+    #[test]
+    fn track_new_multichannel_without_file_channel() {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let config = crate::config::Track::new("stereo".to_string(), "2Channel44.1k.wav", None);
+        let err = super::Track::new(&assets, &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("more than one channel"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_load_tracks_wrong_extension() {
+        let err = super::Track::load_tracks(&PathBuf::from("/tmp/test.mp3"))
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains(".mp3"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_load_tracks_mono() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("mono.wav");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3, 4, 5]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name(), "mono");
+        assert_eq!(tracks[0].file_channel(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn track_load_tracks_stereo() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("stereo.wav");
+        crate::testutil::write_wav(
+            wav_path.clone(),
+            vec![vec![1_i32, 2, 3, 4, 5], vec![5, 4, 3, 2, 1]],
+            44100,
+        )?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].name(), "stereo-l");
+        assert_eq!(tracks[0].file_channel(), 1);
+        assert_eq!(tracks[1].name(), "stereo-r");
+        assert_eq!(tracks[1].file_channel(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn track_load_tracks_multichannel() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("multi.wav");
+        let channels: Vec<Vec<i32>> = (0..4).map(|i| vec![i; 5]).collect();
+        crate::testutil::write_wav(wav_path.clone(), channels, 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 4);
+        assert_eq!(tracks[0].name(), "multi-1");
+        assert_eq!(tracks[0].file_channel(), 1);
+        assert_eq!(tracks[3].name(), "multi-4");
+        assert_eq!(tracks[3].file_channel(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn track_get_config() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("test.wav");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        let config = tracks[0].get_config();
+        assert_eq!(config.name(), "test");
+        assert_eq!(config.file_channel(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn deduplicate_track_names_no_collision() {
+        let mut tracks = vec![make_track("click"), make_track("cue")];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "click");
+        assert_eq!(tracks[1].name(), "cue");
+    }
+
+    #[test]
+    fn deduplicate_track_names_with_collision() {
+        let mut tracks = vec![
+            make_track("backing-track"),
+            make_track("backing-track"),
+            make_track("click"),
+            make_track("backing-track"),
+        ];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "backing-track");
+        assert_eq!(tracks[1].name(), "backing-track-2");
+        assert_eq!(tracks[2].name(), "click");
+        assert_eq!(tracks[3].name(), "backing-track-3");
+    }
+
+    #[test]
+    fn deduplicate_track_names_suffix_collision() {
+        // "foo-2" already exists, so the duplicate "foo" must skip to "foo-3".
+        let mut tracks = vec![make_track("foo-2"), make_track("foo"), make_track("foo")];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "foo-2");
+        assert_eq!(tracks[1].name(), "foo");
+        assert_eq!(tracks[2].name(), "foo-3");
+    }
+
+    fn make_track(name: &str) -> super::Track {
+        super::Track {
+            name: name.to_string(),
+            file: PathBuf::from("/dev/null"),
+            file_channel: 1,
+            sample_rate: 44100,
+            sample_format: crate::audio::SampleFormat::Int,
+            duration: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn dsl_lighting_show_file_not_found() {
+        let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
+        let err = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            Path::new("/tmp"),
+            &config,
+            None,
+        )
+        .expect_err("expected error")
+        .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn dsl_lighting_show_parse_error() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::write(tempdir.path().join("bad.dsl"), "show {")?;
+        let config = crate::config::LightingShow::new("bad.dsl".to_string());
+        let err = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            tempdir.path(),
+            &config,
+            None,
+        )
+        .expect_err("expected error")
+        .to_string();
+        assert!(
+            err.contains("Failed to parse DSL lighting show"),
+            "Error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dsl_lighting_show_valid() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::write(tempdir.path().join("valid.dsl"), "# just a comment\n")?;
+        let config = crate::config::LightingShow::new("valid.dsl".to_string());
+        let show = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            tempdir.path(),
+            &config,
+            None,
+        )?;
+        assert_eq!(show.file_path(), tempdir.path().join("valid.dsl"));
+        assert!(show.shows().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn dsl_lighting_show_absolute_path() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let abs_path = tempdir.path().join("absolute.dsl");
+        fs::write(&abs_path, "")?;
+        let config = crate::config::LightingShow::new(abs_path.to_string_lossy().to_string());
+        let show = super::DslLightingShow::new(
+            crate::lighting::effects::LayerSet::standard(),
+            Path::new("/some/other/path"),
+            &config,
+            None,
+        )?;
+        assert_eq!(show.file_path(), abs_path);
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_with_subdirectory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        fs::create_dir(song_dir.join("subdir"))?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        let song = super::Song::initialize(&song_dir)?;
+        assert_eq!(song.name(), "my_song");
+        assert_eq!(song.tracks().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_unknown_extension() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("unknown_ext_song");
+        fs::create_dir(&song_dir)?;
+        fs::write(song_dir.join("notes.txt"), "some notes")?;
+        let song = super::Song::initialize(&song_dir)?;
+        assert!(song.tracks().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn song_get_config_roundtrip() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
+                .expect("Failed to deserialize song1.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        let config = song.get_config();
+        assert_eq!(config.name(), "Song 1");
+        assert_eq!(config.tracks().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn tempo_config_takes_precedence_over_click_analysis() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("tempo_song");
+        fs::create_dir(&song_dir)?;
+        // A "click" track that analysis would find nothing useful in
+        // (silence), plus an explicit tempo map that must win regardless.
+        crate::testutil::write_wav(
+            song_dir.join("click.wav"),
+            vec![vec![0_i32; 44100 * 4]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Tempo Song
+tracks:
+  - name: click
+    file: click.wav
+tempo:
+  bpm: 120
+  time_signature: 4/4
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        assert!(song.tempo_map().is_some());
+        let grid = song.beat_grid().expect("beat grid");
+        // 4 seconds at 120 BPM in 4/4: 8 beats, measures start at beats 0 and 4.
+        assert_eq!(grid.beats.len(), 8);
+        assert_eq!(grid.measure_starts, vec![0, 4]);
+        assert!((grid.beats[1] - 0.5).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_tempo_config_fails_song_load() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("bad_tempo_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Bad Tempo\ntracks:\n  - name: track\n    file: track.wav\ntempo:\n  bpm: -5\n",
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let result = super::Song::new(&song_dir, &song_config);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .map(|e| e.to_string().contains("invalid tempo config"))
+            .unwrap_or(false));
+        Ok(())
+    }
+
+    #[test]
+    fn sections_resolve_against_tempo_map_grid() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("section_tempo_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![0_i32; 44100 * 8]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Sectioned
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+sections:
+  - name: verse
+    start_measure: 2
+    end_measure: 4
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        // Measures are 2s long at 120 BPM 4/4; verse spans measures 2..4.
+        let (start, end) = song.resolve_section("verse").expect("resolves");
+        assert!((start.as_secs_f64() - 2.0).abs() < 1e-9);
+        assert!((end.as_secs_f64() - 6.0).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn needs_transcoding_no_tracks() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(!song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn needs_transcoding_bad_file() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "bad".to_string(),
+                file: PathBuf::from("/nonexistent/file.wav"),
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: crate::audio::SampleFormat::Int,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn get_all_songs_skips_git_directory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::create_dir(tempdir.path().join(".git"))?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert!(songs.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_with_song_config() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        initialize_songs(
+            tempdir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert_eq!(songs.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_nonexistent_path() {
+        let result = get_all_songs(Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn needs_transcoding_different_sample_rate() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "track".to_string(),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/1Channel44.1k.wav"),
+                file_channel: 1,
+                sample_rate: 48000,
+                sample_format: crate::audio::SampleFormat::Int,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn needs_transcoding_different_sample_format() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "track".to_string(),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/1Channel44.1k.wav"),
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: crate::audio::SampleFormat::Float,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn song_new_with_different_sample_rates() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track1.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track2.wav"),
+            vec![vec![1_i32; 100]],
+            48000,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "mixed rates",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("t1".to_string(), "track1.wav", Some(1)),
+                crate::config::Track::new("t2".to_string(), "track2.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        assert_eq!(song.tracks.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_with_different_sample_formats() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track_int.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+
+        // Create a float WAV file
+        let float_path = tempdir.path().join("track_float.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&float_path, spec)?;
+        for i in 0..100 {
+            writer.write_sample(i as f32 / 100.0)?;
+        }
+        writer.finalize()?;
+
+        let song_config = crate::config::Song::new(
+            "mixed formats",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("t_int".to_string(), "track_int.wav", Some(1)),
+                crate::config::Track::new("t_float".to_string(), "track_float.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        assert_eq!(song.tracks.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_songs_skips_non_directory_entries() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // Create a regular file at the top level (not a directory)
+        fs::write(tempdir.path().join("readme.txt"), "hello")?;
+        let count = initialize_songs(
+            tempdir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    /// The walk finds the folders holding audio, MIDI or a song config, at
+    /// any depth below folders holding none, in name order. It passes over
+    /// hidden folders, a folder holding only hidden media, a project's
+    /// `lighting/` and `playlists/`, the root itself and what lies below a
+    /// song folder.
+    #[test]
+    fn song_dirs_finds_song_folders_at_any_depth() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            "Cfg/sub",
+            "Hid",
+            "Midi",
+            "artist/album/Song",
+            ".git",
+            "lighting/shows",
+            "playlists",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for file in ["root.wav", "Cfg/sub/b.wav", "Hid/.b.wav", ".git/a.wav"] {
+            crate::testutil::write_wav(root.join(file), vec![vec![1_i32, 2]], 44100)?;
+        }
+        crate::testutil::write_wav(
+            root.join("artist/album/Song/a.WAV"),
+            vec![vec![1_i32]],
+            44100,
+        )?;
+        fs::write(root.join("Midi/notes.mid"), "midi data")?;
+        fs::write(root.join("Cfg/song.yml"), "name: Cfg\ntracks: []\n")?;
+        fs::write(root.join("lighting/shows/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs:\n- Cfg\n",
+        )?;
+
+        assert_eq!(
+            super::song_dirs(root)?,
+            [
+                root.join("Cfg"),
+                root.join("Midi"),
+                root.join("artist/album/Song")
+            ]
+        );
+        Ok(())
+    }
+
+    /// An unreadable subdirectory is passed over; an unreadable root fails.
+    #[cfg(unix)]
+    #[test]
+    fn song_dirs_passes_over_an_unreadable_subdirectory() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Foo", "Locked/Bar"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        assert!(super::song_dirs(&root.join("missing")).is_err());
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(root.join("Locked")).is_ok() {
+            // Running as root: the folder reads all the same.
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+            return Ok(());
+        }
+        let dirs = super::song_dirs(root);
+        // On main, init failed here: it read each folder under the root.
+        let count = initialize_songs(root, crate::lighting::effects::LayerSet::standard());
+        let locked = super::song_dirs(&root.join("Locked"));
+        // The player's loader still fails on it, as on main.
+        let loaded = get_all_songs(root);
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+        assert_eq!(dirs?, [root.join("Foo")]);
+        assert_eq!(count?, 1);
+        assert!(root.join("Foo/song.yaml").exists());
+        assert!(locked.is_err());
+        assert!(loaded.is_err(), "the loader fails on an unreadable folder");
+        assert!(!root.join("Locked/Bar/song.yaml").exists());
+        Ok(())
+    }
+
+    /// `songs --init .` in a project writes a config into each song folder
+    /// that has none, nested ones too, and nowhere else: not into `.git/`,
+    /// `lighting/` or `playlists/`, and not over a hand-edited `song.yaml`
+    /// or a `song.yaml` of another kind.
+    #[test]
+    fn initialize_songs_writes_into_song_folders_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            ".git",
+            "lighting",
+            "playlists",
+            "songs/Foo",
+            "songs/Bar",
+            "songs/artist/Baz",
+            "songs/Odd",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for dir in ["songs/Foo", "songs/Bar", "songs/artist/Baz", "songs/Odd"] {
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+        fs::write(root.join("lighting/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs: []\n",
+        )?;
+        let hand_edited = "# mine\nname: Foo Live\ntracks:\n  - name: t\n    file: t.wav\n";
+        fs::write(root.join("songs/Foo/song.yaml"), hand_edited)?;
+        let other_kind = "kind: playlist\nsongs: []\n";
+        fs::write(root.join("songs/Odd/song.yaml"), other_kind)?;
+
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            4
+        );
+
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Foo/song.yaml"))?,
+            hand_edited
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Odd/song.yaml"))?,
+            other_kind
+        );
+        for dir in ["songs/Bar", "songs/artist/Baz"] {
+            assert!(root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
+        for dir in [".git", "lighting", "playlists", "songs", "songs/artist", ""] {
+            assert!(!root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
+        Ok(())
+    }
+
+    /// The names `songs --init` gives its new songs (`new_songs`): two
+    /// `stems/` folders take their paths; a folder named as a song already
+    /// configured (`Old/song.yaml` naming "Intro"), or as a song that fails
+    /// to load but declares a name ("Outro"), takes its path, else the first
+    /// free ` (2)`. The loader then loads every song under its own name.
+    #[test]
+    fn initialize_songs_names_new_songs_past_taken_names() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            "SongA/stems",
+            "SongB/stems",
+            "set/Intro",
+            "Outro",
+            "Old",
+            "Broken",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for dir in ["SongA/stems", "SongB/stems", "set/Intro", "Outro", "Old"] {
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        fs::write(
+            root.join("Broken/song.yaml"),
+            "name: Outro\ntracks:\n  - name: t\n    file: missing.wav\n",
+        )?;
+        let before = get_all_songs(root)?;
+        assert!(before.failure("Outro").is_some(), "Outro fails to load");
+
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            6
+        );
+
+        let name = |dir: &str| -> Result<String, Box<dyn Error>> {
+            Ok(
+                crate::config::Song::deserialize(&root.join(dir).join("song.yaml"))?
+                    .name()
+                    .to_string(),
+            )
+        };
+        assert_eq!(name("SongA/stems")?, "SongA/stems");
+        assert_eq!(name("SongB/stems")?, "SongB/stems");
+        assert_eq!(name("set/Intro")?, "set/Intro");
+        assert_eq!(name("Outro")?, "Outro (2)");
+        let songs = get_all_songs(root)?;
+        let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "Intro",
+                "Outro (2)",
+                "SongA/stems",
+                "SongB/stems",
+                "set/Intro"
+            ]
+        );
+        Ok(())
+    }
+
+    /// A new song that nothing contests keeps its own name before another is
+    /// given a suffix: beside `Old/song.yaml` naming "B", a new `B/` is
+    /// `B (3)`, as the new `B (2)/` keeps `B (2)`.
+    #[test]
+    fn new_songs_keep_uncontested_names_before_suffixes() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Old", "B", "B (2)"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+
+        let found = super::new_songs(root, std::collections::HashSet::new())?;
+
+        let names: Vec<_> = found
+            .new
+            .iter()
+            .map(|song| (song.dir.clone(), song.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [(root.join("B"), "B (3)"), (root.join("B (2)"), "B (2)")]
+        );
+        assert_eq!(found.kept, [root.join("Old")]);
+        Ok(())
+    }
+
+    /// The names no new song may be given are the player's and those
+    /// configured under the songs root; an unreadable root leaves the
+    /// player's alone, with a warning, rather than failing.
+    #[test]
+    fn taken_song_names_adds_configured_names_and_passes_over_a_missing_root(
+    ) -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Old"))?;
+        crate::testutil::write_wav(root.join("Old/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        let loaded = std::collections::HashSet::from(["Loaded".to_string()]);
+
+        assert_eq!(
+            super::taken_song_names(root, loaded.clone()),
+            std::collections::HashSet::from(["Loaded".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            super::taken_song_names(&root.join("missing"), loaded.clone()),
+            loaded
+        );
+        Ok(())
+    }
+
+    /// `songs --init` does not follow a symlinked folder, as on main: a song
+    /// outside the tree is not written into.
+    #[cfg(unix)]
+    #[test]
+    fn initialize_songs_does_not_follow_symlinked_folders() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path().join("songs");
+        let outside = tempdir.path().join("outside/Song");
+        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&outside)?;
+        crate::testutil::write_wav(outside.join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        std::os::unix::fs::symlink(tempdir.path().join("outside"), root.join("Linked"))?;
+        std::os::unix::fs::symlink(&outside, root.join("Song"))?;
+
+        assert_eq!(super::song_dirs(&root)?, Vec::<PathBuf>::new());
+        assert_eq!(
+            initialize_songs(&root, crate::lighting::effects::LayerSet::standard())?,
+            0
+        );
+        assert!(!outside.join("song.yaml").exists());
+        Ok(())
+    }
+
+    /// A folder holding only a `song.yaml` of another kind, and no audio or
+    /// MIDI, is no song folder: the walk looks into it, and init leaves the
+    /// file as it is.
+    #[test]
+    fn song_dirs_looks_into_a_folder_with_another_kind_of_song_yaml() -> Result<(), Box<dyn Error>>
+    {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Pl/Inner"))?;
+        let playlist = "kind: playlist\nsongs: []\n";
+        fs::write(root.join("Pl/song.yaml"), playlist)?;
+        crate::testutil::write_wav(root.join("Pl/Inner/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+
+        assert_eq!(super::song_dirs(root)?, [root.join("Pl/Inner")]);
+        assert_eq!(
+            initialize_songs(root, crate::lighting::effects::LayerSet::standard())?,
+            1
+        );
+        assert_eq!(fs::read_to_string(root.join("Pl/song.yaml"))?, playlist);
+        assert!(root.join("Pl/Inner/song.yaml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_skips_non_file_entries() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        // Create a subdirectory inside the song directory (skipped with warning)
+        fs::create_dir(song_dir.join("subdir"))?;
+        // Also add a real WAV so initialize doesn't fail
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        let song = super::Song::initialize(&song_dir)?;
+        // Should have the track but not the subdir
+        assert_eq!(song.tracks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_mono() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("track.wav");
+        crate::testutil::write_wav(wav_path, vec![vec![1_i32; 4410]], 44100)?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16, 2]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_stereo() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("stereo.wav"),
+            vec![vec![1_i32; 4410], vec![2_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("left".to_string(), "stereo.wav", Some(1)),
+                crate::config::Track::new("right".to_string(), "stereo.wav", Some(2)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("left".to_string(), vec![1_u16]);
+        mappings.insert("right".to_string(), vec![2_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_with_start_time() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track.wav"),
+            vec![vec![1_i32; 44100]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::from_millis(500),
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_unmapped_track() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mappings = std::collections::HashMap::new();
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_multiple_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("file_a.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("file_b.wav"),
+            vec![vec![2_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "multi",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("a".to_string(), "file_a.wav", Some(1)),
+                crate::config::Track::new("b".to_string(), "file_b.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("a".to_string(), vec![1_u16]);
+        mappings.insert("b".to_string(), vec![2_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_seek_past_short_track() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // A 2s main track and a 0.1s stub (like the empty.wav padding some
+        // repositories use). Seeking past the stub must skip it instead of
+        // failing the whole restart with an out-of-range seek.
+        crate::testutil::write_wav(
+            tempdir.path().join("long.wav"),
+            vec![vec![1_i32; 88200]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("short.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "seek-short",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("main".to_string(), "long.wav", Some(1)),
+                crate::config::Track::new("stub".to_string(), "short.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("main".to_string(), vec![1_u16]);
+        mappings.insert("stub".to_string(), vec![2_u16]);
+
+        // Seek to 1s: the stub file (0.1s) is skipped, the main file plays.
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::from_secs(1),
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // From the start both files play.
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_with_metronome() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("metronome_song");
+        fs::create_dir(&song_dir)?;
+        // 2 seconds of silence at 44.1k.
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![0_i32; 88200]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Metronome Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+metronome: {}
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        assert_eq!(
+            song.output_track_names(),
+            vec!["track".to_string(), "metronome".to_string()]
+        );
+
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+
+        // Without the metronome mapped, only the file source is produced.
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // With the metronome mapped, the virtual source is appended.
+        mappings.insert("metronome".to_string(), vec![2_u16]);
+        let mut sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+
+        let metronome_source = sources
+            .iter_mut()
+            .find(|s| s.channel_mappings() == [vec!["metronome".to_string()]])
+            .expect("metronome source present");
+        // The first click starts at t=0 — the opening frames carry energy.
+        let mut buf = vec![0.0f32; 512];
+        let frames = metronome_source.read_frames(&mut buf, 512)?;
+        assert_eq!(frames, 512);
+        let peak = buf.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.1, "metronome should click at t=0, peak was {peak}");
+        Ok(())
+    }
+
+    #[test]
+    fn pilot_hints_resolve_and_render() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pilot_song");
+        fs::create_dir(&song_dir)?;
+        // 8 seconds of silence, plus a 0.5s hint clip.
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![0_i32; 44100 * 8]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            song_dir.join("bridge.wav"),
+            vec![vec![1_000_000_000_i32; 22050]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Pilot Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+pilot:
+  hints:
+    - at: { measure: 2 }
+      label: "bridge in 3..2..1"
+      file: bridge.wav
+    - at: { time: 5.0 }
+      label: "solo"
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+
+        // Measure 2 at 120 BPM 4/4 starts at 2.0s. The clip aligns `end`
+        // there, so its audio starts at 1.5s.
+        let hints = song.pilot_hints();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].label, "bridge in 3..2..1");
+        assert!((hints[0].at_secs - 2.0).abs() < 1e-6);
+        assert!((hints[0].start_secs - 1.5).abs() < 1e-3);
+        assert!((hints[0].end_secs - 2.0).abs() < 1e-3);
+        assert!(hints[0].file.is_some());
+        // Label-only hint collapses to its anchor.
+        assert_eq!(hints[1].label, "solo");
+        assert!((hints[1].at_secs - 5.0).abs() < 1e-6);
+        assert!(hints[1].file.is_none());
+
+        assert_eq!(
+            song.output_track_names(),
+            vec!["track".to_string(), "pilot".to_string()]
+        );
+
+        // The pilot source renders the clip at 1.5s.
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        mappings.insert("pilot".to_string(), vec![2_u16]);
+        let mut sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        let pilot_source = sources
+            .iter_mut()
+            .find(|s| s.channel_mappings() == [vec!["pilot".to_string()]])
+            .expect("pilot source present");
+        // Skip to just after 1.5s and confirm energy.
+        let mut buf = vec![0.0f32; 1024];
+        let mut skipped = 0usize;
+        while skipped < 66150 {
+            let frames = pilot_source.read_frames(&mut buf, 1024.min(66150 - skipped))?;
+            assert!(frames > 0);
+            skipped += frames;
+        }
+        let frames = pilot_source.read_frames(&mut buf, 1024)?;
+        assert_eq!(frames, 1024);
+        let peak = buf.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.1, "hint clip should sound at 1.5s, got {peak}");
+        Ok(())
+    }
+
+    #[test]
+    fn pilot_measure_hint_without_grid_fails() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("gridless_pilot");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Gridless\ntracks:\n  - name: track\n    file: track.wav\npilot:\n  hints:\n    - at: { measure: 2 }\n      label: x\n",
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let result = super::Song::new(&song_dir, &song_config);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .map(|e| e.to_string().contains("beat grid"))
+            .unwrap_or(false));
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_skips_non_song_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // Create a regular file that's not a song config
+        fs::write(tempdir.path().join("readme.txt"), "not a song")?;
+        // Create a WAV file at the top level (should be skipped — no .yaml)
+        crate::testutil::write_wav(
+            tempdir.path().join("random.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert!(songs.is_empty());
+        Ok(())
+    }
+
+    /// Writes `content` to `path` with a modified time `secs` past the
+    /// epoch, so an edit is seen as one however fast the test runs.
+    fn write_at(path: &Path, content: &str, secs: u64) -> Result<(), Box<dyn Error>> {
+        fs::write(path, content)?;
+        fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_show_file_edited_on_disk_is_what_the_song_plays_next() -> Result<(), Box<dyn Error>> {
+        // #585: a show was parsed once, at load; an edit outside mtrack
+        // never took effect, and one hot-reloaded during a playback was
+        // gone at the next play.
+        let tempdir = tempfile::tempdir()?;
+        let path = tempdir.path().join("show.light");
+        let show = |name: &str, end: &str| {
+            format!(
+                "show \"{name}\" {{\n    @00:00.000\n    front: static color: \"blue\", duration: {end}\n}}\n"
+            )
+        };
+        write_at(&path, &show("before", "5s"), 1_000)?;
+        let song_config = crate::config::Song::new(
+            "Edited",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let names = |song: &super::Song| -> Vec<String> {
+            song.dsl_lighting_shows()[0]
+                .shows()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(names(&song), ["before"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(5));
+
+        write_at(&path, &show("after", "8s"), 2_000)?;
+        assert_eq!(names(&song), ["after"], "the edit was not picked up");
+        assert_eq!(
+            song.length(),
+            std::time::Duration::from_secs(8),
+            "a show-only song's length"
+        );
+
+        // A second save in the same tick of the clock, of another size.
+        write_at(&path, &show("same_tick", "12s"), 2_000)?;
+        assert_eq!(names(&song), ["same_tick"], "a same-tick save was missed");
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
+
+        // An edit that does not parse keeps the last good show.
+        write_at(&path, "show \"broken\" {", 3_000)?;
+        assert_eq!(names(&song), ["same_tick"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
+
+        // Fixed again, it is picked up again.
+        write_at(&path, &show("fixed", "3s"), 4_000)?;
+        assert_eq!(names(&song), ["fixed"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(3));
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_with_light_file() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("light_song");
+        fs::create_dir(&song_dir)?;
+
+        // Create a WAV file so the song has at least one track.
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // Create a valid .light DSL file.
+        let dsl = r#"show "test" {
+    @00:00.000
+    front: static color: "blue", duration: 5s
+}"#;
+        fs::write(song_dir.join("lighting.light"), dsl)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        assert_eq!(song.tracks().len(), 1, "Expected one audio track");
+        assert!(
+            !song.dsl_lighting_shows().is_empty(),
+            "Expected at least one DSL lighting show"
+        );
+        let dsl_show = &song.dsl_lighting_shows()[0];
+        assert!(
+            !dsl_show.shows().is_empty(),
+            "Expected parsed shows to be non-empty"
+        );
+        assert!(
+            dsl_show.shows().contains_key("test"),
+            "Expected a show named 'test'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_with_invalid_light_file() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("bad_light_song");
+        fs::create_dir(&song_dir)?;
+
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // Write invalid DSL content.
+        fs::write(song_dir.join("bad.light"), "show {")?;
+
+        let result = super::Song::initialize(&song_dir);
+        assert!(result.is_err(), "Expected an error for invalid .light file");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("Failed to parse DSL lighting show"),
+            "Error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn light_show_dmx_file_path() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let dmx_path = tempdir.path().join("dmx_show.mid");
+        fs::write(&dmx_path, "")?;
+
+        let light_show = super::LightShow {
+            universe_name: "test_universe".to_string(),
+            dmx_file: dmx_path.clone(),
+            midi_channels: vec![],
+        };
+        assert_eq!(light_show.dmx_file_path(), dmx_path.as_path());
+        Ok(())
+    }
+
+    /// `songs --init` reads a file's kind by its extension in any case
+    /// (`FileKind::of`): `Bass.WAV` is a track, `Song.MID` the MIDI
+    /// playback, `dmx_Lights.MID` a MIDI DMX light show and `Show.LIGHT` a
+    /// DSL light show, as the file listing and the upload call them.
+    #[test]
+    fn initialize_reads_extensions_in_any_case() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("loud");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("Bass.WAV"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("Song.MID"), &midi_bytes)?;
+        fs::write(song_dir.join("dmx_Lights.MID"), &midi_bytes)?;
+        fs::write(
+            song_dir.join("Show.LIGHT"),
+            "show \"loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}",
+        )?;
+
+        let song = super::Song::initialize(&song_dir)?;
+
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "bass");
+        assert!(song.midi_playback().is_some());
+        assert_eq!(song.light_shows().len(), 1);
+        assert_eq!(song.dsl_lighting_shows().len(), 1);
+        Ok(())
+    }
+
+    /// With every case counted, the last MIDI file by name is the playback:
+    /// `notes.mid` and `old.MID` give `old.MID` (main passed it over and
+    /// took `notes.mid`). A corrupt `Bad.WAV` now fails the song's init, as
+    /// a corrupt `bad.wav` already did.
+    #[test]
+    fn initialize_counts_every_case_when_picking_and_reading() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pick");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("notes.mid"), &midi_bytes)?;
+        fs::write(song_dir.join("old.MID"), &midi_bytes)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        let playback = song.midi_playback().expect("MIDI playback");
+        assert!(
+            playback.file_path().ends_with("old.MID"),
+            "{}",
+            playback.file_path().display()
+        );
+
+        fs::write(song_dir.join("Bad.WAV"), "")?;
+        assert!(super::Song::initialize(&song_dir).is_err());
+        Ok(())
+    }
+
+    /// `load_tracks` takes an audio file whatever its extension's case.
+    #[test]
+    fn track_load_tracks_uppercase_extension() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("Bass.WAV");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name(), "bass");
+        Ok(())
+    }
+
+    /// A song config's name stays lowercase (`is_yaml_config`): the loader
+    /// passes over a `song.YAML`, as on main.
+    #[test]
+    fn get_all_songs_passes_over_uppercase_yaml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("shouty");
+        fs::create_dir(&song_dir)?;
+        fs::write(
+            song_dir.join("song.YAML"),
+            "kind: song\nname: Shouty\ntracks: []\n",
+        )?;
+
+        let songs = super::get_all_songs(tempdir.path())?;
+
+        assert!(songs.list().is_empty());
+        assert!(songs.failures().is_empty());
+        Ok(())
+    }
+
+    /// A name is hidden when it starts with a dot, AppleDouble files too.
+    #[test]
+    fn is_hidden_is_a_leading_dot() {
+        for name in [".git", ".draft.light", "._Bass.wav", "Song/.song.yaml"] {
+            assert!(super::is_hidden(Path::new(name)), "{name}");
+        }
+        for name in ["Bass.wav", "a.b", ".git/song.yaml", "Song"] {
+            assert!(!super::is_hidden(Path::new(name)), "{name}");
+        }
+    }
+
+    /// The loader passes over a hidden directory but reads a hidden config.
+    #[test]
+    fn get_all_songs_passes_over_hidden_dirs_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        for (dir, file, name) in [
+            (".git", "song.yaml", "Git"),
+            ("Shown", ".song.yaml", "Shown"),
+        ] {
+            fs::create_dir(tempdir.path().join(dir))?;
+            fs::write(
+                tempdir.path().join(dir).join(file),
+                format!("name: {name}\ntracks: []\n"),
+            )?;
+        }
+        let songs = get_all_songs(tempdir.path())?;
+        let names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        assert_eq!(names, ["Shown"]);
+        Ok(())
+    }
+
+    /// A new config leaves hidden files out: a hidden track, a draft light
+    /// show, and an AppleDouble file, which is no audio and failed the init.
+    #[test]
+    fn initialize_leaves_hidden_files_out() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("song");
+        fs::create_dir(&song_dir)?;
+        for name in ["track.wav", ".click.wav"] {
+            crate::testutil::write_wav(song_dir.join(name), vec![vec![1_i32, 2, 3]], 44100)?;
+        }
+        fs::write(song_dir.join("._track.wav"), [0_u8, 5, 22, 7])?;
+        fs::write(song_dir.join(".draft.light"), "show \"Draft\" {}\n")?;
+
+        let config = super::Song::initialize(&song_dir)?.get_config();
+
+        let tracks: Vec<_> = config
+            .tracks()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(tracks, ["track"]);
+        assert!(config.lighting().is_none());
+        Ok(())
+    }
+
+    /// A song directory's config is named `song.yaml` or `song.yml`,
+    /// exactly as written.
+    #[test]
+    fn is_song_config_name_is_exact() {
+        for name in ["song.yaml", "song.yml", "Artist/Song/song.yml"] {
+            assert!(super::is_song_config_name(Path::new(name)), "{name}");
+        }
+        for name in [
+            "Song.yaml",
+            "song.YAML",
+            ".song.yaml",
+            "song.yaml.bak",
+            "album.yaml",
+            "song",
+        ] {
+            assert!(!super::is_song_config_name(Path::new(name)), "{name}");
+        }
+    }
+
+    /// A directory has a song config when it holds one the loader loads, by
+    /// whatever name (`song.yml`, `album.yaml`, the hidden `.song.yaml`), or a
+    /// `song.yaml`/`song.yml` that does not read. A playlist (`song.yml`
+    /// with `kind: playlist` too), a `song.YAML` (which the loader passes
+    /// over) or media alone is none.
+    #[test]
+    fn has_song_config_answers_as_the_loader_does() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song = |name: &str| format!("name: {name}\ntracks: []\n");
+        let layouts: &[(&str, &str, String, bool)] = &[
+            ("Yml", "song.yml", song("Yml"), true),
+            ("Album", "album.yaml", song("Album"), true),
+            ("Hidden", ".song.yaml", song("Hidden"), true),
+            ("Broken", "song.yaml", "{{not yaml".to_string(), true),
+            ("BrokenYml", "song.yml", "{{not yaml".to_string(), true),
+            (
+                "PlaylistYml",
+                "song.yml",
+                "kind: playlist\nsongs: []\n".to_string(),
+                false,
+            ),
+            (
+                "Set",
+                "set.yaml",
+                "kind: playlist\nsongs: []\n".to_string(),
+                false,
+            ),
+            ("Shouty", "song.YAML", song("Shouty"), false),
+            ("Media", "notes.txt", "hello".to_string(), false),
+        ];
+        for (dir, file, body, _) in layouts {
+            fs::create_dir(tempdir.path().join(dir))?;
+            fs::write(tempdir.path().join(dir).join(file), body)?;
+        }
+        fs::create_dir(tempdir.path().join("Empty"))?;
+        assert!(!super::has_song_config(&tempdir.path().join("Empty")));
+
+        let loaded = super::get_all_songs(tempdir.path())?;
+        for (dir, file, _, has) in layouts {
+            assert_eq!(
+                super::has_song_config(&tempdir.path().join(dir)),
+                *has,
+                "{dir}/{file}"
+            );
+        }
+        // The loader loads the ones that read, `.song.yaml` among them.
+        let mut names: Vec<_> = loaded.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["Album", "Hidden", "Yml"]);
+        Ok(())
+    }
+
+    /// A song's config file is its `song.yaml`, else its `song.yml`, else a
+    /// new `song.yaml`.
+    #[test]
+    fn song_config_file_is_song_yaml_else_song_yml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        assert_eq!(super::song_config_file(dir), dir.join("song.yaml"));
+        fs::write(dir.join("song.yml"), "name: A\ntracks: []\n")?;
+        assert_eq!(super::song_config_file(dir), dir.join("song.yml"));
+        fs::write(dir.join("song.yaml"), "name: A\ntracks: []\n")?;
+        assert_eq!(super::song_config_file(dir), dir.join("song.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_with_mixed_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("mixed_song");
+        fs::create_dir(&song_dir)?;
+
+        // Audio track
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // MIDI playback file (regular .mid)
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("song.mid"), &midi_bytes)?;
+
+        // MIDI DMX light show file (dmx_ prefix)
+        fs::write(song_dir.join("dmx_light.mid"), &midi_bytes)?;
+
+        // DSL lighting show file
+        let dsl = r#"show "mixed" {
+    @00:00.000
+    front: static color: "blue", duration: 5s
+}"#;
+        fs::write(song_dir.join("show.light"), dsl)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+
+        // Should have one audio track from the WAV file.
+        assert_eq!(song.tracks().len(), 1, "Expected one audio track");
+
+        // Should have MIDI playback from song.mid.
+        assert!(
+            song.midi_playback().is_some(),
+            "Expected MIDI playback from song.mid"
+        );
+
+        // Should have one MIDI DMX light show from dmx_light.mid.
+        assert_eq!(
+            song.light_shows().len(),
+            1,
+            "Expected one MIDI DMX light show from dmx_light.mid"
+        );
+
+        // Should have one DSL lighting show from show.light.
+        assert_eq!(
+            song.dsl_lighting_shows().len(),
+            1,
+            "Expected one DSL lighting show from show.light"
+        );
+        assert!(
+            song.dsl_lighting_shows()[0].shows().contains_key("mixed"),
+            "Expected parsed show named 'mixed'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_declared_song_invalid_yaml_produces_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "broken-song")?;
+        // kind: song is present, so the failure is recorded.
+        fs::write(
+            song_dir.join("song.yaml"),
+            "kind: song\nname: broken\n  bad indent!!",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "broken-song");
+        assert!(!songs.failures()[0].error().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undeclared_song_invalid_yaml_no_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "not-a-song")?;
+        // No kind field — silently skipped, no failure recorded.
+        fs::write(song_dir.join("song.yaml"), "{{invalid yaml!!")?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(
+            songs.failures().len(),
+            0,
+            "Expected no failures for undeclared YAML"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_missing_audio_produces_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "missing-audio")?;
+        // Song::new failure is always recorded regardless of kind.
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: missing-audio\ntracks:\n  - name: track1\n    file: nonexistent.wav\n",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "missing-audio");
+        Ok(())
+    }
+
+    #[test]
+    fn test_valid_and_invalid_songs_mixed() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+
+        // Create a valid song.
+        create_mono_song(temp_dir.path())?;
+        initialize_songs(
+            temp_dir.path(),
+            crate::lighting::effects::LayerSet::standard(),
+        )?;
+
+        // Create an invalid song with kind: song.
+        let broken_dir = create_song_dir(temp_dir.path(), "broken-song")?;
+        fs::write(
+            broken_dir.join("song.yaml"),
+            "kind: song\nname: broken\n  bad indent!!",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 1, "Expected one valid song");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "broken-song");
+        Ok(())
+    }
+
+    #[test]
+    fn test_playlist_yaml_not_treated_as_song() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let sub_dir = create_song_dir(temp_dir.path(), "playlists")?;
+        fs::write(
+            sub_dir.join("my_playlist.yaml"),
+            "kind: playlist\nsongs:\n  - song1\n",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0);
+        assert_eq!(
+            songs.failures().len(),
+            0,
+            "Playlist YAML should not produce a failure"
+        );
+        Ok(())
+    }
+
+    // ── resolve_section tests ────────────────────────────────────────
+
+    fn make_song_with_beat_grid() -> super::Song {
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        // 8 beats, measures at beats 0 and 4 (two 4-beat measures).
+        song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            measure_starts: vec![0, 4],
+        });
+        song.sections = vec![
+            crate::config::Section {
+                name: "verse".to_string(),
+                start_measure: 1,
+                end_measure: 2,
+                start_beat: None,
+                end_beat: None,
+                color: None,
+            },
+            crate::config::Section {
+                name: "chorus".to_string(),
+                start_measure: 2,
+                end_measure: 3,
+                start_beat: None,
+                end_beat: None,
+                color: None,
+            },
+        ];
+        song
+    }
+
+    #[test]
+    fn resolve_section_returns_correct_times() {
+        let song = make_song_with_beat_grid();
+        let (start, end) = song.resolve_section("verse").unwrap();
+        assert!((start.as_secs_f64() - 0.0).abs() < 0.001);
+        assert!((end.as_secs_f64() - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_second_section() {
+        let song = make_song_with_beat_grid();
+        let (start, end) = song.resolve_section("chorus").unwrap();
+        assert!(
+            (start.as_secs_f64() - 2.0).abs() < 0.001,
+            "chorus start should be ~2.0, got {}",
+            start.as_secs_f64()
+        );
+        // end_measure=3 is past the last measure: it ends where the last
+        // measure does, a beat after its last beat.
+        assert!(
+            (end.as_secs_f64() - 4.0).abs() < 0.001,
+            "chorus end should be ~4.0 (the end of the last measure), got {}",
+            end.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn resolve_section_not_found() {
+        let song = make_song_with_beat_grid();
+        assert!(song.resolve_section("bridge").is_none());
+    }
+
+    #[test]
+    fn resolve_section_no_beat_grid() {
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        song.sections = vec![crate::config::Section {
+            name: "verse".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: None,
+            end_beat: None,
+            color: None,
+        }];
+        // No beat grid set.
+        assert!(song.resolve_section("verse").is_none());
+    }
+
+    #[test]
+    fn resolve_section_measure_zero_returns_none() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bad".to_string(),
+            start_measure: 0, // Invalid: 1-indexed, so 0 means checked_sub fails.
+            end_measure: 2,
+            start_beat: None,
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("bad").is_none());
+    }
+
+    #[test]
+    fn resolve_section_start_beyond_grid() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "far".to_string(),
+            start_measure: 99,
+            end_measure: 100,
+            start_beat: None,
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("far").is_none());
+    }
+
+    #[test]
+    fn resolve_section_with_beats() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "riff".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(3.0), // beat 3 of measure 1 → 1.0s
+            end_beat: Some(2.0),   // beat 2 of measure 2 → 2.5s
+            color: None,
+        }];
+        let (start, end) = song.resolve_section("riff").unwrap();
+        assert!((start.as_secs_f64() - 1.0).abs() < 0.001);
+        assert!((end.as_secs_f64() - 2.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_with_fractional_beat() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "pickup".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(4.5), // halfway between beats 4 (1.5s) and 5 (2.0s)
+            end_beat: None,
+            color: None,
+        }];
+        let (start, _) = song.resolve_section("pickup").unwrap();
+        assert!((start.as_secs_f64() - 1.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_within_one_measure() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bar".to_string(),
+            start_measure: 1,
+            end_measure: 1,
+            start_beat: Some(2.0), // 0.5s
+            end_beat: Some(4.0),   // 1.5s
+            color: None,
+        }];
+        let (start, end) = song.resolve_section("bar").unwrap();
+        assert!((start.as_secs_f64() - 0.5).abs() < 0.001);
+        assert!((end.as_secs_f64() - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_beat_beyond_grid_returns_none() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bad".to_string(),
+            start_measure: 2,
+            end_measure: 3,
+            start_beat: Some(9.0), // measure 2 has only beats 5..8 of the grid
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("bad").is_none());
+    }
+
+    #[test]
+    fn resolve_section_beat_past_its_measure_returns_none() {
+        // Beat 5 of a four-beat measure is measure 2's downbeat, so the
+        // section quietly starts a measure later than it reads — and here
+        // the range still comes out forward, so nothing downstream notices.
+        // A beat has to stay inside the measure that names it.
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+            beats: (0..12).map(|i| i as f64 * 0.5).collect(),
+            measure_starts: vec![0, 4, 8],
+        });
+        song.sections = vec![crate::config::Section {
+            name: "spill".to_string(),
+            start_measure: 1,
+            end_measure: 3,
+            start_beat: Some(5.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("spill").is_none());
+    }
+
+    #[test]
+    fn a_section_from_the_last_beat_ends_with_its_measure() {
+        // The start is the grid's final beat (3.5s) and the end measure is
+        // past the grid: the section runs to the end of the last measure, a
+        // beat on, rather than collapsing to nothing on the final beat.
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "last".to_string(),
+            start_measure: 2,
+            end_measure: 5,
+            start_beat: Some(4.0),
+            end_beat: None,
+            color: None,
+        }];
+        let (start, end) = song.resolve_section("last").unwrap();
+        assert!((start.as_secs_f64() - 3.5).abs() < 0.001, "{start:?}");
+        assert!((end.as_secs_f64() - 4.0).abs() < 0.001, "{end:?}");
+    }
+
+    #[test]
+    fn metronome_default_resolution() {
+        // No tempo map: the default never applies.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_none());
+
+        // With a tempo map: default-on materializes a plain metronome.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        let tempo: crate::config::TempoConfig =
+            serde_json::from_value(serde_json::json!({"bpm": 120.0})).unwrap();
+        song.tempo_map = Some(tempo.to_tempo_map().unwrap());
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_some());
+
+        // Explicitly disabled block resolves to no metronome.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.metronome = Some(crate::config::MetronomeConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_none());
+
+        // Default off: absent stays absent, present block stays.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.metronome = Some(crate::config::MetronomeConfig::default());
+        song.apply_metronome_default(false);
+        assert!(song.metronome.is_some());
+    }
+
+    /// A song's summary lasts as long as the song does, whatever its tracks'
+    /// own lengths. The player's gRPC `Song` takes its duration from here.
+    #[test]
+    fn summary_takes_the_songs_duration_not_its_tracks() {
+        let mut song = super::Song::new_for_test("Proto Song", &["kick", "snare"]);
+        song.duration = std::time::Duration::from_secs(90);
+        assert_eq!(song.summary().duration, std::time::Duration::from_secs(90));
+    }
+
+    #[test]
+    fn sections_getter_returns_all_sections() {
+        let song = make_song_with_beat_grid();
+        assert_eq!(song.sections().len(), 2);
+        assert_eq!(song.sections()[0].name, "verse");
+        assert_eq!(song.sections()[1].name, "chorus");
+    }
+
+    /// A song with no audio is as long as its lighting: the last effect's
+    /// real end, a `clear` counted. With audio, the audio decides.
+    #[test]
+    fn a_song_with_no_audio_is_as_long_as_its_lighting() {
+        use std::time::Duration;
+        let shows = crate::lighting::parser::parse_light_shows(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             @00:12.000\n    clear()\n}\n",
+        )
+        .unwrap();
+        let dsls = vec![super::DslLightingShow::with_shows(
+            crate::lighting::effects::LayerSet::standard(),
+            PathBuf::from("show.light"),
+            shows,
+            None,
+            None,
+        )];
+        let song = super::Song {
+            lighting_end: parking_lot::Mutex::new((0, super::lighting_end(&dsls))),
+            dsl_lighting_shows: dsls,
+            ..Default::default()
+        };
+        assert_eq!(song.duration(), Duration::ZERO, "no audio");
+        assert_eq!(song.length(), Duration::from_secs(12));
+
+        // Files merge into one timeline as they do in playback: a clear in
+        // the outro file cuts the main file's bed.
+        let main = crate::lighting::parser::parse_light_shows(
+            "show \"main\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n}\n",
+        )
+        .unwrap();
+        let outro = crate::lighting::parser::parse_light_shows(
+            "show \"outro\" {\n    @00:10.000\n    clear()\n}\n",
+        )
+        .unwrap();
+        let two_files = vec![
+            super::DslLightingShow::with_shows(
+                crate::lighting::effects::LayerSet::standard(),
+                PathBuf::from("main.light"),
+                main,
+                None,
+                None,
+            ),
+            super::DslLightingShow::with_shows(
+                crate::lighting::effects::LayerSet::standard(),
+                PathBuf::from("outro.light"),
+                outro,
+                None,
+                None,
+            ),
+        ];
+        assert_eq!(super::lighting_end(&two_files), Duration::from_secs(10));
+
+        let with_audio = super::Song {
+            duration: Duration::from_secs(200),
+            ..song
+        };
+        assert_eq!(with_audio.length(), Duration::from_secs(200));
+    }
+}
+
+#[cfg(test)]
+mod song_config_for_test {
+    use super::check_song_config_for;
+
+    /// #680: a folder's config may be written or deleted as a song's only
+    /// when it is that song's, or no song's at all.
+    #[test]
+    fn a_config_is_written_only_as_the_song_it_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let config = foo.join("song.yaml");
+        // None there yet.
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Bar", None), Ok(()));
+        let refused = check_song_config_for(&config, "Foo", None).unwrap_err();
+        assert_eq!(refused.declares, "Bar");
+        assert_eq!(
+            refused.to_string(),
+            "Foo/song.yaml is the config of the song \"Bar\", not of \"Foo\"; it is left as it is"
+        );
+        // A song config that does not read goes by its folder, as the
+        // loader records its failure.
+        std::fs::write(&config, "kind: song\nname: Bar\ntracks: 5\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        assert!(check_song_config_for(&config, "Bar", None).is_err());
+        // A write of Bar's own config, under the folder's name, is Bar's
+        // edit; another song's config over it is not.
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", Some("Bar")), Ok(()));
+        assert!(check_song_config_for(&config, "Foo", Some("Foo")).is_err());
+        assert!(check_song_config_for(&config, "Foo", Some("Qux")).is_err());
+    }
+}

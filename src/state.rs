@@ -1362,7 +1362,7 @@ mod tests {
 
     /// A three-cell RGB bar at address 1: dimmer 1, cells at 2-4, 5-7, 8-10,
     /// the fixture-level colour ganged across them. Mirrors
-    /// `src/lighting/engine/tests/cell_tests.rs`'s `bar()`.
+    /// `crates/mtrack-core/src/lighting/engine/tests/cell_tests.rs`'s `bar()`.
     fn bar(name: &str) -> FixtureInfo {
         let cell = |n: &str, base: u16, x: f64| Cell {
             name: n.to_string(),

@@ -2479,37 +2479,37 @@ mod sample_source_tests {
 
     #[test]
     fn test_symphonia_can_decode_wav() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.wav"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k.wav"));
     }
 
     #[test]
     fn test_symphonia_can_decode_flac() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.flac"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k.flac"));
     }
 
     #[test]
     fn test_symphonia_can_decode_ogg_vorbis() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.ogg"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k.ogg"));
     }
 
     #[test]
     fn test_symphonia_can_decode_mp3() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.mp3"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k.mp3"));
     }
 
     #[test]
     fn test_symphonia_can_decode_aac() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.aac"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k.aac"));
     }
 
     #[test]
     fn test_symphonia_can_decode_alac() {
-        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k_alac.m4a"));
+        decode_some_samples_from(std::path::Path::new("../../assets/1Channel44.1k_alac.m4a"));
     }
 
     #[test]
     fn test_symphonia_can_decode_alac_stereo() {
-        decode_some_samples_from(std::path::Path::new("assets/2Channel44.1k_alac.m4a"));
+        decode_some_samples_from(std::path::Path::new("../../assets/2Channel44.1k_alac.m4a"));
     }
 
     // -----------------------------------------------------------------
@@ -3490,7 +3490,7 @@ mod sample_source_tests {
     fn test_audio_sample_source_mp3_duration() {
         // MP3 files typically don't have n_frames in their metadata,
         // exercising the Duration::ZERO fallback path in from_file.
-        let path = std::path::Path::new("assets/1Channel44.1k.mp3");
+        let path = std::path::Path::new("../../assets/1Channel44.1k.mp3");
         if !path.exists() {
             return; // Skip if fixture missing
         }
@@ -3506,7 +3506,7 @@ mod sample_source_tests {
     fn test_audio_sample_source_aac_duration() {
         // AAC files often don't report n_frames, exercising
         // the Duration::ZERO fallback in from_file (line 169).
-        let path = std::path::Path::new("assets/1Channel44.1k.aac");
+        let path = std::path::Path::new("../../assets/1Channel44.1k.aac");
         if !path.exists() {
             return;
         }
@@ -3519,7 +3519,7 @@ mod sample_source_tests {
     #[test]
     fn test_audio_sample_source_ogg_duration() {
         // OGG Vorbis — verify we can open and read duration.
-        let path = std::path::Path::new("assets/1Channel44.1k.ogg");
+        let path = std::path::Path::new("../../assets/1Channel44.1k.ogg");
         if !path.exists() {
             return;
         }
@@ -3795,7 +3795,7 @@ mod sample_source_tests {
         let tempdir = tempdir().unwrap();
 
         // Read the real FLAC file and truncate it mid-stream
-        let flac_data = std::fs::read("assets/1Channel44.1k.flac").unwrap();
+        let flac_data = std::fs::read("../../assets/1Channel44.1k.flac").unwrap();
         let truncated_path = tempdir.path().join("truncated.flac");
         // Keep header but cut off most of the data
         let truncate_at = flac_data.len() / 3;

@@ -18,11 +18,12 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{config, playsync::PlaybackSync, songs::Song};
 
-pub(crate) mod beat_clock;
 pub(crate) mod midir;
 pub(crate) mod mock;
 pub mod morningstar;
-pub(crate) mod playback;
+#[cfg(test)]
+pub(crate) use mtrack_core::midi::beat_clock;
+pub(crate) use mtrack_core::midi::playback;
 
 /// Typed errors for the MIDI subsystem.
 #[derive(Debug, thiserror::Error)]

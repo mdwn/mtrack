@@ -16,20 +16,14 @@
 
 use std::collections::HashMap;
 
+pub use mtrack_core::testutil::lighting::{create_test_fixture, on_channel, rgb, shows};
+
 use crate::lighting::{
     effects::FixtureInfo,
-    parser::{parse_light_shows, LightShow},
+    parser::LightShow,
     types::{ChannelDef, PhysicalRange, PhysicalUnit},
     EffectEngine,
 };
-
-/// The shows in `source`, in no particular order.
-pub fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("test show should parse")
-        .into_values()
-        .collect()
-}
 
 /// The shows in `source`, by name: for a test whose result depends on
 /// their order.
@@ -37,23 +31,6 @@ pub fn sorted_shows(source: &str) -> Vec<LightShow> {
     let mut parsed = shows(source);
     parsed.sort_by(|a, b| a.name.cmp(&b.name));
     parsed
-}
-
-/// An RGB fixture in universe 1 at `address`: red, green, blue on its
-/// first three channels.
-pub fn rgb(name: &str, address: u16) -> FixtureInfo {
-    let channels: HashMap<String, u16> = [("red", 1), ("green", 2), ("blue", 3)]
-        .into_iter()
-        .map(|(n, o)| (n.to_string(), o))
-        .collect();
-    FixtureInfo::new(
-        name.to_string(),
-        1,
-        address,
-        "RGB".to_string(),
-        channels,
-        None,
-    )
 }
 
 /// A fixture in `universe` at `address` with `channels`, each on the next

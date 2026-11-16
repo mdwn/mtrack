@@ -17,7 +17,7 @@ use midly::{Format, MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
 
 /// A single MIDI event with its absolute timestamp.
 #[derive(Clone)]
-pub(crate) struct TimedMidiEvent {
+pub struct TimedMidiEvent {
     pub time: Duration,
     pub channel: u8,
     pub message: MidiMessage,
@@ -26,29 +26,29 @@ pub(crate) struct TimedMidiEvent {
 /// Pre-computed, time-sorted MIDI event stream.
 /// Replaces nodi's Sheet + Ticker + Player with a single-pass pre-computation
 /// that goes directly from midly's TrackEvents to absolute-timestamped events.
-pub(crate) struct PrecomputedMidi {
+pub struct PrecomputedMidi {
     events: Vec<TimedMidiEvent>,
 }
 
 /// A tempo change at a specific tick position.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TempoEntry {
-    pub(crate) tick: u64,
-    pub(crate) micros_per_beat: u32,
+pub struct TempoEntry {
+    pub tick: u64,
+    pub micros_per_beat: u32,
 }
 
 /// A time signature from a specific tick position.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SignatureEntry {
-    pub(crate) tick: u64,
-    pub(crate) numerator: u8,
+pub struct SignatureEntry {
+    pub tick: u64,
+    pub numerator: u8,
     /// The denominator is `2^denominator_power`, as the file has it.
-    pub(crate) denominator_power: u8,
+    pub denominator_power: u8,
 }
 
 /// Default tempo: 120 BPM = 500_000 microseconds per beat, until a file's
 /// first tempo event.
-pub(crate) const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
+pub const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
 
 /// A MIDI file's timing: its tempo and time-signature events at their
 /// ticks, by the one rule for where a file's tempo lives. A Format 0 file's
@@ -57,9 +57,9 @@ pub(crate) const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
 /// before it. The tempo is 120 BPM until the first tempo event, and the
 /// last event at a tick wins. Playback, the beat clock and the tempo guess
 /// all read a file through this.
-pub(crate) struct MidiTiming {
-    pub(crate) tempo: Vec<TempoEntry>,
-    pub(crate) signatures: Vec<SignatureEntry>,
+pub struct MidiTiming {
+    pub tempo: Vec<TempoEntry>,
+    pub signatures: Vec<SignatureEntry>,
     pub(crate) ticks_per_beat: u16,
     /// The file's length in ticks: the longest track's.
     pub(crate) total_ticks: u64,
@@ -67,7 +67,7 @@ pub(crate) struct MidiTiming {
 
 impl MidiTiming {
     /// The timing of a parsed file's tracks.
-    pub(crate) fn of(tracks: &[Vec<TrackEvent<'_>>], ticks_per_beat: u16, format: Format) -> Self {
+    pub fn of(tracks: &[Vec<TrackEvent<'_>>], ticks_per_beat: u16, format: Format) -> Self {
         let mut timing = MidiTiming {
             tempo: Vec::new(),
             signatures: Vec::new(),
@@ -157,7 +157,7 @@ fn extract_meta(track: &[TrackEvent<'_>]) -> (Vec<TempoEntry>, Vec<SignatureEntr
 /// the first tempo event, each event's tempo from its tick on, the last at
 /// a tick winning. A walk only goes forward; a position behind the last is
 /// answered as the last.
-pub(crate) struct TempoWalk<'a> {
+pub struct TempoWalk<'a> {
     tempo: &'a [TempoEntry],
     ticks_per_beat: f64,
     next: usize,
@@ -169,7 +169,7 @@ pub(crate) struct TempoWalk<'a> {
 }
 
 impl<'a> TempoWalk<'a> {
-    pub(crate) fn new(tempo: &'a [TempoEntry], ticks_per_beat: u16) -> Self {
+    pub fn new(tempo: &'a [TempoEntry], ticks_per_beat: u16) -> Self {
         let ticks_per_beat = ticks_per_beat as f64;
         TempoWalk {
             tempo,
@@ -188,7 +188,7 @@ impl<'a> TempoWalk<'a> {
     }
 
     /// The time at `tick`, in microseconds, the walk advanced to it.
-    pub(crate) fn micros_at(&mut self, tick: f64) -> f64 {
+    pub fn micros_at(&mut self, tick: f64) -> f64 {
         while let Some(entry) = self.tempo.get(self.next) {
             if entry.tick as f64 > tick {
                 break;
@@ -207,7 +207,7 @@ impl<'a> TempoWalk<'a> {
     }
 
     /// The tick at `micros`, the walk advanced to the tempo in effect there.
-    pub(crate) fn tick_at(&mut self, micros: f64) -> f64 {
+    pub fn tick_at(&mut self, micros: f64) -> f64 {
         while let Some(entry) = self.tempo.get(self.next) {
             if entry.tick as f64 > self.tick {
                 let at = self.micros + (entry.tick as f64 - self.tick) * self.micros_per_tick;
@@ -339,7 +339,7 @@ impl PrecomputedMidi {
     }
 
     /// Creates a PrecomputedMidi by taking ownership of a Vec of events.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn from_events(events: Vec<TimedMidiEvent>) -> Self {
         PrecomputedMidi { events }
     }
@@ -357,7 +357,7 @@ impl PrecomputedMidi {
     }
 
     /// Returns true if there are no events.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }

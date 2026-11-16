@@ -713,7 +713,8 @@ mod test {
     use crate::{config, songs, songs::Songs};
 
     fn test_registry() -> Arc<Songs> {
-        songs::get_all_songs(Path::new("assets/songs")).expect("Parse songs should have succeeded.")
+        songs::get_all_songs(Path::new("../../assets/songs"))
+            .expect("Parse songs should have succeeded.")
     }
 
     /// A playlist's file is the name's YAML file; `all_songs` has none.

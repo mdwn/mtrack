@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-mod audio;
 mod examples;
 pub mod lighting;
 pub mod markdown;
@@ -26,5 +25,5 @@ mod polling;
 /// near. Every such wait uses this one.
 pub const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
-pub use audio::{audio_test_utils, write_wav, write_wav_with_bits};
+pub use mtrack_core::testutil::{audio_test_utils, write_wav, write_wav_with_bits};
 pub use polling::{eventually, eventually_async};

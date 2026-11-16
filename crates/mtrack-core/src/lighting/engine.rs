@@ -36,7 +36,7 @@ use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
 use crate::lighting::channels::{dmx_byte, dmx_word, CrossKind};
-pub(crate) use crate::lighting::channels::{fades_to_dark, is_position_channel};
+pub use crate::lighting::channels::{fades_to_dark, is_position_channel};
 
 /// The next [`EffectInstance::start_order`]: process-wide, as a seek's
 /// scratch engine hands its effects to the live one.
@@ -336,7 +336,7 @@ impl EffectEngine {
     }
 
     /// Returns whether a tempo map is currently set
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn has_tempo_map(&self) -> bool {
         self.tempo_map.is_some()
     }
@@ -714,7 +714,7 @@ impl EffectEngine {
     /// at a cut) reads where it got to. Live, the last frame lands up to a
     /// frame period earlier -- about 23 ms on a Pi, longer under load -- so
     /// the rig can hold it one frame short of that.
-    pub(crate) fn trace_wire(&mut self) {
+    pub fn trace_wire(&mut self) {
         self.tracing_wire = true;
     }
 
@@ -723,7 +723,7 @@ impl EffectEngine {
     /// engine's own frame: for an engine with no output of its own -- an
     /// offline evaluation, a test playing a show through. A frame that
     /// fails to render sends nothing.
-    pub(crate) fn render_and_send(&mut self, dt: Duration, song_time: Duration) {
+    pub fn render_and_send(&mut self, dt: Duration, song_time: Duration) {
         if self.update(dt, Some(song_time)).is_ok() {
             let frame = self.cache.get_cached().to_vec();
             self.send(&frame);
@@ -1791,7 +1791,7 @@ impl EffectEngine {
     /// many instants, each read as a start there reads it. For an offline
     /// evaluation, with the wire traced ([`Self::trace_wire`]). Returns the
     /// errors of the effects that would not start.
-    pub(crate) fn replay_sampled(
+    pub fn replay_sampled(
         &mut self,
         history: crate::lighting::timeline::SeekHistory,
         times: &[Duration],
@@ -2025,7 +2025,7 @@ impl EffectEngine {
     /// An engine to reckon a show's ends by, with no rig: effects start as
     /// they are, nothing renders, and each effect's end is kept as it goes
     /// (see `lighting::timeline::effect_ends`).
-    pub(crate) fn reckoner() -> Self {
+    pub fn reckoner() -> Self {
         Self {
             rigless: true,
             ends: Some(HashMap::new()),
@@ -2048,7 +2048,7 @@ impl EffectEngine {
 
     /// Starts `effect` `elapsed` into itself, as a seek to that far past its
     /// cue would: for tests of effects started part way.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn start_effect_part_way(
         &mut self,
         mut effect: EffectInstance,
@@ -2102,13 +2102,13 @@ impl EffectEngine {
     }
 
     /// Get the number of active effects
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn active_effects_count(&self) -> usize {
         self.active_effects.len()
     }
 
     /// Check if a specific effect is active
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn has_effect(&self, effect_id: &str) -> bool {
         self.active_effects.contains_key(effect_id)
     }
