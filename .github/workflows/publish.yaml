@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 jobs:
-  # Publishes mtrack to crates.io.
+  # Publishes mtrack-core and then mtrack to crates.io.
   publish:
     name: Publish to crates.io
     if: github.event_name == 'push'
@@ -26,15 +26,10 @@ jobs:
     - uses: actions/checkout@v7
     # A tag whose version was never bumped in Cargo.toml used to fail only at
     # `cargo publish` ("version already uploaded") — after the GitHub release
-    # already existed. Fail the whole pipeline up front instead.
-    - name: Verify tag matches crate version
-      run: |
-        CRATE_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-        if [ "v${CRATE_VERSION}" != "${GITHUB_REF_NAME}" ]; then
-          echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CRATE_VERSION}." >&2
-          echo "Bump the version (and Cargo.lock) before tagging." >&2
-          exit 1
-        fi
+    # already existed. Fail the whole pipeline up front instead. mtrack-core
+    # is released with the player, at the same version.
+    - name: Verify tag matches crate versions
+      run: scripts/check-versions.sh "${GITHUB_REF_NAME}"
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libdbus-1-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
@@ -56,13 +51,25 @@ jobs:
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
       run: make build-ui
-    # The player depends on crates/mtrack-core, which is not on crates.io
-    # (`publish = false` there). Until it is published, this step fails and
-    # nothing after it runs.
-    - name: Run publish
+    # The player depends on mtrack-core, and crates.io takes no crate whose
+    # dependency it does not have: mtrack-core goes first. Passed over when
+    # this version of it is there already, so the job can be run again after
+    # the player's own publish failed.
+    - name: Publish mtrack-core
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      run: cargo publish --locked --allow-dirty
+      run: |
+        version="${GITHUB_REF_NAME#v}"
+        if curl -sf -A "mtrack-release (github.com/mdwn/mtrack)" \
+            "https://crates.io/api/v1/crates/mtrack-core/${version}" > /dev/null; then
+          echo "mtrack-core ${version} is on crates.io already."
+        else
+          cargo publish -p mtrack-core --locked --allow-dirty
+        fi
+    - name: Publish mtrack
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      run: cargo publish -p mtrack --locked --allow-dirty
 
   # Creates a release on Github. Gated on the crates.io publish so a bad tag
   # (wrong version, packaging failure) doesn't leave a half-made release to

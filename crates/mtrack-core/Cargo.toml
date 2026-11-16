@@ -6,10 +6,9 @@ version = "0.18.1"
 authors = ["Michael Wilson <mike@mdwn.dev>"]
 edition = "2021"
 repository = "https://github.com/mdwn/mtrack"
-# Not on crates.io yet. The player depends on it, and crates.io takes no
-# crate whose dependency it does not have: this has to be published before
-# the player's next release tag (.github/workflows/publish.yaml).
-publish = false
+readme = "README.md"
+keywords = ["audio"]
+categories = ["multimedia", "multimedia::audio"]
 
 [features]
 # Derives the TypeScript types of the structs the web UI's rules module
