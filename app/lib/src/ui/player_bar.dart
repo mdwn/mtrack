@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import '../app/failure.dart';
 import '../app/session.dart';
 import '../protocol/player_channel.dart';
+import 'demo_banner.dart';
 import 'session_scope.dart';
 import 'settings_sheet.dart';
 import 'theme.dart';
@@ -40,7 +41,11 @@ class PlayerBar extends StatelessWidget {
     final colors = context.colors;
     final up = session.phase == ConnectionPhase.ready;
     final carrier = session.carrier;
-    final over = carrier == null ? '' : ' over ${carrierName(carrier)}';
+    final over = switch (carrier) {
+      null => '',
+      Carrier.demo => ' to the demo',
+      _ => ' over ${carrierName(carrier)}',
+    };
     final name = title ?? session.playerName ?? 'mtrack';
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 8, 6, 0),
@@ -78,7 +83,11 @@ class PlayerBar extends StatelessWidget {
           if (carrier != null) ...[
             const SizedBox(width: 6),
             Icon(
-              carrier == Carrier.wifi ? Icons.wifi : Icons.bluetooth,
+              switch (carrier) {
+                Carrier.wifi => Icons.wifi,
+                Carrier.bluetooth => Icons.bluetooth,
+                Carrier.demo => demoIcon,
+              },
               size: 15,
               color: colors.muted,
               semanticLabel: carrierName(carrier),
