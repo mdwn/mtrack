@@ -1,0 +1,1288 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+use std::{collections::HashMap, error::Error};
+
+use midly::live::LiveEvent;
+use serde::{Deserialize, Serialize};
+
+use super::midi::{self, ToMidiEvent};
+use super::midi_event::MidiEvent;
+
+pub const DEFAULT_GRPC_PORT: u16 = 43234;
+pub const DEFAULT_OSC_PORT: u16 = 43235;
+pub const DEFAULT_MCP_PORT: u16 = 43237;
+pub const DEFAULT_MCP_BIND_ADDRESS: &str = "127.0.0.1";
+
+/// The address the gRPC controller listens on unless told another: every
+/// interface.
+pub const DEFAULT_GRPC_BIND_ADDRESS: &str = "0.0.0.0";
+
+fn default_osc_play() -> String {
+    "/mtrack/play".to_string()
+}
+fn default_osc_pause() -> String {
+    "/mtrack/pause".to_string()
+}
+fn default_osc_prev() -> String {
+    "/mtrack/prev".to_string()
+}
+fn default_osc_next() -> String {
+    "/mtrack/next".to_string()
+}
+fn default_osc_stop() -> String {
+    "/mtrack/stop".to_string()
+}
+fn default_osc_all_songs() -> String {
+    "/mtrack/all_songs".to_string()
+}
+fn default_osc_playlist() -> String {
+    "/mtrack/playlist".to_string()
+}
+fn default_osc_stop_samples() -> String {
+    "/mtrack/samples/stop".to_string()
+}
+fn default_osc_section_ack() -> String {
+    "/mtrack/section_ack".to_string()
+}
+fn default_osc_stop_section_loop() -> String {
+    "/mtrack/stop_section_loop".to_string()
+}
+fn default_osc_loop_section() -> String {
+    "/mtrack/loop_section".to_string()
+}
+fn default_osc_ambient_on() -> String {
+    "/mtrack/ambient/on".to_string()
+}
+fn default_osc_ambient_off() -> String {
+    "/mtrack/ambient/off".to_string()
+}
+fn default_osc_ambient_auto() -> String {
+    "/mtrack/ambient/auto".to_string()
+}
+fn default_osc_cancel_auto_play() -> String {
+    "/mtrack/auto_play/cancel".to_string()
+}
+fn default_osc_seek() -> String {
+    "/mtrack/seek".to_string()
+}
+fn default_osc_seek_section() -> String {
+    "/mtrack/seek_section".to_string()
+}
+fn default_osc_track_gain() -> String {
+    "/mtrack/track/*/gain".to_string()
+}
+fn default_osc_status() -> String {
+    "/mtrack/status".to_string()
+}
+fn default_osc_audio_health() -> String {
+    "/mtrack/audio/health".to_string()
+}
+fn default_osc_playlist_current() -> String {
+    "/mtrack/playlist/current".to_string()
+}
+fn default_osc_playlist_current_song() -> String {
+    "/mtrack/playlist/current_song".to_string()
+}
+fn default_osc_playlist_current_song_elapsed() -> String {
+    "/mtrack/playlist/current_song/elapsed".to_string()
+}
+fn default_osc_timeline() -> String {
+    "/mtrack/timeline".to_string()
+}
+
+/// Allows users to specify various controllers.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Controller {
+    Ble(BleController),
+    Grpc(GrpcController),
+    Mcp(McpController),
+    Midi(MidiController),
+    Multi(HashMap<String, Controller>),
+    Osc(Box<OscController>),
+}
+
+/// The kind of a [`Controller`], as its `kind` tag names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
+pub enum ControllerKind {
+    Ble,
+    Grpc,
+    Mcp,
+    Midi,
+    Multi,
+    Osc,
+}
+
+impl ControllerKind {
+    /// The `kind` tag, as serde writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ControllerKind::Ble => "ble",
+            ControllerKind::Grpc => "grpc",
+            ControllerKind::Mcp => "mcp",
+            ControllerKind::Midi => "midi",
+            ControllerKind::Multi => "multi",
+            ControllerKind::Osc => "osc",
+        }
+    }
+
+    /// Every kind's tag, as a sentence lists them: `` `grpc`, `mcp` ``….
+    pub fn names() -> String {
+        use strum::VariantArray;
+        ControllerKind::VARIANTS
+            .iter()
+            .map(|kind| format!("`{}`", kind.name()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl Controller {
+    /// The controller's kind.
+    pub fn kind(&self) -> ControllerKind {
+        match self {
+            Controller::Ble(_) => ControllerKind::Ble,
+            Controller::Grpc(_) => ControllerKind::Grpc,
+            Controller::Mcp(_) => ControllerKind::Mcp,
+            Controller::Midi(_) => ControllerKind::Midi,
+            Controller::Multi(_) => ControllerKind::Multi,
+            Controller::Osc(_) => ControllerKind::Osc,
+        }
+    }
+}
+
+/// The configuration that maps MIDI events to controller messages.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct MidiController {
+    /// The MIDI event to look for to play the current song in the playlist.
+    play: MidiEvent,
+    /// The MIDI event to look for to move the playlist to the previous item.
+    prev: MidiEvent,
+    /// The MIDI event to look for to move the playlist to the next item.
+    next: MidiEvent,
+    /// The MIDI event to look for to stop playback.
+    stop: MidiEvent,
+    /// The MIDI event to look for to switch from the current playlist to an all songs playlist.
+    all_songs: MidiEvent,
+    /// The MIDI event to look for to switch back to the current playlist.
+    playlist: MidiEvent,
+    /// The MIDI event to acknowledge the current section (arm section loop).
+    #[serde(default)]
+    section_ack: Option<MidiEvent>,
+    /// The MIDI event to break out of the current section loop.
+    #[serde(default)]
+    stop_section_loop: Option<MidiEvent>,
+    /// The MIDI event to hold ambient light up (ambient mode `on`).
+    #[serde(default)]
+    ambient_on: Option<MidiEvent>,
+    /// The MIDI event to turn ambient light off (ambient mode `off`).
+    #[serde(default)]
+    ambient_off: Option<MidiEvent>,
+    /// The MIDI event to give ambient light back to the player (ambient
+    /// mode `auto`).
+    #[serde(default)]
+    ambient_auto: Option<MidiEvent>,
+    /// The MIDI event to call off an auto play waiting to start.
+    #[serde(default)]
+    cancel_auto_play: Option<MidiEvent>,
+    /// Optional Morningstar controller integration for automatic preset naming.
+    #[serde(default)]
+    morningstar: Option<MorningstarConfig>,
+}
+
+impl MidiController {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(
+        play: midi::Event,
+        prev: midi::Event,
+        next: midi::Event,
+        stop: midi::Event,
+        all_songs: midi::Event,
+        playlist: midi::Event,
+    ) -> MidiController {
+        MidiController {
+            play,
+            prev,
+            next,
+            stop,
+            all_songs,
+            playlist,
+            section_ack: None,
+            stop_section_loop: None,
+            ambient_on: None,
+            ambient_off: None,
+            ambient_auto: None,
+            cancel_auto_play: None,
+            morningstar: None,
+        }
+    }
+
+    /// Sets the ambient on, off and auto events.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_ambient(
+        mut self,
+        on: midi::Event,
+        off: midi::Event,
+        auto: midi::Event,
+    ) -> MidiController {
+        self.ambient_on = Some(on);
+        self.ambient_off = Some(off);
+        self.ambient_auto = Some(auto);
+        self
+    }
+
+    /// Sets the cancel auto play event.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_cancel_auto_play(mut self, event: midi::Event) -> MidiController {
+        self.cancel_auto_play = Some(event);
+        self
+    }
+    /// Gets the play event.
+    pub fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.play.to_midi_event()
+    }
+
+    /// Gets the prev event.
+    pub fn prev(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.prev.to_midi_event()
+    }
+
+    /// Gets the next event.
+    pub fn next(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.next.to_midi_event()
+    }
+
+    /// Gets the stop event.
+    pub fn stop(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.stop.to_midi_event()
+    }
+
+    /// Gets the all songs event.
+    pub fn all_songs(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.all_songs.to_midi_event()
+    }
+
+    /// Gets the playlist event.
+    pub fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.playlist.to_midi_event()
+    }
+
+    /// Gets the section ack event, if configured.
+    pub fn section_ack(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        self.section_ack
+            .as_ref()
+            .map(|e| e.to_midi_event())
+            .transpose()
+    }
+
+    /// Gets the stop section loop event, if configured.
+    pub fn stop_section_loop(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        self.stop_section_loop
+            .as_ref()
+            .map(|e| e.to_midi_event())
+            .transpose()
+    }
+
+    /// Gets the ambient on event, if configured.
+    pub fn ambient_on(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_on)
+    }
+
+    /// Gets the ambient off event, if configured.
+    pub fn ambient_off(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_off)
+    }
+
+    /// Gets the ambient auto event, if configured.
+    pub fn ambient_auto(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_auto)
+    }
+
+    /// Gets the cancel auto play event, if configured.
+    pub fn cancel_auto_play(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.cancel_auto_play)
+    }
+
+    /// Gets the optional Morningstar configuration.
+    pub fn morningstar(&self) -> Option<&MorningstarConfig> {
+        self.morningstar.as_ref()
+    }
+}
+
+fn optional_event(
+    event: &Option<midi::Event>,
+) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+    event.as_ref().map(|e| e.to_midi_event()).transpose()
+}
+
+/// The configuration for the Bluetooth LE remote: a GATT service a paired
+/// phone controls the player through, with no network.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct BleController {
+    /// The name the player advertises. Defaults to the machine's hostname,
+    /// which is not known until the controller starts.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl BleController {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(name: Option<&str>) -> BleController {
+        BleController {
+            name: name.map(str::to_string),
+        }
+    }
+
+    /// Gets the advertised name, when the config sets one. An empty or
+    /// blank name, as an emptied form field saves, is no name.
+    pub fn name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+}
+
+/// The configuration for the multitrack player gRPC server.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Clone, Deserialize, Serialize)]
+pub struct GrpcController {
+    /// The port to listen on.
+    #[serde(default)]
+    port: Option<u16>,
+    /// The address to listen on. Defaults to every interface (`0.0.0.0`).
+    /// `127.0.0.1` keeps the server to this machine: the `mtrack` CLI run
+    /// on it still reaches the player, and a phone over Wi-Fi does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bind_address: Option<String>,
+    /// Whether to advertise the player on the network by mDNS (DNS-SD,
+    /// `_mtrack._tcp`) so the phone app can list it. On by default. Only
+    /// the interfaces gRPC listens on carry it, and a controller bound to
+    /// loopback advertises nothing. `false` starts no mDNS at all.
+    #[serde(default = "default_advertise", skip_serializing_if = "is_true")]
+    advertise: bool,
+}
+
+fn default_advertise() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+impl Default for GrpcController {
+    fn default() -> Self {
+        GrpcController {
+            port: None,
+            bind_address: None,
+            advertise: default_advertise(),
+        }
+    }
+}
+
+impl GrpcController {
+    /// A controller on `port`. It does not advertise itself, unlike one
+    /// from a config: tests that start controllers should not put adverts on
+    /// the network of the machine running them.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(port: u16) -> GrpcController {
+        GrpcController {
+            port: Some(port),
+            advertise: false,
+            ..GrpcController::default()
+        }
+    }
+
+    /// A controller on `port` that advertises itself, as a configured one does.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn advertising(port: u16) -> GrpcController {
+        GrpcController {
+            port: Some(port),
+            ..GrpcController::default()
+        }
+    }
+
+    /// A controller on `port`, listening on `bind_address`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_bind_address(port: u16, bind_address: &str) -> GrpcController {
+        GrpcController {
+            port: Some(port),
+            bind_address: Some(bind_address.to_string()),
+            advertise: false,
+        }
+    }
+
+    /// Gets the address to listen on.
+    pub fn bind_address(&self) -> &str {
+        self.bind_address
+            .as_deref()
+            .unwrap_or(DEFAULT_GRPC_BIND_ADDRESS)
+    }
+
+    /// Gets the port to listen on.
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(DEFAULT_GRPC_PORT)
+    }
+
+    /// Whether to advertise the player by mDNS.
+    pub fn advertise(&self) -> bool {
+        self.advertise
+    }
+}
+
+fn default_mcp_bind_address() -> String {
+    DEFAULT_MCP_BIND_ADDRESS.to_string()
+}
+
+/// The configuration for the mtrack MCP (Model Context Protocol) server.
+///
+pub const DEFAULT_MCP_IDLE_TIMEOUT_SECS: u64 = 14400;
+
+fn default_mcp_idle_timeout_secs() -> Option<u64> {
+    Some(DEFAULT_MCP_IDLE_TIMEOUT_SECS)
+}
+
+/// Exposes mtrack to MCP-compatible clients (such as Claude Desktop or Claude
+/// Code) over a streamable HTTP transport. The server is bound to localhost
+/// by default — set `bind_address: "0.0.0.0"` to expose it on the network.
+/// When binding beyond localhost you should also set `bearer_token` so the
+/// MCP surface is not exposed unauthenticated.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Clone, Deserialize, Serialize)]
+pub struct McpController {
+    /// The port to listen on. Defaults to `DEFAULT_MCP_PORT`.
+    #[serde(default)]
+    port: Option<u16>,
+    /// The bind address. Defaults to localhost-only.
+    #[serde(default = "default_mcp_bind_address")]
+    bind_address: String,
+    /// Optional bearer token. When set, every request must carry an
+    /// `Authorization: Bearer <token>` header; mismatched or missing tokens
+    /// return HTTP 401. Recommended whenever `bind_address` is not localhost.
+    #[serde(default)]
+    bearer_token: Option<String>,
+    /// Idle timeout in seconds. A session whose inbound *and* outbound traffic
+    /// is quiet for this long is closed and its server-side resources released.
+    /// Defaults to 14400 (4 hours). Set to `null` to disable eviction.
+    ///
+    /// Server-pushed SSE notifications count as activity (see the response-body
+    /// wrapper in `controller/mcp.rs`), so a passive subscriber that's actively
+    /// receiving pushes stays alive without needing to send keepalive pings.
+    #[serde(default = "default_mcp_idle_timeout_secs")]
+    idle_session_timeout_secs: Option<u64>,
+    /// `Host` header values the server accepts, as DNS-rebinding protection.
+    /// Each entry is a host or `host:port` (`"mtrack.local"`,
+    /// `"192.168.1.20:43237"`). An empty list accepts any `Host`.
+    ///
+    /// When unset, a loopback `bind_address` accepts only `localhost`,
+    /// `127.0.0.1` and `::1`, and any other `bind_address` accepts every
+    /// `Host` — a server deliberately exposed on the network has to answer
+    /// to whatever name or address clients reach it by, and `bearer_token`
+    /// is what keeps a rebinding attacker's browser out.
+    #[serde(default)]
+    allowed_hosts: Option<Vec<String>>,
+}
+
+impl Default for McpController {
+    fn default() -> Self {
+        Self {
+            port: None,
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
+        }
+    }
+}
+
+impl McpController {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(port: u16) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_bearer_token(port: u16, token: &str) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: Some(token.to_string()),
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_allowed_hosts(port: u16, hosts: Option<Vec<String>>) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: hosts,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_idle_timeout(port: u16, idle_secs: Option<u64>) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: idle_secs,
+            allowed_hosts: None,
+        }
+    }
+
+    /// Gets the port to listen on.
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(DEFAULT_MCP_PORT)
+    }
+
+    /// Gets the bind address.
+    pub fn bind_address(&self) -> &str {
+        &self.bind_address
+    }
+
+    /// Returns the configured bearer token, if any.
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
+    }
+
+    /// The configured `Host` allowlist, if the config set one.
+    pub fn allowed_hosts(&self) -> Option<&[String]> {
+        self.allowed_hosts.as_deref()
+    }
+
+    /// Idle session timeout, if eviction is enabled.
+    pub fn idle_session_timeout(&self) -> Option<std::time::Duration> {
+        self.idle_session_timeout_secs
+            .map(std::time::Duration::from_secs)
+    }
+}
+
+/// The configuration for the multitrack player OSC server.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Clone, Deserialize, Serialize)]
+pub struct OscController {
+    /// The port to listen on.
+    #[serde(default = "default_osc_port")]
+    port: u16,
+    /// The broadcast addresses including the port.
+    #[serde(default)]
+    broadcast_addresses: Vec<String>,
+    /// The OSC address to look for to play the current song in the playlist.
+    #[serde(default = "default_osc_play")]
+    play: String,
+    /// The OSC address to pause playback while preserving the current position.
+    #[serde(default = "default_osc_pause")]
+    pause: String,
+    /// The OSC address to look for to move the playlist to the previous item.
+    #[serde(default = "default_osc_prev")]
+    prev: String,
+    /// The OSC address to look for to move the playlist to the next item.
+    #[serde(default = "default_osc_next")]
+    next: String,
+    /// The OSC address to look for to stop playback.
+    #[serde(default = "default_osc_stop")]
+    stop: String,
+    /// The OSC address to look for to switch from the current playlist to an all songs playlist.
+    #[serde(default = "default_osc_all_songs")]
+    all_songs: String,
+    /// The OSC address to look for to switch back to the current playlist.
+    #[serde(default = "default_osc_playlist")]
+    playlist: String,
+    /// The OSC address to look for to stop all triggered samples.
+    #[serde(default = "default_osc_stop_samples")]
+    stop_samples: String,
+    /// The OSC address to acknowledge the current section (arm section loop).
+    #[serde(default = "default_osc_section_ack")]
+    section_ack: String,
+    /// The OSC address to break out of the current section loop.
+    #[serde(default = "default_osc_stop_section_loop")]
+    stop_section_loop: String,
+    /// The OSC address to loop a specific section by name (takes a string arg).
+    #[serde(default = "default_osc_loop_section")]
+    loop_section: String,
+    /// The OSC address to seek within the current song (takes a numeric
+    /// seconds arg).
+    #[serde(default = "default_osc_seek")]
+    seek: String,
+    /// The OSC address to seek to the start of a named section (takes a
+    /// string arg).
+    #[serde(default = "default_osc_seek_section")]
+    seek_section: String,
+    /// The OSC address to hold ambient light up (ambient mode `on`).
+    #[serde(default = "default_osc_ambient_on")]
+    ambient_on: String,
+    /// The OSC address to turn ambient light off (ambient mode `off`).
+    #[serde(default = "default_osc_ambient_off")]
+    ambient_off: String,
+    /// The OSC address to give ambient light back to the player (ambient
+    /// mode `auto`).
+    #[serde(default = "default_osc_ambient_auto")]
+    ambient_auto: String,
+    /// The OSC address to call off an auto play waiting to start.
+    #[serde(default = "default_osc_cancel_auto_play")]
+    cancel_auto_play: String,
+    /// The OSC address pattern to set an output track's gain in dB (takes a
+    /// float arg). The `*` segment is the track name; the same pattern (with
+    /// the name substituted) is used for gain feedback broadcasts.
+    #[serde(default = "default_osc_track_gain")]
+    track_gain: String,
+    /// The OSC address to broadcast to display the current player status.
+    #[serde(default = "default_osc_status")]
+    status: String,
+    /// The OSC address to broadcast the audio output's health verdict:
+    /// "healthy", "recovering", "stalled" or "never_started".
+    ///
+    /// Separate from `status`, which reports what the *player* is doing. A
+    /// control surface wants both: the player can be playing while the audio
+    /// output is stalled, and that combination is the one worth a red light.
+    #[serde(default = "default_osc_audio_health")]
+    audio_health: String,
+    /// The OSC address to broadcast the current playlist songs.
+    #[serde(default = "default_osc_playlist_current")]
+    playlist_current: String,
+    /// The OSC address to broadcast to display the current song on the playlist.
+    #[serde(default = "default_osc_playlist_current_song")]
+    playlist_current_song: String,
+    /// The OSC address to broadcast to display the current song elapsed duration.
+    #[serde(default = "default_osc_playlist_current_song_elapsed")]
+    playlist_current_song_elapsed: String,
+    /// The OSC address to broadcast numeric playback progress and the current
+    /// song's dynamically named section boundaries.
+    #[serde(default = "default_osc_timeline")]
+    timeline: String,
+}
+
+fn default_osc_port() -> u16 {
+    DEFAULT_OSC_PORT
+}
+
+impl Default for OscController {
+    fn default() -> Self {
+        OscController {
+            port: DEFAULT_OSC_PORT,
+            broadcast_addresses: Vec::new(),
+            play: default_osc_play(),
+            pause: default_osc_pause(),
+            prev: default_osc_prev(),
+            next: default_osc_next(),
+            stop: default_osc_stop(),
+            all_songs: default_osc_all_songs(),
+            playlist: default_osc_playlist(),
+            stop_samples: default_osc_stop_samples(),
+            section_ack: default_osc_section_ack(),
+            stop_section_loop: default_osc_stop_section_loop(),
+            loop_section: default_osc_loop_section(),
+            seek: default_osc_seek(),
+            seek_section: default_osc_seek_section(),
+            ambient_on: default_osc_ambient_on(),
+            ambient_off: default_osc_ambient_off(),
+            ambient_auto: default_osc_ambient_auto(),
+            cancel_auto_play: default_osc_cancel_auto_play(),
+            track_gain: default_osc_track_gain(),
+            status: default_osc_status(),
+            audio_health: default_osc_audio_health(),
+            playlist_current: default_osc_playlist_current(),
+            playlist_current_song: default_osc_playlist_current_song(),
+            playlist_current_song_elapsed: default_osc_playlist_current_song_elapsed(),
+            timeline: default_osc_timeline(),
+        }
+    }
+}
+
+impl OscController {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new() -> OscController {
+        OscController::default()
+    }
+
+    /// Gets the port to listen on.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Gets the broadcast addresses to broadcast OSC status messages to.
+    pub fn broadcast_addresses(&self) -> &[String] {
+        &self.broadcast_addresses
+    }
+
+    /// Gets the play OSC address.
+    pub fn play(&self) -> &str {
+        &self.play
+    }
+
+    /// Gets the pause OSC address.
+    pub fn pause(&self) -> &str {
+        &self.pause
+    }
+
+    /// Gets the prev OSC address.
+    pub fn prev(&self) -> &str {
+        &self.prev
+    }
+
+    /// Gets the next OSC address.
+    pub fn next(&self) -> &str {
+        &self.next
+    }
+
+    /// Gets the stop OSC address.
+    pub fn stop(&self) -> &str {
+        &self.stop
+    }
+
+    /// Gets the all songs OSC address.
+    pub fn all_songs(&self) -> &str {
+        &self.all_songs
+    }
+
+    /// Gets the playlist OSC address.
+    pub fn playlist(&self) -> &str {
+        &self.playlist
+    }
+
+    /// Gets the stop samples OSC address.
+    pub fn stop_samples(&self) -> &str {
+        &self.stop_samples
+    }
+
+    /// Gets the section ack OSC address.
+    pub fn section_ack(&self) -> &str {
+        &self.section_ack
+    }
+
+    /// Gets the stop section loop OSC address.
+    pub fn stop_section_loop(&self) -> &str {
+        &self.stop_section_loop
+    }
+
+    /// Gets the loop section OSC address.
+    pub fn loop_section(&self) -> &str {
+        &self.loop_section
+    }
+
+    /// Gets the seek OSC address.
+    pub fn seek(&self) -> &str {
+        &self.seek
+    }
+
+    /// Gets the seek-to-section OSC address.
+    pub fn seek_section(&self) -> &str {
+        &self.seek_section
+    }
+
+    /// Gets the ambient on OSC address.
+    pub fn ambient_on(&self) -> &str {
+        &self.ambient_on
+    }
+
+    /// Gets the ambient off OSC address.
+    pub fn ambient_off(&self) -> &str {
+        &self.ambient_off
+    }
+
+    /// Gets the ambient auto OSC address.
+    pub fn ambient_auto(&self) -> &str {
+        &self.ambient_auto
+    }
+
+    /// Gets the cancel auto play OSC address.
+    pub fn cancel_auto_play(&self) -> &str {
+        &self.cancel_auto_play
+    }
+
+    /// Gets the OSC address pattern for setting an output track's gain.
+    pub fn track_gain(&self) -> &str {
+        &self.track_gain
+    }
+
+    /// Gets the player status.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// The address the audio health verdict is broadcast to.
+    pub fn audio_health(&self) -> &str {
+        &self.audio_health
+    }
+
+    /// Gets the playlist current OSC address.
+    pub fn playlist_current(&self) -> &str {
+        &self.playlist_current
+    }
+
+    /// Gets the playlist current song OSC address.
+    pub fn playlist_current_song(&self) -> &str {
+        &self.playlist_current_song
+    }
+
+    /// Gets the playlist current song elapsed OSC address.
+    pub fn playlist_current_song_elapsed(&self) -> &str {
+        &self.playlist_current_song_elapsed
+    }
+
+    /// Gets the numeric playback timeline and section-boundary OSC address.
+    pub fn timeline(&self) -> &str {
+        &self.timeline
+    }
+}
+
+/// Configuration for Morningstar MIDI controller integration.
+///
+/// When present, mtrack will send SysEx messages to update the current bank
+/// name on the controller whenever the current song changes.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct MorningstarConfig {
+    /// The Morningstar controller model.
+    model: MorningstarModel,
+    /// Whether to save the name to flash (true) or keep it temporary (false).
+    #[serde(default)]
+    save: bool,
+}
+
+impl MorningstarConfig {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(model: MorningstarModel, save: bool) -> MorningstarConfig {
+        MorningstarConfig { model, save }
+    }
+
+    /// Returns the device model ID byte for the SysEx message.
+    pub fn model_id(&self) -> u8 {
+        self.model.device_id()
+    }
+
+    /// Returns whether to save to flash.
+    pub fn save(&self) -> bool {
+        self.save
+    }
+
+    /// Returns the required bank name length for this model.
+    /// Names must be padded with spaces to exactly this length.
+    pub fn name_length(&self) -> usize {
+        self.model.name_length()
+    }
+}
+
+/// Morningstar controller model.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum MorningstarModel {
+    MC3,
+    MC6,
+    MC8,
+    #[serde(rename = "mc6pro")]
+    MC6Pro,
+    #[serde(rename = "mc8pro")]
+    MC8Pro,
+    #[serde(rename = "mc4pro")]
+    MC4Pro,
+    Custom(CustomModel),
+}
+
+impl MorningstarModel {
+    /// Returns the SysEx device ID byte for this model.
+    fn device_id(&self) -> u8 {
+        match self {
+            MorningstarModel::MC3 => 0x05,
+            MorningstarModel::MC6 => 0x03,
+            MorningstarModel::MC8 => 0x04,
+            MorningstarModel::MC6Pro => 0x06,
+            MorningstarModel::MC8Pro => 0x08,
+            MorningstarModel::MC4Pro => 0x09,
+            MorningstarModel::Custom(c) => c.model_id,
+        }
+    }
+
+    /// Returns the required bank name length for this model.
+    fn name_length(&self) -> usize {
+        match self {
+            MorningstarModel::MC3 => 16,
+            MorningstarModel::MC6 | MorningstarModel::MC8 => 24,
+            MorningstarModel::MC6Pro | MorningstarModel::MC8Pro | MorningstarModel::MC4Pro => 32,
+            MorningstarModel::Custom(_) => 32,
+        }
+    }
+}
+
+/// Custom Morningstar model with explicit device ID.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct CustomModel {
+    pub model_id: u8,
+}
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use config::{Config, File, FileFormat};
+
+    use super::*;
+
+    #[test]
+    fn grpc_default_port() {
+        let grpc = GrpcController::default();
+        assert_eq!(grpc.port(), DEFAULT_GRPC_PORT);
+    }
+
+    #[test]
+    fn grpc_custom_port() {
+        let grpc = GrpcController::new(9999);
+        assert_eq!(grpc.port(), 9999);
+    }
+
+    #[test]
+    fn grpc_serde_default() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.port(), DEFAULT_GRPC_PORT);
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_serde_custom_port() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("port: 5000", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.port(), 5000);
+        Ok(())
+    }
+
+    #[test]
+    fn osc_defaults() {
+        let osc = OscController::default();
+        assert_eq!(osc.port(), DEFAULT_OSC_PORT);
+        assert!(osc.broadcast_addresses().is_empty());
+        assert_eq!(osc.play(), "/mtrack/play");
+        assert_eq!(osc.pause(), "/mtrack/pause");
+        assert_eq!(osc.prev(), "/mtrack/prev");
+        assert_eq!(osc.next(), "/mtrack/next");
+        assert_eq!(osc.stop(), "/mtrack/stop");
+        assert_eq!(osc.all_songs(), "/mtrack/all_songs");
+        assert_eq!(osc.playlist(), "/mtrack/playlist");
+        assert_eq!(osc.stop_samples(), "/mtrack/samples/stop");
+        assert_eq!(osc.status(), "/mtrack/status");
+        assert_eq!(osc.playlist_current(), "/mtrack/playlist/current");
+        assert_eq!(osc.playlist_current_song(), "/mtrack/playlist/current_song");
+        assert_eq!(
+            osc.playlist_current_song_elapsed(),
+            "/mtrack/playlist/current_song/elapsed"
+        );
+        assert_eq!(osc.timeline(), "/mtrack/timeline");
+        assert_eq!(osc.ambient_on(), "/mtrack/ambient/on");
+        assert_eq!(osc.ambient_off(), "/mtrack/ambient/off");
+        assert_eq!(osc.ambient_auto(), "/mtrack/ambient/auto");
+        assert_eq!(osc.cancel_auto_play(), "/mtrack/auto_play/cancel");
+    }
+
+    #[test]
+    fn osc_serde_custom_addresses() -> Result<(), Box<dyn Error>> {
+        let osc: OscController = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                port: 9000
+                play: /custom/play
+                stop: /custom/stop
+                broadcast_addresses:
+                  - "192.168.1.100:9000"
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(osc.port(), 9000);
+        assert_eq!(osc.play(), "/custom/play");
+        assert_eq!(osc.stop(), "/custom/stop");
+        // Non-overridden fields keep defaults.
+        assert_eq!(osc.next(), "/mtrack/next");
+        assert_eq!(osc.prev(), "/mtrack/prev");
+        assert_eq!(
+            osc.broadcast_addresses(),
+            &["192.168.1.100:9000".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn midi_controller_events() -> Result<(), Box<dyn Error>> {
+        let mc = MidiController::new(
+            midi::note_on(1, 60, 127),
+            midi::note_on(1, 61, 127),
+            midi::note_on(1, 62, 127),
+            midi::note_on(1, 63, 127),
+            midi::note_on(1, 64, 127),
+            midi::note_on(1, 65, 127),
+        );
+        // Each accessor should produce a valid LiveEvent.
+        mc.play()?;
+        mc.prev()?;
+        mc.next()?;
+        mc.stop()?;
+        mc.all_songs()?;
+        mc.playlist()?;
+        // The ambient and auto play events are optional.
+        assert!(mc.ambient_on()?.is_none());
+        assert!(mc.cancel_auto_play()?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn midi_controller_ambient_and_auto_play_events_deserialize() -> Result<(), Box<dyn Error>> {
+        let note = |key: u8| format!("{{ type: note_on, channel: 16, key: {key}, velocity: 127 }}");
+        let yaml = format!(
+            "play: {}\nprev: {}\nnext: {}\nstop: {}\nall_songs: {}\nplaylist: {}\n\
+             ambient_on: {}\nambient_off: {}\nambient_auto: {}\ncancel_auto_play: {}\n",
+            note(0),
+            note(1),
+            note(2),
+            note(3),
+            note(4),
+            note(5),
+            note(10),
+            note(11),
+            note(12),
+            note(13),
+        );
+        let mc: MidiController = Config::builder()
+            .add_source(File::from_str(&yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(
+            mc.ambient_on()?,
+            Some(midi::note_on(16, 10, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.ambient_off()?,
+            Some(midi::note_on(16, 11, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.ambient_auto()?,
+            Some(midi::note_on(16, 12, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.cancel_auto_play()?,
+            Some(midi::note_on(16, 13, 127).to_midi_event()?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_grpc_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: grpc
+                port: 1234
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Grpc(grpc) => assert_eq!(grpc.port(), 1234),
+            _ => panic!("expected Grpc variant"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_bind_address_defaults_to_every_interface_and_is_read() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.bind_address(), "0.0.0.0");
+        // Not written back when it was not set.
+        assert!(!crate::util::to_yaml_string(&grpc)?.contains("bind_address"));
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("bind_address: 127.0.0.1", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.bind_address(), "127.0.0.1");
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_advertise_defaults_on_and_is_written_only_when_off() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(grpc.advertise());
+        // Not written back when it was not set.
+        assert!(!crate::util::to_yaml_string(&grpc)?.contains("advertise"));
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("advertise: false", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(!grpc.advertise());
+        assert!(crate::util::to_yaml_string(&grpc)?.contains("advertise: false"));
+        // Kept through a round trip.
+        let again: GrpcController = Config::builder()
+            .add_source(File::from_str(
+                &crate::util::to_yaml_string(&grpc)?,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert!(!again.advertise());
+        assert!(GrpcController::default().advertise());
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_default_port() {
+        let mcp = McpController::default();
+        assert_eq!(mcp.port(), DEFAULT_MCP_PORT);
+        assert_eq!(mcp.bind_address(), DEFAULT_MCP_BIND_ADDRESS);
+    }
+
+    #[test]
+    fn mcp_serde_default() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(mcp.port(), DEFAULT_MCP_PORT);
+        assert_eq!(mcp.bind_address(), DEFAULT_MCP_BIND_ADDRESS);
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_serde_custom() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                port: 9000
+                bind_address: "0.0.0.0"
+                bearer_token: "shhh"
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(mcp.port(), 9000);
+        assert_eq!(mcp.bind_address(), "0.0.0.0");
+        assert_eq!(mcp.bearer_token(), Some("shhh"));
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_serde_no_token() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(mcp.bearer_token().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_mcp_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: mcp
+                port: 7777
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Mcp(mcp) => assert_eq!(mcp.port(), 7777),
+            _ => panic!("expected Mcp variant"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_osc_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: osc
+                port: 5555
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Osc(osc) => assert_eq!(osc.port(), 5555),
+            _ => panic!("expected Osc variant"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ble_name_is_optional() -> Result<(), Box<dyn Error>> {
+        let bare: Controller = Config::builder()
+            .add_source(File::from_str("kind: ble", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        let named: Controller = Config::builder()
+            .add_source(File::from_str(
+                "kind: ble\nname: stage-left",
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match (bare, named) {
+            (Controller::Ble(bare), Controller::Ble(named)) => {
+                assert_eq!(bare.name(), None);
+                assert_eq!(named.name(), Some("stage-left"));
+            }
+            _ => panic!("expected Ble variants"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ble_round_trips_through_its_tag() -> Result<(), Box<dyn Error>> {
+        let controller = Controller::Ble(BleController::new(Some("mtrack")));
+        assert_eq!(controller.kind(), ControllerKind::Ble);
+        let yaml = crate::util::to_yaml_string(&controller)?;
+        assert!(yaml.contains("kind: ble"), "{yaml}");
+        assert!(yaml.contains("name: mtrack"), "{yaml}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_blank_ble_name_is_no_name() {
+        assert_eq!(BleController::new(None).name(), None);
+        assert_eq!(BleController::new(Some("")).name(), None);
+        assert_eq!(BleController::new(Some("  ")).name(), None);
+        assert_eq!(BleController::new(Some(" stage ")).name(), Some("stage"));
+    }
+}

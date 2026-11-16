@@ -1,0 +1,2011 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+use crate::lighting::parser::*;
+use std::time::Duration;
+
+#[test]
+fn test_sequence_definition_and_reference() {
+    let content = r#"
+sequence "color_cycle" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @2.000
+    front_wash: static, color: "green", duration: 5s
+    
+    @4.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "color_cycle"
+    
+    @6.000
+    sequence "color_cycle"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse shows with sequences: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    assert_eq!(shows.len(), 1);
+
+    let show = shows.get("Test Show").unwrap();
+    // The sequence should be expanded into 6 cues (3 from first reference, 3 from second)
+    assert_eq!(show.cues.len(), 6);
+
+    // First sequence reference: cues at 0.000, 2.000, 4.000
+    assert_eq!(show.cues[0].time, Duration::from_millis(0));
+    assert_eq!(show.cues[1].time, Duration::from_millis(2000));
+    assert_eq!(show.cues[2].time, Duration::from_millis(4000));
+
+    // Second sequence reference: cues at 6.000, 8.000, 10.000
+    assert_eq!(show.cues[3].time, Duration::from_millis(6000));
+    assert_eq!(show.cues[4].time, Duration::from_millis(8000));
+    assert_eq!(show.cues[5].time, Duration::from_millis(10000));
+}
+
+#[test]
+fn test_sequence_with_effects_in_same_cue() {
+    let content = r#"
+sequence "simple_sequence" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @5.000
+    back_wash: static, color: "green", duration: 5s
+    sequence "simple_sequence"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse shows: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 3 cues: one with the effect, plus 2 from the sequence
+    // The effect should be added to the first expanded cue
+    assert_eq!(show.cues.len(), 2);
+
+    // First cue: at 5.000 with both the effect and the first sequence cue
+    assert_eq!(show.cues[0].time, Duration::from_millis(5000));
+    assert_eq!(show.cues[0].effects.len(), 2); // green effect + red from sequence
+
+    // Second cue: at 6.000 with the second sequence cue
+    assert_eq!(show.cues[1].time, Duration::from_millis(6000));
+    assert_eq!(show.cues[1].effects.len(), 1); // blue from sequence
+}
+
+#[test]
+fn test_sequence_not_found_error() {
+    let content = r#"
+show "Test Show" {
+    @0.000
+    sequence "nonexistent_sequence"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_err(), "Should fail when sequence is not found");
+
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("not found"),
+        "Error should mention sequence not found"
+    );
+}
+
+#[test]
+fn test_sequence_with_measure_based_timing() {
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "measure_based_sequence" {
+    @1/1
+    front_wash: static, color: "red", duration: 5s
+    
+    @1/3
+    front_wash: static, color: "green", duration: 5s
+    
+    @2/1
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "measure_based_sequence"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse shows with measure-based sequence: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Sequence should be expanded into 3 cues
+    assert_eq!(show.cues.len(), 3);
+
+    // At 120 BPM, 4/4 time:
+    // Measure 1, beat 1 = 0.0s
+    // Measure 1, beat 3 = 1.0s (2 beats at 120 BPM = 1 second)
+    // Measure 2, beat 1 = 2.0s (4 beats at 120 BPM = 2 seconds)
+    // Since the sequence is referenced at 0.000, the times should be offset by 0
+
+    // First cue: measure 1, beat 1 = 0.0s
+    assert_eq!(show.cues[0].time, Duration::from_secs(0));
+
+    // Second cue: measure 1, beat 3 = 1.0s
+    assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+    // Third cue: measure 2, beat 1 = 2.0s
+    assert_eq!(show.cues[2].time, Duration::from_secs(2));
+}
+
+#[test]
+fn test_sequence_with_own_tempo_and_measure_timing() {
+    let content = r#"
+sequence "sequence_with_tempo" {
+    tempo {
+    bpm: 60
+    time_signature: 4/4
+    }
+    
+    @1/1
+    front_wash: static, color: "red", duration: 5s
+    
+    @2/1
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "sequence_with_tempo"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse shows with sequence having own tempo: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Sequence should be expanded into 2 cues
+    assert_eq!(show.cues.len(), 2);
+
+    // At 60 BPM, 4/4 time:
+    // Measure 1, beat 1 = 0.0s
+    // Measure 2, beat 1 = 4.0s (4 beats at 60 BPM = 4 seconds)
+
+    // First cue: measure 1, beat 1 = 0.0s
+    assert_eq!(show.cues[0].time, Duration::from_secs(0));
+
+    // Second cue: measure 2, beat 1 = 4.0s
+    assert_eq!(show.cues[1].time, Duration::from_secs(4));
+}
+
+#[test]
+fn test_sequence_measure_timing_with_offset() {
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "measure_sequence" {
+    @1/1
+    front_wash: static, color: "red", duration: 5s
+    
+    @1/3
+    front_wash: static, color: "green", duration: 5s
+}
+
+show "Test Show" {
+    @10.000
+    sequence "measure_sequence"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Sequence should be expanded with times offset by 10 seconds
+    assert_eq!(show.cues.len(), 2);
+
+    // At 120 BPM:
+    // Measure 1, beat 1 = 0.0s, offset to 10.0s
+    // Measure 1, beat 3 = 1.0s, offset to 11.0s
+
+    assert_eq!(show.cues[0].time, Duration::from_secs(10));
+    assert_eq!(show.cues[1].time, Duration::from_secs(11));
+}
+
+#[test]
+fn test_sequence_with_comment_after_loop() {
+    // Test that comments on a new line after sequence loop directive work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "test" {
+    @1/1
+    front_wash: static color: "red", duration: 5s
+}
+
+show "Test" {
+    @0.000
+    sequence "test", loop: 3
+    # Some comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse sequence with comment after loop directive: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+
+    // Should have 3 cues (1 cue per iteration × 3 iterations)
+    assert_eq!(show.cues.len(), 3);
+}
+
+#[test]
+fn test_layer_command_with_comment_after_parameter() {
+    // Test that comments on a new line after layer command parameters work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @0.000
+    clear(layer: foreground)
+    # Some comment
+    
+    @1.000
+    freeze(layer: background)
+    # Another comment
+    
+    @2.000
+    master(layer: midground, intensity: 0.5)
+    # Yet another comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse layer commands with comments: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+
+    // Should have 3 cues
+    assert_eq!(show.cues.len(), 3);
+
+    // First cue should have clear command with foreground layer
+    let first_cue = &show.cues[0];
+    assert_eq!(first_cue.layer_commands.len(), 1);
+    let clear_cmd = &first_cue.layer_commands[0];
+    assert_eq!(
+        clear_cmd.command_type,
+        crate::lighting::parser::LayerCommandType::Clear
+    );
+    assert_eq!(
+        clear_cmd.layer,
+        Some(crate::lighting::effects::EffectLayer::FOREGROUND)
+    );
+
+    // Second cue should have freeze command
+    let second_cue = &show.cues[1];
+    assert_eq!(second_cue.layer_commands.len(), 1);
+    let freeze_cmd = &second_cue.layer_commands[0];
+    assert_eq!(
+        freeze_cmd.command_type,
+        crate::lighting::parser::LayerCommandType::Freeze
+    );
+    assert_eq!(
+        freeze_cmd.layer,
+        Some(crate::lighting::effects::EffectLayer::BACKGROUND)
+    );
+
+    // Third cue should have master command with intensity
+    let third_cue = &show.cues[2];
+    assert_eq!(third_cue.layer_commands.len(), 1);
+    let master_cmd = &third_cue.layer_commands[0];
+    assert_eq!(
+        master_cmd.command_type,
+        crate::lighting::parser::LayerCommandType::Master
+    );
+    assert_eq!(
+        master_cmd.layer,
+        Some(crate::lighting::effects::EffectLayer::MIDGROUND)
+    );
+    assert!(master_cmd.intensity.is_some());
+    assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.001);
+}
+
+#[test]
+fn test_effect_parameter_with_comment_after() {
+    // Test that comments on a new line after effect parameters work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @0.000
+    front_wash: static, color: "red", layer: foreground, duration: 5s
+    # Comment after effect
+    
+    @1.000
+    back_wash: cycle, speed: 2beats, direction: forward, duration: 10s
+    # Another comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse effects with comments: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+
+    // Should have 2 cues
+    assert_eq!(show.cues.len(), 2);
+
+    // First cue should have static effect
+    let first_cue = &show.cues[0];
+    assert_eq!(first_cue.effects.len(), 1);
+    let effect = &first_cue.effects[0];
+    assert_eq!(
+        effect.layer,
+        Some(crate::lighting::effects::EffectLayer::FOREGROUND)
+    );
+
+    // Second cue should have cycle effect
+    let second_cue = &show.cues[1];
+    assert_eq!(second_cue.effects.len(), 1);
+}
+
+#[test]
+fn test_sequence_looping_finite() {
+    let content = r#"
+sequence "simple_sequence" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "simple_sequence", loop: 3
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 6 cues (2 cues per iteration × 3 iterations)
+    assert_eq!(show.cues.len(), 6);
+
+    // Sequence duration = max(0+5, 1+5) = 6s per iteration
+    // First iteration: 0s, 1s
+    assert_eq!(show.cues[0].time, Duration::from_secs(0));
+    assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+    // Second iteration: 6s, 7s
+    assert_eq!(show.cues[2].time, Duration::from_secs(6));
+    assert_eq!(show.cues[3].time, Duration::from_secs(7));
+
+    // Third iteration: 12s, 13s
+    assert_eq!(show.cues[4].time, Duration::from_secs(12));
+    assert_eq!(show.cues[5].time, Duration::from_secs(13));
+
+    // All effects should be marked with sequence name
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            assert_eq!(effect.sequences, vec!["simple_sequence".to_string()]);
+        }
+    }
+
+    // First iteration's first cue should NOT have stop_sequences
+    assert!(
+        show.cues[0].stop_sequences.is_empty(),
+        "First iteration should not stop anything"
+    );
+
+    // Second iteration's first cue should stop "simple_sequence"
+    assert_eq!(
+        show.cues[2].stop_sequences,
+        vec!["simple_sequence".to_string()],
+        "Second iteration should stop previous iteration's effects"
+    );
+
+    // Third iteration's first cue should stop "simple_sequence"
+    assert_eq!(
+        show.cues[4].stop_sequences,
+        vec!["simple_sequence".to_string()],
+        "Third iteration should stop previous iteration's effects"
+    );
+
+    // Non-first cues in each iteration should NOT have stop_sequences
+    assert!(show.cues[1].stop_sequences.is_empty());
+    assert!(show.cues[3].stop_sequences.is_empty());
+    assert!(show.cues[5].stop_sequences.is_empty());
+}
+
+#[test]
+fn test_sequence_looping_infinite() {
+    let content = r#"
+sequence "infinite_sequence" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "infinite_sequence", loop: loop
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 20000 cues (2 cues per iteration × 10000 iterations)
+    assert_eq!(show.cues.len(), 20000);
+
+    // Check first few iterations
+    // Sequence duration = max(0+5, 1+5) = 6s per iteration
+    assert_eq!(show.cues[0].time, Duration::from_secs(0));
+    assert_eq!(show.cues[1].time, Duration::from_secs(1));
+    assert_eq!(show.cues[2].time, Duration::from_secs(6)); // Second iteration starts at 6s
+    assert_eq!(show.cues[3].time, Duration::from_secs(7));
+}
+
+#[test]
+fn test_sequence_looping_once() {
+    let content = r#"
+sequence "once_sequence" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "once_sequence", loop: once
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 2 cues (default behavior, same as no loop parameter)
+    assert_eq!(show.cues.len(), 2);
+}
+
+#[test]
+fn test_stop_sequence_command() {
+    let content = r#"
+sequence "looping_sequence" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "looping_sequence", loop: loop
+    
+    @10.000
+    stop sequence "looping_sequence"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Find the cue at 10 seconds with stop_sequences
+    // Note: The looping sequence may also create a cue at 10 seconds, so we need to find the one with stop_sequences
+    let stop_cue = show
+        .cues
+        .iter()
+        .find(|c| c.time == Duration::from_secs(10) && !c.stop_sequences.is_empty());
+    let cue_times: Vec<_> = show.cues.iter().map(|c| c.time).collect();
+    let cues_at_10: Vec<_> = show
+        .cues
+        .iter()
+        .filter(|c| c.time == Duration::from_secs(10))
+        .map(|c| (c.time, c.stop_sequences.clone(), c.effects.len()))
+        .collect();
+    assert!(
+        stop_cue.is_some(),
+        "Should have a cue at 10 seconds with stop_sequences. Cue times: {:?}, Cues at 10s: {:?}",
+        cue_times,
+        cues_at_10
+    );
+
+    let stop_cue = stop_cue.unwrap();
+    assert_eq!(
+        stop_cue.stop_sequences,
+        vec!["looping_sequence"],
+        "Stop sequences: {:?}",
+        stop_cue.stop_sequences
+    );
+}
+
+#[test]
+fn test_stop_multiple_sequences() {
+    let content = r#"
+sequence "seq1" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+}
+
+sequence "seq2" {
+    @0.000
+    back_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @0.000
+    sequence "seq1", loop: loop
+    sequence "seq2", loop: loop
+    
+    @5.000
+    stop sequence "seq1"
+    stop sequence "seq2"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Find cues at 5 seconds with stop_sequences
+    // With 5s duration effects, iteration boundaries also occur at 5s,
+    // so there may be multiple cues at 5s with stop_sequences.
+    // Collect all stop_sequences from all cues at 5s.
+    let cues_at_5: Vec<_> = show
+        .cues
+        .iter()
+        .filter(|c| c.time == Duration::from_secs(5))
+        .collect();
+    assert!(!cues_at_5.is_empty(), "Should have cues at 5 seconds");
+
+    let all_stops: std::collections::HashSet<_> = cues_at_5
+        .iter()
+        .flat_map(|c| c.stop_sequences.iter())
+        .collect();
+    assert!(
+        all_stops.contains(&"seq1".to_string()),
+        "Should stop seq1 at 5s, got stops: {:?}",
+        all_stops
+    );
+    assert!(
+        all_stops.contains(&"seq2".to_string()),
+        "Should stop seq2 at 5s, got stops: {:?}",
+        all_stops
+    );
+}
+
+#[test]
+fn test_nested_sequences() {
+    let content = r#"
+sequence "base_pattern" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    
+    @1.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+sequence "complex_pattern" {
+    @0.000
+    sequence "base_pattern"
+    back_wash: static, color: "green", duration: 5s
+    
+    @3.000
+    sequence "base_pattern"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "complex_pattern"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse nested sequences: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // complex_pattern expands to:
+    // - base_pattern at 0s (2 cues: 0s, 1s) + green effect at 0s (merged into first cue)
+    // - base_pattern at 3s (2 cues: 3s, 4s)
+    // Total: 4 cues (green effect is merged with first base_pattern cue)
+    assert_eq!(show.cues.len(), 4);
+
+    // First base_pattern iteration (with green effect merged)
+    assert_eq!(show.cues[0].time, Duration::from_secs(0));
+    assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+    // Second base_pattern iteration
+    assert_eq!(show.cues[2].time, Duration::from_secs(3));
+    assert_eq!(show.cues[3].time, Duration::from_secs(4));
+}
+
+#[test]
+fn test_circular_sequence_reference() {
+    // With two-pass parsing, forward references are now supported
+    // The circular reference will be detected when seq_a tries to expand seq_b,
+    // which then tries to expand seq_a (already in recursion stack)
+    let content = r#"
+sequence "seq_a" {
+    @0.000
+    front_wash: static, color: "red", duration: 5s
+    @1.000
+    sequence "seq_b"
+}
+
+sequence "seq_b" {
+    @0.000
+    sequence "seq_a"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "seq_a"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_err(), "Should fail with circular reference");
+
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("Circular sequence reference"),
+        "Error should mention circular reference: {}",
+        error
+    );
+}
+
+#[test]
+fn test_nested_sequences_measure_timing() {
+    // Test that nested sequences with measure-based timing work correctly
+    // When "verse" is referenced at @17/1, its @1/1 cue should map to @17/1 in the show
+    let content = r#"tempo {
+    start: 3.0s
+    bpm: 160
+    time_signature: 4/4
+}
+
+sequence "verse-start" {
+    @1/1
+    all_wash: static, color: "white", duration: 5s
+}
+
+sequence "verse" {
+    @1/1
+    sequence "verse-start", loop: 1
+    @13/1
+    all_wash: static, color: "red", duration: 5s
+}
+
+show "Test" {
+    @17/1
+    sequence "verse"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse nested sequences with measure timing: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").unwrap();
+
+    // At 160 BPM in 4/4: 1 beat = 0.375s, 1 measure = 1.5s
+    // Measure 17, beat 1 = 3.0s (start offset) + (16 measures * 1.5s) = 3.0s + 24.0s = 27.0s
+    // "verse-start" should start at measure 17 of the show = 27.0s
+    // "verse" @13/1 should be at measure 17 + 12 measures = measure 29 = 3.0s + (28 * 1.5s) = 3.0s + 42.0s = 45.0s
+
+    // Find the first cue (should be verse-start at 27.0s)
+    // verse-start should start at measure 17 = 27.0s
+    let expected_time = Duration::from_secs_f64(27.0);
+    assert!(!show.cues.is_empty(), "Should have at least one cue");
+    let first_cue_time = show.cues[0].time;
+    assert!(
+        (first_cue_time.as_secs_f64() - expected_time.as_secs_f64()).abs() < 0.001,
+        "verse-start should start at measure 17 (27.0s), got {:?}",
+        first_cue_time
+    );
+}
+
+#[test]
+fn test_sequence_with_fractional_measure_hold_time() {
+    // Test that fractional measure durations in hold_time are calculated correctly
+    // (hold_time in measures is resolved as a measure duration, fractions included)
+    // Since parse_light_shows only returns shows, not sequences directly,
+    // we need to test the sequence by referencing it in a show
+    // We'll verify the hold_time calculation by using the sequence in a show
+    let show_content = r##"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "riff-e" {
+    @1/1
+    all_wash: static, color: "#B5C637", layer: background, blend_mode: replace, duration: 5s
+
+    @1/3
+    all_wash: static, color: "#8A0303", layer: background, blend_mode: replace, hold_time: 1.5measures
+}
+
+show "Test" {
+    @0.000
+    sequence "riff-e"
+}
+"##;
+
+    let show_result = parse_light_shows(show_content);
+    assert!(
+        show_result.is_ok(),
+        "Failed to parse show with sequence: {:?}",
+        show_result.err()
+    );
+
+    let shows_with_sequence = show_result.unwrap();
+    let show = shows_with_sequence
+        .get("Test")
+        .expect("Show 'Test' should exist");
+
+    // The sequence should be expanded into the show's cues
+    // We should have 2 cues from the sequence
+    assert!(
+        show.cues.len() >= 2,
+        "Show should have at least 2 cues from sequence, got {}",
+        show.cues.len()
+    );
+
+    // Find the cue with the effect that has hold_time
+    let cue_with_hold_time = show
+        .cues
+        .iter()
+        .find(|cue| cue.effects.iter().any(|effect| effect.hold_time.is_some()));
+
+    let (sequence_cue, second_effect) = if let Some(cue) = cue_with_hold_time {
+        let effect = cue
+            .effects
+            .iter()
+            .find(|e| e.hold_time.is_some())
+            .expect("Should find effect with hold_time");
+        (cue, effect)
+    } else {
+        panic!("Should find a cue with an effect that has hold_time");
+    };
+
+    // Second effect has hold_time: 1.5measures
+    let hold_time = second_effect
+        .hold_time
+        .expect("Second effect should have hold_time");
+
+    // At 120 BPM in 4/4: 1.5 measures = 6 beats = 3.0 seconds
+    let expected_hold_time = Duration::from_secs_f64(3.0);
+    assert!(
+        (hold_time.as_secs_f64() - expected_hold_time.as_secs_f64()).abs() < 0.001,
+        "hold_time should be 3.0s (1.5 measures at 120 BPM in 4/4), got {}s",
+        hold_time.as_secs_f64()
+    );
+
+    // Verify the effect's total duration (should be just hold_time since no up_time or down_time)
+    let total_duration = second_effect.total_duration();
+    assert!(
+        (total_duration.as_secs_f64() - expected_hold_time.as_secs_f64()).abs() < 0.001,
+        "Total duration should be 3.0s, got {}s",
+        total_duration.as_secs_f64()
+    );
+
+    // Verify the effect completes at the expected time
+    // Second effect starts at measure 1, beat 3 (1.0s) and has hold_time of 1.5 measures (3.0s)
+    // So second effect completes at: 1.0s + 3.0s = 4.0s
+    // At 120 BPM in 4/4: 4.0s = 8 beats = 2 measures
+    let effect_start_time = sequence_cue.time;
+    let total_duration = second_effect.total_duration();
+    let effect_completion_time = effect_start_time + total_duration;
+    let expected_completion_time = Duration::from_secs_f64(4.0);
+    assert!(
+        (effect_completion_time.as_secs_f64() - expected_completion_time.as_secs_f64()).abs()
+            < 0.001,
+        "Effect should complete at 4.0s (2 measures from sequence start), got {}s",
+        effect_completion_time.as_secs_f64()
+    );
+}
+
+#[test]
+fn test_self_referencing_sequence() {
+    let content = r#"
+sequence "self_ref" {
+    @0.000
+    sequence "self_ref"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "self_ref"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_err(), "Should fail with self-reference");
+
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("Circular sequence reference"),
+        "Error should mention circular reference: {}",
+        error
+    );
+}
+
+#[test]
+fn test_sequence_tempo_rescaling_at_expansion() {
+    // A sequence parsed at the global base tempo (110 BPM) should have its cue
+    // times rescaled when expanded at a point where the tempo is 160 BPM.
+    //
+    // The sequence has two cues: @1/1 (beat 0) and @1/2 (beat 1).
+    // At 110 BPM, @1/2 is at 0.545s. At 160 BPM, @1/2 should be at 0.375s.
+    //
+    // The sequence is 1 beat long (perpetual effects, duration = last_cue - first_cue).
+    // At 110 BPM that's 0.545s. At 160 BPM it should be 0.375s per iteration.
+    //
+    // We expand the sequence 4 times starting at measure 5 (after a tempo change
+    // at measure 3 from 110 to 160 BPM).
+    let content = r#"
+tempo {
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 160 }
+    ]
+}
+
+sequence "test_seq" {
+    @1/1
+    front_wash: static, color: "red", duration: 5s
+
+    @1/2
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @5/1
+    sequence "test_seq", loop: 4
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 8 cues (2 cues per iteration x 4 iterations)
+    assert_eq!(show.cues.len(), 8);
+
+    // At 110 BPM, 4/4 time:
+    //   Measure 1: beat 0, time 0.0s
+    //   Measure 2: beat 4, time 4*60/110 = 2.1818s
+    //   Measure 3: beat 8, time 8*60/110 = 4.3636s  (tempo changes to 160 here)
+    //   Measure 4: 4.3636 + 4*60/160 = 4.3636 + 1.5 = 5.8636s
+    //   Measure 5: 5.8636 + 4*60/160 = 5.8636 + 1.5 = 7.3636s
+    let expected_base_time = 8.0 * 60.0 / 110.0 + 8.0 * 60.0 / 160.0;
+    let base_time = show.cues[0].time.as_secs_f64();
+    assert!(
+        (base_time - expected_base_time).abs() < 0.001,
+        "First cue should be at measure 5 ({:.4}s), got {:.4}s",
+        expected_base_time,
+        base_time
+    );
+
+    // The sequence was parsed at 110 BPM. Its internal cue relative times:
+    //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
+    //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
+    //   In beats, counted on the map the sequence was written against, which
+    //   changes to 160 BPM at measure 3 (8 beats, 4.3636s): 8 beats to there,
+    //   then (5.5454 - 4.3636) * 160/60 = 3.1515 beats, ~11.152 beats in all.
+    //
+    // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
+    // Iteration spacing = 11.152 beats * 0.375s/beat = ~4.1818s
+    // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
+    let beat_at_160 = 60.0 / 160.0; // 0.375s
+    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time)
+    let change_at = 8.0 * 60.0 / 110.0; // measure 3 on the sequence's map
+    let duration_beats = 8.0 + (duration_internal - change_at) * (160.0 / 60.0);
+    let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
+
+    // Check iteration spacing: first cue of each iteration
+    for i in 0..4 {
+        let cue_time = show.cues[i * 2].time.as_secs_f64();
+        let expected = expected_base_time + i as f64 * iteration_spacing;
+        assert!(
+            (cue_time - expected).abs() < 0.01,
+            "Iteration {} first cue should be at {:.4}s, got {:.4}s",
+            i,
+            expected,
+            cue_time
+        );
+    }
+
+    // Check the second cue in each iteration (1 beat later at 160 BPM)
+    for i in 0..4 {
+        let cue_time = show.cues[i * 2 + 1].time.as_secs_f64();
+        let expected = expected_base_time + i as f64 * iteration_spacing + beat_at_160;
+        assert!(
+            (cue_time - expected).abs() < 0.01,
+            "Iteration {} second cue should be at {:.4}s, got {:.4}s",
+            i,
+            expected,
+            cue_time
+        );
+    }
+}
+
+#[test]
+fn test_sequence_tempo_rescaling_same_tempo() {
+    // When the expansion tempo matches the sequence's parse tempo, cue times
+    // should be unchanged (no rescaling effect).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "same_tempo_seq" {
+    @1/1
+    front_wash: static, color: "red", duration: 5s
+
+    @1/3
+    front_wash: static, color: "green", duration: 5s
+
+    @2/1
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test Show" {
+    @5/1
+    sequence "same_tempo_seq"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    assert_eq!(show.cues.len(), 3);
+
+    // At 120 BPM, measure 5 starts at 4 measures * 4 beats * 60/120 = 8.0s
+    // Sequence cues relative: @1/1 = 0.0s, @1/3 = 1.0s (2 beats), @2/1 = 2.0s (4 beats)
+    // Since expansion tempo (120 BPM) matches sequence parse tempo (120 BPM),
+    // the rescaled times should match the original relative times.
+    let base = 8.0;
+    assert!(
+        (show.cues[0].time.as_secs_f64() - base).abs() < 0.001,
+        "First cue at {:.4}s, expected {:.4}s",
+        show.cues[0].time.as_secs_f64(),
+        base
+    );
+    assert!(
+        (show.cues[1].time.as_secs_f64() - (base + 1.0)).abs() < 0.001,
+        "Second cue at {:.4}s, expected {:.4}s",
+        show.cues[1].time.as_secs_f64(),
+        base + 1.0
+    );
+    assert!(
+        (show.cues[2].time.as_secs_f64() - (base + 2.0)).abs() < 0.001,
+        "Third cue at {:.4}s, expected {:.4}s",
+        show.cues[2].time.as_secs_f64(),
+        base + 2.0
+    );
+}
+
+/// #529: a sequence parsed at the opening tempo and expanded in a faster
+/// section resolves its beat and measure durations at the expansion tempo,
+/// as its cue times are, and leaves durations in seconds alone. Esaweg's
+/// shape: 110 BPM at the top, 160 from bar 3.
+#[test]
+fn test_sequence_durations_resolve_at_the_expansion_tempo() {
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 160 }
+    ]
+}
+
+sequence "hit" {
+    @1/1
+    front_wash: static, color: "orange", duration: 3beats
+    back_wash: static, color: "white", duration: 1measure
+    side_wash: static, color: "red", duration: 0.5s
+    @1/4
+    front_wash: static, color: "orange", duration: 1beat
+}
+
+show "Test" {
+    @3/1
+    sequence "hit"
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+    let bar3 = tm.measure_to_time_with_offset(3, 1.0, 0, 0.0).unwrap();
+    let first = show
+        .cues
+        .iter()
+        .find(|c| c.time == bar3)
+        .expect("the sequence's first cue lands on bar 3");
+
+    let duration_of = |group: &str| {
+        first
+            .effects
+            .iter()
+            .find(|e| e.groups == vec![group.to_string()])
+            .map(|e| e.effect_type.duration().as_secs_f64())
+            .unwrap()
+    };
+    // 160 BPM: a beat is 0.375 s, a bar 1.5 s. At 110 they were 1.636 s and
+    // 2.182 s, longer than the 1.5 s bar the sequence plays in.
+    assert!(
+        (duration_of("front_wash") - 1.125).abs() < 1e-6,
+        "3 beats: {}",
+        duration_of("front_wash")
+    );
+    assert!(
+        (duration_of("back_wash") - 1.5).abs() < 1e-6,
+        "1 measure: {}",
+        duration_of("back_wash")
+    );
+    assert!(
+        (duration_of("side_wash") - 0.5).abs() < 1e-9,
+        "0.5 s: {}",
+        duration_of("side_wash")
+    );
+
+    // The sequence's anchor cue on beat 4 is on the 160 grid, so a 3-beat
+    // effect from beat 1 ends exactly on it.
+    let anchor = bar3 + Duration::from_secs_f64(1.125);
+    assert!(
+        show.cues
+            .iter()
+            .any(|c| (c.time.as_secs_f64() - anchor.as_secs_f64()).abs() < 1e-6),
+        "the @1/4 cue should be at {anchor:?}"
+    );
+}
+
+#[test]
+fn test_sequence_length_sets_the_loop_period() {
+    // Three and a half beats of content: without a length, each pass would
+    // last 3.5 beats and the loop would drift off the bar.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "centre-beats", length: 1measure {
+    @1/1
+    front_wash: static, color: "blue", duration: 1beat
+    @1/3
+    front_wash: static, color: "white", duration: 1.5beats
+}
+
+sequence "inner", length: 2beats {
+    @1/1
+    back_wash: static, color: "red", duration: 1beat
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner", loop: 2
+    @2/1
+    side_wash: static, color: "green", duration: 1beat
+}
+
+show "Test" {
+    @2/1
+    sequence "centre-beats", loop: 3
+    @6/1
+    sequence "outer"
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+    let at = |bar: u32, beat: f64| tm.measure_to_time_with_offset(bar, beat, 0, 0.0).unwrap();
+    let starts_of = |group: &str| -> Vec<Duration> {
+        show.cues
+            .iter()
+            .filter(|c| {
+                c.effects
+                    .iter()
+                    .any(|e| e.groups == vec![group.to_string()])
+            })
+            .map(|c| c.time)
+            .collect()
+    };
+
+    assert_eq!(
+        starts_of("front_wash"),
+        vec![
+            at(2, 1.0),
+            at(2, 3.0),
+            at(3, 1.0),
+            at(3, 3.0),
+            at(4, 1.0),
+            at(4, 3.0)
+        ],
+        "each pass starts on its own bar"
+    );
+    // Nested, the inner sequence's length still sets its period: two passes
+    // of 2 beats each, not of the 1 beat its effect lasts.
+    assert_eq!(starts_of("back_wash"), vec![at(6, 1.0), at(6, 3.0)]);
+    assert_eq!(starts_of("side_wash"), vec![at(7, 1.0)]);
+}
+
+#[test]
+fn test_sequence_length_shorter_than_its_effects() {
+    let content = r#"
+sequence "hold", length: 2s {
+    @0.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test" {
+    @1.000
+    sequence "hold", loop: 3
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+    // Each later pass stops the one before it, cutting the 5 s effect at
+    // the pass boundary.
+    assert!(show.cues[1].stop_sequences.contains(&"hold".to_string()));
+    assert!(show.cues[2].stop_sequences.contains(&"hold".to_string()));
+}
+
+#[test]
+fn test_sequence_length_rejects_cues_past_it_and_zero() {
+    let past = r#"
+sequence "late", length: 1s {
+    @0.000
+    front_wash: static, color: "blue", duration: 1s
+    @1.000
+    front_wash: static, color: "red", duration: 1s
+}
+
+show "Test" {
+    @0.000
+    sequence "late"
+}
+"#;
+    let err = parse_light_shows(past).expect_err("a cue at the length is rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains("late") && message.contains("1s"),
+        "names the sequence and its length: {message}"
+    );
+
+    let zero = past.replace("length: 1s", "length: 0s");
+    let err = parse_light_shows(&zero).expect_err("a zero length is rejected");
+    assert!(err.to_string().contains("greater than zero"), "{err}");
+
+    let musical = past.replace("length: 1s", "length: 1measure");
+    let err = parse_light_shows(&musical).expect_err("musical length needs a tempo");
+    assert!(err.to_string().contains("tempo"), "{err}");
+}
+
+// ── One placement for a sequence reference, in a show or inside a sequence ──
+
+/// A sequence written past a tempo change on its own map, counted in beats
+/// through that change.
+const SEQUENCE_PAST_A_CHANGE: &str = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+// Declared to rest two bars: without a length, a sequence whose first cue
+// is a bar or more past its own @1/1 is refused. Its cues count from its own
+// @1/1, so these are beats 8 and 12 into it.
+sequence "inner", length: 4measures {
+    @3/1
+    a: static, color: "red", duration: 1s
+
+    @4/1
+    b: static, color: "blue", duration: 1s
+}
+"#;
+
+#[test]
+fn test_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // Its cues are 8 and 12 beats from its @1/1 on its map: 4s and 8s there,
+    // across the change to 60 BPM at @3/1. The show keeps 120 BPM throughout,
+    // so laid by beats they land at 4s and 6s; laid by the sequence's own
+    // times the second would land at 8s.
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+show \"Test\" {{
+    tempo {{
+        bpm: 120
+        time_signature: 4/4
+    }}
+
+    @1/1
+    sequence \"inner\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::from_secs(4), Duration::from_secs(6)]);
+}
+
+#[test]
+fn test_nested_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // The same bar, referenced from an outer sequence placed at @1/1: the
+    // outer's reference cue is at @3/1 (4s) on its map, which is where the
+    // inner's @1/1 lands, so the inner's cues, 8 and 12 beats on at 60 BPM,
+    // fall at 12s and 16s, with the outer's own effect at @1/1. (Before
+    // sequences counted from their origin the inner started on its first
+    // cue, giving 4s and 8s.)
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+sequence \"outer\" {{
+    @1/1
+    c: static, color: \"green\", duration: 1s
+
+    @3/1
+    sequence \"inner\"
+}}
+
+show \"Test\" {{
+    @1/1
+    sequence \"outer\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(12),
+            Duration::from_secs(16)
+        ]
+    );
+}
+
+#[test]
+fn test_stop_sequence_stops_an_inner_sequence_inside_an_outer() {
+    // An effect belongs to every sequence it is started through, so `stop
+    // sequence "inner"` names it as `stop sequence "outer"` does. Expanding
+    // the outer used to rename every effect to the outer's, leaving nothing
+    // for the inner's stop.
+    let content = r#"
+sequence "inner" {
+    @0.000
+    a: static, color: "red", duration: 10s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "inner"
+    b: static, color: "blue", duration: 10s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+
+    @5.000
+    stop sequence "inner"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let owners: Vec<(&str, Option<&str>)> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| (e.groups[0].as_str(), e.sequence_name()))
+        .collect();
+    assert_eq!(owners, vec![("b", Some("outer")), ("a", Some("inner"))]);
+    assert_eq!(show.cues[0].effects[1].sequences, ["inner", "outer"]);
+    assert_eq!(show.cues[1].stop_sequences, vec!["inner".to_string()]);
+}
+
+#[test]
+fn test_nested_musical_duration_resolves_where_its_pass_plays() {
+    // The inner's 2 beats are 1s where it is written (120 BPM) and 2s where
+    // the outer places it (@3/1, 60 BPM); the outer's pass ends with it, so
+    // its second pass starts 2 beats on, at @3/3 = 6s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+sequence "inner" {
+    @1/1
+    a: static, color: "red", duration: 2beats
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner"
+}
+
+show "Test" {
+    @3/1
+    sequence "outer", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::from_secs(4), Duration::from_secs(6)]);
+    for cue in &show.cues {
+        assert_eq!(cue.effects[0].total_duration(), Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn test_nested_cue_merges_the_sequences_it_references_into_itself() {
+    // A cue holding effects of its own and references merges each
+    // reference's same-time cue into itself, inside a sequence as in a show:
+    // one cue, the cue's own effects first. The nested expansion used to
+    // append the cue's effects to the first reference's first cue and keep
+    // the second reference's apart.
+    let content = r#"
+sequence "i1" {
+    @0.000
+    a: static, color: "red", duration: 1s
+}
+
+sequence "i2" {
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "i1"
+    sequence "i2"
+    c: static, color: "green", duration: 1s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    assert_eq!(show.cues.len(), 1);
+    let groups: Vec<&str> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| e.groups[0].as_str())
+        .collect();
+    assert_eq!(groups, vec!["c", "a", "b"]);
+    assert_eq!(
+        show.cues[0].start_sequences,
+        vec!["i1".to_string(), "i2".to_string(), "outer".to_string()]
+    );
+}
+
+// ── One pass length for sequences and inline loops ──
+
+#[test]
+fn test_sequence_without_effects_passes_last_cue_to_last_cue() {
+    // A pass with no effect in it lasts until its last cue, as an inline
+    // loop's always has; a sequence's used to last no time, stacking every
+    // pass on the first.
+    let content = r#"
+sequence "clears" {
+    @0.000
+    clear(layer: foreground)
+
+    @2.000
+    clear(layer: background)
+}
+
+show "Test" {
+    @1.000
+    sequence "clears", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_pass_starts_at_its_origin_not_its_earliest_cue() {
+    // Written out of time order, a sequence's cues are still placed
+    // relative to its origin (@0.000 for a sequence written in times), not
+    // to its earliest cue: "b" at @0.000 lands on the use, "a" a second on.
+    // Placing from the earliest cue would be the same here, so the second
+    // sequence rests first: its earliest cue is at @1.000.
+    let content = r#"
+sequence "backwards" {
+    @1.000
+    a: static, color: "red", duration: 1s
+
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+sequence "resting" {
+    @1.000
+    a: static, color: "red", duration: 1s
+
+    @2.000
+    b: static, color: "blue", duration: 1s
+}
+
+show "Test" {
+    @5.000
+    sequence "backwards"
+}
+
+show "Rest" {
+    @5.000
+    sequence "resting"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let placed = |name: &str| -> Vec<(Duration, String)> {
+        shows
+            .get(name)
+            .unwrap()
+            .cues
+            .iter()
+            .map(|c| (c.time, c.effects[0].groups[0].clone()))
+            .collect()
+    };
+    assert_eq!(
+        placed("Test"),
+        vec![
+            (Duration::from_secs(5), "b".to_string()),
+            (Duration::from_secs(6), "a".to_string())
+        ]
+    );
+    // Resting one second before its first sound.
+    assert_eq!(
+        placed("Rest"),
+        vec![
+            (Duration::from_secs(6), "a".to_string()),
+            (Duration::from_secs(7), "b".to_string())
+        ]
+    );
+}
+
+// ── a sequence's cues count from its origin ──
+
+const LATE_TEMPO: &str = "tempo {\n    start: 0s\n    bpm: 120\n    time_signature: 4/4\n}\n";
+
+fn cue_times(content: &str, show: &str) -> Vec<f64> {
+    let shows = parse_light_shows(content).expect("parses");
+    shows
+        .get(show)
+        .unwrap()
+        .cues
+        .iter()
+        .map(|c| c.time.as_secs_f64())
+        .collect()
+}
+
+fn assert_times(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
+    for (a, e) in actual.iter().zip(expected) {
+        assert!((a - e).abs() < 1e-6, "{actual:?} vs {expected:?}");
+    }
+}
+
+fn late_source(tempo: &str, length: &str, use_params: &str) -> String {
+    format!(
+        "{tempo}sequence \"Late\"{length} {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 0.5beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Late\"{use_params}\n}}\n"
+    )
+}
+
+#[test]
+fn test_sequence_resting_on_beat_one_plays_late_not_early() {
+    // @1/3 at 120 BPM is 1.0s after the sequence's own @1/1, which is where
+    // the show uses it.
+    let src = late_source(LATE_TEMPO, ", length: 1measure", "");
+    assert_times(&cue_times(&src, "t"), &[1.0]);
+    // No length: the same single hit.
+    let src = late_source(LATE_TEMPO, "", "");
+    assert_times(&cue_times(&src, "t"), &[1.0]);
+}
+
+#[test]
+fn test_sequence_resting_loops_on_the_declared_length() {
+    // One measure is 2s at 120 BPM: hits at 1, 3, 5.
+    let src = late_source(LATE_TEMPO, ", length: 1measure", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.0, 3.0, 5.0]);
+}
+
+#[test]
+fn test_sequence_resting_loops_on_its_undeclared_length() {
+    // Without a length a pass runs from the origin (@1/1) to the end of the
+    // half-beat effect that starts at beat 3: 2.5 beats = 1.25s. So the
+    // passes start 1.25s apart and hit at 1.0, 2.25, 3.5.
+    let src = late_source(LATE_TEMPO, "", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.0, 2.25, 3.5]);
+}
+
+#[test]
+fn test_sequence_origin_is_the_time_of_bar_one_with_a_start_offset() {
+    // With start: 98ms, @1/1 is at 98ms, and the hits move with it.
+    let tempo = "tempo {\n    start: 98ms\n    bpm: 120\n    time_signature: 4/4\n}\n";
+    let src = late_source(tempo, ", length: 1measure", ", loop: 3");
+    assert_times(&cue_times(&src, "t"), &[1.098, 3.098, 5.098]);
+    let src = late_source(tempo, "", "");
+    assert_times(&cue_times(&src, "t"), &[1.098]);
+}
+
+#[test]
+fn test_sequence_with_one_late_cue_loops_on_the_bar() {
+    // The only cue is at @1/3 and its 2-beat effect ends at the bar line,
+    // so the undeclared pass is a whole measure (2s) and it repeats on the
+    // bar: hits at 1, 3, 5.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Late\" {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 2beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Late\", loop: 3\n}}\n"
+    );
+    assert_times(&cue_times(&src, "t"), &[1.0, 3.0, 5.0]);
+}
+
+#[test]
+fn test_inline_loop_body_counts_from_its_origin() {
+    // A body written from @0.000 starts on the loop's cue; one whose first
+    // cue is at @0.500 starts half a second after it. The pass is from the
+    // origin (0) to the effect's end (1.5s), so the second pass is 1.5s on.
+    let content = r#"
+show "t" {
+    @2.000
+    loop {
+        @0.500
+        a: static, color: "red", duration: 1s
+    } repeats: 2
+}
+"#;
+    assert_times(&cue_times(content, "t"), &[2.5, 4.0]);
+    let content = r#"
+show "t" {
+    @2.000
+    loop {
+        @0.000
+        a: static, color: "red", duration: 1s
+    } repeats: 2
+}
+"#;
+    assert_times(&cue_times(content, "t"), &[2.0, 3.0]);
+}
+
+#[test]
+fn test_inline_loop_body_in_measures_counts_from_bar_one() {
+    let src = format!(
+        "{LATE_TEMPO}show \"t\" {{\n    @2/1\n    loop {{\n        @1/3\n        a: static, color: \"red\", duration: 2beats\n    }} repeats: 2\n}}\n"
+    );
+    // The loop is at 2.0s; its body rests a second, then passes are 2s.
+    assert_times(&cue_times(&src, "t"), &[3.0, 5.0]);
+}
+
+#[test]
+fn test_sequence_used_off_the_bar_line_has_its_bar_one_there() {
+    // Used at @2/3 (3.0s), the sequence's @1/1 is there, so @1/3 is a
+    // second on.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Late\", length: 1measure {{\n    @1/3\n    left: static, color: \"#FF0000\", layer: background, duration: 0.5beats\n}}\nshow \"t\" {{\n    @2/3\n    sequence \"Late\", loop: 2\n}}\n"
+    );
+    assert_times(&cue_times(&src, "t"), &[4.0, 6.0]);
+}
+
+#[test]
+fn test_sequence_mixing_times_and_bars_counts_from_zero() {
+    // One timed cue, one bar cue: the origin is zero, not @1/1, so the bar
+    // cue at @1/3 (1.0s) is a second after the use and the timed cue
+    // 0.25s after it.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Mixed\" {{\n    @0.250\n    a: static, color: \"red\", duration: 0.5s\n\n    @1/3\n    b: static, color: \"blue\", duration: 0.5s\n}}\nshow \"t\" {{\n    @5.000\n    sequence \"Mixed\"\n}}\n"
+    );
+    assert_times(&cue_times(&src, "t"), &[5.25, 6.0]);
+    // Even with a start offset (so @1/1 is not zero), a mixed sequence
+    // counts from zero.
+    let tempo = "tempo {\n    start: 98ms\n    bpm: 120\n    time_signature: 4/4\n}\n";
+    let src = src.replace(LATE_TEMPO, tempo);
+    assert_times(&cue_times(&src, "t"), &[5.25, 6.098]);
+}
+
+#[test]
+fn test_sequence_first_cue_a_bar_past_its_origin_needs_a_length() {
+    let body = |length: &str| {
+        format!(
+            "{LATE_TEMPO}sequence \"Verse\"{length} {{\n    @17/1\n    left: static, color: \"#FF0000\", duration: 1beat\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Verse\"\n}}\n"
+        )
+    };
+    let err = parse_light_shows(&body(""))
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("Sequence 'Verse'"), "{err}");
+    assert!(err.contains("@17/1"), "{err}");
+    assert!(err.contains("16 bars"), "{err}");
+    // Declared to rest first, it loads, and plays that long after the use.
+    let src = body(", length: 17measures");
+    assert_times(&cue_times(&src, "t"), &[32.0]);
+    // A first cue inside the first bar is not refused.
+    let src = body("").replace("@17/1", "@1/4");
+    assert_times(&cue_times(&src, "t"), &[1.5]);
+    // Nor is one at @2/1 of a sequence written in times.
+    parse_light_shows(
+        "sequence \"T\" {\n    @5.000\n    left: static, color: \"#FF0000\", duration: 1s\n}\nshow \"t\" {\n    @1.000\n    sequence \"T\"\n}\n",
+    )
+    .expect("a timed sequence may rest");
+}
+
+#[test]
+fn test_measure_offset_in_a_sequence_does_not_move_its_origin() {
+    // `offset 1 measures` shifts the cues after it by a bar but not the
+    // origin: the cue at @1/3 after it lands a bar and a second after the
+    // use, not a second.
+    let src = format!(
+        "{LATE_TEMPO}sequence \"Off\", length: 4measures {{\n    @1/1\n    offset 1 measures\n\n    @1/3\n    left: static, color: \"#FF0000\", duration: 0.5beats\n}}\nshow \"t\" {{\n    @1/1\n    sequence \"Off\"\n}}\n"
+    );
+    let times = cue_times(&src, "t");
+    assert_times(&times, &[0.0, 3.0]);
+}
+
+#[test]
+fn test_inline_loop_without_effects_passes_last_cue_to_last_cue() {
+    let content = r#"
+show "Test" {
+    @1.000
+    loop {
+        @0.000
+        clear(layer: foreground)
+
+        @2.000
+        clear(layer: background)
+    }, repeats: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+// ── `length:` is checked against the cues as written ──
+
+#[test]
+fn test_sequence_length_is_checked_against_its_cues_as_written() {
+    // The passes of a sequence a cue references may run past the length; a
+    // pass is cut off by the next, as a longer effect is. Checked against
+    // the expanded cues, this errored with "a cue starts 4.000s in".
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    x: static, color: "red", duration: 1beat
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    sequence "long"
+}
+
+show "Show" {
+    @1/1
+    sequence "short", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(6)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_length_rejects_a_written_cue_past_it_whatever_it_expands_to() {
+    // A cue holding only a reference to a sequence with no cues expands to
+    // nothing, but it is written at or past the length all the same.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "empty" {
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "empty"
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("a written cue past the length is rejected");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
+
+// ── Stop by chain: an effect belongs to every sequence it started through ──
+
+#[test]
+fn test_sequence_length_is_checked_before_its_references_expand() {
+    // A written cue past the length is the error, whatever the cue would
+    // expand to: the reference to a sequence that does not exist is never
+    // reached (nor would a huge one be expanded).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "nope", loop: loop
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("the length is checked first");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_a_standalone_offset_anchors_past_the_referenced_passes() {
+    // "long" placed at @1/1 reaches @6/1 = 12s, past the change to 60 BPM
+    // at @5/1; the `offset 1 measures` in the zero-time cue after it is a
+    // bar there, 4s, and @7/1 (16s) lands at 20s with it.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 60 }
+    ]
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1s
+
+    @6/1
+    x: static, color: "blue", duration: 1s
+}
+
+show "Show" {
+    @1/1
+    sequence "long"
+
+    @0.0
+    offset 1 measures
+
+    @7/1
+    front_wash: static, color: "white", duration: 1s
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let last = show.cues.last().unwrap();
+    assert_eq!(last.time, Duration::from_secs(20));
+    assert_eq!(last.effects[0].tempo_offset_secs, 4.0);
+}
+
+/// A count past `loop`'s practical infinity plays as `loop` does, on every
+/// target, a sequence reference's and an inline loop's alike: 10,000
+/// passes, not every pass written (which never finishes laying out).
+#[test]
+fn a_count_past_loops_passes_lays_as_many_as_loop() {
+    let shows = parse_light_shows(
+        r#"
+sequence "beat" {
+    @0.000
+    front_wash: static color: "red", duration: 1s
+}
+
+show "Reference" {
+    @0.000
+    sequence "beat", loop: 5000000000
+}
+
+show "Loop" {
+    @0.000
+    sequence "beat", loop: loop
+}
+
+show "Inline" {
+    @0.000
+    loop {
+        @0.000
+        front_wash: static color: "red", duration: 1s
+    }, repeats: 5000000000
+}
+
+show "Exact" {
+    @0.000
+    sequence "beat", loop: 10000
+}
+"#,
+    )
+    .unwrap();
+    let loop_passes = shows["Loop"].cues.len();
+    assert_eq!(loop_passes, 10_000);
+    for name in ["Reference", "Inline", "Exact"] {
+        assert_eq!(shows[name].cues.len(), loop_passes, "{name}");
+    }
+}

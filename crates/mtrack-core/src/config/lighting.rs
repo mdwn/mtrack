@@ -1,0 +1,561 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use crate::lighting::effects::LayerSet;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Group constraint types for role-based group resolution
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub enum GroupConstraint {
+    /// All of these tags must be present
+    AllOf(Vec<String>),
+    /// Any of these tags must be present
+    AnyOf(Vec<String>),
+    /// Prefer fixtures with these tags
+    Prefer(Vec<String>),
+    /// Minimum number of fixtures required
+    MinCount(usize),
+    /// Maximum number of fixtures allowed
+    MaxCount(usize),
+    /// Fallback to this group if primary group fails
+    FallbackTo(String),
+    /// Allow group to be empty if no fixtures match (graceful degradation)
+    AllowEmpty(bool),
+}
+
+/// Group definition with role-based constraints
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct LogicalGroup {
+    /// The name of the group
+    name: String,
+    /// Constraints for resolving this group
+    constraints: Vec<GroupConstraint>,
+}
+
+impl LogicalGroup {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(name: String, constraints: Vec<GroupConstraint>) -> Self {
+        Self { name, constraints }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn constraints(&self) -> &[GroupConstraint] {
+        &self.constraints
+    }
+}
+
+/// Where a project's fixture types live, relative to the project, when the
+/// config does not say: `lighting.directories.fixture_types` moves it.
+pub const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
+
+/// Where a project's venues live, relative to the project, when the config
+/// does not say: `lighting.directories.venues` moves it.
+pub const DEFAULT_VENUES_DIR: &str = "lighting/venues";
+
+/// A directory as configured, or its default: the one resolution the
+/// engine, the web API, MCP and the CLI share. An empty value is unset.
+pub fn resolve_dir<'a>(configured: Option<&'a str>, default: &'a str) -> &'a str {
+    configured.filter(|d| !d.is_empty()).unwrap_or(default)
+}
+
+/// The project's fixture types directory for a profile's lighting section,
+/// or the default when it has none.
+pub fn fixture_types_dir(lighting: Option<&Lighting>) -> &str {
+    lighting.map_or(DEFAULT_FIXTURE_TYPES_DIR, Lighting::fixture_types_dir)
+}
+
+/// The project's venues directory for a profile's lighting section, or the
+/// default when it has none.
+pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
+    lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
+}
+
+/// The layers a profile's lighting section configures, or the defaults when
+/// it has none. A section whose layers are not a set (refused when the
+/// config loads) gives the defaults too.
+pub fn layer_set(lighting: Option<&Lighting>) -> LayerSet {
+    lighting
+        .and_then(|l| l.layer_set().ok())
+        .unwrap_or_else(|| LayerSet::standard().clone())
+}
+
+/// A project's fixture types and venues directories, relative to the
+/// project: a profile's configured ones, else the defaults. What the
+/// engine reads on this host is the host-matched profile's
+/// (`Player::lighting_dirs`), the one answer the web UI's server side, MCP
+/// and the CLI give.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDirs {
+    pub fixture_types: String,
+    pub venues: String,
+}
+
+impl ProjectDirs {
+    /// The directories of a profile's lighting section, or the defaults.
+    pub fn of(lighting: Option<&Lighting>) -> Self {
+        ProjectDirs {
+            fixture_types: fixture_types_dir(lighting).to_string(),
+            venues: venues_dir(lighting).to_string(),
+        }
+    }
+}
+
+/// What the loader says about a profile that still patches fixtures inline
+/// (`dmx.lighting.fixtures`, retired): they never lit, and venue files are
+/// the one way to patch a fixture.
+pub const RETIRED_INLINE_FIXTURES: &str = "dmx.lighting.fixtures is no longer supported: fixtures \
+     are patched in venue files — run `mtrack migrate --apply` to move these into one";
+
+/// A YAML representation of the lighting configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Lighting {
+    /// The current venue selection.
+    #[serde(default)]
+    current_venue: Option<String>,
+
+    /// The retired inline fixture map (`fixtures:`), read only so the
+    /// loader can refuse it by name and `mtrack migrate` can move it into a
+    /// venue file. Never written back.
+    #[serde(rename = "fixtures", default, skip_serializing)]
+    retired_fixtures: Option<HashMap<String, String>>,
+
+    /// Logical group definitions with role-based constraints.
+    #[serde(default)]
+    groups: Option<HashMap<String, LogicalGroup>>,
+
+    /// Where fixture types and venues are read from, when not the defaults
+    /// ([`DEFAULT_FIXTURE_TYPES_DIR`], [`DEFAULT_VENUES_DIR`]). Each is
+    /// independent: naming one leaves the other at its default.
+    #[serde(default)]
+    directories: Option<Directories>,
+
+    /// The show the rig plays while no song is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ambient: Option<super::ambient::Ambient>,
+
+    /// The lighting layers, bottom to top. Effects name one with
+    /// `layer:`; a higher layer is drawn over a lower. Between one and
+    /// sixteen identifiers. Left out, it is `background`, `midground` and
+    /// `foreground`, and is not written back.
+    #[serde(default = "default_layers", skip_serializing_if = "is_default_layers")]
+    layers: Vec<String>,
+}
+
+/// The layers a lighting section with none of its own has.
+fn default_layers() -> Vec<String> {
+    LayerSet::standard().names().to_vec()
+}
+
+/// Whether `layers` are the defaults, which a save leaves out.
+fn is_default_layers(layers: &[String]) -> bool {
+    layers == LayerSet::standard().names()
+}
+
+/// Directory configuration for loading fixture types and venues.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Directories {
+    /// Directory containing fixture type definitions.
+    #[serde(default)]
+    fixture_types: Option<String>,
+
+    /// Directory containing venue definitions.
+    #[serde(default)]
+    venues: Option<String>,
+}
+
+impl Lighting {
+    /// A lighting configuration built in code — tests, and the web editor's
+    /// patch check, which loads a venue from its files with no engine.
+    pub fn new(
+        current_venue: Option<String>,
+        groups: Option<HashMap<String, LogicalGroup>>,
+        directories: Option<Directories>,
+    ) -> Lighting {
+        Lighting {
+            current_venue,
+            retired_fixtures: None,
+            groups,
+            directories,
+            ambient: None,
+            layers: default_layers(),
+        }
+    }
+
+    /// This configuration with `layers` as its layers, bottom to top.
+    pub fn with_layers(mut self, layers: Vec<String>) -> Lighting {
+        self.layers = layers;
+        self
+    }
+
+    /// The configured layer names, bottom to top, as written. Use
+    /// [`Self::layer_set`] for the validated set.
+    pub fn layers(&self) -> &[String] {
+        &self.layers
+    }
+
+    /// The configured layers as a set, or why they are not one: between
+    /// one and sixteen unique identifiers.
+    pub fn layer_set(&self) -> Result<LayerSet, String> {
+        LayerSet::new(self.layers.clone())
+    }
+
+    /// This configuration with `ambient` as its ambient light.
+    pub fn with_ambient(mut self, ambient: Option<super::ambient::Ambient>) -> Lighting {
+        self.ambient = ambient;
+        self
+    }
+
+    /// The ambient light: the show the rig plays while no song is.
+    pub fn ambient(&self) -> Option<&super::ambient::Ambient> {
+        self.ambient.as_ref()
+    }
+
+    /// Gets the current venue.
+    pub fn current_venue(&self) -> Option<&str> {
+        self.current_venue.as_deref()
+    }
+
+    /// Gets the logical groups.
+    pub fn groups(&self) -> &HashMap<String, LogicalGroup> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, LogicalGroup>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.groups.as_ref().unwrap_or(&EMPTY)
+    }
+
+    /// Gets the directories configuration as written (an override of the
+    /// defaults). Code that reads or writes the project's files asks
+    /// [`Self::fixture_types_dir`] and [`Self::venues_dir`] instead.
+    pub fn directories(&self) -> Option<&Directories> {
+        self.directories.as_ref()
+    }
+
+    /// The fixture types directory, relative to the project: the
+    /// configured one, else [`DEFAULT_FIXTURE_TYPES_DIR`].
+    pub fn fixture_types_dir(&self) -> &str {
+        resolve_dir(
+            self.directories.as_ref().and_then(|d| d.fixture_types()),
+            DEFAULT_FIXTURE_TYPES_DIR,
+        )
+    }
+
+    /// The venues directory, relative to the project: the configured one,
+    /// else [`DEFAULT_VENUES_DIR`].
+    pub fn venues_dir(&self) -> &str {
+        resolve_dir(
+            self.directories.as_ref().and_then(|d| d.venues()),
+            DEFAULT_VENUES_DIR,
+        )
+    }
+
+    /// The retired inline fixture map, when the file still has one: what
+    /// `mtrack migrate` moves into a venue file. Nothing else reads it.
+    pub fn retired_inline_fixtures(&self) -> Option<&HashMap<String, String>> {
+        self.retired_fixtures.as_ref().filter(|f| !f.is_empty())
+    }
+
+    /// The refusal for this section, when it still patches fixtures inline.
+    pub fn retired_field_error(&self) -> Option<&'static str> {
+        self.retired_inline_fixtures()
+            .map(|_| RETIRED_INLINE_FIXTURES)
+    }
+}
+
+impl Directories {
+    /// Gets the fixture types directory.
+    pub fn fixture_types(&self) -> Option<&str> {
+        self.fixture_types.as_deref()
+    }
+
+    /// Gets the venues directory.
+    pub fn venues(&self) -> Option<&str> {
+        self.venues.as_deref()
+    }
+}
+
+impl Directories {
+    /// Directories built in code — tests, and the web editor's patch check.
+    pub fn new(fixture_types: Option<String>, venues: Option<String>) -> Self {
+        Self {
+            fixture_types,
+            venues,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lighting_current_venue_some() {
+        let l = Lighting::new(Some("club".to_string()), None, None);
+        assert_eq!(l.current_venue(), Some("club"));
+    }
+
+    #[test]
+    fn lighting_current_venue_none() {
+        let l = Lighting::new(None, None, None);
+        assert_eq!(l.current_venue(), None);
+    }
+
+    #[test]
+    fn a_section_built_in_code_has_no_retired_fixtures() {
+        let l = Lighting::new(None, None, None);
+        assert!(l.retired_inline_fixtures().is_none());
+        assert!(l.retired_field_error().is_none());
+    }
+
+    #[test]
+    fn groups_default_empty() {
+        let l = Lighting::new(None, None, None);
+        assert!(l.groups().is_empty());
+    }
+
+    #[test]
+    fn groups_populated() {
+        let mut groups = HashMap::new();
+        groups.insert(
+            "front".to_string(),
+            LogicalGroup::new("front".to_string(), vec![GroupConstraint::MinCount(2)]),
+        );
+        let l = Lighting::new(None, Some(groups), None);
+        let g = l.groups();
+        assert_eq!(g.len(), 1);
+        let front = g.get("front").unwrap();
+        assert_eq!(front.name(), "front");
+        assert_eq!(front.constraints().len(), 1);
+    }
+
+    #[test]
+    fn directories_resolve_per_directory_to_the_defaults() {
+        let dirs = |ft: Option<&str>, v: Option<&str>| {
+            Some(Directories::new(
+                ft.map(str::to_string),
+                v.map(str::to_string),
+            ))
+        };
+        for (directories, types, venues) in [
+            (None, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR),
+            (
+                dirs(None, None),
+                DEFAULT_FIXTURE_TYPES_DIR,
+                DEFAULT_VENUES_DIR,
+            ),
+            (dirs(Some("t"), None), "t", DEFAULT_VENUES_DIR),
+            (dirs(None, Some("v")), DEFAULT_FIXTURE_TYPES_DIR, "v"),
+            (dirs(Some("t"), Some("v")), "t", "v"),
+            (
+                dirs(Some(""), Some("")),
+                DEFAULT_FIXTURE_TYPES_DIR,
+                DEFAULT_VENUES_DIR,
+            ),
+        ] {
+            let l = Lighting::new(None, None, directories);
+            assert_eq!(l.fixture_types_dir(), types);
+            assert_eq!(l.venues_dir(), venues);
+            assert_eq!(fixture_types_dir(Some(&l)), types);
+            assert_eq!(venues_dir(Some(&l)), venues);
+        }
+        assert_eq!(fixture_types_dir(None), DEFAULT_FIXTURE_TYPES_DIR);
+        assert_eq!(venues_dir(None), DEFAULT_VENUES_DIR);
+    }
+
+    #[test]
+    fn directories_none() {
+        let l = Lighting::new(None, None, None);
+        assert!(l.directories().is_none());
+    }
+
+    #[test]
+    fn directories_some() {
+        let dirs = Directories::new(Some("/fixtures".to_string()), Some("/venues".to_string()));
+        let l = Lighting::new(None, None, Some(dirs));
+        let d = l.directories().unwrap();
+        assert_eq!(d.fixture_types(), Some("/fixtures"));
+        assert_eq!(d.venues(), Some("/venues"));
+    }
+
+    #[test]
+    fn directories_partial() {
+        let dirs = Directories::new(Some("/fixtures".to_string()), None);
+        assert_eq!(dirs.fixture_types(), Some("/fixtures"));
+        assert_eq!(dirs.venues(), None);
+    }
+
+    #[test]
+    fn logical_group_accessors() {
+        let group = LogicalGroup::new(
+            "wash".to_string(),
+            vec![
+                GroupConstraint::AllOf(vec!["par".to_string()]),
+                GroupConstraint::MaxCount(4),
+                GroupConstraint::AllowEmpty(true),
+            ],
+        );
+        assert_eq!(group.name(), "wash");
+        assert_eq!(group.constraints().len(), 3);
+    }
+
+    #[test]
+    fn group_constraint_variants() {
+        // Just ensure all variants construct properly.
+        let constraints = [
+            GroupConstraint::AllOf(vec!["a".to_string()]),
+            GroupConstraint::AnyOf(vec!["b".to_string()]),
+            GroupConstraint::Prefer(vec!["c".to_string()]),
+            GroupConstraint::MinCount(1),
+            GroupConstraint::MaxCount(10),
+            GroupConstraint::FallbackTo("other".to_string()),
+            GroupConstraint::AllowEmpty(false),
+        ];
+        assert_eq!(constraints.len(), 7);
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let yaml = r#"
+            current_venue: "main_stage"
+            fixtures:
+              par1: generic_par
+              mover1: moving_head
+            directories:
+              fixture_types: /path/to/fixtures
+              venues: /path/to/venues
+        "#;
+        let lighting: Lighting = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(lighting.current_venue(), Some("main_stage"));
+        // Read, so the loader can refuse it by name; never written back.
+        assert_eq!(lighting.retired_inline_fixtures().map(|f| f.len()), Some(2));
+        assert_eq!(
+            lighting.retired_field_error(),
+            Some(RETIRED_INLINE_FIXTURES)
+        );
+        let written = crate::util::to_yaml_string(&lighting).unwrap();
+        assert!(!written.contains("fixtures:"), "{written}");
+        assert!(!written.contains("par1"), "{written}");
+        let dirs = lighting.directories().unwrap();
+        assert_eq!(dirs.fixture_types(), Some("/path/to/fixtures"));
+        assert_eq!(dirs.venues(), Some("/path/to/venues"));
+    }
+
+    #[test]
+    fn serde_minimal() {
+        let yaml = "{}";
+        let lighting: Lighting = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(lighting.current_venue(), None);
+        assert!(lighting.retired_field_error().is_none());
+        assert!(lighting.groups().is_empty());
+        assert!(lighting.directories().is_none());
+    }
+
+    fn lighting_yaml(yaml: &str) -> Lighting {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn layers_default_to_the_three() {
+        let l = lighting_yaml("current_venue: v\n");
+        assert_eq!(l.layers(), ["background", "midground", "foreground"]);
+        assert_eq!(l.layer_set().unwrap(), *LayerSet::standard());
+        assert_eq!(layer_set(None), *LayerSet::standard());
+        assert_eq!(layer_set(Some(&l)), *LayerSet::standard());
+        assert_eq!(
+            Lighting::new(None, None, None).layers(),
+            ["background", "midground", "foreground"]
+        );
+    }
+
+    #[test]
+    fn layers_are_read_bottom_to_top() {
+        let l = lighting_yaml("layers: [floor, mid, accents, blinders]\n");
+        assert_eq!(l.layers(), ["floor", "mid", "accents", "blinders"]);
+        let set = layer_set(Some(&l));
+        assert_eq!(set.len(), 4);
+        assert_eq!(set.top(), crate::lighting::effects::EffectLayer(3));
+    }
+
+    #[test]
+    fn a_config_without_layers_is_written_without_them() {
+        let l = lighting_yaml("current_venue: v\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert!(!written.contains("layers"), "{written}");
+        // Spelled out as the default, they are the default and written
+        // the same way.
+        let spelled = lighting_yaml("layers: [background, midground, foreground]\n");
+        assert!(!crate::util::to_yaml_string(&spelled)
+            .unwrap()
+            .contains("layers"));
+    }
+
+    #[test]
+    fn configured_layers_are_written_back() {
+        let l = lighting_yaml("layers: [a, b]\n");
+        let written = crate::util::to_yaml_string(&l).unwrap();
+        assert_eq!(lighting_yaml(&written).layers(), ["a", "b"]);
+    }
+
+    #[test]
+    fn layers_that_are_not_a_set_are_refused_with_why() {
+        let many: Vec<String> = (0..17).map(|i| format!("l{i}")).collect();
+        let cases: Vec<(Vec<String>, &str)> = vec![
+            (vec![], "at least one"),
+            (vec!["a".into(), "a".into()], "duplicate layer name 'a'"),
+            (many, "at most 16"),
+            (vec!["has space".into()], "not an identifier"),
+            (vec!["1st".into()], "not an identifier"),
+            (vec!["a:b".into()], "not an identifier"),
+            (vec!["".into()], "layer names cannot be empty"),
+        ];
+        for (names, want) in cases {
+            let l = Lighting::new(None, None, None).with_layers(names.clone());
+            let error = l.layer_set().unwrap_err();
+            assert!(error.contains(want), "{names:?}: {error}");
+        }
+        // Sixteen is the most there can be.
+        let sixteen: Vec<String> = (0..16).map(|i| format!("l{i}")).collect();
+        assert!(Lighting::new(None, None, None)
+            .with_layers(sixteen)
+            .layer_set()
+            .is_ok());
+        // Dashes and underscores are identifier characters.
+        assert!(Lighting::new(None, None, None)
+            .with_layers(vec!["_a".into(), "b-c".into(), "D9".into()])
+            .layer_set()
+            .is_ok());
+    }
+}

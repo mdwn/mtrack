@@ -111,16 +111,7 @@ impl SectionJump {
     }
 }
 
-/// How far through a crossfade of `overlap` it is `into` it: from 0 at its
-/// start, past 1 once it is over. One with no overlap is over at once,
-/// however little time has gone by.
-pub fn crossfade_progress(into: Duration, overlap: Duration) -> f64 {
-    if overlap.is_zero() {
-        1.0
-    } else {
-        into.as_secs_f64() / overlap.as_secs_f64()
-    }
-}
+pub use mtrack_core::section_loop::crossfade_progress;
 
 /// The name the whole song goes by as a section ([`EffectiveSection`]): none
 /// a song config can give one of its own.

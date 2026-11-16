@@ -84,7 +84,7 @@ export function wholeMillis(d: Duration | undefined): number {
   return d ? Number(d.seconds) * 1000 + Math.floor(d.nanos / 1_000_000) : 0;
 }
 
-/** `m:ss`, as the player writes a length (src/position.rs). */
+/** `m:ss`, as the player writes a length (crates/mtrack-core/src/position.rs). */
 export function minutesSeconds(ms: number): string {
   const secs = Math.floor(ms / 1000);
   const s = secs % 60;

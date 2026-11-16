@@ -35,8 +35,8 @@ use layers::{LayerState, Now};
 use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
-pub(crate) use crate::lighting::channels::{base_channel, fades_to_dark, is_position_channel};
 use crate::lighting::channels::{dmx_byte, dmx_word, CrossKind};
+pub(crate) use crate::lighting::channels::{fades_to_dark, is_position_channel};
 
 /// The next [`EffectInstance::start_order`]: process-wide, as a seek's
 /// scratch engine hands its effects to the live one.

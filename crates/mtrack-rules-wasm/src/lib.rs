@@ -14,9 +14,9 @@
 //! mtrack's beat grid, tempo map, metronome, DMX patch and light show
 //! rules for the web UI, as a WebAssembly module.
 //!
-//! The module is the player's own `src/tempo.rs`, `src/config/tempo.rs`,
-//! `src/config/metronome.rs`, `src/audio/beat_grid.rs`,
-//! `src/lighting/patch.rs` and the light show parser (`src/lighting/parser/*`
+//! The module is the player's own `crates/mtrack-core/src/tempo.rs`, `crates/mtrack-core/src/config/tempo.rs`,
+//! `crates/mtrack-core/src/config/metronome.rs`, `src/audio/beat_grid.rs`,
+//! `src/lighting/patch.rs` and the light show parser (`crates/mtrack-core/src/lighting/parser/*`
 //! with the effect types it builds), compiled as they are, so the UI places
 //! measures, beats, signatures, accents and cues exactly where the player
 //! does, refuses the patch overlaps the player refuses, and reads a `.light`
@@ -41,17 +41,17 @@
 // Each included source is named by its own `#[path]` here, one per line:
 // the Makefile reads this list to know which player sources the web UI's
 // build depends on, so it lives nowhere else.
-#[path = "../../../src/tempo.rs"]
+#[path = "../../mtrack-core/src/tempo.rs"]
 #[allow(dead_code)]
 pub mod tempo;
 
-/// The song's `tempo:` block (`src/config/tempo.rs`).
-#[path = "../../../src/config/tempo.rs"]
+/// The song's `tempo:` block (`crates/mtrack-core/src/config/tempo.rs`).
+#[path = "../../mtrack-core/src/config/tempo.rs"]
 #[allow(dead_code)]
 pub mod tempo_config;
 
-/// The song's `metronome:` block (`src/config/metronome.rs`).
-#[path = "../../../src/config/metronome.rs"]
+/// The song's `metronome:` block (`crates/mtrack-core/src/config/metronome.rs`).
+#[path = "../../mtrack-core/src/config/metronome.rs"]
 #[allow(dead_code)]
 pub mod metronome_config;
 
@@ -67,25 +67,25 @@ pub mod beat_grid;
 pub mod patch;
 
 /// The player's light show parser, with the effect types it builds: the
-/// modules of `src/lighting/effects` and `src/lighting/parser` the parser
+/// modules of `crates/mtrack-core/src/lighting/effects` and `crates/mtrack-core/src/lighting/parser` the parser
 /// needs, under the paths they have in the player (`crate::lighting::…`),
 /// so each compiles as it is. See `lighting.rs`.
 #[allow(dead_code)]
 pub mod lighting;
 
-/// The player's config as written (`src/config/*`): the parts the web UI
+/// The player's config as written (`crates/mtrack-core/src/config/*`): the parts the web UI
 /// edits and is sent, under the paths they have in the player
 /// (`crate::config::…`). See `config.rs`.
 #[allow(dead_code)]
 pub mod config;
 
-/// An audio sample format (`src/audio/format.rs`).
-#[path = "../../../src/audio/format.rs"]
+/// An audio sample format (`crates/mtrack-core/src/audio/format.rs`).
+#[path = "../../mtrack-core/src/audio/format.rs"]
 #[allow(dead_code)]
 pub mod audio_format;
 
-/// The range a track's gain may be set in (`src/audio/track_gains.rs`).
-#[path = "../../../src/audio/track_gains.rs"]
+/// The range a track's gain may be set in (`crates/mtrack-core/src/audio/track_gains.rs`).
+#[path = "../../mtrack-core/src/audio/track_gains.rs"]
 #[allow(dead_code)]
 pub mod track_gains;
 
@@ -103,8 +103,8 @@ mod hardware_status;
 #[path = "../../../src/device_info.rs"]
 pub mod device_info;
 
-/// A playback position as text (`src/position.rs`).
-#[path = "../../../src/position.rs"]
+/// A playback position as text (`crates/mtrack-core/src/position.rs`).
+#[path = "../../mtrack-core/src/position.rs"]
 pub mod position;
 
 /// Why a play started no song (`src/player/play_declined.rs`).
@@ -128,8 +128,8 @@ mod ambient_source;
 mod pose;
 
 /// What a file in a song directory is, by its extension
-/// (`src/songs/file_kind.rs`).
-#[path = "../../../src/songs/file_kind.rs"]
+/// (`crates/mtrack-core/src/songs/file_kind.rs`).
+#[path = "../../mtrack-core/src/songs/file_kind.rs"]
 mod file_kind;
 
 // What the web UI reads from the player (`src/webui/wire`), whose

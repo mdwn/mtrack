@@ -11,92 +11,33 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-pub mod ambient;
-mod audio;
-mod controller;
-mod dmx;
-mod duration;
-mod error;
-mod fade;
-mod hostname;
-mod kind_data;
-pub(crate) mod length;
-pub mod lighting;
-pub mod metronome;
-#[cfg(test)]
-pub mod midi;
-#[cfg(not(test))]
-mod midi;
-mod midi_event;
-pub mod notification;
-pub mod pilot;
-mod player;
-mod playlist;
-mod playlist_settings;
-mod profile;
-pub mod samples;
-mod section;
-mod song;
-mod statusevents;
+//! The player's configuration. The files' types and their loaders are
+//! `mtrack-core`'s; the store that edits them on a running player is here.
+
+pub use mtrack_core::config::*;
+
 pub mod store;
-mod tempo;
-mod track;
-mod trackmappings;
-pub mod trigger;
-
-pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
-pub use self::controller::BleController;
-pub use self::controller::Controller;
-pub use self::controller::ControllerKind;
-pub use self::controller::CustomModel;
-pub use self::controller::GrpcController;
-pub use self::controller::McpController;
-pub use self::controller::MidiController;
-pub use self::controller::MorningstarConfig;
-pub use self::controller::MorningstarModel;
-pub use self::controller::OscController;
-pub use self::controller::DEFAULT_GRPC_PORT;
-pub use self::controller::DEFAULT_MCP_PORT;
-pub use self::dmx::Dmx;
-pub use self::dmx::Universe;
-// Re-exported for the hardware harness, which needs the default port to probe
-// for a running OLA daemon. Gated to match the constant itself, which (with
-// `Dmx::ola_port`) is excluded from test builds; the harness links the
-// non-test build and so still sees it.
-#[cfg(not(test))]
-pub use self::dmx::DEFAULT_OLA_PORT;
-pub use self::error::ConfigError;
-pub use self::lighting::Lighting;
-pub use self::metronome::MetronomeConfig;
-pub use self::midi::BeatClockSeams;
-pub use self::midi::Midi;
-pub use self::midi::ToMidiEvent;
-pub use self::pilot::PilotConfig;
-pub use self::player::{MetronomeDefaults, Player};
-#[allow(unused_imports)]
-pub use self::playlist::{
-    AutoPlayConfig, ConfiguredEntry, EntryFades, EntryTransitions, Fade, FadeConfig, FadeCurve,
-    FadeStatus, Playlist, PlaylistEntry,
-};
-// Sample types are exported for external configuration
-pub(crate) use self::duration::{parse_playback_delay, playback_delay_problem};
-pub use self::hostname::resolve_hostname;
-pub use self::notification::{
-    section_key, NotificationConfig, NotificationKind, SongNotificationConfig,
-};
-pub(crate) use self::player::{list_profile_files, profile_file};
-pub use self::profile::Profile;
-#[allow(unused_imports)]
-pub use self::samples::{
-    ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
-    VelocityConfig, VelocityLayer, VelocityMode,
-};
-pub use self::section::Section;
-pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Song};
-pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
-pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};
-pub use self::track::Track;
 
-mod kind;
-pub use self::kind::{peek_kind, ConfigKind};
+#[cfg(test)]
+mod tests {
+    use super::Player;
+
+    const LEGACY_YAML: &str = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                               off_events: []\n  idling_events: []\n  playing_events: []\n";
+
+    /// A draft being validated is not the running config: reading one gives
+    /// no warning, so it cannot use up the one the loaded config gives.
+    #[test]
+    fn a_draft_gives_no_legacy_warning() {
+        let (layer, lines) = crate::tui::logging::capture_layer(10);
+        {
+            use tracing_subscriber::layer::SubscriberExt;
+            let subscriber = tracing_subscriber::Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let player = Player::deserialize_from_str(LEGACY_YAML).expect("config parses");
+            assert!(player.status_events().is_some());
+        }
+        assert!(lines.lock().is_empty(), "{:?}", lines.lock());
+    }
+}

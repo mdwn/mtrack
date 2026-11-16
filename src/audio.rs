@@ -20,13 +20,14 @@ use crate::playsync::PlaybackSync;
 use crate::songs::Song;
 use std::collections::HashMap;
 
+pub use mtrack_core::audio::{format, track_gains};
+
 pub mod beat_grid;
 pub mod click_analysis;
 pub mod confirmation;
 pub mod context;
 pub mod cpal;
 pub mod crossfade;
-pub mod format;
 pub mod guessed_tempo;
 pub mod health;
 pub mod metronome;
@@ -38,7 +39,6 @@ pub mod output_status;
 pub mod pilot;
 pub mod sample_source;
 pub(crate) mod song_loop;
-pub mod track_gains;
 
 // Re-export the format types for backward compatibility
 pub use context::PlaybackContext;

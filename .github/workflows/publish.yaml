@@ -56,6 +56,9 @@ jobs:
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
       run: make build-ui
+    # The player depends on crates/mtrack-core, which is not on crates.io
+    # (`publish = false` there). Until it is published, this step fails and
+    # nothing after it runs.
     - name: Run publish
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

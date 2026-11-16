@@ -19,18 +19,18 @@
 
 pub use crate::{patch, tempo};
 
-#[path = "../../../src/lighting/channels.rs"]
+#[path = "../../mtrack-core/src/lighting/channels.rs"]
 pub mod channels;
 pub mod effects;
 #[path = "../../../src/lighting/findings.rs"]
 pub mod findings;
 #[path = "../../../src/lighting/fit/types.rs"]
 mod fit_types;
-#[path = "../../../src/lighting/fixture_data.rs"]
+#[path = "../../mtrack-core/src/lighting/fixture_data.rs"]
 pub mod fixture_data;
 #[path = "../../../src/lighting/fixture_test/types.rs"]
 mod fixture_test_types;
-#[path = "../../../src/lighting/geometry.rs"]
+#[path = "../../mtrack-core/src/lighting/geometry.rs"]
 pub mod geometry;
 #[path = "../../../src/lighting/import/report.rs"]
 pub mod import_report;

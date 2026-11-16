@@ -1,0 +1,2449 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+use super::audio::Audio;
+use super::controller::Controller;
+use super::dmx::Dmx;
+use super::lighting::Lighting;
+use super::midi::Midi;
+use super::profile::{AudioConfig, Profile};
+use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX_SAMPLE_VOICES};
+use super::statusevents::StatusEvents;
+use super::trackmappings::TrackMappings;
+use super::trigger::{MidiTriggerInput, TriggerConfig, TriggerInput};
+use config::Config;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use super::error::ConfigError;
+use tracing::{info, warn};
+
+/// The legacy-status-events warning, named so a test can look for it.
+const LEGACY_STATUS_EVENTS: &str = "top-level 'status_events' is legacy; it is only used when \
+     the matched profile has none. Move it into the profile";
+
+/// Config warnings already given, so that each is given once.
+///
+/// The config is read again on every web UI and API request that needs it, so
+/// a warning logged per read repeats for as long as the config stays as it is
+/// -- eleven times in an evening's soak, burying the lines around it.
+struct Warned(parking_lot::Mutex<std::collections::BTreeSet<&'static str>>);
+
+impl Warned {
+    const fn new() -> Self {
+        Self(parking_lot::Mutex::new(std::collections::BTreeSet::new()))
+    }
+
+    /// Logs `message` unless it was already given. Returns whether it logged.
+    fn warn(&self, message: &'static str) -> bool {
+        let first = self.0.lock().insert(message);
+        if first {
+            warn!("{message}");
+        }
+        first
+    }
+
+    fn forget(&self) {
+        self.0.lock().clear();
+    }
+}
+
+static WARNED: Warned = Warned::new();
+
+/// Whether [`Player::normalize_with`] gives its warnings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Warnings {
+    Give,
+    Withhold,
+}
+
+/// Logs a config warning the first time it applies, and not again until a new
+/// config is written as raw YAML (see [`forget_config_warnings`]).
+fn warn_once(message: &'static str) {
+    WARNED.warn(message);
+}
+
+/// Lets the config warnings be given again. Called when a config written as
+/// raw YAML is read back: one that puts a legacy field back after it was fixed
+/// says so. Typed edits (a playlist switch, a gain) do not call it, since they
+/// cannot bring a legacy field back.
+pub fn forget_config_warnings() {
+    WARNED.forget();
+    #[cfg(any(test, feature = "test-util"))]
+    FORGOTTEN_ON_THIS_THREAD.with(|n| n.set(n.get() + 1));
+}
+
+#[cfg(any(test, feature = "test-util"))]
+thread_local! {
+    /// How often this thread has called [`forget_config_warnings`]. The
+    /// warnings themselves are process-wide and shared by tests running in
+    /// parallel, so a test asks this instead.
+    static FORGOTTEN_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// See [`FORGOTTEN_ON_THIS_THREAD`].
+#[cfg(any(test, feature = "test-util"))]
+pub fn config_warnings_forgotten_on_this_thread() -> usize {
+    FORGOTTEN_ON_THIS_THREAD.with(std::cell::Cell::get)
+}
+
+fn default_active_playlist() -> String {
+    "playlist".to_string()
+}
+
+/// Lists the profile YAML files in a profiles directory in load order
+/// (sorted by file name): every one (`util::yaml_config_files`), since a
+/// profile is matched by the `hostname` inside it, not by its file name.
+/// Shared by config load, gain persistence and the web UI's list so all
+/// agree on which file owns the active profile.
+pub fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
+    crate::util::yaml_config_files(dir).map_err(|source| ConfigError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })
+}
+
+/// The file in the profiles directory `dir` that `name` addresses, by the
+/// directory's listing: a full file name it lists (`stage.yml`) is that
+/// file (`util::file_among`), so two files sharing a stem are each
+/// addressed; else a stem's file (`util::yaml_file_among`: `stage` is its
+/// `.yaml`, else its `.yml`; `stage.yaml` with only `stage.yaml.yaml`
+/// there is that). With neither, a full file name is created as written
+/// (`x.yml`) and a stem as `<stem>.yaml`. A new file named as one there
+/// but for case is refused. `name` is not checked for path safety here.
+pub fn profile_file(
+    dir: &Path,
+    name: &str,
+) -> Result<crate::util::NamedFile, crate::util::CaseClash> {
+    let files = crate::util::files_to_look_up(dir);
+    let as_stem = crate::util::yaml_file_among(dir, &files, name);
+    if !crate::songs::is_yaml_config(Path::new(name)) {
+        return as_stem;
+    }
+    match crate::util::file_among(dir, &files, std::ffi::OsStr::new(name)) {
+        Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+        full => match as_stem {
+            Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+            _ => full,
+        },
+    }
+}
+
+/// The configuration for the multitrack player.
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Player {
+    /// The controller configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    controller: Option<Controller>,
+    /// The controllers configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    controllers: Option<Vec<Controller>>,
+    /// The audio device to use. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_device: Option<String>,
+    /// The audio configuration section. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<Audio>,
+    /// The track mappings for the player. (legacy, now optional when using profiles)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    track_mappings: Option<TrackMappings>,
+    /// The MIDI device to use. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    midi_device: Option<String>,
+    /// The MIDI configuration section. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    midi: Option<Midi>,
+    /// The DMX configuration. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dmx: Option<Dmx>,
+    /// Audio trigger configuration. (legacy, now in profiles)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trigger: Option<TriggerConfig>,
+    /// Unified hardware profiles, tried in priority order.
+    /// Each profile contains audio (optional), MIDI (optional), and DMX (optional) configs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profiles: Option<Vec<Profile>>,
+    /// Directory of external profile YAML files. When it contains any profiles they replace the
+    /// inline `profiles` list entirely; inline profiles are only used if the directory is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profiles_dir: Option<String>,
+    /// Events to emit to report status out via MIDI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_events: Option<StatusEvents>,
+    /// The path to the playlist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playlist: Option<String>,
+    /// Directory containing playlist YAML files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    playlists_dir: Option<String>,
+    /// The active playlist name (persisted across restarts). Switching to
+    /// "all_songs" is session-only and deliberately not stored here, so the
+    /// value is the last non-all_songs selection -- see `Player::switch_to_playlist`.
+    #[serde(default = "default_active_playlist")]
+    active_playlist: String,
+    /// The path to the song definitions.
+    songs: String,
+    /// Inline sample definitions.
+    #[serde(default)]
+    samples: HashMap<String, SampleDefinition>,
+    /// Path to external samples configuration file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    samples_file: Option<String>,
+    /// Sample trigger mappings.
+    #[serde(default)]
+    sample_triggers: Vec<SampleTrigger>,
+    /// Maximum number of concurrent sample voices globally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_sample_voices: Option<u32>,
+    /// Player-wide metronome defaults. Songs enable the metronome with a
+    /// `metronome:` block; the volume and any sounds not overridden there
+    /// fall back to these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metronome: Option<MetronomeDefaults>,
+}
+
+/// Player-wide metronome defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct MetronomeDefaults {
+    /// When true, every song with a tempo map gets a metronome by default;
+    /// individual songs opt out with `metronome: { enabled: false }`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
+    /// Master click volume (0.0-2.0) for every song that doesn't set its own
+    /// `metronome.volume`. Absent means 1.0. Click levels are usually a
+    /// property of the rig, not of one song.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
+    /// Default click sounds used when a song's metronome config doesn't
+    /// override them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<super::metronome::MetronomeSounds>,
+}
+
+impl MetronomeDefaults {
+    /// Validates the player-wide defaults, sounds included.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(volume) = self.volume {
+            super::metronome::validate_volume(volume)?;
+        }
+        if let Some(sounds) = &self.sounds {
+            sounds.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        let mut player = Player {
+            controller: None,
+            controllers: None,
+            audio_device: None,
+            audio: None,
+            track_mappings: None,
+            midi_device: None,
+            midi: None,
+            dmx: None,
+            trigger: None,
+            profiles: None,
+            profiles_dir: None,
+            status_events: None,
+            playlist: None,
+            playlists_dir: None,
+            active_playlist: default_active_playlist(),
+            songs: "songs".to_string(),
+            samples: HashMap::new(),
+            samples_file: None,
+            sample_triggers: Vec::new(),
+            max_sample_voices: None,
+            metronome: None,
+        };
+        player.normalize();
+        player
+    }
+}
+
+impl Player {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(
+        controllers: Vec<Controller>,
+        audio: Option<Audio>,
+        midi: Option<Midi>,
+        dmx: Option<Dmx>,
+        track_mappings: HashMap<String, Vec<u16>>,
+        songs: &str,
+    ) -> Player {
+        let mut player = Player {
+            controller: None,
+            controllers: Some(controllers),
+            audio_device: None,
+            audio,
+            track_mappings: Some(TrackMappings {
+                track_mappings: track_mappings.into_iter().collect(),
+            }),
+            midi_device: None,
+            midi,
+            dmx,
+            trigger: None,
+            profiles: None,
+            profiles_dir: None,
+            status_events: None,
+            playlist: None,
+            playlists_dir: None,
+            active_playlist: default_active_playlist(),
+            songs: songs.to_string(),
+            samples: HashMap::new(),
+            samples_file: None,
+            sample_triggers: Vec::new(),
+            max_sample_voices: None,
+            metronome: None,
+        };
+        player.normalize();
+        player
+    }
+
+    /// Deserializes a file from the path into a player configuration struct.
+    /// Legacy configs (audio + track_mappings at top level) are normalized into profiles.
+    pub fn deserialize(path: &Path) -> Result<Player, ConfigError> {
+        let mut player = Config::builder()
+            .add_source(crate::util::yaml_source(path)?)
+            .build()?
+            .try_deserialize::<Player>()?;
+        player.load_profiles_dir(path)?;
+        player.normalize();
+        player
+            .validate()
+            .map_err(|errors| ConfigError::Validation(errors.join("; ")))?;
+        Ok(player)
+    }
+
+    /// [`Self::deserialize`] for `mtrack migrate`: the same load, but a
+    /// retired field it exists to move (inline fixtures) is not an error.
+    pub fn deserialize_for_migration(path: &Path) -> Result<Player, ConfigError> {
+        let mut player = Config::builder()
+            .add_source(crate::util::yaml_source(path)?)
+            .build()?
+            .try_deserialize::<Player>()?;
+        player.load_profiles_dir(path)?;
+        player.normalize();
+        if let Err(errors) = player.validate() {
+            let rest: Vec<String> = errors
+                .into_iter()
+                .filter(|e| !e.ends_with(super::lighting::RETIRED_INLINE_FIXTURES))
+                .collect();
+            if !rest.is_empty() {
+                return Err(ConfigError::Validation(rest.join("; ")));
+            }
+        }
+        Ok(player)
+    }
+
+    /// Deserializes a YAML string directly into a player configuration struct.
+    /// Does not load profiles_dir (no filesystem context). Runs normalize().
+    ///
+    /// This reads drafts -- a config the web UI is validating, or checking
+    /// before it saves -- not the config the player runs, so the legacy-field
+    /// warnings are not given: they belong to the config that is loaded.
+    pub fn deserialize_from_str(yaml: &str) -> Result<Player, ConfigError> {
+        let mut player = Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize::<Player>()?;
+        player.normalize_with(Warnings::Withhold);
+        Ok(player)
+    }
+
+    /// Validates the player configuration for semantic issues that can be
+    /// caught without runtime context. Call this before writing to disk.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        // Validate legacy top-level configs.
+        if let Some(ref audio) = self.audio {
+            if let Err(audio_errors) = audio.validate() {
+                errors.extend(audio_errors);
+            }
+        }
+        if let Some(ref midi) = self.midi {
+            if let Err(midi_errors) = midi.validate() {
+                errors.extend(midi_errors);
+            }
+        }
+        if let Some(ref dmx) = self.dmx {
+            if let Err(dmx_errors) = dmx.validate() {
+                errors.extend(dmx_errors);
+            }
+        }
+
+        // Validate track mappings (legacy top-level).
+        if let Some(ref mappings) = self.track_mappings {
+            for (name, channels) in mappings.track_mappings.iter() {
+                for ch in channels {
+                    if *ch == 0 {
+                        errors.push(format!(
+                            "track_mappings '{}': channel 0 is invalid (channels are 1-indexed)",
+                            name
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Validate profiles.
+        if let Some(ref profiles) = self.profiles {
+            for (i, profile) in profiles.iter().enumerate() {
+                if let Err(profile_errors) = profile.validate() {
+                    for e in profile_errors {
+                        errors.push(format!("profile[{}]: {}", i, e));
+                    }
+                }
+            }
+        } else if let Some(profile) = self.legacy_profile() {
+            // A config edited in place without profiles loads as the one its
+            // legacy fields make, which the load validates whole: two MIDI
+            // controllers there passed here and failed the next start.
+            if let Err(profile_errors) = profile.validate() {
+                for e in profile_errors {
+                    if !errors.contains(&e) {
+                        errors.push(e);
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Loads profiles from the profiles_dir, if configured.
+    /// Directory profiles replace inline profiles entirely. If the directory is
+    /// empty, inline profiles are kept as a fallback.
+    fn load_profiles_dir(&mut self, config_path: &Path) -> Result<(), ConfigError> {
+        let dir_path = match self.resolved_profiles_dir(config_path) {
+            Some(dir) => dir,
+            None => return Ok(()),
+        };
+
+        let yaml_paths = list_profile_files(&dir_path)?;
+
+        let mut dir_profiles: Vec<Profile> = Vec::new();
+        for path in &yaml_paths {
+            let profile = crate::util::yaml_source(path)
+                .and_then(|source| Config::builder().add_source(source).build())
+                .and_then(|c| c.try_deserialize::<Profile>())
+                .map_err(|source| ConfigError::ProfileParse {
+                    path: path.clone(),
+                    source,
+                })?;
+            let mut profile = profile;
+            profile.set_source_file(path.file_name().and_then(|n| n.to_str()).map(String::from));
+            dir_profiles.push(profile);
+        }
+
+        if !dir_profiles.is_empty() {
+            // Directory profiles win — replace any inline profiles entirely.
+            if self.profiles.is_some() {
+                warn_once("inline 'profiles' ignored; using profiles_dir");
+            }
+            self.profiles = Some(dir_profiles);
+        }
+        // If directory is empty, fall back to inline profiles (backward compat).
+
+        Ok(())
+    }
+
+    /// Normalizes legacy configuration fields into profiles.
+    /// After normalization, `profiles` is the source of truth.
+    fn normalize(&mut self) {
+        self.normalize_with(Warnings::Give);
+    }
+
+    /// [`Self::normalize`], saying what it ignores or only when `warnings`
+    /// says to.
+    fn normalize_with(&mut self, warnings: Warnings) {
+        if self.profiles.is_some() {
+            // Warn about legacy fields that will be ignored.
+            let warn_once = |message: &'static str| {
+                if warnings == Warnings::Give {
+                    warn_once(message)
+                }
+            };
+            if self.audio.is_some() || self.audio_device.is_some() {
+                warn_once("top-level 'audio'/'audio_device' ignored when 'profiles' is present");
+            }
+            if self.midi.is_some() || self.midi_device.is_some() {
+                warn_once("top-level 'midi'/'midi_device' ignored when 'profiles' is present");
+            }
+            if self.dmx.is_some() {
+                warn_once("top-level 'dmx' ignored when 'profiles' is present");
+            }
+            if self.trigger.is_some() {
+                warn_once("top-level 'trigger' ignored when 'profiles' is present");
+            }
+            if self.track_mappings.is_some() {
+                warn_once("top-level 'track_mappings' ignored when 'profiles' is present");
+            }
+            if !self.sample_triggers.is_empty() {
+                warn_once("top-level 'sample_triggers' ignored when 'profiles' is present");
+            }
+            if self.controller.is_some() || self.controllers.is_some() {
+                warn_once(
+                    "top-level 'controller'/'controllers' ignored when 'profiles' is present",
+                );
+            }
+            if self.status_events.is_some() {
+                warn_once(LEGACY_STATUS_EVENTS);
+            }
+            return;
+        }
+
+        let profile = self.legacy_profile();
+        self.status_events = None;
+        if let Some(profile) = profile {
+            self.profiles = Some(vec![profile]);
+        }
+    }
+
+    /// The single profile a config without profiles loads as, built from its
+    /// legacy fields, if any subsystem is configured.
+    fn legacy_profile(&self) -> Option<Profile> {
+        let audio = if let Some(audio) = &self.audio {
+            Some(audio.clone())
+        } else {
+            self.audio_device.as_ref().map(|d| Audio::new(d))
+        };
+
+        let audio_config = audio.map(|audio| {
+            let track_mappings = self
+                .track_mappings
+                .as_ref()
+                .map(|tm| tm.track_mappings.clone())
+                .unwrap_or_default();
+            AudioConfig::new(audio, track_mappings)
+        });
+
+        let midi = if let Some(midi) = &self.midi {
+            Some(midi.clone())
+        } else {
+            self.midi_device.as_ref().map(|d| Midi::new(d, None))
+        };
+
+        let dmx = self.dmx.clone();
+        let mut trigger = self.trigger.clone();
+
+        // Convert legacy sample_triggers → TriggerInput::Midi entries
+        if !self.sample_triggers.is_empty() {
+            let trigger_config =
+                trigger.get_or_insert_with(|| TriggerConfig::new_midi_only(vec![]));
+            for st in &self.sample_triggers {
+                trigger_config.add_input(TriggerInput::Midi(MidiTriggerInput::new(
+                    st.trigger().clone(),
+                    st.sample().to_string(),
+                )));
+            }
+        }
+
+        // Collect controllers from legacy top-level fields.
+        let controllers = self.collect_controllers();
+
+        let status_events = self.status_events.clone();
+
+        // Create a profile if any subsystem is configured.
+        if audio_config.is_some()
+            || midi.is_some()
+            || dmx.is_some()
+            || trigger.is_some()
+            || !controllers.is_empty()
+            || status_events.is_some()
+        {
+            let mut profile = Profile::new(None, audio_config, midi, dmx);
+            profile.set_trigger(trigger);
+            profile.set_controllers(controllers);
+            profile.set_status_events(status_events);
+            Some(profile)
+        } else {
+            None
+        }
+    }
+
+    /// Collects controllers from legacy top-level fields.
+    fn collect_controllers(&self) -> Vec<Controller> {
+        if let Some(controllers) = &self.controllers {
+            return controllers.clone();
+        } else if let Some(controller) = &self.controller {
+            if let Controller::Multi(multi) = controller {
+                return multi.values().cloned().collect();
+            }
+
+            return vec![controller.clone()];
+        }
+
+        vec![]
+    }
+
+    /// Returns a reference to the first profile, if any.
+    fn first_profile(&self) -> Option<&Profile> {
+        self.profiles.as_ref().and_then(|ps| ps.first())
+    }
+
+    /// Gets the controllers configuration from the first profile.
+    /// Kept for backward compatibility in tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn controllers(&self) -> Vec<Controller> {
+        self.first_profile()
+            .map(|p| p.controllers().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Returns profiles filtered by hostname and ordered by priority.
+    /// The first matching profile should be used.
+    pub fn profiles(&self, hostname: &str) -> Vec<&Profile> {
+        match &self.profiles {
+            Some(profiles) => profiles
+                .iter()
+                .filter(|p| match p.hostname() {
+                    Some(h) => h == hostname,
+                    None => true,
+                })
+                .collect(),
+            None => vec![],
+        }
+    }
+
+    /// Resolves the configured profiles directory against the config file
+    /// location, if `profiles_dir` is set.
+    pub fn resolved_profiles_dir(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir = self.profiles_dir.as_ref()?;
+        Some(crate::util::project_dir_of(config_path).join(dir))
+    }
+
+    /// Returns a mutable reference to the active profile for the given
+    /// hostname: the first profile whose hostname matches or that has no
+    /// hostname constraint (same selection rule as `profiles`).
+    pub fn active_profile_mut(&mut self, hostname: &str) -> Option<&mut Profile> {
+        self.profiles.as_mut().and_then(|profiles| {
+            profiles.iter_mut().find(|p| match p.hostname() {
+                Some(h) => h == hostname,
+                None => true,
+            })
+        })
+    }
+
+    /// Returns all profiles without hostname filtering (for verify command).
+    pub fn all_profiles(&self) -> &[Profile] {
+        match &self.profiles {
+            Some(profiles) => profiles.as_slice(),
+            None => &[],
+        }
+    }
+
+    /// Gets the audio configuration from the first profile.
+    /// Kept for backward compatibility in tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn audio(&self) -> Option<Audio> {
+        self.first_profile()
+            .and_then(|p| p.audio_config())
+            .map(|ac| ac.audio().clone())
+    }
+
+    /// Gets the track mapping configuration from the first profile.
+    /// Kept for backward compatibility. Returns a HashMap since callers
+    /// (verify, CLI) don't need insertion-order preservation.
+    pub fn track_mappings(&self) -> HashMap<String, Vec<u16>> {
+        self.first_profile()
+            .and_then(|p| p.audio_config())
+            .map(|ac| ac.track_mappings_hash())
+            .unwrap_or_default()
+    }
+
+    /// Gets the MIDI configuration from the first profile.
+    /// Kept for backward compatibility in tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn midi(&self) -> Option<Midi> {
+        self.first_profile().and_then(|p| p.midi().cloned())
+    }
+
+    /// Gets the DMX configuration from the first profile.
+    /// Kept for backward compatibility.
+    pub fn dmx(&self) -> Option<&Dmx> {
+        self.first_profile().and_then(|p| p.dmx())
+    }
+
+    /// Gets the status events configuration.
+    pub fn status_events(&self) -> Option<StatusEvents> {
+        self.status_events.clone()
+    }
+
+    /// Gets the path to the playlist.
+    pub fn playlist(&self) -> Option<PathBuf> {
+        self.playlist.as_ref().map(PathBuf::from)
+    }
+
+    /// Gets the playlists directory, resolved relative to the given config path.
+    pub fn playlists_dir(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir = self.playlists_dir.as_ref()?;
+        Some(crate::util::project_dir_of(config_path).join(dir))
+    }
+
+    /// Gets the active playlist name.
+    pub fn active_playlist(&self) -> &str {
+        &self.active_playlist
+    }
+
+    /// Sets the active playlist name (for config store mutations).
+    pub fn set_active_playlist(&mut self, name: String) {
+        self.active_playlist = name;
+    }
+
+    /// Sets the songs path (relative or absolute).
+    pub fn set_songs(&mut self, path: &str) {
+        self.songs = path.to_string();
+    }
+
+    /// Gets the path to the song definitions.
+    pub fn songs(&self, player_path: &Path) -> PathBuf {
+        crate::util::project_dir_of(player_path).join(&self.songs)
+    }
+
+    /// Gets the samples configuration, merging inline definitions with any external file.
+    /// The player_path is used to resolve relative paths.
+    pub fn samples_config(&self, player_path: &Path) -> Result<SamplesConfig, ConfigError> {
+        let mut config = SamplesConfig::new(
+            self.samples.clone(),
+            Vec::new(),
+            self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES),
+        );
+
+        // Load external samples file if specified
+        if let Some(samples_file) = &self.samples_file {
+            let samples_path = crate::util::project_dir_of(player_path).join(samples_file);
+
+            info!(path = ?samples_path, "Loading external samples configuration");
+
+            let external_config: SamplesConfig = Config::builder()
+                .add_source(crate::util::yaml_source(&samples_path)?)
+                .build()?
+                .try_deserialize()?;
+
+            // External config is loaded first, then inline config overrides it
+            let mut merged = external_config;
+            merged.merge(config);
+            config = merged;
+        }
+
+        Ok(config)
+    }
+
+    /// Gets the player-wide metronome defaults.
+    pub fn metronome(&self) -> Option<&MetronomeDefaults> {
+        self.metronome.as_ref()
+    }
+
+    /// Sets the player-wide metronome defaults.
+    pub fn set_metronome(&mut self, metronome: Option<MetronomeDefaults>) {
+        self.metronome = metronome;
+    }
+
+    /// Gets the maximum sample voices limit.
+    pub fn max_sample_voices(&self) -> u32 {
+        self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES)
+    }
+
+    /// Sets the audio configuration.
+    pub fn set_audio(&mut self, audio: Option<Audio>) {
+        self.audio = audio;
+    }
+
+    /// Sets the MIDI configuration.
+    pub fn set_midi(&mut self, midi: Option<Midi>) {
+        self.midi = midi;
+    }
+
+    /// Sets the DMX configuration.
+    pub fn set_dmx(&mut self, dmx: Option<Dmx>) {
+        self.dmx = dmx;
+    }
+
+    /// Sets the controllers configuration. Pass an empty vec or None to clear.
+    pub fn set_controllers(&mut self, controllers: Vec<Controller>) {
+        if controllers.is_empty() {
+            self.controllers = None;
+        } else {
+            self.controllers = Some(controllers);
+        }
+    }
+
+    /// Returns a mutable reference to the profiles list.
+    pub fn profiles_mut(&mut self) -> &mut Option<Vec<Profile>> {
+        &mut self.profiles
+    }
+
+    /// The profiles as loaded, in declaration order and without hostname
+    /// filtering.
+    ///
+    /// Distinct from [`Player::profiles`], which filters to the ones that apply
+    /// to a given host. Persistence needs the unfiltered list, because when
+    /// profiles come from `profiles_dir` their position in this list is what
+    /// identifies the file each one came from.
+    pub fn profile_list(&self) -> Option<&[Profile]> {
+        self.profiles.as_deref()
+    }
+
+    /// Sets the inline sample definitions.
+    pub fn set_samples(&mut self, samples: HashMap<String, SampleDefinition>) {
+        self.samples = samples;
+    }
+
+    /// Sets the global max sample voices.
+    pub fn set_max_sample_voices(&mut self, max_voices: Option<u32>) {
+        self.max_sample_voices = max_voices;
+    }
+
+    /// Returns the raw `profiles_dir` value (before path resolution).
+    pub fn profiles_dir_raw(&self) -> Option<&str> {
+        self.profiles_dir.as_deref()
+    }
+
+    /// Returns the raw `playlist` value (before path resolution).
+    pub fn playlist_raw(&self) -> Option<&str> {
+        self.playlist.as_deref()
+    }
+
+    /// Returns the raw inline profiles (may be None if not set or already cleared).
+    pub fn inline_profiles(&self) -> Option<&[Profile]> {
+        self.profiles.as_deref()
+    }
+
+    /// Sets the profiles_dir field.
+    pub fn set_profiles_dir(&mut self, dir: String) {
+        self.profiles_dir = Some(dir);
+    }
+
+    /// Clears inline profiles.
+    pub fn clear_inline_profiles(&mut self) {
+        self.profiles = None;
+    }
+
+    /// Sets the playlists_dir field.
+    pub fn set_playlists_dir_value(&mut self, dir: String) {
+        self.playlists_dir = Some(dir);
+    }
+
+    /// Clears the playlist field.
+    pub fn clear_playlist(&mut self) {
+        self.playlist = None;
+    }
+
+    /// Clears all legacy top-level fields that have been normalized into profiles.
+    pub fn clear_legacy_fields(&mut self) {
+        self.audio_device = None;
+        self.audio = None;
+        self.midi_device = None;
+        self.midi = None;
+        self.dmx = None;
+        self.trigger = None;
+        self.track_mappings = None;
+        self.controller = None;
+        self.controllers = None;
+        self.sample_triggers = Vec::new();
+    }
+
+    /// Returns a mutable reference to the DMX config's lighting section.
+    pub fn lighting_mut(&mut self) -> Option<&mut Lighting> {
+        self.dmx.as_mut().and_then(|d| d.lighting_mut())
+    }
+
+    /// The lighting section of the profile `hostname` runs: the first of
+    /// [`Self::profiles`] for it, as the engine picks its profile, so every
+    /// surface reads the directories the engine loads from.
+    pub fn lighting_for_host(&self, hostname: &str) -> Option<&Lighting> {
+        self.profiles(hostname)
+            .first()
+            .and_then(|p| p.dmx())
+            .and_then(|d| d.lighting())
+    }
+
+    /// The lighting section of the profile this host runs
+    /// ([`super::resolve_hostname`], [`Self::lighting_for_host`]).
+    pub fn host_lighting(&self) -> Option<&Lighting> {
+        self.lighting_for_host(&super::hostname::resolve_hostname())
+    }
+
+    /// The project's lighting directories on this host: the host-matched
+    /// profile's, else the defaults, as the engine loads them.
+    pub fn lighting_dirs(&self) -> super::lighting::ProjectDirs {
+        super::lighting::ProjectDirs::of(self.host_lighting())
+    }
+
+    /// The lighting layers on this host: the host-matched profile's, else
+    /// the defaults (bottom to top: `background`, `midground`,
+    /// `foreground`). The one set the parser, the songs and the engine use.
+    pub fn layer_set(&self) -> crate::lighting::effects::LayerSet {
+        super::lighting::layer_set(self.host_lighting())
+    }
+
+    /// The lighting directories the config at `config_path` gives this host
+    /// ([`Self::lighting_dirs`]): the one reader the web UI's server side,
+    /// MCP and the CLI ask. The defaults when there is no config file; an
+    /// error when it does not load.
+    pub fn lighting_dirs_at(
+        config_path: &Path,
+    ) -> Result<super::lighting::ProjectDirs, ConfigError> {
+        if !config_path.is_file() {
+            return Ok(super::lighting::ProjectDirs::of(None));
+        }
+        Ok(Self::deserialize(config_path)?.lighting_dirs())
+    }
+
+    /// Deserializes a config file without running normalize() or loading profiles_dir.
+    /// Used by the migrate command to inspect raw inline fields.
+    pub fn deserialize_raw(path: &Path) -> Result<Player, ConfigError> {
+        let player = Config::builder()
+            .add_source(crate::util::yaml_source(path)?)
+            .build()?
+            .try_deserialize::<Player>()?;
+        Ok(player)
+    }
+
+    /// Returns the raw top-level DMX field (before normalization into profiles).
+    pub fn dmx_raw(&self) -> Option<&Dmx> {
+        self.dmx.as_ref()
+    }
+
+    /// Returns whether there are any legacy top-level fields set.
+    pub fn has_legacy_fields(&self) -> bool {
+        self.audio_device.is_some()
+            || self.audio.is_some()
+            || self.midi_device.is_some()
+            || self.midi.is_some()
+            || self.dmx.is_some()
+            || self.trigger.is_some()
+            || self.track_mappings.is_some()
+            || self.controller.is_some()
+            || self.controllers.is_some()
+            || !self.sample_triggers.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::Path;
+
+    use super::*;
+
+    /// Helper to create a Player from a YAML string via a temp file.
+    fn player_from_yaml(yaml: &str) -> Player {
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(yaml.as_bytes()).unwrap();
+        Player::deserialize(temp.path()).expect("Failed to deserialize")
+    }
+
+    #[test]
+    fn a_warning_is_given_once_until_forgotten() {
+        let warned = Warned::new();
+        assert!(warned.warn("first sight"));
+        assert!(!warned.warn("first sight"));
+        assert!(warned.warn("another message"));
+        warned.forget();
+        assert!(warned.warn("first sight"));
+    }
+
+    const LEGACY_YAML: &str = "songs: songs\nprofiles:\n  - hostname: rig\nstatus_events:\n  \
+                               off_events: []\n  idling_events: []\n  playing_events: []\n";
+
+    /// The loaded config warns through the one place that says it once.
+    #[test]
+    fn the_loaded_config_gives_the_legacy_warning_through_warn_once() {
+        let player = player_from_yaml(LEGACY_YAML);
+        assert!(player.status_events().is_some());
+        // Given now or by an earlier test in this process; either way it is
+        // remembered, so the next read does not say it again.
+        assert!(WARNED.0.lock().contains(LEGACY_STATUS_EVENTS));
+    }
+
+    #[test]
+    fn test_deserialize_rejects_invalid_profile() {
+        // A profile missing its audio device must fail at load with a
+        // readable validation error, not spin in device-retry at startup.
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(
+            b"songs: songs\nprofiles:\n  - audio:\n      track_mappings:\n        click: [1]\n",
+        )
+        .unwrap();
+        let err = match Player::deserialize(temp.path()) {
+            Ok(_) => panic!("expected validation error for missing device"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("audio device must not be empty"),
+            "expected device validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_legacy_config_normalizes_into_profiles() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+  sample_rate: 48000
+track_mappings:
+  click: [1]
+  cue: [2]
+midi:
+  device: mock-midi
+  playback_delay: 500ms
+"#,
+        );
+
+        // Unified profiles should have been created from legacy fields.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().sample_rate(),
+            48000
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("click"),
+            Some(&vec![1u16])
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("cue"),
+            Some(&vec![2u16])
+        );
+        assert!(profiles[0].hostname().is_none());
+        assert!(profiles[0].midi().is_some());
+        assert_eq!(profiles[0].midi().unwrap().device(), "mock-midi");
+
+        // Backward compat getters should still work.
+        assert_eq!(player.audio().unwrap().device(), "mock-device");
+        assert_eq!(player.track_mappings().get("click"), Some(&vec![1u16]));
+        assert_eq!(player.midi().unwrap().device(), "mock-midi");
+    }
+
+    #[test]
+    fn test_legacy_audio_device_string_normalizes() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio_device: mock-device
+track_mappings:
+  drums: [1]
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
+            Some(&vec![1u16])
+        );
+    }
+
+    #[test]
+    fn test_legacy_midi_device_string_normalizes() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+midi_device: mock-midi
+"#,
+        );
+
+        let midi = player.midi();
+        assert!(midi.is_some());
+        assert_eq!(midi.unwrap().device(), "mock-midi");
+    }
+
+    #[test]
+    fn test_profiles_parse() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-device-a
+      sample_rate: 48000
+      track_mappings:
+        drums: [1]
+        synth: [2]
+    midi:
+      device: mock-midi-a
+  - hostname: pi-b
+    audio:
+      device: mock-device-b
+      track_mappings:
+        drums: [11]
+        synth: [12]
+    midi:
+      device: mock-midi-b
+    dmx:
+      universes:
+        - universe: 1
+          name: light-show
+  - audio:
+      device: mock-fallback
+      track_mappings:
+        drums: [1]
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 3);
+
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device-a"
+        );
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().sample_rate(),
+            48000
+        );
+        assert!(profiles[0].midi().is_some());
+        assert!(profiles[0].dmx().is_none());
+
+        assert_eq!(profiles[1].hostname(), Some("pi-b"));
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "mock-device-b"
+        );
+        assert!(profiles[1].midi().is_some());
+        assert!(profiles[1].dmx().is_some());
+
+        assert_eq!(profiles[2].hostname(), None);
+        assert_eq!(
+            profiles[2].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
+        assert!(profiles[2].midi().is_none());
+        assert!(profiles[2].dmx().is_none());
+    }
+
+    #[test]
+    fn the_hosts_profile_gives_the_layers_and_the_default_has_three() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    dmx:
+      universes: []
+      lighting:
+        layers: [floor, mid, top, flash]
+  - dmx:
+      universes: []
+      lighting:
+        current_venue: b
+"#,
+        );
+        let of = |host: &str| super::super::lighting::layer_set(player.lighting_for_host(host));
+        assert_eq!(of("pi-a").names(), ["floor", "mid", "top", "flash"]);
+        assert_eq!(
+            of("pi-b").names(),
+            ["background", "midground", "foreground"]
+        );
+    }
+
+    #[test]
+    fn layers_that_are_not_a_set_fail_the_config_load() {
+        for (layers, want) in [
+            ("[]", "at least one"),
+            ("[a, a]", "duplicate layer name 'a'"),
+            ("[\"not ok\"]", "not an identifier"),
+        ] {
+            let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+            temp.write_all(
+                format!(
+                    "songs: songs\nprofiles:\n  - dmx:\n      universes: []\n      lighting:\n        layers: {layers}\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let error = Player::deserialize(temp.path())
+                .err()
+                .expect("refused")
+                .to_string();
+            assert!(error.contains("dmx lighting layers"), "{error}");
+            assert!(error.contains(want), "{layers}: {error}");
+        }
+        let many = (0..17)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(
+            format!(
+                "songs: songs\nprofiles:\n  - dmx:\n      universes: []\n      lighting:\n        layers: [{many}]\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let error = Player::deserialize(temp.path())
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(error.contains("at most 16"), "{error}");
+    }
+
+    #[test]
+    fn lighting_comes_from_the_hosts_profile_not_the_first() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    dmx:
+      universes: []
+      lighting:
+        current_venue: a-venue
+        directories:
+          venues: a/venues
+  - dmx:
+      universes: []
+      lighting:
+        current_venue: b-venue
+        directories:
+          venues: b/venues
+"#,
+        );
+        let of = |host: &str| {
+            player
+                .lighting_for_host(host)
+                .and_then(|l| l.current_venue())
+        };
+        assert_eq!(of("pi-a"), Some("a-venue"));
+        assert_eq!(of("pi-b"), Some("b-venue"));
+        let dirs = super::super::lighting::ProjectDirs::of(player.lighting_for_host("pi-b"));
+        assert_eq!(dirs.venues, "b/venues");
+        // The legacy first-profile accessor would have said pi-a's.
+        assert_eq!(
+            player
+                .dmx()
+                .and_then(|d| d.lighting())
+                .and_then(|l| l.current_venue()),
+            Some("a-venue")
+        );
+    }
+
+    #[test]
+    fn test_profiles_filter_by_hostname() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-device-a
+      track_mappings:
+        drums: [1]
+  - hostname: pi-b
+    audio:
+      device: mock-device-b
+      track_mappings:
+        drums: [11]
+  - audio:
+      device: mock-fallback
+      track_mappings:
+        drums: [1]
+"#,
+        );
+
+        // pi-a sees its own profile + the wildcard.
+        let pi_a = player.profiles("pi-a");
+        assert_eq!(pi_a.len(), 2);
+        assert_eq!(
+            pi_a[0].audio_config().unwrap().audio().device(),
+            "mock-device-a"
+        );
+        assert_eq!(
+            pi_a[1].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
+
+        // pi-b sees its own profile + the wildcard.
+        let pi_b = player.profiles("pi-b");
+        assert_eq!(pi_b.len(), 2);
+        assert_eq!(
+            pi_b[0].audio_config().unwrap().audio().device(),
+            "mock-device-b"
+        );
+        assert_eq!(
+            pi_b[1].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
+
+        // Unknown host only sees the wildcard.
+        let unknown = player.profiles("pi-c");
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(
+            unknown[0].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
+    }
+
+    #[test]
+    fn test_profile_without_midi_dmx() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].midi().is_none());
+        assert!(profiles[0].dmx().is_none());
+    }
+
+    #[test]
+    fn test_profiles_take_precedence_over_legacy() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: legacy-device
+track_mappings:
+  click: [99]
+profiles:
+  - audio:
+      device: profile-device
+      track_mappings:
+        click: [1]
+"#,
+        );
+
+        // Profiles should be used, not legacy.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "profile-device"
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("click"),
+            Some(&vec![1u16])
+        );
+
+        // Backward compat getters return from the first profile.
+        assert_eq!(player.audio().unwrap().device(), "profile-device");
+        assert_eq!(player.track_mappings().get("click"), Some(&vec![1u16]));
+    }
+
+    #[test]
+    fn test_no_profiles_when_no_audio_config() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+
+        // No audio at all.
+        assert!(player.all_profiles().is_empty());
+        assert!(player.audio().is_none());
+        assert!(player.track_mappings().is_empty());
+    }
+
+    #[test]
+    fn test_profiles_without_top_level_track_mappings() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
+        synth: [2]
+"#,
+        );
+
+        // Should work without top-level track_mappings.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
+            Some(&vec![1u16])
+        );
+
+        // Backward compat getter returns from profile.
+        assert_eq!(player.track_mappings().get("drums"), Some(&vec![1u16]));
+    }
+
+    #[test]
+    fn test_hostname_deconfliction() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    audio:
+      device: "Behringer WING"
+      track_mappings:
+        drums: [1]
+        synth: [2]
+  - hostname: pi-b
+    audio:
+      device: "Behringer WING"
+      track_mappings:
+        drums: [11]
+        synth: [12]
+"#,
+        );
+
+        let pi_a = player.profiles("pi-a");
+        assert_eq!(pi_a.len(), 1);
+        assert_eq!(
+            pi_a[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
+            Some(&vec![1u16])
+        );
+
+        let pi_b = player.profiles("pi-b");
+        assert_eq!(pi_b.len(), 1);
+        assert_eq!(
+            pi_b[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
+            Some(&vec![11u16])
+        );
+
+        // Different device name, same mappings — ensures isolation.
+        let pi_c = player.profiles("pi-c");
+        assert!(pi_c.is_empty());
+    }
+
+    #[test]
+    fn test_normalization_creates_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+dmx:
+  dim_speed_modifier: 0.25
+  universes:
+  - universe: 1
+    name: light-show
+"#,
+        );
+
+        // Legacy dmx config should be normalized into unified profile
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].dmx().is_some());
+        assert_eq!(profiles[0].dmx().unwrap().dimming_speed_modifier(), 0.25);
+    }
+
+    #[test]
+    fn test_trigger_only_normalizes_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+trigger:
+  device: "UltraLite-mk5"
+  inputs:
+    - kind: audio
+      channel: 1
+      sample: "kick"
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].audio_config().is_none());
+        assert!(profiles[0].midi().is_none());
+        assert!(profiles[0].dmx().is_none());
+        assert!(profiles[0].trigger().is_some());
+        assert_eq!(
+            profiles[0].trigger().unwrap().device(),
+            Some("UltraLite-mk5")
+        );
+    }
+
+    #[test]
+    fn test_trigger_with_audio_normalizes_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+trigger:
+  device: "UltraLite-mk5"
+  inputs:
+    - kind: audio
+      channel: 1
+      sample: "kick"
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].audio_config().is_some());
+        assert!(profiles[0].trigger().is_some());
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0].trigger().unwrap().device(),
+            Some("UltraLite-mk5")
+        );
+    }
+
+    #[test]
+    fn test_legacy_controllers_normalize_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+controllers:
+  - kind: grpc
+    port: 43234
+  - kind: osc
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 2);
+        assert_eq!(player.controllers().len(), 2);
+    }
+
+    #[test]
+    fn test_controllers_only_normalize_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+controllers:
+  - kind: grpc
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
+    }
+
+    #[test]
+    fn test_profile_controllers_not_overridden_by_legacy() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+controllers:
+  - kind: grpc
+profiles:
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
+    controllers:
+      - kind: osc
+"#,
+        );
+
+        // Profile controllers should be used, not legacy.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
+    }
+
+    #[test]
+    fn test_example_config_parses() {
+        // The existing examples/mtrack.yaml must still parse without error.
+        let config = Player::deserialize(Path::new("../../examples/mtrack.yaml"))
+            .expect("example config failed");
+
+        // Profiles are loaded from profiles_dir.
+        let profiles = config.all_profiles();
+        assert!(
+            profiles.len() >= 2,
+            "Expected at least 2 profiles from profiles_dir"
+        );
+
+        // First profile (01-raspberry-pi-a) has audio + MIDI + DMX.
+        assert!(profiles[0].audio_config().is_some());
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "Behringer WING"
+        );
+        assert!(profiles[0].midi().is_some());
+        assert!(profiles[0].dmx().is_some());
+
+        // Config-level accessors should return the first profile's config.
+        assert!(config.audio().is_some());
+        assert!(config.midi().is_some());
+        assert!(config.dmx().is_some());
+    }
+
+    /// Helper to create a Player from a YAML string with an associated temp directory.
+    /// The `dir_setup` closure receives the temp dir path for creating profile files.
+    fn player_with_dir(yaml: &str, dir_setup: impl FnOnce(&Path)) -> Player {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, yaml).unwrap();
+        dir_setup(dir.path());
+        Player::deserialize(&config_path).expect("Failed to deserialize")
+    }
+
+    fn write_profile(dir: &Path, filename: &str, yaml: &str) {
+        std::fs::write(dir.join(filename), yaml).unwrap();
+    }
+
+    /// The retired inline fixture map, refused by name wherever a profile
+    /// carries it, with the way out.
+    #[test]
+    fn inline_fixtures_are_refused_with_the_migrate_hint() {
+        let refused = |config: &str, setup: &dyn Fn(&Path)| {
+            let dir = tempfile::tempdir().unwrap();
+            let config_path = dir.path().join("mtrack.yaml");
+            std::fs::write(&config_path, config).unwrap();
+            setup(dir.path());
+            match Player::deserialize(&config_path) {
+                Ok(_) => panic!("a config with inline fixtures loaded"),
+                Err(e) => e.to_string(),
+            }
+        };
+        let lighting =
+            "    dmx:\n      universes:\n        - universe: 1\n          name: main\n      \
+                        lighting:\n        fixtures:\n          par1: \"Par @ 1:1\"\n";
+        // An inline profile.
+        let err = refused(
+            &format!("songs: songs\nprofiles:\n  - hostname: pi\n{lighting}"),
+            &|_| {},
+        );
+        assert!(
+            err.contains(super::super::lighting::RETIRED_INLINE_FIXTURES),
+            "{err}"
+        );
+        // A profile file.
+        let err = refused("songs: songs\nprofiles_dir: profiles/\n", &|dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            let profile = format!("hostname: pi\n{}", lighting.replace("\n    ", "\n"))
+                .replace("    dmx:", "dmx:");
+            write_profile(&dir.join("profiles"), "pi.yaml", &profile);
+        });
+        assert!(
+            err.contains("dmx.lighting.fixtures is no longer supported"),
+            "{err}"
+        );
+        assert!(err.contains("mtrack migrate --apply"), "{err}");
+        // The legacy top-level dmx section.
+        let err = refused(
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    fixtures:\n      par1: \"Par @ 1:1\"\n",
+            &|_| {},
+        );
+        assert!(
+            err.contains("dmx.lighting.fixtures is no longer supported"),
+            "{err}"
+        );
+        // An empty map is nothing to refuse.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    fixtures: {}\n",
+        )
+        .unwrap();
+        assert!(Player::deserialize(&config_path).is_ok());
+    }
+
+    #[test]
+    fn test_profiles_dir_loads_profiles() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            write_profile(
+                &dir.join("profiles"),
+                "pi-a.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "pi-b.yml",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "device-a"
+        );
+        assert_eq!(profiles[1].hostname(), Some("pi-b"));
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "device-b"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_replaces_inline() {
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - audio:\n",
+                "      device: inline-fallback\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+                write_profile(
+                    &dir.join("profiles"),
+                    "pi-a.yaml",
+                    "hostname: pi-a\naudio:\n  device: dir-device\n  track_mappings:\n    drums: [1]\n",
+                );
+            },
+        );
+
+        let profiles = player.all_profiles();
+        // Directory profiles replace inline entirely.
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "dir-device"
+        );
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+    }
+
+    #[test]
+    fn test_profiles_dir_no_duplication_on_roundtrip() {
+        // Regression test: serializing and re-deserializing a config with
+        // profiles_dir must not duplicate the directory-loaded profiles.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "pi-a.yaml",
+            "hostname: pi-a\naudio:\n  device: dir-device\n  track_mappings:\n    drums: [1]\n",
+        );
+
+        let player = Player::deserialize(&config_path).unwrap();
+        assert_eq!(player.all_profiles().len(), 1);
+
+        // Serialize and write back (simulates config store save).
+        let yaml = crate::util::to_yaml_string(&player).unwrap();
+        std::fs::write(&config_path, &yaml).unwrap();
+
+        // Re-deserialize: should still have exactly 1 profile, not 2.
+        let player2 = Player::deserialize(&config_path).unwrap();
+        assert_eq!(
+            player2.all_profiles().len(),
+            1,
+            "profiles should not be duplicated after roundtrip"
+        );
+
+        assert_eq!(
+            player2.all_profiles()[0]
+                .audio_config()
+                .unwrap()
+                .audio()
+                .device(),
+            "dir-device"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_only_serializes_correctly() {
+        // When the config has profiles_dir but no inline profiles, the
+        // directory profiles should appear in serialized YAML output.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "pi-a.yaml",
+            "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+        );
+
+        let player = Player::deserialize(&config_path).unwrap();
+        assert_eq!(player.all_profiles().len(), 1);
+
+        // Serialized YAML must include the profile from the directory.
+        let yaml = crate::util::to_yaml_string(&player).unwrap();
+        assert!(
+            yaml.contains("pi-a"),
+            "serialized YAML should contain dir profile hostname"
+        );
+        assert!(
+            yaml.contains("device-a"),
+            "serialized YAML should contain dir profile device"
+        );
+
+        // Roundtrip: re-deserialize should still have exactly 1 profile.
+        std::fs::write(&config_path, &yaml).unwrap();
+        let player2 = Player::deserialize(&config_path).unwrap();
+        assert_eq!(
+            player2.all_profiles().len(),
+            1,
+            "profiles should not be duplicated after roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_empty_directory() {
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - audio:\n",
+                "      device: inline-device\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+            },
+        );
+
+        // Only the inline profile should be present.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "inline-device"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_missing_directory_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: nonexistent/\n").unwrap();
+
+        match Player::deserialize(&config_path) {
+            Err(ConfigError::Io { path, .. }) => {
+                assert!(path.to_string_lossy().contains("nonexistent"));
+            }
+            Err(other) => panic!("expected ConfigError::Io, got: {other}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_profiles_dir_invalid_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "bad.yaml",
+            "this is not valid profile yaml: [[[",
+        );
+
+        match Player::deserialize(&config_path) {
+            Err(ConfigError::ProfileParse { path, .. }) => {
+                assert!(
+                    path.to_string_lossy().contains("bad.yaml"),
+                    "should mention filename: {path:?}"
+                );
+            }
+            Err(other) => panic!("expected ConfigError::ProfileParse, got: {other}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_profiles_dir_ignores_non_yaml_files() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            write_profile(
+                &dir.join("profiles"),
+                "pi-a.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            // These should be ignored.
+            write_profile(&dir.join("profiles"), "notes.txt", "just some notes");
+            write_profile(
+                &dir.join("profiles"),
+                "data.json",
+                r#"{"not": "a profile"}"#,
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+    }
+
+    /// Profiles are matched by the `hostname` inside them, so every profile
+    /// file loads: `stage.yaml` (`pi-a`) and `stage.yml` (the catch-all)
+    /// both do. Addressed (`profile_file`), `stage` is the `.yaml` and
+    /// `stage.yml` the `.yml`.
+    #[test]
+    fn test_profiles_dir_loads_both_files_of_a_stem() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            let profiles = dir.join("profiles");
+            std::fs::create_dir(&profiles).unwrap();
+            write_profile(
+                &profiles,
+                "stage.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &profiles,
+                "stage.yml",
+                "audio:\n  device: catch-all\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &profiles,
+                "pi-b.yml",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [1]\n",
+            );
+            use crate::util::NamedFile;
+            let file = |name: &str| super::profile_file(&profiles, name).unwrap();
+            assert_eq!(file("stage"), NamedFile::Found(profiles.join("stage.yaml")));
+            assert_eq!(
+                file("stage.yaml"),
+                NamedFile::Found(profiles.join("stage.yaml"))
+            );
+            assert_eq!(
+                file("stage.yml"),
+                NamedFile::Found(profiles.join("stage.yml"))
+            );
+            assert_eq!(file("pi-b"), NamedFile::Found(profiles.join("pi-b.yml")));
+            assert_eq!(file("pi-c"), NamedFile::New(profiles.join("pi-c.yaml")));
+            assert_eq!(file("pi-c.yml"), NamedFile::New(profiles.join("pi-c.yml")));
+            assert_eq!(
+                super::profile_file(&profiles, "Stage.yml"),
+                Err(crate::util::CaseClash("stage.yml".to_string()))
+            );
+        });
+
+        let devices: Vec<_> = player
+            .all_profiles()
+            .iter()
+            .map(|p| p.audio_config().unwrap().audio().device().to_string())
+            .collect();
+        assert_eq!(devices, ["device-b", "device-a", "catch-all"]);
+        // Each remembers its file, which the web UI links the running one by.
+        let files: Vec<_> = player
+            .all_profiles()
+            .iter()
+            .map(|p| p.source_file())
+            .collect();
+        assert_eq!(
+            files,
+            [Some("pi-b.yml"), Some("stage.yaml"), Some("stage.yml")]
+        );
+    }
+
+    /// A full file name the directory does not list is tried as a stem:
+    /// `stage.yaml` with only `stage.yaml.yaml` there is that file. With
+    /// neither, it is created as written: `x.yml`, not `x.yml.yaml`.
+    #[test]
+    fn profile_file_tries_a_full_name_as_a_stem() {
+        use crate::util::NamedFile;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        std::fs::write(dir.join("stage.yaml.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml.yaml")))
+        );
+        assert_eq!(
+            super::profile_file(dir, "x.yml"),
+            Ok(NamedFile::New(dir.join("x.yml")))
+        );
+        std::fs::write(dir.join("stage.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml")))
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_sorts_by_filename() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            // Write in reverse order to verify sorting.
+            write_profile(
+                &dir.join("profiles"),
+                "03-fallback.yml",
+                "audio:\n  device: fallback\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "01-pi-a.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "02-pi-b.yaml",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "device-a"
+        );
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "device-b"
+        );
+        assert_eq!(
+            profiles[2].audio_config().unwrap().audio().device(),
+            "fallback"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_with_hostname_filtering() {
+        // With profiles_dir set, directory profiles replace inline entirely.
+        // Hostname filtering works on the directory profiles only.
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - audio:\n",
+                "      device: inline-fallback\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+                write_profile(
+                    &dir.join("profiles"),
+                    "01-pi-a.yaml",
+                    "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+                );
+                write_profile(
+                    &dir.join("profiles"),
+                    "02-pi-b.yaml",
+                    "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
+                );
+                // A fallback profile with no hostname in the directory.
+                write_profile(
+                    &dir.join("profiles"),
+                    "99-fallback.yaml",
+                    "audio:\n  device: dir-fallback\n  track_mappings:\n    drums: [1]\n",
+                );
+            },
+        );
+
+        // pi-a sees its directory profile + dir fallback.
+        let pi_a = player.profiles("pi-a");
+        assert_eq!(pi_a.len(), 2);
+        assert_eq!(pi_a[0].audio_config().unwrap().audio().device(), "device-a");
+        assert_eq!(
+            pi_a[1].audio_config().unwrap().audio().device(),
+            "dir-fallback"
+        );
+
+        // pi-b sees its directory profile + dir fallback.
+        let pi_b = player.profiles("pi-b");
+        assert_eq!(pi_b.len(), 2);
+        assert_eq!(pi_b[0].audio_config().unwrap().audio().device(), "device-b");
+        assert_eq!(
+            pi_b[1].audio_config().unwrap().audio().device(),
+            "dir-fallback"
+        );
+
+        // Unknown host sees only dir fallback.
+        let unknown = player.profiles("pi-c");
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(
+            unknown[0].audio_config().unwrap().audio().device(),
+            "dir-fallback"
+        );
+    }
+
+    #[test]
+    fn test_playlist_getter() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+playlist: my_playlist.yaml
+"#,
+        );
+        assert_eq!(
+            player.playlist().unwrap(),
+            std::path::PathBuf::from("my_playlist.yaml")
+        );
+    }
+
+    #[test]
+    fn test_playlist_none() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.playlist().is_none());
+    }
+
+    #[test]
+    fn test_songs_absolute_path() {
+        let player = player_from_yaml(
+            r#"
+songs: /absolute/path/to/songs
+"#,
+        );
+        let songs_path = player.songs(Path::new("/some/config.yaml"));
+        assert_eq!(
+            songs_path,
+            std::path::PathBuf::from("/absolute/path/to/songs")
+        );
+    }
+
+    #[test]
+    fn test_songs_relative_path() {
+        let player = player_from_yaml(
+            r#"
+songs: relative/songs
+"#,
+        );
+        let songs_path = player.songs(Path::new("/config/dir/mtrack.yaml"));
+        assert_eq!(
+            songs_path,
+            std::path::PathBuf::from("/config/dir/relative/songs")
+        );
+    }
+
+    #[test]
+    fn test_dmx_none_without_profiles() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.dmx().is_none());
+    }
+
+    #[test]
+    fn test_profiles_none_returns_empty() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.profiles("any-host").is_empty());
+    }
+
+    #[test]
+    fn test_legacy_single_controller_normalizes() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+controller:
+  kind: grpc
+  port: 43234
+"#,
+        );
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
+    }
+
+    #[test]
+    fn test_max_sample_voices_default() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert_eq!(player.max_sample_voices(), super::DEFAULT_MAX_SAMPLE_VOICES);
+    }
+
+    #[test]
+    fn test_max_sample_voices_custom() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+max_sample_voices: 64
+"#,
+        );
+        assert_eq!(player.max_sample_voices(), 64);
+    }
+
+    #[test]
+    fn test_samples_config_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+songs: songs
+samples:
+  kick:
+    file: kick.wav
+    output_channels: [1, 2]
+"#,
+        )
+        .unwrap();
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        assert!(sc.samples().contains_key("kick"));
+        assert_eq!(sc.samples().get("kick").unwrap().file(), Some("kick.wav"));
+    }
+
+    #[test]
+    fn test_samples_config_with_external_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write the external samples file.
+        let samples_path = dir.path().join("samples.yaml");
+        std::fs::write(
+            &samples_path,
+            r#"
+samples:
+  snare:
+    file: snare.wav
+    output_channels: [3, 4]
+"#,
+        )
+        .unwrap();
+
+        // Write the main config that references the external file.
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+songs: songs
+samples_file: samples.yaml
+samples:
+  kick:
+    file: kick.wav
+    output_channels: [1, 2]
+"#,
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        // Both inline and external samples should be present.
+        assert!(sc.samples().contains_key("kick"));
+        assert!(sc.samples().contains_key("snare"));
+    }
+
+    #[test]
+    fn test_profiles_dir_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("abs_profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("host.yaml"),
+            "hostname: pi-x\naudio:\n  device: dev-x\n  track_mappings:\n    drums: [1]\n",
+        )
+        .unwrap();
+
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "songs: songs\nprofiles_dir: {}\n",
+                profiles_dir.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].hostname(), Some("pi-x"));
+    }
+
+    #[test]
+    fn test_legacy_sample_triggers_normalize_into_trigger_config() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+sample_triggers:
+  - trigger:
+      type: note_on
+      channel: 1
+      key: 60
+      velocity: 127
+    sample: kick
+"#,
+        );
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].trigger().is_some());
+    }
+
+    #[test]
+    fn test_songs_relative_path_no_parent() {
+        // A bare config filename names the current directory as the project,
+        // as `util::project_dir_of` has it for every path a config resolves.
+        let player = player_from_yaml(
+            r#"
+songs: my_songs
+"#,
+        );
+        assert_eq!(
+            player.songs(Path::new("mtrack.yaml")),
+            PathBuf::from("./my_songs")
+        );
+        assert_eq!(player.songs(Path::new("")), PathBuf::from("./my_songs"));
+    }
+
+    #[test]
+    fn test_samples_config_absolute_external_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write the external samples file at an absolute path
+        let samples_path = dir.path().join("abs_samples.yaml");
+        std::fs::write(
+            &samples_path,
+            r#"
+samples:
+  hat:
+    file: hat.wav
+    output_channels: [5, 6]
+"#,
+        )
+        .unwrap();
+
+        // Main config references external file via absolute path
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "songs: songs\nsamples_file: {}\n",
+                samples_path.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        assert!(sc.samples().contains_key("hat"));
+    }
+
+    #[test]
+    fn test_serialize_deserialize_round_trip() {
+        let yaml = r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-device
+      sample_rate: 48000
+      track_mappings:
+        click: [1]
+        cue: [2]
+    midi:
+      device: mock-midi
+      playback_delay: 500ms
+    dmx:
+      universes:
+        - universe: 1
+          name: main
+    controllers:
+      - kind: grpc
+        port: 43234
+      - kind: osc
+  - audio:
+      device: fallback
+      track_mappings:
+        drums: [1, 2]
+"#;
+
+        let player = player_from_yaml(yaml);
+
+        // Serialize to YAML via util::to_yaml_string
+        let serialized =
+            crate::util::to_yaml_string(&player).expect("serialization should succeed");
+
+        // Deserialize the serialized YAML back
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(serialized.as_bytes()).unwrap();
+        let round_tripped =
+            Player::deserialize(temp.path()).expect("round-trip deserialization should succeed");
+
+        // Compare by serializing both to JSON (deterministic field order)
+        let json1 = serde_json::to_value(&player).unwrap();
+        let json2 = serde_json::to_value(&round_tripped).unwrap();
+        assert_eq!(json1, json2, "round-trip should preserve all config values");
+    }
+}

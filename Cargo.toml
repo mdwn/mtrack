@@ -1,5 +1,5 @@
 [workspace]
-members = ["harness", "crates/mtrack-rules-wasm"]
+members = ["harness", "crates/mtrack-core", "crates/mtrack-rules-wasm"]
 exclude = ["fuzz"]
 
 [package]
@@ -40,7 +40,7 @@ include = [
 # the web UI's WebAssembly module with this feature on, deriving their
 # TypeScript types; declaring it here keeps the `cfg_attr` in those files a
 # known cfg, and `--all-features` (make lint-rust) still builds.
-tsify = ["dep:tsify-next", "dep:wasm-bindgen"]
+tsify = ["dep:tsify-next", "dep:wasm-bindgen", "mtrack-core/tsify"]
 # The Bluetooth LE controller's BlueZ driver. `bluer` is a Linux-only
 # dependency, so on any other target this feature adds nothing and the
 # controller reports that the build has no Bluetooth support.
@@ -87,6 +87,8 @@ pkg-fmt = "tgz"
 bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
 
 [dependencies]
+# The configuration, tempo and light show code that needs no hardware.
+mtrack-core = { path = "crates/mtrack-core", version = "0.18.1" }
 clap = { version = "4.5.60", features = ["cargo", "derive"] }
 config = "0.15.19"
 cpal = "0.18.1"
@@ -130,9 +132,7 @@ crossbeam-channel = "0.5.15"
 thread-priority = "3.0"
 parking_lot = "0.12"
 tokio-util = "0.7"
-hostname = "0.4"
 pest = "2.8"
-pest_derive = "2.8"
 indexmap = { version = "2", features = ["serde"] }
 serde_json = "1.0"
 # Only with the `tsify` feature (see [features]).
@@ -181,6 +181,8 @@ libc = "0.2"
 bluer = { version = "0.17", features = ["bluetoothd"], optional = true }
 
 [dev-dependencies]
+# The constructors and write faults its modules keep for tests.
+mtrack-core = { path = "crates/mtrack-core", features = ["test-util"] }
 criterion = "0.7"
 # Paused time, for the tests of what expires.
 tokio = { version = "1.50.0", features = ["test-util"] }

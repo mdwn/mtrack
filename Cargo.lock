@@ -2435,7 +2435,6 @@ dependencies = [
  "crossterm",
  "flate2",
  "futures-util",
- "hostname",
  "hound",
  "http",
  "http-body-util",
@@ -2446,13 +2445,13 @@ dependencies = [
  "mdns-sd",
  "midir",
  "midly",
+ "mtrack-core",
  "notify",
  "notify-debouncer-mini",
  "num_cpus",
  "ola",
  "parking_lot",
  "pest",
- "pest_derive",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "quick-xml",
@@ -2493,6 +2492,30 @@ dependencies = [
  "wasm-bindgen",
  "yaml-rust2",
  "zip",
+]
+
+[[package]]
+name = "mtrack-core"
+version = "0.18.1"
+dependencies = [
+ "config",
+ "hostname",
+ "indexmap",
+ "midly",
+ "parking_lot",
+ "pest",
+ "pest_derive",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "strum 0.28.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tsify-next",
+ "wasm-bindgen",
+ "yaml-rust2",
 ]
 
 [[package]]

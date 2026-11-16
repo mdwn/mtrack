@@ -34,9 +34,10 @@ build: build-ui build-rust
 
 ## The player sources the rules crate compiles into the web UI's WebAssembly
 ## module: read off the crate's `#[path]` includes (each a `../`-prefixed path
-## under the player's src/, in lib.rs and its lighting module), so the list
-## lives in the crate alone; and the grammar its parser derives from.
-WASM_SOURCES := $(shell grep -ho '\[path = "[^"]*"\]' $(WASM_CRATE_DIR)/src/*.rs $(WASM_CRATE_DIR)/src/lighting/*.rs | sed 's|.*"\(\.\./\)*\(src/[^"]*\)"\]|$(ROOT_DIR)/\2|') $(ROOT_DIR)/src/lighting/grammar.pest
+## under the player's src/ or crates/mtrack-core/src/, in lib.rs and its
+## lighting module), so the list lives in the crate alone; and the grammar its
+## parser derives from.
+WASM_SOURCES := $(shell grep -ho '\[path = "[^"]*"\]' $(WASM_CRATE_DIR)/src/*.rs $(WASM_CRATE_DIR)/src/lighting/*.rs | sed -e 's|.*"\(\.\./\)*mtrack-core/\(src/[^"]*\)"\]|$(ROOT_DIR)/crates/mtrack-core/\2|' -e 's|.*"\(\.\./\)*\(src/[^"]*\)"\]|$(ROOT_DIR)/\2|') $(ROOT_DIR)/crates/mtrack-core/src/lighting/grammar.pest
 
 ## Compute a hash of all frontend inputs (source, proto, lockfile, the rules crate and the
 ## player sources it compiles).

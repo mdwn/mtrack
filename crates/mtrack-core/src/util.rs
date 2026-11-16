@@ -1,0 +1,2998 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use yaml_rust2::{Yaml, YamlEmitter};
+
+/// Extracts a displayable file name from a path, returning a fallback if the name is unreadable.
+/// Extracts the human-readable message from a panic payload, as delivered to
+/// `std::panic::set_hook` callbacks and rayon `panic_handler`s. Panic payloads
+/// are `&str` for `panic!("literal")` and `String` for `panic!("{x}")`;
+/// anything else has no portable message.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
+}
+
+pub fn filename_display(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("unreadable file name")
+}
+
+pub use crate::position::{duration_from_secs, duration_minutes_seconds, parse_position};
+
+/// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
+/// and PascalCase by inserting hyphens at word boundaries and lowercasing.
+pub fn to_kebab_case(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::with_capacity(s.len() + 4);
+    let mut prev_was_separator = false;
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == ' ' || ch == '_' || ch == '-' {
+            if !result.is_empty() && !prev_was_separator {
+                result.push('-');
+            }
+            prev_was_separator = true;
+        } else if ch.is_uppercase() {
+            // Insert hyphen before uppercase if preceded by a lowercase letter/digit,
+            // or if preceded by uppercase followed by lowercase (e.g., "XMLParser" -> "xml-parser").
+            if !result.is_empty() && !prev_was_separator {
+                let prev = chars[i - 1];
+                if prev.is_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_uppercase()
+                        && chars.get(i + 1).is_some_and(|next| next.is_lowercase()))
+                {
+                    result.push('-');
+                }
+            }
+            for lc in ch.to_lowercase() {
+                result.push(lc);
+            }
+            prev_was_separator = false;
+        } else {
+            result.push(ch);
+            prev_was_separator = false;
+        }
+    }
+
+    // Strip trailing hyphen from trailing separators in input.
+    while result.ends_with('-') {
+        result.pop();
+    }
+
+    result
+}
+
+/// The regular files in `dir`, as it lists them, sorted by file name: the
+/// one listing every lookup and list of named files below works from. Names
+/// are kept as the filesystem has them, UTF-8 or not. An entry that cannot
+/// be read is passed over with a warning.
+pub fn files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        match entry {
+            Ok(entry) if entry.path().is_file() => found.push(entry.path()),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("{}: unreadable entry: {e}", dir.display()),
+        }
+    }
+    found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(found)
+}
+
+/// [`files_in`] for a lookup by name: a directory that is not there, or
+/// cannot be listed, lists nothing (the name's file is new; its write then
+/// fails if the directory does).
+pub fn files_to_look_up(dir: &Path) -> Vec<PathBuf> {
+    files_in(dir).unwrap_or_default()
+}
+
+/// The YAML config files in `dir` ([`files_in`]): every file whose name
+/// ends in `.yaml` or `.yml`, lowercase as written (`songs::is_yaml_config`),
+/// sorted by file name.
+pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(files_in(dir)?
+        .into_iter()
+        .filter(|path| crate::songs::is_yaml_config(path))
+        .collect())
+}
+
+/// The one rule for a name's YAML file: of `files` (one directory's
+/// [`files_in`]), those named for `stem`, `<stem>.yaml` then `<stem>.yml`
+/// (`songs::YAML_EXTENSIONS`), matched against the names as listed, so a
+/// `set.YML` on a case-insensitive filesystem is not `set.yml`. The first is
+/// the name's file.
+fn yaml_files_named<'a>(files: &'a [PathBuf], stem: &std::ffi::OsStr) -> Vec<&'a PathBuf> {
+    crate::songs::YAML_EXTENSIONS
+        .iter()
+        .filter_map(|ext| {
+            let mut file_name = stem.to_os_string();
+            file_name.push(".");
+            file_name.push(ext);
+            files
+                .iter()
+                .find(|file| file.file_name() == Some(file_name.as_os_str()))
+        })
+        .collect()
+}
+
+/// A name's file in a directory, by the directory's listing: one it lists
+/// (`Found`), or the one to create (`New`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedFile {
+    Found(PathBuf),
+    New(PathBuf),
+}
+
+impl NamedFile {
+    /// The file's path.
+    pub fn path(&self) -> &Path {
+        match self {
+            NamedFile::Found(path) | NamedFile::New(path) => path,
+        }
+    }
+
+    /// Whether the directory lists it.
+    pub fn exists(&self) -> bool {
+        matches!(self, NamedFile::Found(_))
+    }
+
+    /// The same file, at `path`.
+    pub fn with_path(&self, path: PathBuf) -> NamedFile {
+        match self {
+            NamedFile::Found(_) => NamedFile::Found(path),
+            NamedFile::New(_) => NamedFile::New(path),
+        }
+    }
+}
+
+/// A file to create is named as one already there but for case
+/// (`Set.yaml` for a new `set.yaml`), which a case-insensitive filesystem
+/// takes for the same file: it is refused, not written into.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` already exists; names differ only in case")]
+pub struct CaseClash(pub String);
+
+/// The file `file_name` in `dir`, whose regular files are `files`
+/// ([`files_in`]): `Found` when listed as written, else `New`, unless a
+/// listed name differs from it only in case ([`CaseClash`]).
+pub fn file_among(
+    dir: &Path,
+    files: &[PathBuf],
+    file_name: &std::ffi::OsStr,
+) -> Result<NamedFile, CaseClash> {
+    let mut names = files.iter().filter_map(|file| file.file_name());
+    if names.clone().any(|listed| listed == file_name) {
+        return Ok(NamedFile::Found(dir.join(file_name)));
+    }
+    let folded = file_name.to_string_lossy().to_lowercase();
+    match names.find(|listed| listed.to_string_lossy().to_lowercase() == folded) {
+        Some(listed) => Err(CaseClash(listed.to_string_lossy().into_owned())),
+        None => Ok(NamedFile::New(dir.join(file_name))),
+    }
+}
+
+/// The YAML file in `dir` (whose regular files are `files`) that holds
+/// `name` (a playlist, a profile): the first of [`yaml_files_named`], else
+/// a new `<name>.yaml` ([`file_among`]: refused beside a `Set.yaml`).
+pub fn yaml_file_among(dir: &Path, files: &[PathBuf], name: &str) -> Result<NamedFile, CaseClash> {
+    match yaml_files_named(files, std::ffi::OsStr::new(name)).first() {
+        Some(file) => Ok(NamedFile::Found((*file).clone())),
+        None => file_among(
+            dir,
+            files,
+            std::ffi::OsStr::new(&format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])),
+        ),
+    }
+}
+
+/// The YAML file in `dir` that holds `name` ([`yaml_file_among`], by the
+/// directory's listing). Every read, write and delete of the name goes to
+/// it, so a `.yml` is saved into itself. `name` is not checked for path
+/// safety here.
+pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
+    yaml_file_among(dir, &files_to_look_up(dir), name)
+}
+
+/// The YAML config files in `dir`, one for each name: the file
+/// [`yaml_file_at`] takes for it ([`yaml_files_named`]), with the other a
+/// name has (its `.yml` beside its `.yaml`), which is not read. Sorted by
+/// file name.
+pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
+    let files = files_in(dir)?;
+    Ok(files
+        .iter()
+        .filter(|file| crate::songs::is_yaml_config(file))
+        .filter_map(
+            |file| match yaml_files_named(&files, file.file_stem()?).as_slice() {
+                [taken, unread @ ..] if *taken == file => {
+                    Some((file.clone(), unread.first().map(|f| (*f).clone())))
+                }
+                _ => None,
+            },
+        )
+        .collect())
+}
+
+/// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
+/// emission.
+pub fn to_yaml_string<T: Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
+    let json_value = serde_json::to_value(value)?;
+    let yaml = json_to_yaml(&json_value);
+    let mut out = String::new();
+    let mut emitter = YamlEmitter::new(&mut out);
+    emitter.dump(&yaml)?;
+    Ok(out)
+}
+
+fn json_to_yaml(value: &serde_json::Value) -> Yaml {
+    match value {
+        serde_json::Value::Null => Yaml::Null,
+        serde_json::Value::Bool(b) => Yaml::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Yaml::Integer(i)
+            } else {
+                Yaml::Real(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Yaml::String(s.clone()),
+        serde_json::Value::Array(arr) => Yaml::Array(arr.iter().map(json_to_yaml).collect()),
+        serde_json::Value::Object(obj) => {
+            let mut hash = yaml_rust2::yaml::Hash::new();
+            for (k, v) in obj {
+                hash.insert(Yaml::String(k.clone()), json_to_yaml(v));
+            }
+            Yaml::Hash(hash)
+        }
+    }
+}
+
+/// The suffix mtrack stages a pending write under, alongside its destination.
+///
+/// Deliberately appended rather than substituted for the extension, so a staged
+/// `01-main.yaml.1234.mtrack-new` is not picked up by the directory scans that
+/// look for `.yaml` and `.light` files.
+const STAGED_SUFFIX: &str = ".mtrack-new";
+
+/// The suffix a file's kept original takes ([`restore_file`]), then `-2`,
+/// `-3`… when taken.
+const ORIGINAL_SUFFIX: &str = ".mtrack-original";
+
+/// Whether `path` is a file mtrack's own writes leave beside another: a
+/// staged copy (`<file>.<pid>.mtrack-new`) or a kept original
+/// (`<file>.mtrack-original`, `-2`, …). A scan of a directory's files
+/// takes neither for one of them.
+pub fn is_write_leftover(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.ends_with(STAGED_SUFFIX) {
+        return true;
+    }
+    match name.rfind(ORIGINAL_SUFFIX) {
+        Some(at) => {
+            let rest = &name[at + ORIGINAL_SUFFIX.len()..];
+            rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        }
+        None => false,
+    }
+}
+
+/// The path a pending write to `path` from this process is staged under. The
+/// process id keeps two mtrack processes writing one file from sharing it;
+/// within one, [`write_file`] has writers of a file take turns.
+pub fn staged_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}{STAGED_SUFFIX}", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// The lock writers of `path` in this process take turns on, and readers
+/// through [`read_file`] with them. Keyed by the path with its directory
+/// resolved, so two spellings of one file share it. One per file ever
+/// written or read so, which the files of a project bound.
+fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let key = parent_of(path)
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .ok()
+        .zip(path.file_name())
+        .map(|(dir, name)| dir.join(name))
+        .unwrap_or_else(|| path.to_path_buf());
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    std::sync::Arc::clone(locks.entry(key).or_default())
+}
+
+/// Writes `contents` to `path`, preserving who owns the file and leaving a
+/// recoverable copy if the write is interrupted.
+///
+/// The destination is rewritten **through its existing inode** rather than by
+/// renaming a replacement over it. That is what preserves ownership: a rename
+/// installs a new inode, which carries the ownership and mode of the file the
+/// writing process created (itself, mode 0600) rather than the destination's.
+/// Run mtrack once under `sudo` to debug something and a rename-based save
+/// leaves every config file `root:root` and mode 0600, locking the normal user
+/// out of their own configuration. Writing in place cannot do that, and it
+/// keeps the file's ACLs and extended attributes into the bargain.
+///
+/// The cost is that an in-place rewrite is not atomic — it truncates and then
+/// writes, so losing power midway leaves a short file. To bound that, the
+/// complete new content is first staged in a sidecar (see [`staged_path`]) and
+/// flushed to disk, and removed once the destination is durable. A sidecar
+/// left behind holds the content a write was writing: after a crash, or a
+/// failure past the destination's truncation, the content the destination
+/// may be missing; a lighting writer that puts the file back, or keeps its
+/// original beside it, removes it then ([`restore_file`]). One can also
+/// stay, rarely, beside a file written in full, when even a second try at
+/// removing it fails.
+/// Recovery is otherwise manual: copy the sidecar over the destination. A reader can see
+/// the short file too, while the rewrite is under way, unless it reads
+/// through [`read_file`].
+///
+/// Writers of the same file serialise rather than interleave. Within one
+/// process they take turns for the whole write, sidecar and all, since they
+/// share the sidecar; two mtrack processes each stage their own, and take
+/// turns on a lock on the destination for the rewrite. That lock is advisory
+/// and only binds cooperating writers, which is all we need — the racing
+/// writer this guards against is mtrack. Nothing is created at `path` until
+/// the new content is staged, so a write that fails before then (a full
+/// disk, say) leaves no empty file where there was none.
+pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_file_tracked(path, contents, WriteMode::CreateOrReplace).map_err(|failed| failed.error)
+}
+
+/// [`write_file`] for a file that must not be there yet: the destination is
+/// opened with `create_new`, so the filesystem itself refuses one already
+/// there (`ErrorKind::AlreadyExists`), including one a case-insensitive or
+/// normalization-insensitive filesystem takes for the same name, and one
+/// made since it was looked up. Nothing is written over it.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_file_tracked(path, contents, WriteMode::CreateNew).map_err(|failed| failed.error)
+}
+
+/// How [`write_file_tracked`] opens its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMode {
+    /// [`write_file`]: made if missing, else rewritten.
+    CreateOrReplace,
+    /// [`write_new_file`]: made, and refused (`AlreadyExists`) if there.
+    CreateNew,
+    /// Rewritten only if there: one gone since it was read is `NotFound`,
+    /// never made again.
+    ReplaceExisting,
+}
+
+/// A failed [`write_file_tracked`], and whether it left the destination
+/// changed: rewritten part way, past its truncation (its staged copy,
+/// [`staged_path`], is kept beside it, holding the full content). One that
+/// did not leaves the destination as it was, or as another writer left it.
+/// A file a [`WriteMode::CreateNew`] write made is removed again, with its
+/// staged copy, and is untouched; touched only if that removal failed.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub error: std::io::Error,
+    pub touched: bool,
+}
+
+/// [`write_file`], opening the destination as `mode` says and saying on
+/// failure whether it was left changed ([`WriteFailure`]), so a writer
+/// undoing its changes undoes this one's only when there is one. Every
+/// decision about the staged copy is made here, under the file's writer
+/// lock: a write whose only failure is the staged copy's removal, after the
+/// destination is fully written, retries it once and is written (the copy
+/// may stay, holding what the destination holds).
+pub fn write_file_tracked(
+    path: &Path,
+    contents: &[u8],
+    mode: WriteMode,
+) -> Result<(), WriteFailure> {
+    // Take turns from before staging: a writer staging while another
+    // rewrites would overwrite its sidecar, and whichever removed it first
+    // left the other's removal to fail (#578).
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    write_locked(path, contents, mode)
+}
+
+/// [`write_file_tracked`] with `path`'s writer lock held.
+fn write_locked(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let result = write_steps(path, contents, mode);
+    match result {
+        // A file this write made is taken away again, with its staged copy.
+        Err(failure) if mode == WriteMode::CreateNew && failure.touched => {
+            let gone = match remove_with_staged(path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+            Err(WriteFailure {
+                error: failure.error,
+                touched: !gone,
+            })
+        }
+        other => other,
+    }
+}
+
+fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let new = mode == WriteMode::CreateNew;
+    let untouched = |error| WriteFailure {
+        error,
+        touched: false,
+    };
+    let touched = |error| WriteFailure {
+        error,
+        touched: true,
+    };
+    #[cfg(any(test, feature = "test-util"))]
+    let fault = next_fault();
+    use std::io::Write;
+
+    // Read the ownership we are aiming for before creating anything, since
+    // creating the destination would otherwise answer the question with the
+    // freshly created file's own ownership.
+    let intended = intended_ownership(path).map_err(untouched)?;
+
+    // Stage the complete new content beside the destination and get it on disk,
+    // so the rewrite below always has something to recover from.
+    let staged = staged_path(path);
+    let stage = || -> std::io::Result<()> {
+        // A fresh file, never one a kept original is linked to: truncating
+        // a leftover staged copy in place would empty that original too.
+        match std::fs::remove_file(&staged) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        let mut file = std::fs::File::create(&staged)?;
+        if let Some(ownership) = intended {
+            ownership.apply(&file, &staged)?;
+        }
+        file.write_all(contents)?;
+        #[cfg(any(test, feature = "test-util"))]
+        if fault == Fault::Staging {
+            return Err(std::io::Error::other("injected staging failure"));
+        }
+        file.sync_all()?;
+        // Flushing the file is not enough on its own: without syncing the
+        // directory too, the sidecar's *name* may not survive a crash, and
+        // an unnamed file is no use to recover from.
+        sync_parent_dir(path)
+    };
+
+    // Lock before truncating, not as part of the open: opening with
+    // truncation would discard another process's content before we had any
+    // claim to the file.
+    // A file it made is this write's from then on, even if what follows
+    // fails; one it only opened is untouched until it is truncated.
+    let claim = || -> Result<std::fs::File, WriteFailure> {
+        let destination = std::fs::OpenOptions::new()
+            .create(mode == WriteMode::CreateOrReplace)
+            .create_new(new)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .map_err(untouched)?;
+        let made = |error| WriteFailure {
+            error,
+            touched: new,
+        };
+        destination.lock().map_err(made)?;
+        if let Some(ownership) = intended {
+            ownership.apply(&destination, path).map_err(made)?;
+        }
+        Ok(destination)
+    };
+
+    // Whether this write gives the destination its name: always a new
+    // file's; a create-or-replace's only when nothing had the name before
+    // the claim. Only then is the directory synced after the rewrite.
+    let names_it = match mode {
+        WriteMode::CreateNew => true,
+        WriteMode::CreateOrReplace => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        WriteMode::ReplaceExisting => false,
+    };
+    // Until the truncation the destination is as it was, so a failure up to
+    // then takes the sidecar with it: left, it would claim a write that never
+    // touched the destination may not have completed (#578).
+    let mut destination = match stage().map_err(untouched).and_then(|()| claim()) {
+        Ok(destination) => destination,
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
+    };
+    let mut rewrite = || -> std::io::Result<()> {
+        destination.set_len(0)?;
+        #[cfg(any(test, feature = "test-util"))]
+        if fault == Fault::AfterTruncating {
+            return Err(std::io::Error::other("injected failure after truncating"));
+        }
+        destination.write_all(contents)?;
+        destination.sync_all()
+    };
+    // Past the truncation the sidecar is the one full copy of the content:
+    // it stays, for whoever puts the destination back or for a person to
+    // recover from.
+    rewrite().map_err(touched)?;
+    // A destination this write made has a name only once its directory is
+    // synced: until then a crash may keep the staged copy's removal below
+    // and lose the new name, and the content with it. Best effort, as the
+    // destination itself is written: a failure keeps the staged copy. A
+    // destination already named needs no sync: its rewrite is in place.
+    if names_it && sync_parent_dir(path).is_err() {
+        return Ok(());
+    }
+
+    // The destination is durable, so the staged copy has served its purpose.
+    // It is removed (a second try if the first fails); one that stays even
+    // so holds what the destination holds.
+    let removed = std::fs::remove_file(&staged);
+    #[cfg(any(test, feature = "test-util"))]
+    let removed = match fault {
+        Fault::SidecarRemoval => Err(std::io::Error::other("injected sidecar removal failure")),
+        _ => removed,
+    };
+    if removed.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    Ok(())
+}
+
+/// Removes `path`, a file a write made, and its staged copy, taking turns
+/// with the file's writers.
+pub fn remove_written(path: &Path) -> std::io::Result<()> {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    remove_with_staged(path)
+}
+
+/// Removes `path`, then its staged copy, best effort: the one step of
+/// taking away a file a write made ([`remove_written`], and a failed
+/// [`WriteMode::CreateNew`] write's own cleanup). The caller holds the
+/// file's writer lock. Answers the file's removal.
+fn remove_with_staged(path: &Path) -> std::io::Result<()> {
+    #[cfg(any(test, feature = "test-util"))]
+    let removed = match next_fault() {
+        Fault::Removal => Err(std::io::Error::other("injected removal failure")),
+        _ => std::fs::remove_file(path),
+    };
+    #[cfg(not(any(test, feature = "test-util")))]
+    let removed = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(staged_path(path));
+    removed
+}
+
+/// Syncs the directory `path` is in, so a name made or removed there
+/// survives a crash: a file's own sync covers its content, not its name.
+/// Unix only: elsewhere a directory cannot be opened to sync, and this
+/// does nothing.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = parent_of(path) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// What [`restore_file`] did.
+#[derive(Debug)]
+pub enum Restored {
+    /// The file holds what it held again.
+    Yes,
+    /// It could not be put back (`error`): it is left as the failed write
+    /// left it, and its original content is where `original` says.
+    No {
+        error: std::io::Error,
+        original: Original,
+    },
+}
+
+/// Where a file's original content is after a restore that failed.
+#[derive(Debug)]
+pub enum Original {
+    /// In a new file of its own beside it (named), which no later write
+    /// writes over: `<file>.mtrack-original`, `-2`, `-3`….
+    Kept(String),
+    /// Only in the restore's staged copy (named), which is left, and which
+    /// the next write of the file from this process writes over: it must
+    /// be copied elsewhere first. Only when the original could be neither
+    /// linked, written out nor moved to a name of its own.
+    Staged(String),
+    /// Nowhere: it could not be written (why).
+    Lost(std::io::Error),
+}
+
+/// Puts `path` back as it held `was`, as a writer undoing its change does,
+/// under the file's writer lock. When that fails, the original is kept
+/// before anything holding it is let go: the restore's staged copy (which
+/// holds `was`, synced, once the restore got past truncating) is linked
+/// to a new `<file>.mtrack-original`, taking no space; failing that, `was`
+/// is written to one; and only once one holds it, its name synced, is the
+/// staged copy removed. Failing both (no links on the filesystem, and no
+/// space), the staged copy is renamed to one, which needs neither: no
+/// later write uses that name. Only if that fails too does the staged copy
+/// stay, named.
+pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let failure = match write_locked(path, was, WriteMode::CreateOrReplace) {
+        Ok(()) => return Restored::Yes,
+        Err(failure) => failure,
+    };
+    let staged = staged_path(path);
+    // Past its truncation the restore kept its staged copy, holding `was`.
+    let original = if failure.touched {
+        match link_original(path, &staged).or_else(|_| write_original(path, was)) {
+            Ok(name) => {
+                // The original's name is durable before the staged copy,
+                // the other file holding it, goes.
+                if sync_parent_dir(path).is_ok() && std::fs::remove_file(&staged).is_ok() {
+                    let _ = sync_parent_dir(path);
+                }
+                Original::Kept(name)
+            }
+            Err(_) => match rename_original(path, &staged) {
+                Ok(name) => {
+                    let _ = sync_parent_dir(path);
+                    Original::Kept(name)
+                }
+                Err(_) => Original::Staged(
+                    staged
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+            },
+        }
+    } else {
+        match write_original(path, was) {
+            // Written through `write_file_tracked`, which syncs the name.
+            Ok(name) => Original::Kept(name),
+            Err(e) => Original::Lost(e),
+        }
+    };
+    Restored::No {
+        error: failure.error,
+        original,
+    }
+}
+
+/// The names a file kept beside `path` may take, in turn, with the name
+/// alone: `<file><suffix>`, then `<file><suffix>-2`, `-3`…, appended to
+/// the whole file name. A kept original's (`.mtrack-original`) and `mtrack
+/// migrate`'s backups' (`.bak`).
+pub fn kept_names<'a>(
+    path: &'a Path,
+    suffix: &'a str,
+) -> impl Iterator<Item = (String, PathBuf)> + 'a {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    (1u32..).map(move |n| {
+        let candidate = if n == 1 {
+            format!("{name}{suffix}")
+        } else {
+            format!("{name}{suffix}-{n}")
+        };
+        let file = path.with_file_name(&candidate);
+        (candidate, file)
+    })
+}
+
+/// Makes a file at the first free one of `path`'s [`kept_names`] with
+/// `make`, which makes it new and answers `AlreadyExists` for a name
+/// taken, so nothing there is written over: the next name is tried.
+/// Answers the name made and its path.
+pub fn make_first_free(
+    path: &Path,
+    suffix: &str,
+    mut make: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<(String, PathBuf)> {
+    for (name, file) in kept_names(path, suffix) {
+        match make(&file) {
+            Ok(()) => return Ok((name, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only with the integers")
+}
+
+/// Links `staged` to the first free original name of `path`; its name.
+fn link_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(any(test, feature = "test-util"))]
+    if next_fault() == Fault::Link {
+        return Err(std::io::Error::other("injected link failure"));
+    }
+    make_first_free(path, ORIGINAL_SUFFIX, |file| {
+        std::fs::hard_link(staged, file)
+    })
+    .map(|(name, _)| name)
+}
+
+/// Moves `staged` to the first free original name of `path`; its name.
+/// A rename replaces what is at its target, so a name is taken only when
+/// nothing is there. That is checked before the rename, not by it: the
+/// file's writer lock, which the caller holds, keeps this process's other
+/// writers out between the two, but it is this process's alone, so another
+/// process making that name in between is written over. Only a last
+/// resort, when the original can be neither linked nor written out, runs
+/// this.
+fn rename_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(any(test, feature = "test-util"))]
+    if next_fault() == Fault::Rename {
+        return Err(std::io::Error::other("injected rename failure"));
+    }
+    make_first_free(
+        path,
+        ORIGINAL_SUFFIX,
+        |file| match std::fs::symlink_metadata(file) {
+            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(staged, file),
+            Err(e) => Err(e),
+        },
+    )
+    .map(|(name, _)| name)
+}
+
+/// Writes `was` to the first free original name of `path`, made new; its
+/// name.
+fn write_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
+    make_first_free(path, ORIGINAL_SUFFIX, |file| write_new_file(file, was)).map(|(name, _)| name)
+}
+
+/// A failure a test injects into [`write_file_tracked`] (and so every
+/// [`write_file`] and [`write_new_file`]) on its thread, into
+/// [`restore_file`]'s link or rename of the original, or into the removal
+/// of a file a write made, one per step in turn ([`inject_faults`]).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// This write (or link) goes through.
+    Pass,
+    /// Staging fails, before the destination is touched.
+    Staging,
+    /// The write fails just after truncating the destination, as a disk
+    /// that fills mid-write would.
+    AfterTruncating,
+    /// Only the sidecar's first removal fails, the destination written.
+    SidecarRemoval,
+    /// The link of a kept original fails, as on a filesystem without them.
+    Link,
+    /// The rename of a restore's staged copy to a kept original fails.
+    Rename,
+    /// The removal of a file a write made fails ([`remove_written`], and a
+    /// failed new file's cleanup).
+    Removal,
+}
+
+/// The faults the next writes (and links) on this thread meet, in order;
+/// after them, everything goes through. Replaces any not yet met.
+#[cfg(any(test, feature = "test-util"))]
+pub fn inject_faults(faults: &[Fault]) {
+    FAULTS.with(|f| *f.borrow_mut() = faults.iter().copied().collect());
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn next_fault() -> Fault {
+    FAULTS.with(|f| f.borrow_mut().pop_front().unwrap_or(Fault::Pass))
+}
+
+#[cfg(any(test, feature = "test-util"))]
+thread_local! {
+    /// The faults [`inject_faults`] queued.
+    static FAULTS: std::cell::RefCell<std::collections::VecDeque<Fault>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Reads all of `path`, as [`write_file`] last wrote it, never the empty or
+/// partial file its rewrite in place passes through on the way.
+///
+/// The reader takes its turn with the writers: in this process on their
+/// lock, which also covers the moment a new file exists but is not yet
+/// locked, and with another mtrack process on a shared lock on the file,
+/// which its rewrite holds exclusively. A loader that read a file midway
+/// through a save would take it for broken: a playlist so read is skipped,
+/// and an active one falls back to all songs (#578).
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = std::fs::File::open(path)?;
+    file.lock_shared()?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
+}
+
+/// [`read_file`], as text.
+pub fn read_to_string(path: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_file(path)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// A config source with the content of `path`, read by [`read_file`]
+/// rather than by the config crate, which reads the file as it finds it. In
+/// the format the file's extension names, as the config crate chose it when
+/// it read the file itself; YAML, mtrack's own, for any other.
+pub fn yaml_source(
+    path: &Path,
+) -> Result<::config::File<::config::FileSourceString, ::config::FileFormat>, ::config::ConfigError>
+{
+    let text = read_to_string(path).map_err(|e| {
+        ::config::ConfigError::Foreign(Box::new(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        )))
+    })?;
+    let format = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("toml") => ::config::FileFormat::Toml,
+        Some("json") => ::config::FileFormat::Json,
+        Some("json5") => ::config::FileFormat::Json5,
+        Some("ini") => ::config::FileFormat::Ini,
+        Some("ron") => ::config::FileFormat::Ron,
+        _ => ::config::FileFormat::Yaml,
+    };
+    Ok(::config::File::from_str(&text, format))
+}
+
+/// What a failed write of `target` says, naming it, with the hint for
+/// fixing it ([`write_failure_hint`]): the one wording every writer's
+/// failure takes.
+pub fn write_failure_message(target: WriteTarget<'_>, e: &std::io::Error) -> String {
+    let mut message = format!("could not write {}: {e}", target.path().display());
+    if let Some(hint) = write_failure_hint(target, e) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
+    }
+    message
+}
+
+/// Explains a write failure whose cause is not the file's own permissions.
+///
+/// The generated systemd unit runs mtrack under `ProtectSystem=strict` as a
+/// dedicated system user, and both of those produce failures that name the
+/// symptom and not the cause. A path the operator owns and can write from a
+/// shell reports a read-only filesystem, because it falls outside the unit's
+/// `ReadWritePaths=`; a library they just created reports permission denied,
+/// because the service user owns nothing it did not create. Neither points at
+/// the unit, which is not where anyone looks.
+///
+/// `None` when the error is anything else, or when nothing suggests we are
+/// running under systemd — outside a unit these two errors mean what they say.
+///
+/// `target` decides which directory the advice names, and callers must say
+/// which they have: see [`WriteTarget`].
+pub fn write_failure_hint(target: WriteTarget<'_>, error: &std::io::Error) -> Option<String> {
+    let env = HintEnv {
+        under_systemd: under_systemd(),
+        service_user: service_user(),
+        directory_exists: target.directory().is_dir(),
+    };
+    write_failure_hint_in(target, error, &env)
+}
+
+/// What a failed write was aiming at, which decides the directory the advice
+/// names.
+///
+/// Getting this from the path alone is not possible: a directory that failed to
+/// be *created* does not exist to be inspected, so `is_dir` says no and the
+/// advice ends up one level too high — telling an operator to `chown -R` or
+/// unseal `/var/lib` rather than their library.
+#[derive(Debug, Clone, Copy)]
+pub enum WriteTarget<'a> {
+    /// A file. Advice names the directory holding it, since `ReadWritePaths=`
+    /// is normally given one and chowning a lone file leaves its siblings
+    /// unwritable.
+    File(&'a Path),
+    /// A directory, named as-is.
+    Directory(&'a Path),
+}
+
+impl<'a> WriteTarget<'a> {
+    /// The path itself, for reporting what failed.
+    pub fn path(&self) -> &'a Path {
+        match self {
+            WriteTarget::File(path) | WriteTarget::Directory(path) => path,
+        }
+    }
+
+    /// The directory the advice should name.
+    fn directory(&self) -> &'a Path {
+        match self {
+            WriteTarget::File(path) => parent_of(path).unwrap_or(path),
+            WriteTarget::Directory(path) => path,
+        }
+    }
+}
+
+/// What the advice needs to know about the machine it is running on, gathered
+/// in one place so the wording can be tested without a real filesystem or
+/// process-global environment variables.
+struct HintEnv {
+    under_systemd: bool,
+    service_user: Option<String>,
+    /// Whether the directory the advice will name is actually there. A
+    /// directory that failed to be created is not, and most of the remediation
+    /// changes when that is the case.
+    directory_exists: bool,
+}
+
+/// Whether systemd started this process as a unit.
+///
+/// `INVOCATION_ID` is set by systemd for every service it starts, and is not
+/// inherited by anything an operator runs from a shell on the same machine.
+fn under_systemd() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
+}
+
+/// The account the service is running as, when it can be known.
+///
+/// systemd sets `USER` from the unit's `User=`. Naming a specific account
+/// matters because `INVOCATION_ID` is set for *any* unit — a `systemd --user`
+/// service, or a hand-written one with a different `User=` — and telling
+/// somebody to `chown -R mtrack:mtrack` their own library is either an error
+/// about an unknown user or a way to hand it to a system account.
+fn service_user() -> Option<String> {
+    std::env::var("USER").ok().filter(|user| !user.is_empty())
+}
+
+/// [`write_failure_hint`] with its environment supplied.
+fn write_failure_hint_in(
+    target: WriteTarget<'_>,
+    error: &std::io::Error,
+    env: &HintEnv,
+) -> Option<String> {
+    if !env.under_systemd {
+        return None;
+    }
+
+    let dir = target.directory();
+    // Commands are only offered for an absolute path. `mtrack systemd` refuses
+    // a relative one, and a relative `chown` means something different in the
+    // operator's shell than it did in the service's working directory.
+    let actionable = dir.is_absolute();
+    let user = env.service_user.as_deref();
+
+    match error.kind() {
+        std::io::ErrorKind::ReadOnlyFilesystem => {
+            // Deliberately does not name `strict`: a unit generated without any
+            // path gets `ProtectSystem=full`, and sending its operator to grep
+            // for a directive their file does not contain wastes the one place
+            // this message had their attention.
+            let mut hint = format!(
+                "The systemd sandbox is blocking this write: the unit's \
+                 ProtectSystem= setting makes the filesystem read-only except \
+                 for the paths listed in ReadWritePaths=, and {} is not one of \
+                 them. The file's own permissions are not the cause — a \
+                 read-only mount refuses the write before they are consulted.",
+                dir.display(),
+            );
+            if actionable {
+                // Order matters. systemd bind-mounts each ReadWritePaths= entry,
+                // and cannot mount what is not there: an operator who pastes a
+                // missing path in gets a unit that fails namespace setup and
+                // never runs, which produces no diagnostic at all.
+                if !env.directory_exists {
+                    hint.push_str(&format!(
+                        " Create {} first — systemd cannot bind-mount a path \
+                         that does not exist, and an unprefixed ReadWritePaths= \
+                         entry naming a missing one fails the unit at startup.",
+                        dir.display(),
+                    ));
+                }
+                hint.push_str(&format!(
+                    " Add {} to ReadWritePaths= in the unit and run `systemctl \
+                     daemon-reload`, or regenerate the unit naming {} alongside \
+                     every path it already lists — `mtrack systemd` takes the \
+                     full set each time and drops any path left out.",
+                    dir.display(),
+                    dir.display(),
+                ));
+            }
+            Some(hint)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            let mut hint = match user {
+                Some(user) => format!(
+                    "The service runs as {user}, which owns nothing it did not \
+                     create, so this is likely ownership rather than a missing \
+                     file."
+                ),
+                None => "The service runs as the account in the unit's User=, \
+                         which owns nothing it did not create, so this is \
+                         likely ownership rather than a missing file."
+                    .to_string(),
+            };
+            if actionable {
+                if env.directory_exists {
+                    match user {
+                        Some(user) => hint.push_str(&format!(
+                            " `chown -R {user}:{user} {}` grants it.",
+                            dir.display()
+                        )),
+                        None => hint.push_str(&format!(
+                            " Granting that account ownership of {} fixes it.",
+                            dir.display()
+                        )),
+                    }
+                } else {
+                    // A directory that could not be created cannot be chowned
+                    // either -- `chown` on a missing path just reports that it
+                    // is missing. Granting the *parent* instead hands the
+                    // account every sibling -- for a path one level under
+                    // /var/lib, most of the system's state. Create the
+                    // directory owned by the service, which touches nothing
+                    // beside it.
+                    match user {
+                        Some(user) => hint.push_str(&format!(
+                            " {} does not exist and could not be created. \
+                             `install -d -o {user} -g {user} {}` creates it \
+                             owned by the service without touching anything \
+                             beside it.",
+                            dir.display(),
+                            dir.display(),
+                        )),
+                        None => hint.push_str(&format!(
+                            " {} does not exist and could not be created; \
+                             create it and grant that account ownership of it.",
+                            dir.display(),
+                        )),
+                    }
+                }
+            }
+            Some(hint)
+        }
+        _ => None,
+    }
+}
+
+/// [`write_file`] for callers on a Tokio runtime, which keeps the filesystem
+/// work off the async worker.
+pub async fn write_file_async(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_file(&path, &contents))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// The ownership a write to `path` should land with: that of the file already
+/// there, or — when it is about to be created — that implied by its directory.
+/// `None` when there is neither, leaving the process defaults to stand.
+fn intended_ownership(path: &Path) -> std::io::Result<Option<Ownership>> {
+    match Ownership::of(path) {
+        Ok(existing) => Ok(Some(existing)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match parent_of(path) {
+            Some(parent) => Ok(Some(Ownership::of(parent)?.for_file_in_dir())),
+            None => Ok(None),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Like [`std::fs::create_dir_all`], but every directory it creates adopts the
+/// ownership and mode of the nearest ancestor that already existed, rather than
+/// of the invoking user — for the same reason as [`write_file`]. A path that
+/// already exists is left untouched.
+pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+    // Walk up to the nearest existing ancestor, remembering what we pass.
+    let mut created = Vec::new();
+    let mut cursor = path;
+    let existing = loop {
+        if cursor.try_exists()? {
+            break Some(cursor);
+        }
+        created.push(cursor);
+        match parent_of(cursor) {
+            Some(parent) => cursor = parent,
+            None => break None,
+        }
+    };
+
+    std::fs::create_dir_all(path)?;
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    let ownership = Ownership::of(existing)?;
+
+    // Outermost first, so a failure part way down still leaves the shallower
+    // directories — the ones most likely to be shared — correctly owned.
+    for dir in created.iter().rev() {
+        // A directory opens read-only on Unix, which is enough for fchmod/fchown.
+        ownership.apply(&std::fs::File::open(dir)?, dir)?;
+    }
+    Ok(())
+}
+
+/// Why [`create_dir_within`] declined to create a directory.
+#[derive(Debug)]
+pub enum CreateWithinError {
+    /// The directory is outside the project directory, so nothing was created.
+    Outside {
+        /// The directory that was asked for, as it was configured.
+        path: PathBuf,
+        /// Where that spelling actually lands. Reported alongside the spelling
+        /// because they differ whenever a symlink or a `..` is involved, and
+        /// naming only the spelling can tell an operator that a path plainly
+        /// inside the project is outside it.
+        resolved: PathBuf,
+        /// The project directory it had to be inside of.
+        project: PathBuf,
+    },
+    /// Something is already there, and it is not a directory.
+    NotADirectory {
+        /// The path that is occupied.
+        path: PathBuf,
+        /// Whether the occupant is a symlink that leads nowhere useful. Worth
+        /// distinguishing: a link to unmounted media is invisible to `exists`,
+        /// and is the removable-media case this rule exists to protect.
+        symlink: bool,
+    },
+    /// It was inside the project, and creating it failed anyway.
+    Io {
+        /// The path creation was attempted on — the resolved one, which is
+        /// what any advice about it has to name.
+        path: PathBuf,
+        /// What went wrong.
+        source: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for CreateWithinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateWithinError::Outside {
+                path,
+                resolved,
+                project,
+            } if resolved != path => write!(
+                f,
+                "{} resolves to {}, which is outside the project directory \
+                 ({}), and mtrack only creates directories inside that. Create \
+                 it, or point the setting at a path inside the project.",
+                path.display(),
+                resolved.display(),
+                project.display(),
+            ),
+            CreateWithinError::Outside { path, project, .. } => write!(
+                f,
+                "{} does not exist, and mtrack only creates directories inside \
+                 its project directory ({}). Create it, or point the setting at \
+                 a path inside the project.",
+                path.display(),
+                project.display(),
+            ),
+            CreateWithinError::NotADirectory {
+                path,
+                symlink: true,
+            } => write!(
+                f,
+                "{} is a symlink that does not lead to a directory. Its target \
+                 may be missing, or on media that is not mounted — mount it, \
+                 repoint the link, or remove it.",
+                path.display(),
+            ),
+            CreateWithinError::NotADirectory { path, .. } => write!(
+                f,
+                "{} is not a directory. Point the setting at a directory, or \
+                 move what is there out of the way.",
+                path.display(),
+            ),
+            CreateWithinError::Io { source, .. } => write!(f, "{source}"),
+        }
+    }
+}
+
+impl std::error::Error for CreateWithinError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CreateWithinError::Io { source, .. } => Some(source),
+            CreateWithinError::Outside { .. } | CreateWithinError::NotADirectory { .. } => None,
+        }
+    }
+}
+
+/// A directory that [`create_dir_within`] made or accepted, resolved.
+///
+/// A newtype rather than a bare `PathBuf` so the obligation is the compiler's
+/// to enforce: the caller must use *this* path, because the spelling passed in
+/// may no longer resolve — creating deliberately leaves no stray intermediate
+/// behind, so `songs/../real` names a directory that was never made. Stating
+/// that in a doc comment was not enough; it was missed twice, once leaving
+/// every web UI songs endpoint answering "Root directory not found".
+#[must_use = "use this path rather than the one passed in, which may not resolve"]
+#[derive(Debug, Clone)]
+pub struct CreatedDir(PathBuf);
+
+impl CreatedDir {
+    /// The directory, borrowed.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The directory, owned.
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl std::ops::Deref for CreatedDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Creates `dir` if it is missing, but only when it lies inside `project`.
+///
+/// mtrack creates directories on behalf of a config that names them, and a
+/// config can name anywhere on the filesystem. Creating those wherever they
+/// point turns a typo into an empty directory and a puzzling "no songs found",
+/// and asks the service to write outside the very paths the generated systemd
+/// unit's `ProtectSystem=strict` exists to fence off.
+///
+/// A directory that already exists is accepted wherever it is: the restriction
+/// is on *creating* one, not on using a path the operator set up themselves.
+///
+/// Returns the directory that now exists, resolved. Callers must use it rather
+/// than the path they passed in: creation follows the resolved path, and a
+/// spelling like `songs/../real` is not equivalent to it — POSIX cannot resolve
+/// that spelling unless `songs` exists, which is exactly the stray intermediate
+/// this avoids making.
+pub fn create_dir_within(dir: &Path, project: &Path) -> Result<CreatedDir, CreateWithinError> {
+    if dir.is_dir() {
+        return Ok(CreatedDir(
+            dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        ));
+    }
+    // `symlink_metadata` rather than `exists`, which follows the link and so
+    // reports a dangling one as absent. Creation then fails deep inside
+    // `create_dir_all` with `File exists` for a path the operator can see is
+    // not there, saying nothing about the link.
+    if let Ok(occupant) = std::fs::symlink_metadata(dir) {
+        return Err(CreateWithinError::NotADirectory {
+            path: dir.to_path_buf(),
+            symlink: occupant.file_type().is_symlink(),
+        });
+    }
+
+    let resolved = match resolve_as_far_as_possible(dir) {
+        Resolved::Path(resolved) => resolved,
+        // A link to nowhere anywhere along the path, not merely at its end.
+        Resolved::Dangling(link) => {
+            return Err(CreateWithinError::NotADirectory {
+                path: link,
+                symlink: true,
+            })
+        }
+    };
+
+    if !is_within(&resolved, project) {
+        return Err(CreateWithinError::Outside {
+            path: dir.to_path_buf(),
+            resolved,
+            project: project.to_path_buf(),
+        });
+    }
+
+    // The resolved path, not the original. Creating the original walks the
+    // literal spelling: it would materialize a stray intermediate for a benign
+    // `songs/../real`, and it re-walks components that were checked as
+    // something else — a window in which one could have become a symlink out of
+    // the project.
+    create_dir_all(&resolved).map_err(|source| CreateWithinError::Io {
+        path: resolved.clone(),
+        source,
+    })?;
+    Ok(CreatedDir(resolved))
+}
+
+/// [`create_dir_within`] for callers on a Tokio runtime, which keeps the
+/// filesystem work off the async worker.
+pub async fn create_dir_within_async(
+    dir: PathBuf,
+    project: PathBuf,
+) -> Result<CreatedDir, CreateWithinError> {
+    tokio::task::spawn_blocking(move || create_dir_within(&dir, &project))
+        .await
+        .map_err(|e| CreateWithinError::Io {
+            path: PathBuf::new(),
+            source: std::io::Error::other(e),
+        })?
+}
+
+/// The outcome of resolving a path as far as the filesystem allows.
+#[derive(Debug)]
+enum Resolved {
+    /// Resolved to this absolute path.
+    Path(PathBuf),
+    /// A symlink along the way leads nowhere. Creating through it fails with
+    /// `File exists` deep inside `create_dir_all` and says nothing about the
+    /// link, for a path the operator can see is not there.
+    Dangling(PathBuf),
+}
+
+/// `path` resolved as far as the filesystem allows.
+///
+/// Walks the components, canonicalizing whenever what has been built so far
+/// exists. Resolving only the longest existing *prefix* is not enough: the
+/// remainder gets pushed literally, so a `..` can walk back into existing,
+/// symlinked territory — `project/missing/../link/songs` — and land outside
+/// the project while still reading as inside it.
+fn resolve_as_far_as_possible(path: &Path) -> Resolved {
+    // A relative path is relative to the process's directory, and comparing one
+    // against an absolute root answers "outside" for everything. `mtrack start
+    // mtrack.yaml` produces exactly that: a project of "." and a songs path of
+    // "songs", both of which mean the current directory.
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                resolved.push(part);
+                // Canonicalize the moment it exists, so a symlink is followed
+                // here rather than compared as though it were a directory.
+                match resolved.canonicalize() {
+                    Ok(canonical) => resolved = canonical,
+                    Err(_) => {
+                        // Unresolvable but present means a link to nowhere.
+                        // Checked at every component, not just the last: an
+                        // unmounted drive is as likely to sit part way along
+                        // the path as at the end of it.
+                        if std::fs::symlink_metadata(&resolved)
+                            .is_ok_and(|meta| meta.file_type().is_symlink())
+                        {
+                            return Resolved::Dangling(resolved);
+                        }
+                    }
+                }
+            }
+            // Popping a canonical path is exact; popping one that still holds
+            // an unresolved symlink is what the canonicalization above avoids.
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => resolved.push(other.as_os_str()),
+        }
+    }
+    Resolved::Path(resolved)
+}
+
+/// Whether an already-resolved `path` lands inside `root`.
+///
+/// Takes the *resolved* path rather than resolving here, so the caller creates
+/// exactly what was checked. Purely lexical comparison would not do:
+/// `project/songs` is inside the project by spelling, and outside it if
+/// `project/songs` is a symlink somewhere else.
+fn is_within(path: &Path, root: &Path) -> bool {
+    root.canonicalize().is_ok_and(|root| path.starts_with(root))
+}
+
+/// A configured directory, resolved as far as the filesystem allows, for
+/// callers that only read it.
+///
+/// [`create_dir_within`] hands back what it made, but a reader has nothing to
+/// create and still needs the resolved path: the spelling in a config is not
+/// always usable now that the stray intermediate is no longer made, since POSIX
+/// cannot resolve `sub/../real` unless `sub` exists. Falls back to the path as
+/// given when nothing along it exists, which reads the same as before.
+pub fn resolved_dir(path: &Path) -> PathBuf {
+    match resolve_as_far_as_possible(path) {
+        Resolved::Path(resolved) => resolved,
+        // A link to nowhere resolves to nothing useful; hand back the original
+        // so the caller's own error names what the operator configured.
+        Resolved::Dangling(_) => path.to_path_buf(),
+    }
+}
+
+/// What kind of fault an error a client caused or met is: classified once,
+/// by the error itself, for each transport to answer with its own code (a
+/// one-line table each in gRPC, the web API and MCP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaultKind {
+    /// What was named is not there.
+    NotFound,
+    /// The player or the config is not in the state the request needs.
+    Precondition,
+    /// The request itself is wrong.
+    Invalid,
+    /// mtrack's own fault.
+    Internal,
+}
+
+/// What tells a file has changed: its modified time and its length, for two
+/// saves within one tick of the clock -- a truncate, then the write. Compared
+/// for inequality, never ordered: a backup restored moves the time backwards,
+/// and that is a change too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub modified: std::time::SystemTime,
+    pub len: u64,
+}
+
+impl FileStamp {
+    /// The stamp of `path`, if it can be read.
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        })
+    }
+}
+
+/// Whether a path a config or a client names could leave the directory it is
+/// joined to: absolute, or with a `..` component. The one rule for a path that
+/// must stay inside the project; a `..` inside a name (`v1..2`) is no escape.
+pub fn escapes_project(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// The project directory implied by a config file's path: the directory holding
+/// it, and the only place mtrack creates directories on a config's behalf.
+///
+/// [`Path::parent`] answers `Some("")` rather than `None` for a bare filename,
+/// so a fallback written against `None` never fires and leaves an empty path
+/// behind — which canonicalizes to nothing and refuses every creation. That is
+/// reachable: `mtrack start mtrack.yaml` passes exactly such a path.
+pub fn project_dir_of(config_path: &Path) -> PathBuf {
+    parent_of(config_path)
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Whether `path`, which need not exist, is `dir` or inside it. `path` is
+/// expected already resolved, as `SafePath` resolves a request's path: a
+/// `..` after a component that is not there is not normalised here. The
+/// nearest of `path` and its ancestors that is there is canonicalized
+/// (symlinks), then it and each ancestor of it is compared
+/// with `dir` by identity (device and inode on Unix), so a name in another
+/// case on a case-insensitive file system, or a second path to the same
+/// directory, is the same directory. `false` when `dir` is not there:
+/// nothing is in it.
+pub fn is_within_dir(path: &Path, dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    let Some(existing) = path.ancestors().find_map(|a| std::fs::canonicalize(a).ok()) else {
+        return false;
+    };
+    if existing.starts_with(&dir) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(wanted) = std::fs::metadata(&dir) else {
+            return false;
+        };
+        existing.ancestors().any(|a| {
+            std::fs::metadata(a).is_ok_and(|m| m.dev() == wanted.dev() && m.ino() == wanted.ino())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let fold = |p: &Path| p.to_string_lossy().to_lowercase();
+        std::path::Path::new(&fold(&existing)).starts_with(fold(&dir))
+    }
+}
+
+/// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
+/// filesystem work off the async worker.
+pub async fn create_dir_all_async(path: &Path) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || create_dir_all(&path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// The parent directory of `path`, treating the empty parent of a bare relative
+/// name as absent rather than as the root.
+fn parent_of(path: &Path) -> Option<&Path> {
+    path.parent().filter(|p| !p.as_os_str().is_empty())
+}
+
+/// The ownership and mode of an existing file or directory. Changing ownership
+/// is best effort — an unprivileged process cannot hand a file to another user,
+/// and there is nothing useful to do about that beyond logging it — while the
+/// mode is always applied.
+#[derive(Clone, Copy)]
+struct Ownership {
+    #[cfg(unix)]
+    uid: u32,
+    #[cfg(unix)]
+    gid: u32,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl Ownership {
+    /// Reads the ownership of `path`, following symlinks: renaming over a
+    /// symlink replaces the link, and the file it pointed at describes what the
+    /// user actually wants far better than the link's own `lrwxrwxrwx`.
+    fn of(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mode: meta.mode() & 0o7777,
+        })
+    }
+
+    /// The ownership a file created inside this directory should have: the same
+    /// owner, and the directory's mode without its execute bits — a 0755
+    /// directory yields a 0644 file, a 0700 one yields 0600. That tracks the
+    /// umask the directory itself was created under, without having to read the
+    /// current umask, which cannot be queried without also setting it.
+    fn for_file_in_dir(self) -> Self {
+        Self {
+            mode: self.mode & 0o666,
+            ..self
+        }
+    }
+
+    /// Applies this ownership and mode to an open file or directory. `path`
+    /// names it for diagnostics only.
+    fn apply(&self, file: &std::fs::File, path: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // Skip the syscall in the overwhelmingly common case of writing a file
+        // we already own — chown only matters when the ids actually differ.
+        let current = file.metadata()?;
+        if current.uid() != self.uid || current.gid() != self.gid {
+            // Only a privileged process can give a file away, so failure here
+            // is expected whenever a user edits a file owned by someone else,
+            // and is not something they can act on. Log it and keep the write.
+            if let Err(e) = std::os::unix::fs::fchown(file, Some(self.uid), Some(self.gid)) {
+                tracing::warn!(
+                    "Unable to set ownership of {} to {}:{} ({}). It will be owned by {}:{} instead.",
+                    path.display(),
+                    self.uid,
+                    self.gid,
+                    e,
+                    current.uid(),
+                    current.gid(),
+                );
+            }
+        }
+
+        // Mode last: chown clears the setuid and setgid bits on a file, so
+        // setting the mode first would let the chown strip bits we just set.
+        //
+        // Skip it when the mode already matches, which is always the case for
+        // a destination rewritten in place: it keeps its inode and so its mode.
+        // Like the chown, changing the mode of a file another user owns is
+        // refused to an unprivileged process, and there is nothing to correct
+        // when that happens, so it is logged rather than failing the write.
+        if current.mode() & 0o7777 == self.mode {
+            return Ok(());
+        }
+        match file.set_permissions(std::fs::Permissions::from_mode(self.mode)) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::warn!(
+                    "Unable to set the mode of {} to {:o} ({}). It keeps mode {:o}.",
+                    path.display(),
+                    self.mode,
+                    e,
+                    current.mode() & 0o7777,
+                );
+                Ok(())
+            }
+            other => other,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl Ownership {
+    fn of(path: &Path) -> std::io::Result<Self> {
+        // Confirm the path exists so callers can still distinguish replacing a
+        // file from creating one, then carry no ownership to apply.
+        std::fs::metadata(path)?;
+        Ok(Self {})
+    }
+
+    fn for_file_in_dir(self) -> Self {
+        self
+    }
+
+    fn apply(&self, _file: &std::fs::File, _path: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ownership_test {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn write_file_keeps_the_inode_of_the_destination() {
+        // The whole point of writing in place: the file that ends up on disk is
+        // the same file, so everything hanging off the inode survives.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "old").unwrap();
+        let before = std::fs::metadata(&dest).unwrap();
+
+        write_file(&dest, b"new").unwrap();
+
+        let after = std::fs::metadata(&dest).unwrap();
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_file_keeps_the_mode_of_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "old").unwrap();
+        set_mode(&dest, 0o640);
+
+        write_file(&dest, b"new").unwrap();
+
+        assert_eq!(mode_of(&dest), 0o640);
+    }
+
+    #[test]
+    fn write_file_derives_a_new_files_mode_from_its_directory() {
+        for (dir_mode, want) in [(0o755, 0o644), (0o700, 0o600), (0o775, 0o664)] {
+            let dir = tempfile::tempdir().unwrap();
+            set_mode(dir.path(), dir_mode);
+            let dest = dir.path().join("new.yaml");
+
+            write_file(&dest, b"contents").unwrap();
+
+            assert_eq!(
+                mode_of(&dest),
+                want,
+                "directory mode {:o} should yield file mode {:o}",
+                dir_mode,
+                want
+            );
+            // Restore a writable mode so the temp dir can clean itself up.
+            set_mode(dir.path(), 0o755);
+        }
+    }
+
+    #[test]
+    fn write_file_removes_the_staged_copy_once_the_write_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+
+        write_file(&dest, b"contents").unwrap();
+
+        // A leftover sidecar means "the last write may not have completed", so
+        // a successful write must not leave one lying about.
+        assert!(!staged_path(&dest).exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "contents");
+    }
+
+    #[test]
+    fn a_write_never_truncates_a_kept_original_linked_to_its_staged_name() {
+        // A kept original linked to a staged copy that stayed (its removal
+        // failed): the next write stages afresh, leaving the original whole.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("club.venue");
+        std::fs::write(&dest, "failed save\n").unwrap();
+        std::fs::write(staged_path(&dest), "was\n").unwrap();
+        let original = dir.path().join("club.venue.mtrack-original");
+        std::fs::hard_link(staged_path(&dest), &original).unwrap();
+
+        write_file(&dest, b"new\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new\n");
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "was\n");
+        assert!(!staged_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_write_s_leftovers_are_known_by_name() {
+        for leftover in [
+            "par.zip.1234.mtrack-new",
+            "club.venue.mtrack-original",
+            "club.venue.mtrack-original-2",
+            "club.venue.mtrack-original-17",
+        ] {
+            assert!(is_write_leftover(Path::new(leftover)), "{leftover}");
+        }
+        for file in [
+            "par.zip",
+            "synth.gdtf",
+            "club.venue.mtrack-original-x",
+            "club.venue.mtrack-original-",
+            "mtrack-original.gdtf",
+        ] {
+            assert!(!is_write_leftover(Path::new(file)), "{file}");
+        }
+    }
+
+    #[test]
+    fn write_file_takes_the_staged_copy_with_a_failed_staging() {
+        // #578: a staging that failed left its sidecar, which reads as a
+        // write to the destination that may not have completed.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "before").unwrap();
+
+        super::inject_faults(&[super::Fault::Staging]);
+        let result = write_file(&dest, b"after");
+        super::inject_faults(&[]);
+
+        assert!(result.is_err());
+        assert!(!staged_path(&dest).exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "before");
+    }
+
+    /// #685: a new file whose write fails past its truncation is taken
+    /// away with its staged copy, by the one removal step; one whose
+    /// removal fails too is reported touched, and its staged copy goes.
+    #[test]
+    fn a_failed_new_file_is_removed_with_its_staged_copy_or_reported_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("new.yaml");
+
+        super::inject_faults(&[super::Fault::AfterTruncating]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(!failure.touched);
+        assert!(!dest.exists());
+        assert!(!staged_path(&dest).exists());
+
+        super::inject_faults(&[super::Fault::AfterTruncating, super::Fault::Removal]);
+        let failure = write_file_tracked(&dest, b"after", WriteMode::CreateNew).unwrap_err();
+        super::inject_faults(&[]);
+        assert!(failure.touched, "left, so the writer can say so");
+        assert!(dest.exists());
+        assert!(!staged_path(&dest).exists());
+        remove_written(&dest).unwrap();
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn write_file_takes_the_staged_copy_with_a_destination_it_cannot_open() {
+        // Staged, but the destination is a directory: it was never touched,
+        // so nothing is left to recover.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(write_file(&dest, b"after").is_err());
+        assert!(!staged_path(&dest).exists());
+    }
+
+    #[test]
+    fn staged_path_does_not_masquerade_as_a_config_file() {
+        // Directory scans pick files by extension, so the sidecar must not keep
+        // the one it was staged from.
+        let staged = staged_path(Path::new("/cfg/profiles/01-main.yaml"));
+        let pid = std::process::id();
+        assert_eq!(
+            staged.file_name().unwrap().to_str().unwrap(),
+            format!("01-main.yaml.{pid}.mtrack-new")
+        );
+        assert_ne!(staged.extension().unwrap(), "yaml");
+        assert_ne!(
+            staged_path(Path::new("/cfg/show.light"))
+                .extension()
+                .unwrap(),
+            "light"
+        );
+    }
+
+    #[test]
+    fn create_dir_all_gives_new_directories_the_ancestors_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        std::fs::create_dir(&base).unwrap();
+        set_mode(&base, 0o750);
+
+        create_dir_all(&base.join("a/b")).unwrap();
+
+        assert_eq!(mode_of(&base.join("a")), 0o750);
+        assert_eq!(mode_of(&base.join("a/b")), 0o750);
+    }
+
+    #[test]
+    fn create_dir_all_leaves_existing_directories_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        set_mode(&existing, 0o700);
+
+        create_dir_all(&existing).unwrap();
+
+        assert_eq!(mode_of(&existing), 0o700);
+    }
+
+    #[test]
+    fn write_file_leaves_an_existing_files_mode_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.yaml");
+        std::fs::write(&path, "old").unwrap();
+        set_mode(&path, 0o604);
+
+        write_file(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(mode_of(&path), 0o604);
+    }
+
+    #[test]
+    fn a_write_that_fails_to_stage_leaves_no_new_empty_file() {
+        // Created first to lock it, the destination was left empty where
+        // there was none when staging failed (a full disk, say).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.yaml");
+        std::fs::create_dir(staged_path(&path)).unwrap(); // staging cannot open it
+        assert!(write_file(&path, b"songs: [A]\n").is_err());
+        assert!(
+            !path.exists(),
+            "an empty {} was left behind",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_file_all_succeed() {
+        // #578: writers shared the sidecar, and all but one failed to
+        // remove it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || write_file(&path, format!("songs: [{i}]\n").as_bytes()))
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("songs: [") && written.ends_with("]\n"),
+            "{written:?}"
+        );
+        assert!(!staged_path(&path).exists());
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    /// The lookup by a listing alone (no filesystem): a name's file is
+    /// `<name>.yaml`, else `<name>.yml`, as listed, else a new `<name>.yaml`.
+    /// Only a name as listed is found, so on a case-insensitive filesystem
+    /// a `set.YML` is not `set.yml`; and a new file named as a listed one
+    /// but for case (`Set.yaml`, `set.YAML`) is refused, not written into.
+    #[test]
+    fn a_names_file_is_found_by_the_listing() {
+        use super::{file_among, yaml_file_among, CaseClash, NamedFile};
+        let dir = std::path::Path::new("/p");
+        let names = |listed: &[&str]| listed.iter().map(|n| dir.join(n)).collect::<Vec<_>>();
+        let found = |file: &str| Ok(NamedFile::Found(dir.join(file)));
+        let new = |file: &str| Ok(NamedFile::New(dir.join(file)));
+        let clash = |file: &str| Err(CaseClash(file.to_string()));
+
+        assert_eq!(yaml_file_among(dir, &names(&[]), "set"), new("set.yaml"));
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml", "set.yaml"]), "set"),
+            found("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YML", "set.yml.bak"]), "set"),
+            new("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yaml"]), "set"),
+            clash("Set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YAML"]), "set"),
+            clash("set.YAML")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yml", "set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["a.b.yml"]), "a.b"),
+            found("a.b.yml")
+        );
+
+        assert_eq!(
+            file_among(
+                dir,
+                &names(&["stage.yml"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
+            found("stage.yml")
+        );
+        assert_eq!(
+            file_among(
+                dir,
+                &names(&["Stage.YML"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
+            clash("Stage.YML")
+        );
+        assert_eq!(
+            file_among(dir, &names(&[]), std::ffi::OsStr::new("stage.yml")),
+            new("stage.yml")
+        );
+    }
+
+    /// The listing keeps a name that is not UTF-8 as the filesystem has it,
+    /// and the one rule finds its YAML file by it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_listing_keeps_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
+        std::fs::write(dir.join(name), "").unwrap();
+        assert_eq!(super::files_in(dir).unwrap(), vec![dir.join(name)]);
+        assert_eq!(
+            super::yaml_files_by_name(dir).unwrap(),
+            vec![(dir.join(name), None)]
+        );
+    }
+
+    /// A create is only a create: a file made between the lookup and the
+    /// write (here, after `yaml_file_at` said `New`) is refused by the
+    /// filesystem and left as it was.
+    #[test]
+    fn a_create_racing_a_new_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let file = super::yaml_file_at(dir, "set").unwrap();
+        assert_eq!(file, super::NamedFile::New(dir.join("set.yaml")));
+        std::fs::write(dir.join("set.yaml"), "theirs").unwrap();
+        let error = super::write_new_file(file.path(), b"ours").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("set.yaml")).unwrap(),
+            "theirs"
+        );
+        assert!(!super::staged_path(file.path()).exists());
+
+        super::write_new_file(&dir.join("new.yaml"), b"ours").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("new.yaml")).unwrap(),
+            "ours"
+        );
+    }
+
+    /// On disk, the lookup lists the directory: regular files only, so a
+    /// folder named `folder.yaml` is not found; one name is listed once, by
+    /// its file, with the other it has.
+    #[test]
+    fn a_names_yaml_file_on_disk() {
+        use super::{yaml_config_files, yaml_file_at, yaml_files_by_name, NamedFile};
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(
+            yaml_file_at(&dir.join("missing"), "set"),
+            Ok(NamedFile::New(dir.join("missing/set.yaml")))
+        );
+        std::fs::write(dir.join("set.yml"), "").unwrap();
+        std::fs::write(dir.join("set.yaml"), "").unwrap();
+        std::fs::write(dir.join("a.b.yml"), "").unwrap();
+        std::fs::write(dir.join("loud.YAML"), "").unwrap();
+        std::fs::create_dir(dir.join("folder.yaml")).unwrap();
+        assert_eq!(
+            yaml_file_at(dir, "set"),
+            Ok(NamedFile::Found(dir.join("set.yaml")))
+        );
+        assert_eq!(
+            yaml_file_at(dir, "folder"),
+            Ok(NamedFile::New(dir.join("folder.yaml")))
+        );
+        assert_eq!(
+            yaml_files_by_name(dir).unwrap(),
+            vec![
+                (dir.join("a.b.yml"), None),
+                (dir.join("set.yaml"), Some(dir.join("set.yml")))
+            ]
+        );
+        assert_eq!(
+            yaml_config_files(dir).unwrap(),
+            vec![
+                dir.join("a.b.yml"),
+                dir.join("set.yaml"),
+                dir.join("set.yml")
+            ]
+        );
+    }
+
+    #[test]
+    fn duration_from_secs_turns_down_what_no_duration_holds() {
+        use super::duration_from_secs;
+        use std::time::Duration;
+        assert_eq!(duration_from_secs(1.5), Some(Duration::from_millis(1500)));
+        assert_eq!(duration_from_secs(0.0), Some(Duration::ZERO));
+        // Finite but past what a duration holds: from_secs_f64 panics.
+        assert_eq!(duration_from_secs(1e30), None);
+        assert_eq!(duration_from_secs(-1.0), None);
+        assert_eq!(duration_from_secs(f64::NAN), None);
+        assert_eq!(duration_from_secs(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn yaml_source_reads_the_format_the_extension_names() {
+        // The main config was read by the config crate, which went by the
+        // extension: a TOML or JSON config still loads.
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("c.yaml", "a: 1\n"),
+            ("c.toml", "a = 1\n"),
+            ("c.json", "{\"a\": 1}"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            let value: i64 = ::config::Config::builder()
+                .add_source(super::yaml_source(&path).unwrap())
+                .build()
+                .unwrap()
+                .get("a")
+                .unwrap();
+            assert_eq!(value, 1, "{name}");
+        }
+    }
+
+    use std::time::Duration;
+
+    use crate::util::{duration_minutes_seconds, escapes_project};
+
+    /// A save within the clock's tick of the last, and a backup restored
+    /// over the file, both read as changes.
+    #[test]
+    fn a_file_stamp_changes_with_the_length_and_with_time_moved_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("show.light");
+        std::fs::write(&path, "a").unwrap();
+        let first = crate::util::FileStamp::of(&path).unwrap();
+        std::fs::write(&path, "ab").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(first.modified)
+            .unwrap();
+        let same_tick = crate::util::FileStamp::of(&path).unwrap();
+        assert_eq!(same_tick.modified, first.modified);
+        assert_ne!(same_tick, first);
+
+        let earlier = first.modified - Duration::from_secs(60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        std::fs::write(&path, "a").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        assert_ne!(crate::util::FileStamp::of(&path).unwrap(), first);
+        assert!(crate::util::FileStamp::of(&dir.path().join("none")).is_none());
+    }
+
+    /// Every spelling a surface takes, the CLI's `@` included.
+    #[test]
+    fn a_position_parses_in_every_spelling() {
+        use crate::util::parse_position;
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            (" 1:30 ", 90.0),
+            ("1:30.5s", 90.5),
+            ("@1:30", 90.0),
+            ("@ 45.25", 45.25),
+            ("1:23.456789", 83.456789),
+        ] {
+            assert_eq!(
+                parse_position(given),
+                Ok(Duration::from_secs_f64(secs)),
+                "{given}"
+            );
+        }
+        assert!(parse_position("chorus").is_err());
+        assert!(parse_position("@").is_err());
+    }
+
+    #[test]
+    fn a_path_escapes_the_project_as_absolute_or_by_a_parent_component() {
+        for escapes in ["/etc/passwd", "../x", "a/../../x", "a/.."] {
+            assert!(escapes_project(std::path::Path::new(escapes)), "{escapes}");
+        }
+        for inside in ["x", "a/b", "v1..2", "..a/b", "./a"] {
+            assert!(!escapes_project(std::path::Path::new(inside)), "{inside}");
+        }
+    }
+
+    #[test]
+    fn test_duration_minutes_strings() {
+        assert_eq!("0:00", duration_minutes_seconds(Duration::new(0, 0)));
+        assert_eq!("0:05", duration_minutes_seconds(Duration::new(5, 0)));
+        assert_eq!("0:55", duration_minutes_seconds(Duration::new(55, 0)));
+        assert_eq!("1:00", duration_minutes_seconds(Duration::new(60, 0)));
+        assert_eq!("2:05", duration_minutes_seconds(Duration::new(125, 0)));
+        assert_eq!("60:06", duration_minutes_seconds(Duration::new(3606, 0)));
+    }
+
+    #[test]
+    fn filename_display_normal() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("/home/user/song.wav")),
+            "song.wav"
+        );
+    }
+
+    #[test]
+    fn filename_display_no_extension() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("/home/user/readme")),
+            "readme"
+        );
+    }
+
+    #[test]
+    fn filename_display_just_filename() {
+        use std::path::Path;
+        assert_eq!(super::filename_display(Path::new("track.wav")), "track.wav");
+    }
+
+    #[test]
+    fn filename_display_root_path() {
+        use std::path::Path;
+        // "/" has no file_name component
+        assert_eq!(
+            super::filename_display(Path::new("/")),
+            "unreadable file name"
+        );
+    }
+
+    #[test]
+    fn filename_display_empty_path() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("")),
+            "unreadable file name"
+        );
+    }
+
+    #[test]
+    fn kebab_case_spaces() {
+        assert_eq!(super::to_kebab_case("Backing Track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_underscores() {
+        assert_eq!(super::to_kebab_case("backing_track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_camel() {
+        assert_eq!(super::to_kebab_case("backingTrack"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_pascal() {
+        assert_eq!(super::to_kebab_case("BackingTrack"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_already_kebab() {
+        assert_eq!(super::to_kebab_case("backing-track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_mixed() {
+        assert_eq!(
+            super::to_kebab_case("My Cool_Song Name"),
+            "my-cool-song-name"
+        );
+    }
+
+    #[test]
+    fn kebab_case_consecutive_separators() {
+        assert_eq!(super::to_kebab_case("a  b__c--d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn kebab_case_all_caps() {
+        assert_eq!(super::to_kebab_case("LOUD"), "loud");
+    }
+
+    #[test]
+    fn kebab_case_acronym_then_word() {
+        assert_eq!(super::to_kebab_case("XMLParser"), "xml-parser");
+    }
+
+    #[test]
+    fn kebab_case_digit_before_upper() {
+        assert_eq!(super::to_kebab_case("v2Track"), "v2-track");
+        assert_eq!(super::to_kebab_case("Part2Guitars"), "part2-guitars");
+    }
+
+    #[test]
+    fn kebab_case_non_ascii() {
+        assert_eq!(super::to_kebab_case("café_backing"), "café-backing");
+        assert_eq!(super::to_kebab_case("Élite Track"), "élite-track");
+    }
+
+    #[test]
+    fn kebab_case_numbers_only() {
+        assert_eq!(super::to_kebab_case("123"), "123");
+    }
+
+    #[test]
+    fn kebab_case_trailing_leading_separators() {
+        assert_eq!(super::to_kebab_case("_hello_"), "hello");
+        assert_eq!(super::to_kebab_case("  spaced  "), "spaced");
+    }
+}
+
+#[cfg(test)]
+mod write_failure_hint_tests {
+    use super::{write_failure_hint_in, HintEnv, WriteTarget};
+    use std::io::{Error, ErrorKind};
+    use std::path::Path;
+
+    /// A machine where the named directory is there and the service is mtrack.
+    fn env() -> HintEnv {
+        HintEnv {
+            under_systemd: true,
+            service_user: Some("mtrack".to_string()),
+            directory_exists: true,
+        }
+    }
+
+    fn hint_for(target: WriteTarget<'_>, kind: ErrorKind, env: &HintEnv) -> Option<String> {
+        write_failure_hint_in(target, &Error::from(kind), env)
+    }
+
+    fn hint(kind: ErrorKind) -> Option<String> {
+        hint_for(
+            WriteTarget::File(Path::new("/srv/songs/mtrack.yaml")),
+            kind,
+            &env(),
+        )
+    }
+
+    /// The sandbox is the cause nobody looks for, so the advice has to name it
+    /// and say what to do about it.
+    #[test]
+    fn a_read_only_filesystem_under_systemd_blames_the_sandbox() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("ReadWritePaths"), "{hint}");
+        // The directory, not the file: ReadWritePaths= is normally given one.
+        assert!(hint.contains("/srv/songs"), "{hint}");
+        assert!(!hint.contains("mtrack.yaml"), "{hint}");
+        assert!(hint.contains("permissions are not the cause"), "{hint}");
+    }
+
+    /// A directory that failed to be created is the thing to name. Taking its
+    /// parent instead told operators to `chown -R` or unseal `/var/lib`, which
+    /// hands a system account far more than it needs and defeats the sandbox
+    /// this advice exists to explain.
+    #[test]
+    fn a_directory_target_names_itself_not_its_parent() {
+        for kind in [ErrorKind::ReadOnlyFilesystem, ErrorKind::PermissionDenied] {
+            let hint = hint_for(
+                WriteTarget::Directory(Path::new("/var/lib/mtrack-songs")),
+                kind,
+                &env(),
+            )
+            .expect("a hint");
+            assert!(hint.contains("/var/lib/mtrack-songs"), "{kind:?}: {hint}");
+            assert!(!hint.contains("/var/lib "), "{kind:?}: {hint}");
+            assert!(!hint.contains("/var/lib`"), "{kind:?}: {hint}");
+        }
+    }
+
+    /// systemd bind-mounts every ReadWritePaths= entry and cannot mount what is
+    /// not there. An operator who pastes a missing path in gets a unit that
+    /// fails namespace setup and never starts — no diagnostic at all, which is
+    /// worse than the failure they began with.
+    #[test]
+    fn a_missing_directory_must_be_created_before_it_is_declared_writable() {
+        let missing = HintEnv {
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::ReadOnlyFilesystem,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("Create /var/lib/outside-songs first"),
+            "{hint}"
+        );
+        // And still says what to do after creating it.
+        assert!(
+            hint.contains("Add /var/lib/outside-songs to ReadWritePaths="),
+            "{hint}"
+        );
+    }
+
+    /// `chown` on a path that does not exist reports only that it does not
+    /// exist, but granting the parent instead is the reviewed bug all over
+    /// again: `chown -R mtrack:mtrack /var/lib` hands a system account every
+    /// sibling. The advice creates the directory owned by the service instead.
+    #[test]
+    fn a_missing_directory_is_created_for_the_service_not_granted_through_its_parent() {
+        let missing = HintEnv {
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::PermissionDenied,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("does not exist and could not be created"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("install -d -o mtrack -g mtrack /var/lib/outside-songs"),
+            "{hint}"
+        );
+        // Neither chowning the missing directory, which chown would reject,
+        // nor its parent, which is the whole of /var/lib.
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(!hint.contains("/var/lib "), "{hint}");
+        assert!(!hint.contains("/var/lib`"), "{hint}");
+    }
+
+    /// The same missing directory with no account to name still says what to
+    /// do, without prescribing a command that needs a user to be true.
+    #[test]
+    fn a_missing_directory_without_a_known_account_still_says_create_it() {
+        let missing = HintEnv {
+            service_user: None,
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::PermissionDenied,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("does not exist and could not be created"),
+            "{hint}"
+        );
+        assert!(hint.contains("/var/lib/outside-songs"), "{hint}");
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(!hint.contains("install"), "{hint}");
+        assert!(!hint.contains("/var/lib "), "{hint}");
+        assert!(!hint.contains("/var/lib`"), "{hint}");
+    }
+
+    /// `mtrack systemd` takes the complete set of paths and drops any left out,
+    /// so advice to re-run it has to say so — following it verbatim otherwise
+    /// trades this block for a new one on the next start.
+    #[test]
+    fn regenerating_is_described_as_taking_every_path() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("alongside"), "{hint}");
+        assert!(hint.contains("drops any path left out"), "{hint}");
+    }
+
+    /// The unit is only `ProtectSystem=strict` when it was generated with a
+    /// path; naming the value sends everyone else grepping for a line their
+    /// file does not have.
+    #[test]
+    fn the_sandbox_advice_does_not_assert_a_particular_protect_system() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("ProtectSystem="), "{hint}");
+        assert!(!hint.contains("ProtectSystem=strict"), "{hint}");
+        assert!(!hint.contains("ProtectSystem=full"), "{hint}");
+    }
+
+    /// A denied write is an ownership problem, and pointing it at the sandbox
+    /// would send the operator to edit a unit that is already correct.
+    #[test]
+    fn permission_denied_under_systemd_blames_ownership_not_the_sandbox() {
+        let hint = hint(ErrorKind::PermissionDenied).expect("a hint");
+        assert!(hint.contains("chown -R mtrack:mtrack /srv/songs"), "{hint}");
+        assert!(!hint.contains("ReadWritePaths"), "{hint}");
+        assert!(!hint.contains("ProtectSystem"), "{hint}");
+    }
+
+    /// `INVOCATION_ID` is set for any unit, including a `systemd --user` one
+    /// running as somebody's own account. Prescribing `mtrack:mtrack` there is
+    /// either an error about an unknown user or a way to hand a personal
+    /// library to a system account.
+    #[test]
+    fn ownership_advice_names_the_account_the_service_runs_as() {
+        let alice = HintEnv {
+            service_user: Some("alice".to_string()),
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/home/alice/music")),
+            ErrorKind::PermissionDenied,
+            &alice,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("chown -R alice:alice /home/alice/music"),
+            "{hint}"
+        );
+        assert!(!hint.contains("mtrack:mtrack"), "{hint}");
+    }
+
+    /// With no account to name, the advice still has to be true.
+    #[test]
+    fn ownership_advice_without_a_known_account_prescribes_no_command() {
+        let anonymous = HintEnv {
+            service_user: None,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/srv/songs")),
+            ErrorKind::PermissionDenied,
+            &anonymous,
+        )
+        .expect("a hint");
+        assert!(hint.contains("User="), "{hint}");
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(hint.contains("/srv/songs"), "{hint}");
+    }
+
+    /// A relative path gets the explanation but no command: `mtrack systemd`
+    /// refuses one, and a relative `chown` means something different in the
+    /// operator's shell than it did in the service's working directory.
+    #[test]
+    fn a_relative_path_is_explained_but_gets_no_command_to_paste() {
+        for (kind, expected) in [
+            (ErrorKind::ReadOnlyFilesystem, "ReadWritePaths"),
+            (
+                ErrorKind::PermissionDenied,
+                "owns nothing it did not create",
+            ),
+        ] {
+            let hint = hint_for(WriteTarget::File(Path::new("mtrack.yaml")), kind, &env())
+                .expect("a hint");
+            // Still says what went wrong.
+            assert!(hint.contains(expected), "{kind:?}: {hint}");
+            // But offers nothing that would be rejected or misread on arrival.
+            assert!(!hint.contains("mtrack systemd"), "{kind:?}: {hint}");
+            assert!(!hint.contains("daemon-reload"), "{kind:?}: {hint}");
+            assert!(!hint.contains("chown"), "{kind:?}: {hint}");
+            assert!(!hint.contains("install -d"), "{kind:?}: {hint}");
+        }
+    }
+
+    /// Outside a unit these errors mean exactly what they say, and advice about
+    /// a systemd sandbox that is not running would be a false lead.
+    #[test]
+    fn nothing_is_offered_outside_systemd() {
+        let shell = HintEnv {
+            under_systemd: false,
+            ..env()
+        };
+        for kind in [ErrorKind::ReadOnlyFilesystem, ErrorKind::PermissionDenied] {
+            assert_eq!(
+                hint_for(
+                    WriteTarget::File(Path::new("/srv/songs/x.yaml")),
+                    kind,
+                    &shell
+                ),
+                None
+            );
+        }
+    }
+
+    /// Only the two failures the unit actually explains get an explanation.
+    #[test]
+    fn unrelated_failures_are_left_alone() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::AlreadyExists,
+            ErrorKind::StorageFull,
+            ErrorKind::InvalidInput,
+        ] {
+            assert_eq!(hint(kind), None, "{kind:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_dir_of_tests {
+    use super::project_dir_of;
+    use std::path::{Path, PathBuf};
+
+    /// The case that broke `mtrack start mtrack.yaml`.
+    ///
+    /// `Path::parent` answers `Some("")` for a bare filename, so a fallback
+    /// written against `None` never fired and left an empty path. That
+    /// canonicalizes to nothing, which made every directory look outside the
+    /// project and refused creation with an error naming no project at all.
+    #[test]
+    fn a_bare_config_filename_means_the_current_directory() {
+        assert_eq!(project_dir_of(Path::new("mtrack.yaml")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn a_config_in_a_directory_means_that_directory() {
+        assert_eq!(
+            project_dir_of(Path::new("/srv/mtrack/mtrack.yaml")),
+            PathBuf::from("/srv/mtrack")
+        );
+    }
+
+    #[test]
+    fn a_relative_config_keeps_its_directory() {
+        assert_eq!(
+            project_dir_of(Path::new("gig/mtrack.yaml")),
+            PathBuf::from("gig")
+        );
+    }
+
+    /// The project directory it yields has to be one `create_dir_within`
+    /// accepts, or the fix moves the failure rather than removing it.
+    #[test]
+    fn the_directory_it_yields_accepts_a_child() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let config = project.path().join("mtrack.yaml");
+
+        let resolved = project_dir_of(&config);
+        let _created =
+            super::create_dir_within(&resolved.join("songs"), &resolved).expect("created");
+        assert!(project.path().join("songs").is_dir());
+    }
+}
+
+#[cfg(test)]
+mod create_dir_within_tests {
+    use super::{create_dir_within, CreateWithinError};
+    use std::path::Path;
+
+    fn is_outside(result: Result<super::CreatedDir, CreateWithinError>) -> bool {
+        matches!(result, Err(CreateWithinError::Outside { .. }))
+    }
+
+    /// The first-run case this keeps: a relative `songs:` resolves inside the
+    /// project, and mtrack still sets it up without being asked.
+    #[test]
+    fn a_directory_inside_the_project_is_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let songs = project.path().join("songs");
+
+        let _created = create_dir_within(&songs, project.path()).expect("created");
+        assert!(songs.is_dir());
+    }
+
+    #[test]
+    fn nested_directories_inside_the_project_are_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let nested = project.path().join("media/audio/songs");
+
+        let _created = create_dir_within(&nested, project.path()).expect("created");
+        assert!(nested.is_dir());
+    }
+
+    /// The case that motivated this: a typo in an absolute path used to become
+    /// an empty directory and a puzzling "no songs found".
+    #[test]
+    fn a_directory_outside_the_project_is_refused_not_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let outside = elsewhere.path().join("sonsg");
+
+        assert!(is_outside(create_dir_within(&outside, project.path())));
+        assert!(!outside.exists(), "it must not have been created anyway");
+    }
+
+    /// Naming the parent is what makes the message actionable.
+    #[test]
+    fn the_refusal_names_both_the_path_and_the_project() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let outside = elsewhere.path().join("songs");
+
+        let error = create_dir_within(&outside, project.path()).expect_err("refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(&outside.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&project.path().display().to_string()),
+            "{message}"
+        );
+    }
+
+    /// A path that merely spells its way back out is still out.
+    ///
+    /// The project is nested inside an outer temp directory so the escape has
+    /// somewhere contained to land: a test that escapes into /tmp litters a
+    /// shared path, and the leftover then fails the next run for the wrong
+    /// reason.
+    #[test]
+    fn a_traversal_out_of_the_project_is_refused() {
+        let outer = tempfile::tempdir().expect("tempdir");
+        let project = outer.path().join("project");
+        std::fs::create_dir(&project).expect("project dir");
+        let escaped = project.join("../escaped-songs");
+
+        assert!(is_outside(create_dir_within(&escaped, &project)));
+        assert!(!outer.path().join("escaped-songs").exists());
+    }
+
+    /// "Does not exist" sent the operator looking for a path sitting right
+    /// there — `songs: /mnt/nas/songs.tar` names a real file, just not a
+    /// directory.
+    #[test]
+    fn an_occupied_path_says_so_rather_than_claiming_it_is_missing() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let occupied = project.path().join("songs.tar");
+        std::fs::write(&occupied, b"not a directory").expect("write");
+
+        let error = create_dir_within(&occupied, project.path()).expect_err("refused");
+        let message = error.to_string();
+        assert!(message.contains("is not a directory"), "{message}");
+        assert!(!message.contains("does not exist"), "{message}");
+        // The file it named is left alone.
+        assert!(occupied.is_file());
+    }
+
+    /// The removable-media case this rule exists to protect, and the one that
+    /// was reported worst: `songs -> /media/usb/songs` with the stick
+    /// unmounted. `exists()` follows the link and says nothing is there, so
+    /// creation used to run on and fail inside `create_dir_all` with `File
+    /// exists` — for a path the operator can see is absent, with no mention of
+    /// the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_nowhere_says_so_rather_than_file_exists() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let dangling = project.path().join("songs");
+        std::os::unix::fs::symlink("/media/usb/songs-that-are-not-mounted", &dangling)
+            .expect("symlink");
+
+        let message = create_dir_within(&dangling, project.path())
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("is a symlink"), "{message}");
+        assert!(message.contains("not mounted"), "{message}");
+        assert!(!message.contains("File exists"), "{message}");
+        assert!(!message.contains("does not exist"), "{message}");
+    }
+
+    /// A link to nowhere part way along the path is the same failure as one at
+    /// the end, and just as likely: an unmounted drive sits wherever the
+    /// operator mounted it, not necessarily at the leaf.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_nowhere_mid_path_says_so_too() {
+        let project = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(
+            "/media/usb/lib-that-is-not-mounted",
+            project.path().join("lib"),
+        )
+        .expect("symlink");
+
+        // The dangling link is `lib`, not the leaf being asked for.
+        let through = project.path().join("lib/songs");
+        let message = create_dir_within(&through, project.path())
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("is a symlink"), "{message}");
+        assert!(!message.contains("File exists"), "{message}");
+    }
+
+    /// Creation uses the path that was checked, not the spelling it came in as
+    /// — which would walk components already resolved to something else and
+    /// leave stray intermediates behind.
+    ///
+    /// The returned path is the point: POSIX cannot resolve `songs/../real`
+    /// unless `songs` exists, so a caller that kept its own spelling would be
+    /// told the directory was created and then fail to read it.
+    #[test]
+    fn a_benign_traversal_returns_a_path_the_caller_can_use() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let configured = project.path().join("songs/../real");
+
+        let created = create_dir_within(&configured, project.path()).expect("created");
+
+        assert!(project.path().join("real").is_dir(), "target not created");
+        assert!(
+            !project.path().join("songs").exists(),
+            "left a stray intermediate behind"
+        );
+        // The returned path resolves; the configured spelling does not.
+        assert!(
+            created.is_dir(),
+            "returned {} is unusable",
+            created.display()
+        );
+        assert!(
+            !configured.is_dir(),
+            "the spelling resolves after all — this test proves nothing"
+        );
+        assert!(
+            std::fs::read_dir(created.as_path()).is_ok(),
+            "cannot read what was made"
+        );
+    }
+
+    /// An existing directory also comes back resolved, so callers get the same
+    /// kind of path either way rather than one that depends on whether they
+    /// happened to be first.
+    #[test]
+    fn an_existing_directory_is_returned_resolved() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let songs = project.path().join("songs");
+        std::fs::create_dir(&songs).expect("songs");
+
+        let returned = create_dir_within(&songs, project.path()).expect("accepted");
+        assert_eq!(
+            returned.as_path(),
+            songs.canonicalize().expect("canonical").as_path()
+        );
+    }
+
+    /// A symlink that does lead to a directory is simply used, wherever it
+    /// points — the same as any other existing directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_to_a_real_directory_is_accepted() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let link = project.path().join("songs");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).expect("symlink");
+
+        let _created = create_dir_within(&link, project.path()).expect("accepted");
+    }
+
+    /// A file in the way outside the project is still reported as the file it
+    /// is: the operator has to move it either way, and "outside the project"
+    /// would send them to fix the wrong thing.
+    #[test]
+    fn an_occupied_path_outside_the_project_reports_the_occupant() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let occupied = elsewhere.path().join("songs.tar");
+        std::fs::write(&occupied, b"not a directory").expect("write");
+
+        let message = create_dir_within(&occupied, project.path())
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("is not a directory"), "{message}");
+    }
+
+    /// The restriction is on *creating*, not on using. An operator who set up
+    /// /mnt/nas/songs themselves must keep working.
+    #[test]
+    fn an_existing_directory_outside_the_project_is_accepted() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        let _created = create_dir_within(elsewhere.path(), project.path()).expect("accepted");
+    }
+
+    /// Spelling is not containment. `project/songs` looks inside the project
+    /// whatever it points at, so a lexical check would create the target of a
+    /// symlink that leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leaving_the_project_is_refused() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        let link = project.path().join("songs");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).expect("symlink");
+
+        // Spelled inside the project, actually somewhere else entirely.
+        let through_link = link.join("inner");
+        assert!(is_outside(create_dir_within(&through_link, project.path())));
+        assert!(!elsewhere.path().join("inner").exists());
+    }
+
+    /// A `..` can walk back into existing, symlinked territory.
+    ///
+    /// Canonicalizing only the longest *existing* ancestor is not enough: the
+    /// remainder is pushed literally, so `project/missing/../link/songs` hops
+    /// over `missing`, lands on a symlink that leaves the project, and reads as
+    /// inside it. The previous fix closed the lexical spelling and left this.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_reached_after_a_missing_component_is_refused() {
+        let outer = tempfile::tempdir().expect("tempdir");
+        let project = outer.path().join("project");
+        std::fs::create_dir(&project).expect("project dir");
+        let outside = outer.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside dir");
+
+        std::os::unix::fs::symlink(&outside, project.join("link")).expect("symlink");
+
+        // `missing` does not exist, so resolution stops before `link`.
+        let escaped = project.join("missing/../link/songs");
+        assert!(
+            is_outside(create_dir_within(&escaped, &project)),
+            "escaped through a symlink after a missing component"
+        );
+        assert!(
+            !outside.join("songs").exists(),
+            "created {} outside",
+            outside.join("songs").display()
+        );
+    }
+
+    /// A symlink that stays inside the project is not the problem.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_staying_inside_the_project_is_allowed() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let real = project.path().join("real");
+        std::fs::create_dir(&real).expect("real dir");
+
+        let link = project.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let _created = create_dir_within(&link.join("songs"), project.path()).expect("created");
+        assert!(real.join("songs").is_dir());
+    }
+
+    /// `..` after a component that does not exist used to escape entirely.
+    ///
+    /// Resolution gave up at a path ending in `..` (whose `file_name()` is
+    /// `None`), returned the path unresolved, and `starts_with` then compared
+    /// it lexically -- where `/proj/new/../../escaped` is "inside" `/proj`.
+    /// The directory really was created out there.
+    #[test]
+    fn a_traversal_through_a_missing_component_is_refused() {
+        let outer = tempfile::tempdir().expect("tempdir");
+        let project = outer.path().join("project");
+        std::fs::create_dir(&project).expect("project dir");
+        let outside = project.join("missing/../../escaped-songs");
+
+        assert!(
+            is_outside(create_dir_within(&outside, &project)),
+            "escaped the project"
+        );
+        // Where the old code actually made it: the project's sibling.
+        let escaped = outer.path().join("escaped-songs");
+        assert!(!escaped.exists(), "created {} outside", escaped.display());
+    }
+
+    /// A relative path means "relative to the process's directory", and
+    /// comparing one against an absolute root answers "outside" for everything.
+    ///
+    /// `mtrack start mtrack.yaml` produces exactly that pair — a project of "."
+    /// and a songs path of "songs" — and refused to create it, which unit tests
+    /// of the pieces missed because only running the binary puts the two
+    /// together. Reads the current directory rather than changing it, which
+    /// would race the rest of the suite.
+    #[test]
+    fn a_relative_path_is_measured_against_the_current_directory() {
+        let super::Resolved::Path(resolved) =
+            super::resolve_as_far_as_possible(Path::new("a-relative-name"))
+        else {
+            panic!("expected a resolved path");
+        };
+
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(
+            super::is_within(&resolved, &cwd),
+            "a relative name must be inside the current directory: {}",
+            resolved.display()
+        );
+
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !super::is_within(&resolved, elsewhere.path()),
+            "and outside an unrelated project"
+        );
+    }
+
+    /// Without a project directory there is nothing to be inside of, and
+    /// creating anywhere would be the old behaviour by another name.
+    #[test]
+    fn a_project_directory_that_does_not_exist_refuses_everything() {
+        let project = Path::new("/nonexistent-project-dir-for-tests");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        assert!(is_outside(create_dir_within(
+            &elsewhere.path().join("songs"),
+            project
+        )));
+    }
+
+    #[test]
+    fn a_reader_never_sees_a_half_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        let body = "songs:\n".to_string() + &"- Some Song Name\n".repeat(2000);
+        crate::util::write_file(&path, body.as_bytes()).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, body, stop) = (path.clone(), body.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    crate::util::write_file(&path, body.as_bytes()).unwrap();
+                }
+            })
+        };
+        let mut torn = 0;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(2) {
+            if crate::util::read_to_string(&path).unwrap() != body {
+                torn += 1;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(
+            torn, 0,
+            "a reader saw an empty or partial file {torn} times"
+        );
+    }
+}

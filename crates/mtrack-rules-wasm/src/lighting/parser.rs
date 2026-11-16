@@ -11,47 +11,47 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! The player's light show parser (`src/lighting/parser`), the fixture
+//! The player's light show parser (`crates/mtrack-core/src/lighting/parser`), the fixture
 //! and venue parser left out (the editor edits shows), and the disk-facing
 //! entry points of the player's `parser.rs` with it: here the files an
 //! `include` names come from the UI (`Sources`).
 
-#[path = "../../../../src/lighting/parser/document.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/document.rs"]
 pub mod document;
-#[path = "../../../../src/lighting/parser/edit.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/edit.rs"]
 pub mod edit;
-#[path = "../../../../src/lighting/parser/effect_parse.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/effect_parse.rs"]
 mod effect_parse;
-#[path = "../../../../src/lighting/parser/error.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/error.rs"]
 mod error;
-#[path = "../../../../src/lighting/parser/include.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/include.rs"]
 mod include;
-#[path = "../../../../src/lighting/parser/layout.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/layout.rs"]
 pub mod layout;
-#[path = "../../../../src/lighting/parser/palette.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/palette.rs"]
 pub mod palette;
-#[path = "../../../../src/lighting/parser/palette_edit.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/palette_edit.rs"]
 pub mod palette_edit;
-#[path = "../../../../src/lighting/parser/sequences.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/sequences.rs"]
 mod sequences;
-#[path = "../../../../src/lighting/parser/show.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/show.rs"]
 mod show;
-#[path = "../../../../src/lighting/parser/tempo_parse.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/tempo_parse.rs"]
 mod tempo_parse;
-#[path = "../../../../src/lighting/parser/types.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/types.rs"]
 mod types;
-#[path = "../../../../src/lighting/parser/utils.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/utils.rs"]
 pub(crate) mod utils;
-#[path = "../../../../src/lighting/parser/writer.rs"]
+#[path = "../../../mtrack-core/src/lighting/parser/writer.rs"]
 pub mod writer;
 
-/// The player's grammar (`src/lighting/grammar.pest`), derived here
+/// The player's grammar (`crates/mtrack-core/src/lighting/grammar.pest`), derived here
 /// because `pest_derive` reads the file relative to the crate being built.
 pub(crate) mod grammar {
     use pest_derive::Parser;
 
     #[derive(Parser)]
-    #[grammar = "../../src/lighting/grammar.pest"]
+    #[grammar = "../mtrack-core/src/lighting/grammar.pest"]
     pub struct LightingParser;
 }
 
