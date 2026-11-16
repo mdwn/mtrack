@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+#[cfg(feature = "hub")]
+mod hub;
 mod local;
 mod migrate;
 mod remote;
@@ -395,6 +397,14 @@ enum Commands {
         #[arg(long)]
         hostname: Option<String>,
     },
+    /// Pairs a project with the mtrack hub, uploads it, or pulls it. Hidden,
+    /// and so out of `--help` and the CLI reference, while it has no UI.
+    #[cfg(feature = "hub")]
+    #[command(hide = true)]
+    Hub {
+        #[clap(subcommand)]
+        command: hub::HubCommand,
+    },
 }
 
 /// Formats a list of devices into a display string.
@@ -637,6 +647,8 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             check,
             hostname,
         } => local::verify(&config, check, hostname)?,
+        #[cfg(feature = "hub")]
+        Commands::Hub { command } => hub::run(command).await?,
     }
 
     Ok(())

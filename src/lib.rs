@@ -23,6 +23,8 @@ pub mod device_info;
 pub mod dmx;
 #[cfg(test)]
 mod docs_tests;
+#[cfg(feature = "hub")]
+pub mod hub;
 pub mod lighting;
 pub mod logging;
 pub mod midi;
