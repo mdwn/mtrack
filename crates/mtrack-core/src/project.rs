@@ -22,6 +22,8 @@
 //! it, starts with a dot (the song cache, a rig's own state), and what an
 //! interrupted write leaves beside a file ([`crate::util::is_write_leftover`]).
 
+pub mod protocol;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
