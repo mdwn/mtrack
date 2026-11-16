@@ -445,6 +445,9 @@ async fn a_hub_that_is_not_https_is_not_given_a_token() {
     for hub in [
         "http://hub.example",
         "http://127.0.0.1.evil.example",
+        "http://127.0.0.1:80@evil.example",
+        "http://localhost:@evil.example",
+        "https://user:secret@hub.example",
         "ftp://hub.example",
     ] {
         assert!(
@@ -453,6 +456,7 @@ async fn a_hub_that_is_not_https_is_not_given_a_token() {
         );
     }
     assert!(Client::new("https://hub.example", None).is_ok());
+    assert!(Client::new("HTTPS://hub.example/", None).is_ok());
     assert!(Client::new("http://127.0.0.1:8080", None).is_ok());
 }
 
@@ -521,7 +525,11 @@ async fn what_a_failed_pull_fetched_does_not_poison_the_next() {
         entry(b"songs: [still, broken]\n"),
     );
     hub.force_revision(as_file, &[b"a file", b"songs: [still, broken]\n"]);
-    assert!(second.pull(false).await.is_err());
+    assert!(matches!(
+        second.pull(false).await,
+        Err(SyncError::RevisionDoesNotLoad(_))
+    ));
+    assert!(file_at(&second.state.staging().join("files"), "extra").is_file());
     let mut as_folder = fixed.clone();
     as_folder
         .files
@@ -718,10 +726,56 @@ async fn a_pull_cut_short_is_finished_before_the_player_reads_the_project() {
         state_before: second.state.sync_state().unwrap(),
         moved: false,
     };
-    crate::hub::state::write_json(&second.state.journal(), &journal, false).unwrap();
+    apply::begin(&second.state, &journal).unwrap();
     assert!(!second_dir.path().join("songs/one/notes.txt").exists());
 
     assert!(recover(&config(&second_dir)).unwrap());
     assert_eq!(files(&second_dir), files(&first_dir));
+    let status = second.status().unwrap();
+    assert_eq!(status.revision.unwrap().number, 2);
+    assert!(!status.local_changes);
+    assert!(status.undoable);
     assert!(!recover(&config(&second_dir)).unwrap());
+}
+
+#[tokio::test]
+async fn an_upload_leaves_no_older_pull_to_undo() {
+    let (_hub, first_dir, first, second_dir, second) = two_rigs().await;
+    write(first_dir.path(), "songs/one/notes.txt", "from the first");
+    first.upload().await.unwrap();
+    second.pull(false).await.unwrap();
+    assert!(second.status().unwrap().undoable);
+
+    write(second_dir.path(), "songs/one/notes.txt", "from the second");
+    second.upload().await.unwrap();
+    let status = second.status().unwrap();
+    assert!(!status.undoable, "the project has moved on from that pull");
+    assert_eq!(status.revision.unwrap().number, 3);
+    assert!(second.undo(false).await.is_err());
+}
+
+#[tokio::test]
+async fn a_fetched_song_that_does_not_load_is_named_where_it_now_is() {
+    let (hub, _first_dir, _first, second_dir, second) = two_rigs().await;
+    let mut manifest = files(&second_dir);
+    let broken = b"kind: song\nname: Broken\ntracks:\n  - name: gone\n    file: gone.wav\n";
+    manifest
+        .files
+        .insert("songs/broken/song.yaml".to_string(), entry(broken));
+    hub.force_revision(manifest, &[broken]);
+    let pulled = second.pull(false).await.unwrap();
+    let Pulled::Updated { report, .. } = pulled else {
+        panic!("{pulled:?}");
+    };
+    assert_eq!(report.problems.len(), 1, "{report:?}");
+    let named = &report.problems[0].0;
+    assert!(named.is_file(), "{}", named.display());
+    assert!(
+        named.ends_with("songs/broken/song.yaml")
+            && !named
+                .components()
+                .any(|part| part.as_os_str() == crate::hub::state::DIR),
+        "{}",
+        named.display()
+    );
 }

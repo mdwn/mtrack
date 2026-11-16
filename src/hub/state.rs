@@ -94,6 +94,11 @@ impl StateDir {
         &self.project
     }
 
+    /// The state directory itself.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn staging(&self) -> PathBuf {
         self.dir.join("staging")
     }

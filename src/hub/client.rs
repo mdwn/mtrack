@@ -69,6 +69,14 @@ pub enum Poll {
     Paired(Paired),
 }
 
+/// How long the hub may take to begin an answer, and a transfer may go
+/// without a byte arriving, before it is given up.
+const PATIENCE: Duration = Duration::from_secs(60);
+
+/// The slowest link a file is still sent over: an upload is given
+/// [`PATIENCE`] and its length at this many bytes a second.
+const SLOWEST_UPLOAD: u64 = 16 * 1024;
+
 /// A connection to one hub, as one rig once it has a token.
 #[derive(Clone)]
 pub struct Client {
@@ -82,21 +90,20 @@ impl Client {
     /// token when it has one. The address is https, or this machine's own
     /// (a hub under test): the token is not sent in the clear.
     pub fn new(hub: &str, token: Option<String>) -> Result<Client, HubError> {
-        let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-            .iter()
-            .any(|prefix| {
-                hub.strip_prefix(prefix)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-            });
-        if !hub.starts_with("https://") && !local {
+        // Read as the HTTP client will read it, so that what is checked is
+        // where the token goes: `http://127.0.0.1:80@elsewhere` is elsewhere.
+        let safe = reqwest::Url::parse(hub).is_ok_and(|url| {
+            let own = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+            url.username().is_empty()
+                && url.password().is_none()
+                && (url.scheme() == "https" || (url.scheme() == "http" && own))
+        });
+        if !safe {
             return Err(HubError::NotHttps(hub.to_string()));
         }
         let http = reqwest::Client::builder()
             .user_agent(concat!("mtrack/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(20))
-            // Between two reads, not for a whole file: a transfer that
-            // stalls ends, and a long one does not.
-            .read_timeout(Duration::from_secs(60))
             .build()?;
         Ok(Client {
             http,
@@ -105,8 +112,14 @@ impl Client {
         })
     }
 
+    /// A request of the hub's API. It ends if the hub has not begun to
+    /// answer in [`PATIENCE`]: every one is small but a file's, which has
+    /// its own bounds ([`Self::upload`], [`Self::download`]).
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let request = self.http.request(method, format!("{}/{path}", self.base));
+        let request = self
+            .http
+            .request(method, format!("{}/{path}", self.base))
+            .timeout(PATIENCE);
         match &self.token {
             Some(token) => request.bearer_auth(token),
             None => request,
@@ -209,9 +222,12 @@ impl Client {
     /// Sends the file at `path` where the hub said to.
     pub async fn upload(&self, upload: &Upload, path: &Path, size: u64) -> Result<(), HubError> {
         let file = tokio::fs::File::open(path).await?;
+        // Bounded by the file's length, not by a fixed time: a stem takes
+        // minutes on a venue's connection.
         let mut request = self
             .http
             .put(&upload.url)
+            .timeout(PATIENCE + Duration::from_secs(size / SLOWEST_UPLOAD))
             .header(reqwest::header::CONTENT_LENGTH, size);
         // The token goes to the hub alone: the URL may be storage's own.
         if upload.url.starts_with(&format!("{}/", self.base)) {
@@ -255,14 +271,18 @@ impl Client {
 
     /// Fetches the file `entry` names into `to`. The bytes are hashed as
     /// they come, and a file of another hash or length is removed: after an
-    /// `Ok`, `to` is the file whole; after an error there is no file there.
+    /// `Ok`, `to` is the file whole. After an error it is not to be used,
+    /// and is gone unless removing it failed too. It may take as long as
+    /// bytes keep arriving, and ends when none has for [`PATIENCE`].
     pub async fn download(&self, entry: &FileEntry, to: &Path) -> Result<(), HubError> {
         match tokio::fs::remove_file(to).await {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
         let mut response = Self::accepted(
+            // No bound on the whole of it: see the loop below.
             self.request(reqwest::Method::GET, &format!("blobs/{}", entry.sha256))
+                .timeout(Duration::from_secs(u64::from(u32::MAX)))
                 .send()
                 .await?,
         )
@@ -274,7 +294,14 @@ impl Client {
         let mut hasher = Sha256::new();
         let mut size = 0u64;
         let fetched: Result<(), HubError> = async {
-            while let Some(chunk) = response.chunk().await? {
+            loop {
+                let Ok(next) = tokio::time::timeout(PATIENCE, response.chunk()).await else {
+                    return Err(HubError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the hub stopped sending",
+                    )));
+                };
+                let Some(chunk) = next? else { break };
                 size += chunk.len() as u64;
                 if size > entry.size {
                     break;
@@ -295,7 +322,7 @@ impl Client {
             }
         });
         if whole.is_err() {
-            tokio::fs::remove_file(to).await?;
+            let _ = tokio::fs::remove_file(to).await;
         }
         whole
     }

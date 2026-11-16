@@ -77,6 +77,9 @@ pub struct Previous {
     pub state: Option<SyncState>,
     /// The project's files before it.
     pub manifest: Manifest,
+    /// The project's files after it. What differs between the two is what
+    /// the pull touched, and all an undo puts back.
+    pub after: Manifest,
 }
 
 /// The file a project path names under `root`.
@@ -114,12 +117,42 @@ fn remove_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Removes the directories above `path`, up to `root`, that are now empty.
+/// Files a folder may hold and still count as empty: mtrack's own song
+/// cache, the probe [`preflight`] writes, and the one a Mac leaves in every
+/// folder it has shown. None is a project's file, and each is made again
+/// when wanted.
+const NOTHING: [&str; 3] = [".mtrack-cache.json", PROBE, ".DS_Store"];
+
+/// The file [`preflight`] makes and removes in a folder to see that it can.
+const PROBE: &str = ".mtrack-hub-probe";
+
+/// Whether `dir` holds nothing but [`NOTHING`] and folders that do too.
+fn holds_nothing(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else { return false };
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => holds_nothing(&entry.path()),
+            Ok(kind) if kind.is_file() => entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| NOTHING.contains(&name)),
+            _ => false,
+        }
+    })
+}
+
+/// Removes the directories above `path`, up to `root`, that now hold
+/// nothing ([`holds_nothing`]).
 fn prune(root: &Path, path: &str) {
     let mut at = file_at(root, path);
     while at.pop() && at != root && at.starts_with(root) {
-        // Fails on the first that still holds something, which ends it.
-        if std::fs::remove_dir(&at).is_err() {
+        if !at.is_dir() {
+            continue;
+        }
+        if !holds_nothing(&at) || std::fs::remove_dir_all(&at).is_err() {
             break;
         }
     }
@@ -136,25 +169,59 @@ fn refusal(message: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
 }
 
+/// Whether everything under `dir` is a file this pull takes out (`leaving`,
+/// by project path under `prefix`) or counts as nothing ([`NOTHING`]): a
+/// folder that will be gone, or removable, once the pull's removals are
+/// made.
+fn will_be_empty(dir: &Path, prefix: &str, leaving: &BTreeSet<&String>) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else { return false };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            return false;
+        };
+        let path = format!("{prefix}/{name}");
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => will_be_empty(&entry.path(), &path, leaving),
+            Ok(kind) if kind.is_file() => {
+                NOTHING.contains(&name.as_str()) || leaving.contains(&path)
+            }
+            _ => false,
+        }
+    })
+}
+
 /// Looks, before anything moves, for what would stop a move part-way: a
-/// file to move that is on another file system than the project (a rename
-/// cannot cross one), a directory a file has to be made or taken from that
-/// cannot be written, and a directory standing where a file is to go.
-/// Nothing is changed.
+/// folder on another file system than the project (a rename cannot cross
+/// one), `.mtrack-hub` being on another, a folder a file has to be made in
+/// or taken from that cannot be written, and something not the project's
+/// standing where a file or folder is to go. Nothing is changed.
 pub fn preflight(state: &StateDir, before: &Manifest, manifest: &Manifest) -> std::io::Result<()> {
     let project = state.project();
     #[cfg(unix)]
     let home = {
         use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(project)?.dev()
+        let home = std::fs::metadata(project)?.dev();
+        std::fs::create_dir_all(state.dir())?;
+        if std::fs::metadata(state.dir())?.dev() != home {
+            return Err(refusal(format!(
+                "{} is on another disk than the project's folder; a pull cannot move files \
+                 between them",
+                state.dir().display()
+            )));
+        }
+        home
     };
+    let leaving: BTreeSet<&String> = removed(before, manifest).collect();
     let mut folders = BTreeSet::new();
     for path in removed(before, manifest).chain(changed(before, manifest)) {
         let live = file_at(project, path);
-        if live.is_dir() {
+        if live.is_dir() && !will_be_empty(&live, path, &leaving) {
             return Err(refusal(format!(
-                "{} is a folder here and a file in the revision; it holds files that are not \
-                 the project's, so it is left alone. Move or remove it and pull again",
+                "{} is a folder here and a file in the revision, and holds files that are \
+                 not the project's. Move or remove it and try again",
                 live.display()
             )));
         }
@@ -164,7 +231,7 @@ pub fn preflight(state: &StateDir, before: &Manifest, manifest: &Manifest) -> st
             if folder.exists() && !before.files.keys().any(|p| file_at(project, p) == folder) {
                 return Err(refusal(format!(
                     "{} is a file here and a folder in the revision, and is not one of the \
-                     project's files. Move or remove it and pull again",
+                     project's files. Move or remove it and try again",
                     folder.display()
                 )));
             }
@@ -188,7 +255,7 @@ pub fn preflight(state: &StateDir, before: &Manifest, manifest: &Manifest) -> st
         }
     }
     for folder in folders {
-        let probe = folder.join(".mtrack-hub-probe");
+        let probe = folder.join(PROBE);
         std::fs::File::create(&probe)
             .and_then(|_| std::fs::remove_file(&probe))
             .map_err(|e| {
@@ -212,7 +279,7 @@ pub fn apply(state: &StateDir, journal: &Journal) -> std::io::Result<()> {
 
 /// Sets a pull's moves down before any is made: an empty `displaced`,
 /// holding what an undo of this pull goes back to, and then the journal.
-fn begin(state: &StateDir, journal: &Journal) -> std::io::Result<()> {
+pub(super) fn begin(state: &StateDir, journal: &Journal) -> std::io::Result<()> {
     remove_dir(&state.displaced())?;
     std::fs::create_dir_all(state.displaced())?;
     write_json(
@@ -220,6 +287,7 @@ fn begin(state: &StateDir, journal: &Journal) -> std::io::Result<()> {
         &Previous {
             state: journal.state_before.clone(),
             manifest: journal.before.clone(),
+            after: journal.manifest.clone(),
         },
         false,
     )?;
@@ -263,6 +331,11 @@ fn finish(state: &StateDir, mut journal: Journal) -> std::io::Result<()> {
                 rename(&live, &kept)?;
             }
         }
+        // The folders that emptied go before any file comes in: one may be
+        // where a file is to go.
+        for path in removed(&journal.before, &journal.manifest) {
+            prune(project, path);
+        }
         for path in changed(&journal.before, &journal.manifest) {
             let incoming = file_at(&source, path);
             if !incoming.is_file() {
@@ -270,6 +343,9 @@ fn finish(state: &StateDir, mut journal: Journal) -> std::io::Result<()> {
                 continue;
             }
             let live = file_at(project, path);
+            if live.is_dir() && holds_nothing(&live) {
+                std::fs::remove_dir_all(&live)?;
+            }
             if live.is_file() {
                 let kept = file_at(&displaced, path);
                 if kept.exists() {
@@ -315,8 +391,9 @@ pub fn undoable(state: &StateDir) -> std::io::Result<Option<Previous>> {
 }
 
 /// Puts back what the last pull replaced: the files it changed or removed
-/// as they were, and the files it added gone. `current` is the project's
-/// files as they are and `recorded` what they are recorded as. What this
+/// as they were, and the files it added gone. A file the pull did not touch
+/// is not touched by its undo. `current` is the project's files as they are
+/// and `recorded` what they are recorded as. What this
 /// replaces is kept in turn, so an undo can itself be undone. The project
 /// is recorded as it was before the pull, so files that had been changed
 /// here then are known to be changed here still.
@@ -331,18 +408,31 @@ pub fn undo(
             "there is no pull to undo",
         ));
     };
-    // Only what the pull touched goes back: a file it did not, changed here
-    // since, has no kept copy and stays as it is.
+    // Only what the pull touched goes back. A file it did not touch, made
+    // or changed here since, stays as it is; so does one it touched whose
+    // kept copy is not there.
     let kept = state.previous().join("files");
     let mut manifest = current.clone();
-    for (path, entry) in &previous.manifest.files {
+    for path in changed(&previous.manifest, &previous.after) {
+        // Changed or added by the pull: as it was, or gone.
+        match previous.manifest.files.get(path) {
+            Some(entry) if current.files.get(path) == Some(entry) => {}
+            Some(entry) => {
+                if file_at(&kept, path).is_file() {
+                    manifest.files.insert(path.clone(), entry.clone());
+                }
+            }
+            None => {
+                manifest.files.remove(path);
+            }
+        }
+    }
+    for path in removed(&previous.manifest, &previous.after) {
+        // Removed by the pull: back, when it was kept.
+        let entry = &previous.manifest.files[path];
         if current.files.get(path) != Some(entry) && file_at(&kept, path).is_file() {
             manifest.files.insert(path.clone(), entry.clone());
         }
-    }
-    let added: Vec<String> = removed(current, &previous.manifest).cloned().collect();
-    for path in added {
-        manifest.files.remove(&path);
     }
     apply(
         state,
@@ -574,8 +664,8 @@ mod tests {
 
     #[test]
     fn an_undo_cut_short_at_any_move_is_finished_and_keeps_its_own_undo() {
-        // An undo of [`staged_pull`]'s pull makes three moves into the
-        // project and two out of it; cut short after each count of them.
+        // An undo of [`staged_pull`]'s pull makes two moves out of the
+        // project and two into it; cut short after each count of them.
         for made in 0..=4 {
             let (_dir, state, journal) = staged_pull();
             let project = state.project().to_path_buf();
@@ -728,8 +818,13 @@ mod tests {
     fn a_folder_of_other_files_where_a_file_is_to_go_stops_the_pull_before_it_starts() {
         let (_dir, state, journal) = staged_pull();
         // A folder the project's manifest cannot see (it holds only a file
-        // of mtrack's own), where the revision has a file.
-        write(state.project(), "songs/c/new.wav/.mtrack-cache.json", "{}");
+        // under a name starting with a dot, which someone put there), where
+        // the revision has a file.
+        write(
+            state.project(),
+            "songs/c/new.wav/.someones-notes",
+            "keep me",
+        );
         let before = Manifest::of_dir(state.project()).unwrap();
         assert_eq!(before, journal.before, "the scan does not see it");
         let refused = apply(&state, &journal).unwrap_err();
@@ -778,5 +873,169 @@ mod tests {
         std::fs::remove_dir_all(file_at(state.project(), "songs/a/change.yaml")).unwrap();
         assert!(recover(&state).unwrap());
         assert_eq!(Manifest::of_dir(state.project()).unwrap(), journal.manifest);
+    }
+
+    #[test]
+    fn an_undo_leaves_alone_a_file_made_here_since_the_pull() {
+        let (_dir, state, journal) = staged_pull();
+        let project = state.project().to_path_buf();
+        apply(&state, &journal).unwrap();
+        write(&project, "songs/mine/song.yaml", "recorded tonight");
+        let current = Manifest::of_dir(&project).unwrap();
+        undo(&state, journal.state.clone(), &current).unwrap();
+        assert_eq!(
+            read(&project, "songs/mine/song.yaml").as_deref(),
+            Some("recorded tonight")
+        );
+        assert_eq!(
+            read(&project, "songs/a/change.yaml").as_deref(),
+            Some("old")
+        );
+        // And undone again, it is still there.
+        let current = Manifest::of_dir(&project).unwrap();
+        undo(&state, state.sync_state().unwrap(), &current).unwrap();
+        assert_eq!(
+            read(&project, "songs/mine/song.yaml").as_deref(),
+            Some("recorded tonight")
+        );
+        assert_eq!(
+            read(&project, "songs/a/change.yaml").as_deref(),
+            Some("new")
+        );
+    }
+
+    /// A pull between two trees, each given as (path, contents), and back.
+    fn pull_and_undo(before: &[(&str, &str)], after: &[(&str, &str)], extra: &[(&str, &str)]) {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, contents) in before {
+            write(dir.path(), path, contents);
+        }
+        let from = Manifest::of_dir(dir.path()).unwrap();
+        for (path, contents) in extra {
+            write(dir.path(), path, contents);
+        }
+        let target = tempfile::tempdir().unwrap();
+        for (path, contents) in after {
+            write(target.path(), path, contents);
+        }
+        let to = Manifest::of_dir(target.path()).unwrap();
+        let state = StateDir::of(dir.path());
+        for path in changed(&from, &to) {
+            let contents = std::fs::read(file_at(target.path(), path)).unwrap();
+            let staged = file_at(&state.staging().join("files"), path);
+            std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+            std::fs::write(staged, contents).unwrap();
+        }
+        let journal = Journal {
+            source: Source::Staging,
+            state: at(2, &to),
+            manifest: to.clone(),
+            state_before: at(1, &from),
+            before: from.clone(),
+            moved: false,
+        };
+        apply(&state, &journal).unwrap();
+        assert_eq!(Manifest::of_dir(dir.path()).unwrap(), to);
+        undo(&state, journal.state.clone(), &to).unwrap();
+        assert_eq!(Manifest::of_dir(dir.path()).unwrap(), from);
+    }
+
+    #[test]
+    fn a_folder_becomes_a_file_and_a_file_a_folder_and_back() {
+        // A folder of the project's files where the revision has a file.
+        pull_and_undo(
+            &[
+                ("mtrack.yaml", "c"),
+                ("extra/one.txt", "1"),
+                ("extra/two.txt", "2"),
+            ],
+            &[("mtrack.yaml", "c"), ("extra", "now a file")],
+            &[],
+        );
+        // A file where the revision has a folder.
+        pull_and_undo(
+            &[("mtrack.yaml", "c"), ("extra", "a file")],
+            &[("mtrack.yaml", "c"), ("extra/deep/one.txt", "1")],
+            &[],
+        );
+        // The same folder, holding the player's own cache as well, which is
+        // nothing to keep.
+        pull_and_undo(
+            &[("mtrack.yaml", "c"), ("songs/one/song.yaml", "s")],
+            &[("mtrack.yaml", "c"), ("songs/one", "now a file")],
+            &[("songs/one/.mtrack-cache.json", "{}")],
+        );
+    }
+
+    #[test]
+    fn a_song_taken_out_leaves_no_folder_behind_for_its_cache() {
+        let (_dir, state, journal) = staged_pull();
+        write(state.project(), "songs/b/.mtrack-cache.json", "{}");
+        apply(&state, &journal).unwrap();
+        assert!(!state.project().join("songs/b").exists());
+    }
+
+    #[test]
+    fn an_undo_cut_short_after_its_moves_does_not_take_its_own_undo_for_its_source() {
+        // The undo's moves all made, then each of the steps that follow;
+        // then recovery. After the second, `previous` holds what the undo
+        // displaced, at the very paths its moves read from.
+        for done in 1..=2 {
+            let (_dir, state, journal) = staged_pull();
+            let project = state.project().to_path_buf();
+            apply(&state, &journal).unwrap();
+            let previous = undoable(&state).unwrap().unwrap();
+            let mut undoing = Journal {
+                source: Source::Previous,
+                manifest: previous.manifest.clone(),
+                state: previous.state.clone(),
+                before: journal.manifest.clone(),
+                state_before: journal.state.clone(),
+                moved: false,
+            };
+            begin(&state, &undoing).unwrap();
+            let kept = state.previous().join("files");
+            let displaced = state.displaced().join("files");
+            for (from, to) in [
+                (
+                    file_at(&project, "songs/c/new.wav"),
+                    file_at(&displaced, "songs/c/new.wav"),
+                ),
+                (
+                    file_at(&project, "songs/a/change.yaml"),
+                    file_at(&displaced, "songs/a/change.yaml"),
+                ),
+                (
+                    file_at(&kept, "songs/a/change.yaml"),
+                    file_at(&project, "songs/a/change.yaml"),
+                ),
+                (
+                    file_at(&kept, "songs/b/gone.wav"),
+                    file_at(&project, "songs/b/gone.wav"),
+                ),
+            ] {
+                rename(&from, &to).unwrap();
+            }
+            undoing.moved = true;
+            write_json(&state.journal(), &undoing, false).unwrap();
+            if done == 2 {
+                remove_dir(&state.previous()).unwrap();
+                std::fs::rename(state.displaced(), state.previous()).unwrap();
+            }
+
+            assert!(recover(&state).unwrap(), "after {done} closing steps");
+            assert_eq!(
+                Manifest::of_dir(&project).unwrap(),
+                journal.before,
+                "after {done} closing steps: the undo's own undo was not moved back in"
+            );
+            assert_eq!(
+                read(&project, "songs/a/change.yaml").as_deref(),
+                Some("old")
+            );
+            let kept = state.previous().join("files");
+            assert_eq!(read(&kept, "songs/a/change.yaml").as_deref(), Some("new"));
+            assert_eq!(number(&state), Some(1));
+        }
     }
 }

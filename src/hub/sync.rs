@@ -162,11 +162,17 @@ impl Rig {
             .unwrap_or("mtrack.yaml")
     }
 
-    /// The project's files as they are, a cut-short pull finished first.
-    fn local(&self) -> Result<Manifest, SyncError> {
+    /// Finishes a pull that was cut short, if one was.
+    fn recovered(&self) -> Result<(), SyncError> {
         if apply::recover(&self.state)? {
             tracing::info!("Finished a pull that was cut short");
         }
+        Ok(())
+    }
+
+    /// The project's files as they are, a cut-short pull finished first.
+    fn local(&self) -> Result<Manifest, SyncError> {
+        self.recovered()?;
         Ok(Manifest::of_dir(self.project())?)
     }
 
@@ -201,7 +207,7 @@ impl Rig {
     }
 
     /// Sends this rig's project to the hub as its next revision: the files
-    /// the hub lacks, then the manifest. Not sent: a project whose config
+    /// the hub lacks, then the manifest. After it there is no pull to undo. Not sent: a project whose config
     /// does not load here, and one a copy made from the hub could not be
     /// the same as (a file a song uses from outside the project, two names
     /// that differ only by case).
@@ -259,6 +265,9 @@ impl Rig {
         let base = self.state.sync_state()?.and_then(|state| state.revision);
         let revision = self.client.create_revision(base.as_ref(), &local).await?;
         self.state.record(Some(revision.clone()), &local)?;
+        // The project has moved on from the pull an undo would take back:
+        // undoing it now would put old files under a revision made since.
+        remove_dir_all(&self.state.previous())?;
         self.report(Some(&revision)).await;
         Ok(Uploaded::Saved {
             revision,
@@ -273,10 +282,13 @@ impl Rig {
     /// this player, stops it with nothing in the project touched.
     pub async fn pull(&self, discard_local_changes: bool) -> Result<Pulled, SyncError> {
         let _lock = self.state.lock()?;
-        // Taken before the files are read and again before any is moved: the
-        // same both times, nothing here was written in between.
+        self.recovered()?;
+        // Taken before the files are read and again before any is moved. The
+        // same both times, no file was added, removed, or written in a way
+        // that shows in its length or time: what a player saving a song
+        // does, which is what this is for.
         let stamps = project::stamps(self.project())?;
-        let local = self.local()?;
+        let local = Manifest::of_dir(self.project())?;
         let recorded = self.state.sync_state()?;
 
         let remote = self.client.project().await?;
@@ -314,15 +326,25 @@ impl Rig {
         let staged = self.state.staging().join("files");
         let wanted: BTreeSet<&String> = changed(&local, &manifest).collect();
         if staged.is_dir() {
-            let left = Manifest::of_dir(&staged)?;
-            for (path, entry) in &left.files {
-                if !wanted.contains(path) || manifest.files.get(path) != Some(entry) {
-                    std::fs::remove_file(file_at(&staged, path))?;
+            // Whatever else is there is not looked at, only cleared.
+            let keep = self.state.staging().join("keep");
+            remove_dir_all(&keep)?;
+            for path in &wanted {
+                let left = file_at(&staged, path);
+                let whole = std::fs::symlink_metadata(&left).is_ok_and(|m| m.is_file())
+                    && hash_file(&left).ok().as_ref() == manifest.files.get(*path);
+                if whole {
+                    let to = file_at(&keep, path);
+                    if let Some(parent) = to.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::rename(&left, &to)?;
                 }
             }
-            // And the folders that emptied, which could stand where a file
-            // is to be staged.
-            remove_empty_dirs(&staged)?;
+            remove_dir_all(&staged)?;
+            if keep.is_dir() {
+                std::fs::rename(&keep, &staged)?;
+            }
         }
         let mut fetched = 0;
         for path in &wanted {
@@ -377,13 +399,10 @@ impl Rig {
         &self,
         manifest: &Manifest,
         wanted: &BTreeSet<&String>,
-        staged: &Path,
+        staged: &PathBuf,
     ) -> Result<Report, SyncError> {
         let view = self.state.staging().join("view");
-        match std::fs::remove_dir_all(&view) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
-        }
+        remove_dir_all(&view)?;
         for path in manifest.files.keys() {
             let source = if wanted.contains(path) {
                 file_at(staged, path)
@@ -398,12 +417,14 @@ impl Rig {
         }
         let checked = project::check(&view.join(self.config_name()))
             .map_err(|e| SyncError::RevisionDoesNotLoad(e.to_string()));
-        // Where the files will be, not where they were looked at.
-        let seen_at = view.canonicalize().unwrap_or_else(|_| view.clone());
+        // Where the files will be, not where they were looked at: the
+        // loader names a file by where its link leads, which for a fetched
+        // one is the staging folder.
+        let seen_at = [&view, staged].map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.clone()));
         let _ = std::fs::remove_dir_all(&view);
         checked.map(|mut report| {
             for (file, _) in &mut report.problems {
-                if let Ok(relative) = file.strip_prefix(&seen_at) {
+                if let Some(relative) = seen_at.iter().find_map(|dir| file.strip_prefix(dir).ok()) {
                     *file = self.project().join(relative);
                 }
             }
@@ -417,8 +438,8 @@ impl Rig {
     /// Puts back what the last pull replaced, with no network: the files it
     /// changed or removed as they were, and the files it added gone. Files
     /// changed here since the pull stop it unless `discard_local_changes`;
-    /// with it, those the pull had touched are replaced and those it had
-    /// not stay as they are.
+    /// with it, those the pull had touched are replaced, and those it had
+    /// not (a file made here since, say) stay as they are.
     pub async fn undo(&self, discard_local_changes: bool) -> Result<Option<Revision>, SyncError> {
         let _lock = self.state.lock()?;
         let local = self.local()?;
@@ -433,17 +454,12 @@ impl Rig {
     }
 }
 
-/// Removes every folder under `root` that holds nothing.
-fn remove_empty_dirs(root: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            remove_empty_dirs(&path)?;
-            // Fails when it still holds something, which is the test.
-            let _ = std::fs::remove_dir(&path);
-        }
+/// Removes `dir` and all in it; one that is not there is no error.
+fn remove_dir_all(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -458,8 +474,9 @@ fn link_or_copy(source: &Path, link: &Path) -> std::io::Result<()> {
 
 /// Finishes a pull of the project whose player config is at `config_path`
 /// that was cut short, if one was: for the player to call before it loads
-/// the project, so it never starts on one part-way between two revisions.
-/// True when there was one. Nothing is done, or made, for a project that is
+/// the project, so it does not start on one part-way between two revisions
+/// when that can be helped. True when there was one. An error is a pull
+/// that is still unfinished; the caller decides whether to start anyway. Nothing is done, or made, for a project that is
 /// not paired.
 pub fn recover(config_path: &Path) -> Result<bool, SyncError> {
     let state = StateDir::of(&mtrack_core::util::project_dir_of(config_path));
