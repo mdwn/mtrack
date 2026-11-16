@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 //! What a rig and the hub say to each other: JSON over HTTPS, under
-//! [`API`]. Every request but pairing carries the rig's token as a bearer
-//! token.
+//! [`API`]. Every request to the hub but pairing carries the rig's token as
+//! a bearer token. A file's `PUT` goes where the hub says, which may be
+//! storage of its own; the token goes with it only when that is the hub.
 //!
 //! | Request | Does |
 //! | --- | --- |

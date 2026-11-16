@@ -24,10 +24,18 @@
 //! files this rig lacks and then puts them in place ([`apply`]), keeping what
 //! they replaced so the pull can be undone with no network.
 //!
-//! A pull cannot leave the rig unable to play: the files are fetched beside
-//! the project and checked by hash, the project as it would be is loaded with
-//! the player's own loader, and only then is anything in the project moved.
-//! The moves are journaled, so one cut short is finished on the next run.
+//! A pull is made so as not to leave the rig unable to play. The files are
+//! fetched beside the project and checked by hash; the project as it would
+//! be is loaded with the player's own loader; what could stop a move
+//! part-way is looked for first; and only then is anything in the project
+//! moved. The moves are journaled, so one cut short is finished by the next
+//! hub command, or by the player before it reads the project. What it does
+//! not survive is a move that keeps failing once the moves have begun: the
+//! project then stays part-way until the cause is dealt with ([`apply`]).
+//!
+//! Not here yet: the running player is told nothing of a pull, and its lock
+//! is not asked. These work on a project's directory, with the player
+//! stopped.
 
 pub mod apply;
 pub mod client;

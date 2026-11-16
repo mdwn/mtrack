@@ -204,7 +204,11 @@ impl Manifest {
     /// a copy made from the manifest would silently lack it.
     pub fn of_dir(dir: &Path) -> Result<Manifest, ScanError> {
         let mut files = BTreeMap::new();
-        scan(dir, "", &mut files)?;
+        walk(dir, "", &mut |relative, path| {
+            let hashed = hash_file(path).map_err(|e| ScanError::Io(path.to_path_buf(), e))?;
+            files.insert(relative, hashed);
+            Ok(())
+        })?;
         Ok(Manifest { files })
     }
 
@@ -276,10 +280,12 @@ impl Manifest {
     }
 }
 
-fn scan(
+/// Visits every file of the project in `dir`, by the module's rule, with
+/// its project path.
+fn walk(
     dir: &Path,
     prefix: &str,
-    files: &mut BTreeMap<String, FileEntry>,
+    visit: &mut dyn FnMut(String, &Path) -> Result<(), ScanError>,
 ) -> Result<(), ScanError> {
     let entries = std::fs::read_dir(dir).map_err(|e| ScanError::Io(dir.to_path_buf(), e))?;
     for entry in entries {
@@ -304,15 +310,30 @@ fn scan(
             .file_type()
             .map_err(|e| ScanError::Io(path.clone(), e))?;
         if kind.is_dir() {
-            scan(&path, &relative, files)?;
+            walk(&path, &relative, visit)?;
         } else if kind.is_file() {
-            let hashed = hash_file(&path).map_err(|e| ScanError::Io(path.clone(), e))?;
-            files.insert(relative, hashed);
+            visit(relative, &path)?;
         } else {
             return Err(ScanError::NotAFile(path));
         }
     }
     Ok(())
+}
+
+/// Every file of the project in `dir` with its length and when it was last
+/// written: what [`Manifest::of_dir`] would read, without reading it. Taken
+/// before a manifest and again later, two that are equal say no file was
+/// added, removed or written in between.
+pub fn stamps(
+    dir: &Path,
+) -> Result<BTreeMap<String, (u64, Option<std::time::SystemTime>)>, ScanError> {
+    let mut found = BTreeMap::new();
+    walk(dir, "", &mut |relative, path| {
+        let metadata = std::fs::metadata(path).map_err(|e| ScanError::Io(path.to_path_buf(), e))?;
+        found.insert(relative, (metadata.len(), metadata.modified().ok()));
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// What loading a project found: what the player would say on starting with
@@ -326,6 +347,22 @@ pub struct Report {
     /// What did not load, each as the file and why. The player starts
     /// without these; they are not a reason it cannot play.
     pub problems: Vec<(PathBuf, String)>,
+    /// Files the songs that loaded are made of that are not the project's
+    /// ([`Manifest`]'s rule): outside its directory, or under a name mtrack
+    /// keeps for itself. A copy of the project made from its manifest would
+    /// lack them.
+    pub outside: Vec<PathBuf>,
+}
+
+/// Whether `file` is one of the files of the project in `project`, both
+/// resolved: inside it, by a path a manifest can name.
+fn in_project(project: &Path, file: &Path) -> bool {
+    let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    file.strip_prefix(project).is_ok_and(|relative| {
+        relative.to_str().is_some_and(|relative| {
+            valid_path(&relative.replace(std::path::MAIN_SEPARATOR, "/")).is_ok()
+        })
+    })
 }
 
 /// Loads the project whose player config is at `config_path` as the player
@@ -346,6 +383,20 @@ pub fn check(config_path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
         songs: songs.len(),
         ..Report::default()
     };
+    let project = crate::util::project_dir_of(config_path);
+    let project = project.canonicalize().unwrap_or(project);
+    for song in songs.sorted_list() {
+        let files = song
+            .config_path()
+            .into_iter()
+            .chain(song.tracks().iter().map(|track| track.file()))
+            .chain(song.midi_playback().map(|midi| midi.file_path()));
+        for file in files {
+            if !in_project(&project, file) && !report.outside.iter().any(|seen| seen == file) {
+                report.outside.push(file.to_path_buf());
+            }
+        }
+    }
     for failure in songs.failures() {
         report.problems.push((
             failure.config_path().to_path_buf(),
@@ -508,6 +559,50 @@ mod tests {
         let report = check(Path::new("../../examples/mtrack.yaml")).unwrap();
         assert!(report.songs > 0, "{report:?}");
         assert!(report.playlists > 0, "{report:?}");
+    }
+
+    #[test]
+    fn stamps_move_when_a_file_is_written_added_or_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.yaml", "one");
+        write(dir.path(), ".hidden", "x");
+        let before = stamps(dir.path()).unwrap();
+        assert_eq!(before.keys().collect::<Vec<_>>(), ["a.yaml"]);
+        assert_eq!(before, stamps(dir.path()).unwrap());
+        write(dir.path(), "a.yaml", "longer");
+        assert_ne!(before, stamps(dir.path()).unwrap());
+        write(dir.path(), "a.yaml", "one");
+        write(dir.path(), "b.yaml", "two");
+        assert_ne!(before.len(), stamps(dir.path()).unwrap().len());
+    }
+
+    #[test]
+    fn a_songs_file_outside_the_project_is_reported() {
+        let elsewhere = tempfile::tempdir().unwrap();
+        crate::testutil::write_wav(
+            elsewhere.path().join("click.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "mtrack.yaml", "songs: songs\n");
+        write(
+            dir.path(),
+            "songs/one/song.yaml",
+            &format!(
+                "kind: song\nname: One\ntracks:\n  - name: click\n    file: {}\n",
+                elsewhere.path().join("click.wav").display()
+            ),
+        );
+        let report = check(&dir.path().join("mtrack.yaml")).unwrap();
+        assert_eq!(report.songs, 1, "{report:?}");
+        assert_eq!(report.outside.len(), 1, "{report:?}");
+        assert!(report.outside[0].ends_with("click.wav"));
+
+        // The example project's songs are all its own.
+        let example = check(Path::new("../../examples/mtrack.yaml")).unwrap();
+        assert!(example.outside.is_empty(), "{example:?}");
     }
 
     #[test]

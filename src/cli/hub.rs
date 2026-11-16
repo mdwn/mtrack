@@ -41,8 +41,9 @@ pub enum HubCommand {
         #[arg(default_value = ".")]
         path: String,
     },
-    /// Brings the project to the hub's current revision. Stop the player, or
-    /// restart it afterwards: a running player is not told.
+    /// Brings the project to the hub's current revision. Stop the player
+    /// first: a running one is not told, and a file it writes meanwhile stops
+    /// the pull.
     Pull {
         /// A project directory or its mtrack.yaml.
         #[arg(default_value = ".")]
@@ -57,11 +58,13 @@ pub enum HubCommand {
         /// A project directory or its mtrack.yaml.
         #[arg(default_value = ".")]
         path: String,
-        /// Replace files changed here since the pull.
+        /// Undo although files here changed since the pull. Those the pull
+        /// had changed are replaced; those it had not stay as they are.
         #[arg(long)]
         discard_local_changes: bool,
     },
-    /// Says what the project is paired to and where it stands.
+    /// Says what the project is paired to and where it stands. Finishes a
+    /// pull that was cut short.
     Status {
         /// A project directory or its mtrack.yaml.
         #[arg(default_value = ".")]
@@ -92,10 +95,19 @@ pub async fn run(command: HubCommand) -> Result<(), Box<dyn Error>> {
                 Uploaded::UpToDate(revision) => {
                     println!("The hub already has this as revision {}.", revision.number)
                 }
-                Uploaded::Saved { revision, sent } => println!(
-                    "Saved as revision {} ({sent} file(s) sent).",
-                    revision.number
-                ),
+                Uploaded::Saved {
+                    revision,
+                    sent,
+                    report,
+                } => {
+                    println!(
+                        "Saved as revision {} ({sent} file(s) sent): {} song(s), {} playlist(s).",
+                        revision.number, report.songs, report.playlists
+                    );
+                    for (file, problem) in &report.problems {
+                        println!("  {} does not load: {problem}", file.display());
+                    }
+                }
             }
         }
         HubCommand::Pull {

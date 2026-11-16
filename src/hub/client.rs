@@ -30,9 +30,13 @@ use super::protocol::{
 /// What went wrong talking to the hub.
 #[derive(Debug, thiserror::Error)]
 pub enum HubError {
-    /// The hub could not be reached, or what it sent could not be read.
-    #[error("the hub could not be reached: {0}")]
+    /// The hub could not be reached, or stopped answering, or what it sent
+    /// could not be read.
+    #[error("talking to the hub failed: {0}")]
     Http(#[from] reqwest::Error),
+    /// An address the rig's token cannot be sent to.
+    #[error("{0} is not an https address, and a rig's token is sent only over https")]
+    NotHttps(String),
     /// The hub refused.
     #[error("the hub refused ({status}): {}", .message.as_deref().unwrap_or(.error))]
     Refused {
@@ -46,7 +50,8 @@ pub enum HubError {
     /// The hub would not take the project: the player could not load it.
     #[error("the hub would not take this project: {0}")]
     InvalidProject(String),
-    /// A file's bytes were not the ones its hash names.
+    /// A file's bytes were not the ones its hash names. Named by its hash
+    /// here, and by its path once the caller knows it.
     #[error("{0} did not arrive whole: its hash or length is not the revision's")]
     Corrupt(String),
     #[error(transparent)]
@@ -74,11 +79,24 @@ pub struct Client {
 
 impl Client {
     /// A client of the hub at `hub` (its address, no path), with the rig's
-    /// token when it has one.
+    /// token when it has one. The address is https, or this machine's own
+    /// (a hub under test): the token is not sent in the clear.
     pub fn new(hub: &str, token: Option<String>) -> Result<Client, HubError> {
+        let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+            .iter()
+            .any(|prefix| {
+                hub.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+            });
+        if !hub.starts_with("https://") && !local {
+            return Err(HubError::NotHttps(hub.to_string()));
+        }
         let http = reqwest::Client::builder()
             .user_agent(concat!("mtrack/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(20))
+            // Between two reads, not for a whole file: a transfer that
+            // stalls ends, and a long one does not.
+            .read_timeout(Duration::from_secs(60))
             .build()?;
         Ok(Client {
             http,
@@ -196,7 +214,7 @@ impl Client {
             .put(&upload.url)
             .header(reqwest::header::CONTENT_LENGTH, size);
         // The token goes to the hub alone: the URL may be storage's own.
-        if upload.url.starts_with(&self.base) {
+        if upload.url.starts_with(&format!("{}/", self.base)) {
             if let Some(token) = &self.token {
                 request = request.bearer_auth(token);
             }
@@ -235,10 +253,14 @@ impl Client {
         }
     }
 
-    /// Fetches the file `entry` names into `to`, which is there only if it
-    /// arrived whole: the bytes are hashed as they come, and a file of
-    /// another hash or length is removed.
+    /// Fetches the file `entry` names into `to`. The bytes are hashed as
+    /// they come, and a file of another hash or length is removed: after an
+    /// `Ok`, `to` is the file whole; after an error there is no file there.
     pub async fn download(&self, entry: &FileEntry, to: &Path) -> Result<(), HubError> {
+        match tokio::fs::remove_file(to).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
         let mut response = Self::accepted(
             self.request(reqwest::Method::GET, &format!("blobs/{}", entry.sha256))
                 .send()
@@ -273,7 +295,7 @@ impl Client {
             }
         });
         if whole.is_err() {
-            let _ = tokio::fs::remove_file(to).await;
+            tokio::fs::remove_file(to).await?;
         }
         whole
     }

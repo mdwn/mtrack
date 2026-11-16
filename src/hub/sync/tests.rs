@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use mtrack_core::project::{hash_file, FileEntry, Manifest};
 
 use super::*;
-use crate::hub::standin::StandIn;
+use crate::hub::standin::{Corruption, StandIn};
 
 fn write(dir: &Path, path: &str, contents: &str) {
     let file = file_at(dir, path);
@@ -95,7 +95,7 @@ async fn a_project_goes_from_one_rig_to_another() {
     assert!(first.status().unwrap().local_changes, "never uploaded");
 
     let uploaded = first.upload().await.unwrap();
-    let Uploaded::Saved { revision, sent } = uploaded else {
+    let Uploaded::Saved { revision, sent, .. } = uploaded else {
         panic!("{uploaded:?}");
     };
     assert_eq!(revision.number, 1);
@@ -152,7 +152,7 @@ async fn only_what_changed_is_sent_and_fetched() {
     // The new playlist has the bytes of the one the hub holds: nothing is
     // sent for it, and it is still a new revision.
     assert!(
-        matches!(uploaded, Uploaded::Saved { ref revision, sent: 0 } if revision.number == 2),
+        matches!(uploaded, Uploaded::Saved { ref revision, sent: 0, .. } if revision.number == 2),
         "{uploaded:?}"
     );
     write(
@@ -224,29 +224,32 @@ async fn files_changed_here_stop_a_pull_until_they_are_given_up() {
 
 #[tokio::test]
 async fn a_file_that_does_not_arrive_whole_leaves_the_project_as_it_was() {
-    let (hub, first_dir, first, second_dir, second) = two_rigs().await;
-    write(first_dir.path(), "songs/one/notes.txt", "a new file");
-    write(
-        first_dir.path(),
-        "playlists/set.yaml",
-        "kind: playlist\nsongs: []\n",
-    );
-    first.upload().await.unwrap();
-    let before = files(&second_dir);
-    hub.corrupt(
-        &hash_file(&first_dir.path().join("songs/one/notes.txt"))
-            .unwrap()
-            .sha256,
-    );
+    for how in [Corruption::OtherBytes, Corruption::Short, Corruption::Long] {
+        let (hub, first_dir, first, second_dir, second) = two_rigs().await;
+        write(first_dir.path(), "songs/one/notes.txt", "a new file");
+        write(
+            first_dir.path(),
+            "playlists/set.yaml",
+            "kind: playlist\nsongs: []\n",
+        );
+        first.upload().await.unwrap();
+        let before = files(&second_dir);
+        let bad = hash_file(&first_dir.path().join("songs/one/notes.txt")).unwrap();
+        hub.corrupt(&bad.sha256, how);
 
-    assert!(matches!(
-        second.pull(false).await,
-        Err(SyncError::Hub(HubError::Corrupt(_)))
-    ));
-    assert_eq!(files(&second_dir), before);
-    assert!(!second.state.journal().exists());
-    assert!(!file_at(&second.state.staging().join("files"), "songs/one/notes.txt").exists());
-    assert_eq!(second.status().unwrap().revision.unwrap().number, 1);
+        let failed = second.pull(false).await.unwrap_err();
+        assert!(
+            matches!(&failed, SyncError::Hub(HubError::Corrupt(path)) if path == "songs/one/notes.txt"),
+            "{how:?}: {failed}"
+        );
+        assert_eq!(files(&second_dir), before, "{how:?}");
+        assert!(!second.state.journal().exists());
+        assert!(
+            !file_at(&second.state.staging().join("files"), "songs/one/notes.txt").exists(),
+            "{how:?}: what arrived is not kept"
+        );
+        assert_eq!(second.status().unwrap().revision.unwrap().number, 1);
+    }
 }
 
 #[tokio::test]
@@ -262,7 +265,7 @@ async fn a_pull_picks_up_where_one_left_off() {
     let bad = hash_file(&first_dir.path().join("songs/one/notes.txt"))
         .unwrap()
         .sha256;
-    hub.corrupt(&bad);
+    hub.corrupt(&bad, Corruption::OtherBytes);
     assert!(second.pull(false).await.is_err());
     // The playlist arrived before the bad file stopped the pull.
     let fetched_before = hub.downloads().len();
@@ -404,7 +407,7 @@ async fn there_is_nothing_to_pull_from_an_empty_project() {
 }
 
 #[tokio::test]
-async fn a_token_the_hub_does_not_know_is_refused() {
+async fn a_refusal_of_the_rigs_token_is_said_as_one() {
     let hub = StandIn::start("The show").await;
     let dir = a_project();
     let rig = paired(&hub, &dir, "first").await;
@@ -412,8 +415,313 @@ async fn a_token_the_hub_does_not_know_is_refused() {
     credentials.token = "not-a-token".to_string();
     rig.state.set_credentials(&credentials).unwrap();
     let rig = Rig::open(&config(&dir)).unwrap();
+    let refused = rig.upload().await.unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            SyncError::Hub(HubError::Refused { status: 401, .. })
+        ),
+        "{refused}"
+    );
+    assert!(!format!("{:?}", rig.credentials).contains("not-a-token"));
+}
+
+#[tokio::test]
+async fn the_token_goes_to_the_hub_and_not_to_where_files_are_sent() {
+    let mut hub = StandIn::start("The show").await;
+    hub.store_elsewhere().await;
+    let dir = a_project();
+    let rig = paired(&hub, &dir, "first").await;
     assert!(matches!(
-        rig.upload().await,
-        Err(SyncError::Hub(HubError::Refused { status: 401, .. }))
+        rig.upload().await.unwrap(),
+        Uploaded::Saved { sent: 4, .. }
     ));
+    assert_eq!(hub.uploads().len(), 4, "the files arrived");
+    assert!(!hub.storage_saw_token());
+}
+
+#[tokio::test]
+async fn a_hub_that_is_not_https_is_not_given_a_token() {
+    for hub in [
+        "http://hub.example",
+        "http://127.0.0.1.evil.example",
+        "ftp://hub.example",
+    ] {
+        assert!(
+            matches!(Client::new(hub, None), Err(HubError::NotHttps(_))),
+            "{hub}"
+        );
+    }
+    assert!(Client::new("https://hub.example", None).is_ok());
+    assert!(Client::new("http://127.0.0.1:8080", None).is_ok());
+}
+
+#[tokio::test]
+async fn files_given_up_to_a_pull_and_put_back_by_an_undo_are_still_changed_here() {
+    let (_hub, first_dir, first, second_dir, second) = two_rigs().await;
+    write(first_dir.path(), "songs/one/notes.txt", "from the first");
+    first.upload().await.unwrap();
+
+    write(
+        second_dir.path(),
+        "songs/one/song.yaml",
+        "kind: song\nname: Mine\n",
+    );
+    let mine = files(&second_dir);
+    second.pull(true).await.unwrap();
+    second.undo(false).await.unwrap();
+    assert_eq!(files(&second_dir), mine);
+
+    let status = second.status().unwrap();
+    assert!(status.local_changes, "they were never uploaded");
+    assert_eq!(status.revision.unwrap().number, 1);
+    // So the next pull asks again before it replaces them.
+    assert!(matches!(
+        second.pull(false).await,
+        Err(SyncError::LocalChanges)
+    ));
+    assert_eq!(files(&second_dir), mine);
+}
+
+#[tokio::test]
+async fn what_a_failed_pull_fetched_does_not_poison_the_next() {
+    let (hub, _first_dir, _first, second_dir, second) = two_rigs().await;
+    let good = files(&second_dir);
+
+    // A revision whose config does not load: fetched, refused, left staged.
+    let mut broken = good.clone();
+    broken
+        .files
+        .insert("mtrack.yaml".to_string(), entry(b"songs: [not, a, path]\n"));
+    hub.force_revision(broken, &[b"songs: [not, a, path]\n"]);
+    assert!(matches!(
+        second.pull(false).await,
+        Err(SyncError::RevisionDoesNotLoad(_))
+    ));
+
+    // The next revision puts the config back and adds a file. The staged
+    // broken config is not this pull's, and must not be what is checked.
+    let mut fixed = good.clone();
+    fixed
+        .files
+        .insert("songs/one/notes.txt".to_string(), entry(b"fixed"));
+    hub.force_revision(fixed.clone(), &[b"fixed"]);
+    let pulled = second.pull(false).await.unwrap();
+    assert!(
+        matches!(pulled, Pulled::Updated { fetched: 1, .. }),
+        "{pulled:?}"
+    );
+    assert_eq!(files(&second_dir), fixed);
+
+    // A staged file where a later revision has a folder is no obstacle.
+    let mut as_file = fixed.clone();
+    as_file.files.insert("extra".to_string(), entry(b"a file"));
+    as_file.files.insert(
+        "mtrack.yaml".to_string(),
+        entry(b"songs: [still, broken]\n"),
+    );
+    hub.force_revision(as_file, &[b"a file", b"songs: [still, broken]\n"]);
+    assert!(second.pull(false).await.is_err());
+    let mut as_folder = fixed.clone();
+    as_folder
+        .files
+        .insert("extra/inside.txt".to_string(), entry(b"in a folder"));
+    hub.force_revision(as_folder.clone(), &[b"in a folder"]);
+    second.pull(false).await.unwrap();
+    assert_eq!(files(&second_dir), as_folder);
+}
+
+#[tokio::test]
+async fn a_file_written_while_a_pull_is_fetching_stops_it() {
+    let (hub, first_dir, first, second_dir, second) = two_rigs().await;
+    write(first_dir.path(), "songs/one/notes.txt", "from the first");
+    first.upload().await.unwrap();
+    // The player, say, saving a song while the pull fetches.
+    hub.write_on_download(
+        second_dir.path().join("playlists/set.yaml"),
+        "kind: playlist\nsongs: []\n",
+    );
+    assert!(matches!(
+        second.pull(false).await,
+        Err(SyncError::ChangedMeanwhile)
+    ));
+    assert!(!second_dir.path().join("songs/one/notes.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(second_dir.path().join("playlists/set.yaml")).unwrap(),
+        "kind: playlist\nsongs: []\n",
+        "what was written is still there"
+    );
+    assert!(!second.state.journal().exists());
+    // And is now a change here, which the next pull asks about.
+    assert!(matches!(
+        second.pull(false).await,
+        Err(SyncError::LocalChanges)
+    ));
+}
+
+#[tokio::test]
+async fn a_pull_that_happened_is_not_a_failure_because_the_hub_was_not_told() {
+    let (hub, first_dir, first, second_dir, second) = two_rigs().await;
+    write(first_dir.path(), "songs/one/notes.txt", "from the first");
+    hub.fail_reports();
+    assert!(matches!(
+        first.upload().await.unwrap(),
+        Uploaded::Saved { .. }
+    ));
+    assert!(matches!(
+        second.pull(false).await.unwrap(),
+        Pulled::Updated { .. }
+    ));
+    assert_eq!(files(&second_dir), files(&first_dir));
+}
+
+#[tokio::test]
+async fn a_project_paired_anew_with_another_starts_afresh() {
+    let (hub, _first_dir, _first, second_dir, second) = two_rigs().await;
+    assert_eq!(second.status().unwrap().revision.unwrap().number, 1);
+    let other = hub.add_project("Another show");
+    pair(&config(&second_dir), &hub.url, "second", |_| {
+        hub.approve_all_for(&other)
+    })
+    .await
+    .unwrap();
+    let again = Rig::open(&config(&second_dir)).unwrap();
+    assert_eq!(again.credentials.project.name, "Another show");
+
+    let status = again.status().unwrap();
+    assert_eq!(status.revision, None, "it is no revision of this project");
+    assert!(status.local_changes, "its files were never this project's");
+    assert!(!status.undoable);
+    // And it uploads as that project's first revision.
+    let uploaded = again.upload().await.unwrap();
+    assert!(
+        matches!(uploaded, Uploaded::Saved { ref revision, .. } if revision.number == 1),
+        "{uploaded:?}"
+    );
+
+    // Paired again with the same project, what it was recorded as stays.
+    pair(&config(&second_dir), &hub.url, "second", |_| {
+        hub.approve_all_for(&other)
+    })
+    .await
+    .unwrap();
+    let same = Rig::open(&config(&second_dir)).unwrap();
+    assert_eq!(same.status().unwrap().revision.unwrap().number, 1);
+}
+
+#[tokio::test]
+async fn a_folder_that_is_not_a_project_is_not_replaced_even_when_told_to() {
+    let (hub, _first_dir, _first, _second_dir, _second) = two_rigs().await;
+    let home = tempfile::tempdir().unwrap();
+    write(home.path(), "notes/todo.txt", "mine");
+    let rig = paired(&hub, &home, "third").await;
+    assert!(matches!(
+        rig.pull(false).await,
+        Err(SyncError::LocalChanges)
+    ));
+    assert!(matches!(
+        rig.pull(true).await,
+        Err(SyncError::NotAProject(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("notes/todo.txt")).unwrap(),
+        "mine"
+    );
+}
+
+#[tokio::test]
+async fn a_project_another_rig_could_not_take_is_not_uploaded() {
+    let hub = StandIn::start("The show").await;
+
+    // A song whose track is outside the project's folder.
+    let elsewhere = tempfile::tempdir().unwrap();
+    crate::testutil::write_wav(
+        elsewhere.path().join("click.wav"),
+        vec![vec![1_i32; 4410]],
+        44100,
+    )
+    .unwrap();
+    let dir = a_project();
+    write(
+        dir.path(),
+        "songs/two/song.yaml",
+        &format!(
+            "kind: song\nname: Two\ntracks:\n  - name: click\n    file: {}\n",
+            elsewhere.path().join("click.wav").display()
+        ),
+    );
+    let rig = paired(&hub, &dir, "first").await;
+    let refused = rig.upload().await.unwrap_err();
+    assert!(
+        matches!(&refused, SyncError::NotUploadable(why) if why.contains("click.wav")),
+        "{refused}"
+    );
+
+    // Two names that differ only by case, where the disk tells them apart.
+    let dir = a_project();
+    write(dir.path(), "songs/one/Notes.txt", "a");
+    write(dir.path(), "songs/one/notes.txt", "b");
+    if files(&dir).files.len() == 6 {
+        let rig = paired(&hub, &dir, "other").await;
+        let refused = rig.upload().await.unwrap_err();
+        assert!(
+            matches!(&refused, SyncError::NotUploadable(why) if why.contains("differ only by case")),
+            "{refused}"
+        );
+    }
+    assert!(hub.uploads().is_empty());
+    assert_eq!(hub.revisions(), 0);
+}
+
+#[tokio::test]
+async fn a_pairing_refused_in_the_hub_is_said_plainly() {
+    let hub = StandIn::start("The show").await;
+    let dir = a_project();
+    let refused = pair(&config(&dir), &hub.url, "first", |_| hub.deny_all())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, SyncError::NotPairedInTime(_)),
+        "{refused}"
+    );
+    assert!(
+        refused.to_string().contains("refused in the hub"),
+        "{refused}"
+    );
+    assert!(matches!(
+        Rig::open(&config(&dir)),
+        Err(SyncError::NotPaired)
+    ));
+}
+
+#[tokio::test]
+async fn a_pull_cut_short_is_finished_before_the_player_reads_the_project() {
+    // Not paired, never pulled: nothing is done, and nothing is made.
+    let plain = a_project();
+    assert!(!recover(&config(&plain)).unwrap());
+    assert!(!plain.path().join(crate::hub::state::DIR).exists());
+
+    let (_hub, first_dir, first, second_dir, second) = two_rigs().await;
+    write(first_dir.path(), "songs/one/notes.txt", "from the first");
+    first.upload().await.unwrap();
+    second.pull(false).await.unwrap();
+    // The pull undone, and then an undo of that set down and cut short
+    // before any of its moves: the project is at revision 1 with a journal
+    // that takes it to revision 2.
+    second.undo(false).await.unwrap();
+    let previous = apply::undoable(&second.state).unwrap().unwrap();
+    let journal = Journal {
+        source: Source::Previous,
+        manifest: files(&first_dir),
+        state: previous.state,
+        before: files(&second_dir),
+        state_before: second.state.sync_state().unwrap(),
+        moved: false,
+    };
+    crate::hub::state::write_json(&second.state.journal(), &journal, false).unwrap();
+    assert!(!second_dir.path().join("songs/one/notes.txt").exists());
+
+    assert!(recover(&config(&second_dir)).unwrap());
+    assert_eq!(files(&second_dir), files(&first_dir));
+    assert!(!recover(&config(&second_dir)).unwrap());
 }

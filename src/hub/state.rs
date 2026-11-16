@@ -38,12 +38,23 @@ use super::protocol::{Named, Revision};
 pub const DIR: &str = ".mtrack-hub";
 
 /// The hub this rig is paired with.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub hub: String,
     pub token: String,
     pub rig: Named,
     pub project: Named,
+}
+
+// By hand, to leave the token out of anything printed.
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("hub", &self.hub)
+            .field("rig", &self.rig)
+            .field("project", &self.project)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where the project's files stand against the hub.
@@ -134,6 +145,28 @@ impl StateDir {
     pub fn set_sync_state(&self, state: &SyncState) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         write_json(&self.dir.join("state.json"), state, false)
+    }
+
+    /// Forgets what the project was recorded as: it is no revision's.
+    pub fn clear_sync_state(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(self.dir.join("state.json")) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Forgets everything about the hub but the pairing: the recorded
+    /// revision, the undo, and anything a pull left half-fetched. For a
+    /// project paired anew, which is not the one those were about.
+    pub fn forget_sync(&self) -> std::io::Result<()> {
+        self.clear_sync_state()?;
+        for dir in [self.staging(), self.displaced(), self.previous()] {
+            match std::fs::remove_dir_all(dir) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Records the project's files, as they are now, as `revision`.

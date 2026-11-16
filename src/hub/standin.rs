@@ -15,7 +15,7 @@
 //! memory, on a port of this machine. It keeps files by project and hash and
 //! revisions in order, as the hub does, and counts what it is asked for.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -59,8 +59,19 @@ struct Inner {
     reports: HashMap<String, Option<String>>,
     downloads: Vec<String>,
     uploads: Vec<String>,
-    /// Hashes served with the wrong bytes.
-    corrupt: HashSet<String>,
+    /// Hashes served with the wrong bytes, and how.
+    corrupt: HashMap<String, Corruption>,
+    /// Where files are sent, when not to the hub itself.
+    storage: Option<String>,
+    /// Whether a file sent to storage came with a rig's token.
+    storage_saw_token: bool,
+    /// A file to write when the next file is fetched: something else on the
+    /// rig writing to the project while a pull is under way.
+    write_on_download: Option<(std::path::PathBuf, String)>,
+    /// Whether `PUT rig` fails.
+    reports_fail: bool,
+    /// Whether every pairing is refused.
+    deny: bool,
     /// The next revision is refused as a project that does not load.
     refuse_next: Option<String>,
     counter: u64,
@@ -73,17 +84,30 @@ impl Inner {
     }
 }
 
+/// A way a file does not arrive whole.
+#[derive(Clone, Copy, Debug)]
+pub enum Corruption {
+    /// The right length, other bytes.
+    OtherBytes,
+    /// Cut off before its end.
+    Short,
+    /// With more after its end.
+    Long,
+}
+
 /// A running stand-in hub. It stops when dropped.
 pub struct StandIn {
     /// Its address, as a rig is given one.
     pub url: String,
     inner: Arc<Mutex<Inner>>,
-    server: tokio::task::JoinHandle<()>,
+    servers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for StandIn {
     fn drop(&mut self) {
-        self.server.abort();
+        for server in &self.servers {
+            server.abort();
+        }
     }
 }
 
@@ -140,6 +164,9 @@ async fn pairing_token(State(inner): Shared, Json(request): Json<TokenRequest>) 
     let Some(pairing) = inner.pairings.get(&request.device_code) else {
         return refuse(StatusCode::BAD_REQUEST, "expired_token", None);
     };
+    if inner.deny {
+        return refuse(StatusCode::BAD_REQUEST, "access_denied", None);
+    }
     let Some(project) = pairing.project.clone() else {
         return refuse(StatusCode::BAD_REQUEST, AUTHORIZATION_PENDING, None);
     };
@@ -212,7 +239,10 @@ async fn missing(
             .into_iter()
             .filter(|sha256| !held.contains_key(sha256))
             .map(|sha256| Upload {
-                url: format!("{}{API}/blobs/{sha256}", inner.address),
+                url: match &inner.storage {
+                    Some(storage) => format!("{storage}/store/{project}/{sha256}"),
+                    None => format!("{}{API}/blobs/{sha256}", inner.address),
+                },
                 sha256,
                 headers: BTreeMap::from([("x-standin".to_string(), "upload".to_string())]),
             })
@@ -260,11 +290,15 @@ async fn get_blob(
         return refuse(StatusCode::NOT_FOUND, "not_found", None);
     };
     inner.downloads.push(sha256.clone());
-    if inner.corrupt.contains(&sha256) {
-        let mut wrong = bytes;
-        wrong.reverse();
-        wrong.push(b'!');
-        return wrong.into_response();
+    if let Some((path, contents)) = inner.write_on_download.take() {
+        std::fs::write(path, contents).unwrap();
+    }
+    let mut bytes = bytes;
+    match inner.corrupt.get(&sha256) {
+        Some(Corruption::OtherBytes) => bytes.iter_mut().for_each(|byte| *byte ^= 0xff),
+        Some(Corruption::Short) => bytes.truncate(bytes.len() / 2),
+        Some(Corruption::Long) => bytes.push(b'!'),
+        None => {}
     }
     bytes.into_response()
 }
@@ -334,8 +368,36 @@ async fn report(
     let Some((rig, _)) = rig_of(&inner, &headers) else {
         return unauthorized();
     };
+    if inner.reports_fail {
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
+    }
     inner.reports.insert(rig.id, report.revision);
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Storage of the hub's own, at another address: it takes a file by the URL
+/// the hub gave, and no token.
+async fn store(
+    State(inner): Shared,
+    headers: HeaderMap,
+    Path((project, sha256)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let mut inner = inner.lock();
+    if headers.contains_key("authorization") {
+        inner.storage_saw_token = true;
+    }
+    if hex(&Sha256::digest(&body)) != sha256 {
+        return refuse(StatusCode::BAD_REQUEST, "hash_mismatch", None);
+    }
+    inner.uploads.push(sha256.clone());
+    match inner.projects.get_mut(&project) {
+        Some(project) => {
+            project.blobs.insert(sha256, body.to_vec());
+            StatusCode::NO_CONTENT.into_response()
+        }
+        None => refuse(StatusCode::NOT_FOUND, "not_found", None),
+    }
 }
 
 impl StandIn {
@@ -370,14 +432,71 @@ impl StandIn {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        StandIn { url, inner, server }
+        StandIn {
+            url,
+            inner,
+            servers: vec![server],
+        }
     }
 
-    /// A person enters every code shown so far, for the hub's project.
+    /// From now on files are sent to storage at an address of its own, as a
+    /// hub with object storage has them sent.
+    pub async fn store_elsewhere(&mut self) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        self.inner.lock().storage = Some(format!("http://{}", listener.local_addr().unwrap()));
+        let app = Router::new()
+            .route("/store/{project}/{sha256}", put(store))
+            .layer(axum::extract::DefaultBodyLimit::disable())
+            .with_state(self.inner.clone());
+        self.servers.push(tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        }));
+    }
+
+    /// Whether a file sent to storage came with a rig's token.
+    pub fn storage_saw_token(&self) -> bool {
+        self.inner.lock().storage_saw_token
+    }
+
+    /// A second project, empty; its id.
+    pub fn add_project(&self, name: &str) -> String {
+        let mut inner = self.inner.lock();
+        let id = format!("project-{}", inner.projects.len() + 1);
+        inner.projects.insert(
+            id.clone(),
+            Project {
+                name: name.to_string(),
+                ..Project::default()
+            },
+        );
+        id
+    }
+
+    /// A person enters every code shown so far, for the hub's first project.
     pub fn approve_all(&self) {
+        self.approve_all_for("project-1");
+    }
+
+    /// A person enters every code shown so far, for the project `id`.
+    pub fn approve_all_for(&self, id: &str) {
         for pairing in self.inner.lock().pairings.values_mut() {
-            pairing.project = Some("project-1".to_string());
+            pairing.project = Some(id.to_string());
         }
+    }
+
+    /// Every pairing is refused from now on.
+    pub fn deny_all(&self) {
+        self.inner.lock().deny = true;
+    }
+
+    /// Telling the hub which revision a rig is on fails from now on.
+    pub fn fail_reports(&self) {
+        self.inner.lock().reports_fail = true;
+    }
+
+    /// Writes `contents` to `path` when the next file is fetched.
+    pub fn write_on_download(&self, path: std::path::PathBuf, contents: &str) {
+        self.inner.lock().write_on_download = Some((path, contents.to_string()));
     }
 
     /// The codes rigs are showing.
@@ -416,9 +535,9 @@ impl StandIn {
         inner.reports.get(&id).cloned().flatten()
     }
 
-    /// Serves the file of this hash with the wrong bytes from now on.
-    pub fn corrupt(&self, sha256: &str) {
-        self.inner.lock().corrupt.insert(sha256.to_string());
+    /// Serves the file of this hash other than whole from now on.
+    pub fn corrupt(&self, sha256: &str, how: Corruption) {
+        self.inner.lock().corrupt.insert(sha256.to_string(), how);
     }
 
     /// Serves the file of this hash as it is again.
