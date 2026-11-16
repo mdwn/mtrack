@@ -16,6 +16,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../gen/player/v1/player.pb.dart' as player;
+import '../demo/demo_channel.dart';
+import '../demo/demo_content.dart';
 import '../protocol/envelope_channel.dart';
 import '../protocol/playback_clock.dart';
 import '../protocol/player_channel.dart';
@@ -188,7 +190,8 @@ class Session extends ChangeNotifier {
   /// With [wifi], a player is also reached over the network when it answers
   /// there; without, over Bluetooth alone. With [browser], the connect screen
   /// also lists the players on the network. With [probe] (and Wi-Fi), the
-  /// person can also scan their network for players.
+  /// person can also scan their network for players. [demoChannel] makes the
+  /// channel to the simulated player of [startDemo].
   Session({
     required this._link,
     required this._store,
@@ -196,6 +199,7 @@ class Session extends ChangeNotifier {
     this._wifi,
     this._browser,
     this._probe,
+    this._demoChannel = DemoChannel.new,
     Monotonic? monotonic,
     this._backoff = reconnectBackoff,
     this._wifiTimeout = wifiConnectTimeout,
@@ -237,6 +241,7 @@ class Session extends ChangeNotifier {
   final WifiLink? _wifi;
   final PlayerBrowser? _browser;
   final NetworkProbe? _probe;
+  final PlayerChannel Function() _demoChannel;
   final Duration _wifiTimeout;
   final Duration _wifiInterval;
   final Duration _browseWindow;
@@ -320,6 +325,7 @@ class Session extends ChangeNotifier {
   bool _foreground = true;
   bool? _wakeAsked;
   bool _disposed = false;
+  bool _demo = false;
 
   /// Where the connection stands.
   ConnectionPhase get phase => _phase;
@@ -329,6 +335,10 @@ class Session extends ChangeNotifier {
 
   /// The name of that player.
   String? get playerName => _target?.name;
+
+  /// True while the demo is on: the player is simulated inside the app, and
+  /// nothing of it is remembered. See [startDemo].
+  bool get inDemo => _demo;
 
   /// Why the last attempt to connect to a new player failed, in words for a
   /// person; null otherwise.
@@ -576,10 +586,81 @@ class Session extends ChangeNotifier {
   /// Loads the remembered player and, when there is one, connects to it.
   Future<void> start() async {
     final remembered = await _store.load();
-    if (_disposed || remembered == null) {
+    // The demo is never started here, and it is not undone by a player that
+    // was found while it was begun: leaving it connects to the player.
+    if (_disposed || _demo || remembered == null) {
       return;
     }
     _target = remembered;
+    unawaited(_connect(remembered));
+  }
+
+  // The demo.
+
+  /// Starts the demo: the app connects to a player simulated inside it, the
+  /// way it connects to a real one, and shows it as ready. Nothing is asked
+  /// of Bluetooth or the network, and the demo is never remembered: the
+  /// player remembered, if there is one, is not touched and is not looked
+  /// for again until [leaveDemo]. Does nothing while the demo is on.
+  Future<void> startDemo() async {
+    if (_disposed || _demo) {
+      return;
+    }
+    stopScan();
+    final epoch = ++_epoch;
+    _cancelTimers();
+    _demo = true;
+    await _dropConnection();
+    if (_stale(epoch)) {
+      return;
+    }
+    _clearView();
+    const target = RememberedPlayer(
+      id: 'demo',
+      name: demoPlayerName,
+      bluetooth: false,
+    );
+    _target = target;
+    _setPhase(ConnectionPhase.connecting);
+    try {
+      await _adopt(target, epoch, _demoChannel(), null);
+    } on Object {
+      if (!_stale(epoch)) {
+        await leaveDemo();
+      }
+    }
+  }
+
+  /// Ends the demo and returns to where the app was before it: the connect
+  /// screen, or the connection to the remembered player, if there is one.
+  /// What the demo changed is gone with it.
+  Future<void> leaveDemo() async {
+    if (_disposed || !_demo) {
+      return;
+    }
+    final epoch = ++_epoch;
+    _cancelTimers();
+    RememberedPlayer? remembered;
+    try {
+      remembered = await _store.load();
+    } on Object {
+      remembered = null;
+    }
+    if (_stale(epoch)) {
+      return;
+    }
+    await _dropConnection();
+    if (_stale(epoch)) {
+      return;
+    }
+    _demo = false;
+    _clearView();
+    _target = remembered;
+    if (remembered == null) {
+      _setPhase(ConnectionPhase.noPlayer);
+      return;
+    }
+    _setPhase(ConnectionPhase.connecting);
     unawaited(_connect(remembered));
   }
 
@@ -758,12 +839,23 @@ class Session extends ChangeNotifier {
 
   /// Disconnects and forgets the player, so the app goes back to finding one.
   Future<void> forget() async {
+    if (_demo) {
+      // The demo is not a player to forget; leaving it leaves the
+      // remembered player alone.
+      return leaveDemo();
+    }
     _epoch++;
     _cancelTimers();
     await _dropConnection();
     await _store.clear();
-    _wifiOldFor = null;
     _target = null;
+    _clearView();
+    _setPhase(ConnectionPhase.noPlayer);
+  }
+
+  /// Forgets everything shown of the player that was connected.
+  void _clearView() {
+    _wifiOldFor = null;
     _connectError = null;
     _status = null;
     _ambientMode = null;
@@ -783,10 +875,12 @@ class Session extends ChangeNotifier {
     _stage.clear();
     lightingAssets.clear();
     songLibrary.clear();
-    _setPhase(ConnectionPhase.noPlayer);
   }
 
   Future<void> _connect(RememberedPlayer target) async {
+    if (_demo) {
+      return;
+    }
     final epoch = ++_epoch;
     _cancelTimers();
     await _dropConnection(keepState: true);
@@ -907,7 +1001,9 @@ class Session extends ChangeNotifier {
     if (channel.currentState != TransportState.ready) {
       throw const PlayerException.unavailable('connection lost');
     }
-    await _store.save(target);
+    if (!_demo) {
+      await _store.save(target);
+    }
     _retries = 0;
     _connectError = null;
     _setPhase(ConnectionPhase.ready);
@@ -1201,6 +1297,11 @@ class Session extends ChangeNotifier {
 
   /// Gives up a working connection and starts over from the first retry.
   void _lose() {
+    if (_demo) {
+      // A simulated player is not lost; one that went has nothing to retry.
+      unawaited(leaveDemo());
+      return;
+    }
     _epoch++;
     clock.hold();
     unawaited(_dropConnection(keepState: true));

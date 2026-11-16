@@ -96,6 +96,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       case ConnectionPhase.lost:
         _scanned = false;
         content = _Progress(
+          session: session,
           title: phase == ConnectionPhase.lost
               ? 'Looking for $name…'
               : 'Connecting to $name…',
@@ -106,6 +107,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
       case ConnectionPhase.pairing:
         _scanned = false;
         content = _Progress(
+          session: session,
           title: 'Pairing with $name…',
           detail: 'Your phone may show a code. Confirm it.',
           action: _Action('Cancel', session.cancelConnecting),
@@ -153,8 +155,14 @@ class _Action {
 }
 
 class _Progress extends StatelessWidget {
-  const _Progress({required this.title, this.detail, required this.action});
+  const _Progress({
+    required this.session,
+    required this.title,
+    this.detail,
+    required this.action,
+  });
 
+  final Session session;
   final String title;
   final String? detail;
   final _Action action;
@@ -203,7 +211,33 @@ class _Progress extends StatelessWidget {
           semanticLabel: action.label,
           onPressed: action.run,
         ),
+        _DemoButton(session: session),
       ],
+    );
+  }
+}
+
+/// "Try the demo": the way to look around the app with no player, no
+/// Bluetooth and no network. Quiet, and on every state of the connect screen:
+/// it asks for no permission and needs nothing to be working.
+class _DemoButton extends StatelessWidget {
+  const _DemoButton({required this.session});
+
+  final Session session;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Align(
+      alignment: Alignment.center,
+      child: TextButton(
+        style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
+        onPressed: session.startDemo,
+        child: Text(
+          'Try the demo',
+          style: AppText.bodyStrong.copyWith(color: colors.muted),
+        ),
+      ),
     );
   }
 }
@@ -265,6 +299,7 @@ class _Refused extends StatelessWidget {
           semanticLabel: 'Choose another player',
           onPressed: session.cancelConnecting,
         ),
+        _DemoButton(session: session),
       ],
     );
   }
@@ -304,7 +339,8 @@ class _Finder extends StatelessWidget {
         ],
         const SizedBox(height: 14),
         address,
-        const SizedBox(height: 14),
+        _DemoButton(session: session),
+        const SizedBox(height: 8),
         const NoteBox(
           child: Text.rich(
             TextSpan(

@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/ble/v1/ble.pb.dart' as ble;
 import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/app/session.dart';
+import 'package:mtrack_remote/src/demo/demo_channel.dart';
 
 import 'fake_browser.dart';
 import 'fake_link.dart';
@@ -48,6 +49,7 @@ class Harness {
       wifi: wifi,
       browser: browser,
       probe: probe,
+      demoChannel: () => DemoChannel(clock: () => async.elapsed),
       monotonic: () => async.elapsed,
     );
     this.rig.link.paired.add('p1');

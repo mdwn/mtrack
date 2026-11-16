@@ -87,7 +87,10 @@ class _SettingsSheet extends StatelessWidget {
             ),
           ),
           Text(
-            session.carrier == null
+            session.inDemo
+                ? 'A simulated player inside the app. Nothing here is a real '
+                      'player, and nothing leaves the phone.'
+                : session.carrier == null
                 ? 'Not connected'
                 : 'Connected over ${carrierName(session.carrier!)}',
             style: AppText.small.copyWith(color: colors.muted),
@@ -100,7 +103,20 @@ class _SettingsSheet extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
-          if (name != null)
+          if (session.inDemo)
+            ChunkyButton(
+              height: 52,
+              fontSize: 16,
+              label: 'Leave the demo',
+              semanticLabel: 'Leave the demo',
+              borderColor: colors.amber,
+              foreground: colors.amber,
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await session.leaveDemo();
+              },
+            )
+          else if (name != null)
             ChunkyButton(
               height: 52,
               fontSize: 16,

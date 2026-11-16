@@ -132,14 +132,24 @@ class MemoryStore implements PlayerStore {
   /// What is remembered.
   RememberedPlayer? player;
 
+  /// How many times the store was written to, and cleared.
+  int saves = 0;
+  int clears = 0;
+
   @override
   Future<RememberedPlayer?> load() async => player;
 
   @override
-  Future<void> save(RememberedPlayer player) async => this.player = player;
+  Future<void> save(RememberedPlayer player) async {
+    saves++;
+    this.player = player;
+  }
 
   @override
-  Future<void> clear() async => player = null;
+  Future<void> clear() async {
+    clears++;
+    player = null;
+  }
 }
 
 /// A [ScreenWake] that records what it was told.

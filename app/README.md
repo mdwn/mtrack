@@ -195,6 +195,40 @@ the directories in a fresh checkout, so the asset entries in `pubspec.yaml` are 
 is built; Flutter leaves hidden files out of the bundle. The page adds about 0.86 MB to the APK, of
 which 0.20 MB is the 3D view (three.js, mostly).
 
+## The demo
+
+**Try the demo**, a quiet button on every state of the connect screen, lets anyone use every tab
+of the app with no player, no Bluetooth and no network: for a look around before owning a
+player, and for checking a build of the app (an app-store reviewer has no player). It asks for no
+permission, and the button is there with Bluetooth off, refused or missing.
+
+- The player is simulated inside the app (`lib/src/demo/`). `DemoChannel` is a third
+  `PlayerChannel`, beside Bluetooth and Wi-Fi: it decodes each call's method and request, has the
+  `DemoPlayer` answer, and encodes the answer, so the rest of the app cannot tell it from a real
+  player. Nothing leaves the phone, and nothing is written to its disk.
+- It has eight invented songs with sections, three playlists (the player's own `all_songs`, a short
+  set and a rehearsal list), a rig's output tracks with levels, the lock, the ambient light, and
+  songs with samples and a loop. Play runs a clock, a song that ends moves the playlist on (and
+  starts the entry whose auto play says so), and seeking, section loops, navigation, switching
+  playlists, editing playlists and songs, gains, mutes, the ambient mode and the lock all work, with
+  the real player's refusals (a song that plays does not give way to Next, a locked player refuses
+  an edit) in its words and with its gRPC codes. The demo starts unlocked, so that editing can be
+  tried. Everything is gone when the demo is left.
+- The Lights tab draws a small invented rig (six pars on a front truss and four uplights at the
+  back): the ambient look when stopped, following the ambient mode, and a slow colour chase while
+  a song plays. It has no 3D models, so the 3D view has none to fetch and draws boxes, as for a
+  player with none.
+- While it is on, the player is called "Demo player", the bar shows a flask where the radio's icon
+  would be, and a line across the top of the app, over every screen and sheet, says "Demo: nothing
+  here is a real player" and offers **Leave**. The settings sheet offers **Leave the demo** where it
+  would offer to forget the player.
+- The demo is never remembered. A player remembered before it is left alone, and is connected to
+  again when the demo is left; the app never starts in the demo; and while it is on nothing
+  reconnects, retries, scans or uses Wi-Fi.
+- What it cannot show: audio (there is none), 3D models, and anything that depends on a real
+  player's hardware. The simulation is the app's tests' friend too: `Session.startDemo` takes a
+  channel factory, so a test gives the demo its own clock.
+
 ## Layout
 
 - `lib/src/protocol/` is pure Dart with no Flutter or plugin imports: the chunk framing
@@ -227,6 +261,10 @@ which 0.20 MB is the 3D view (three.js, mostly).
     over real sockets.
   - `lighting_assets.dart` fetches the player's lighting assets for the 3D view, one at a time, and
     `asset_cache.dart` keeps them on the phone.
+- `lib/src/demo/` is the simulated player of the demo (see [The demo](#the-demo)): `demo_player.dart`
+  is the player's state and behaviour on an injected clock, `demo_content.dart` its invented songs,
+  playlists and tracks, `demo_stage.dart` the rig and look of the Lights tab, and `demo_channel.dart`
+  the `PlayerChannel` that puts it behind the same seam as a real player.
 - `lib/src/protocol/` is the protocol without a radio: `player_channel.dart` is the seam,
   `envelope_channel.dart` and `grpc_channel.dart` are its two carriers, `player_client.dart` the typed
   calls, and `frame_codec.dart`, `asset_download.dart` and `playback_clock.dart` what they share.

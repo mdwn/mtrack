@@ -23,6 +23,9 @@ enum Carrier {
 
   /// The player's gRPC port, over the network the phone and the player share.
   wifi,
+
+  /// A player simulated inside the app, for the demo: no radio, no network.
+  demo,
 }
 
 /// The seam between the app and the player: "call this method with these
@@ -31,7 +34,7 @@ enum Carrier {
 /// Everything above it speaks `PlayerService` in serialized messages and
 /// neither knows nor cares which [Carrier] is under it. Bluetooth implements
 /// it with the envelope (`EnvelopeChannel`), Wi-Fi with real gRPC calls
-/// (`GrpcChannel`). Both fail with a `PlayerException`, carrying the same gRPC
+/// (`GrpcChannel`), the demo with a simulated player (`DemoChannel`). All fail with a `PlayerException`, carrying the same gRPC
 /// status codes, so a screen says the same thing whichever was used.
 abstract class PlayerChannel {
   /// How long a call waits for its answer unless the caller says otherwise.

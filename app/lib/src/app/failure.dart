@@ -68,6 +68,10 @@ String describeWifiFailure(Object error, RememberedPlayer target) {
       'connected.';
 }
 
-/// The name of a radio for a person: `Wi-Fi` or `Bluetooth`.
-String carrierName(Carrier carrier) =>
-    carrier == Carrier.wifi ? 'Wi-Fi' : 'Bluetooth';
+/// The name of a radio for a person: `Wi-Fi` or `Bluetooth`; `Demo` for the
+/// simulated player, which has none.
+String carrierName(Carrier carrier) => switch (carrier) {
+  Carrier.wifi => 'Wi-Fi',
+  Carrier.bluetooth => 'Bluetooth',
+  Carrier.demo => 'Demo',
+};

@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import '../app/ports.dart';
 import '../app/session.dart';
 import 'connect_screen.dart';
+import 'demo_banner.dart';
 import 'home_shell.dart';
 import 'session_scope.dart';
 import 'stage_surface.dart';
@@ -57,6 +58,27 @@ class MtrackApp extends StatelessWidget {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode ?? ThemeMode.system,
+      // The demo's banner is above every route, dialogs and sheets included.
+      // The same widgets stand whether it shows or not, so entering and
+      // leaving the demo does not rebuild the app under it.
+      builder: (context, child) => ListenableBuilder(
+        listenable: session,
+        builder: (context, _) => Column(
+          children: [
+            if (session.inDemo)
+              DemoBanner(session: session)
+            else
+              const SizedBox.shrink(),
+            Expanded(
+              child: MediaQuery.removePadding(
+                context: context,
+                removeTop: session.inDemo,
+                child: child ?? const SizedBox.shrink(),
+              ),
+            ),
+          ],
+        ),
+      ),
       home: SessionScope(
         session: session,
         child: _Root(stage: stage, views: views),

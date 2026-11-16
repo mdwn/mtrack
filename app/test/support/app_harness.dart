@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/app/session.dart';
+import 'package:mtrack_remote/src/demo/demo_channel.dart';
 import 'package:mtrack_remote/src/ui/app.dart';
 
 import 'fake_browser.dart';
@@ -141,6 +142,8 @@ class AppHarness {
       wifi: wifi,
       browser: browser,
       probe: probe,
+      // The demo's player keeps the harness's time, so a test moves it on.
+      demoChannel: () => DemoChannel(clock: () => harness.now),
       monotonic: () => harness.now,
     );
     final stage = FakeStageHost()..view = stageView;

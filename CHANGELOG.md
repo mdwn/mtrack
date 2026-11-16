@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A demo mode in the phone app**: **Try the demo**, a quiet button on the connect screen, lets
+  anyone use every tab of the app with no player, no Bluetooth and no network, against a player
+  simulated inside the app: invented songs, playlists, levels, a lock, the ambient light and a small
+  stage that chases colours while a song plays. Play runs a clock and a song that ends moves on,
+  and editing works, with the real player's refusals; everything is gone when the demo is left.
+  Nothing leaves the phone, nothing is written to disk, no permission is asked for, and the demo is
+  never remembered: the player remembered before it is left alone and connected to again on
+  leaving. A line across the top says "Demo: nothing here is a real player" and offers **Leave**.
+  It has no audio and no 3D models.
 - **An icon for mtrack**: the web UI's 3×3 mark on the brand ink is now the phone app's launcher
   icon (an adaptive icon on Android 8 and up) and the tab icon of the web UI and of the
   documentation. The masters are SVG in `design/brand/`; `scripts/gen-icons.sh` regenerates the
