@@ -20,24 +20,19 @@ use crate::playsync::PlaybackSync;
 use crate::songs::Song;
 use std::collections::HashMap;
 
-pub use mtrack_core::audio::{format, track_gains};
+pub use mtrack_core::audio::{
+    beat_grid, click_analysis, context, crossfade, duration_to_samples, format, metronome,
+    monoclip, pilot, sample_source, track_gains,
+};
 
-pub mod beat_grid;
-pub mod click_analysis;
 pub mod confirmation;
-pub mod context;
 pub mod cpal;
-pub mod crossfade;
 pub mod guessed_tempo;
 pub mod health;
-pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
-pub mod monoclip;
 pub mod output_status;
-pub mod pilot;
-pub mod sample_source;
 pub(crate) mod song_loop;
 
 // Re-export the format types for backward compatibility
@@ -51,15 +46,6 @@ static SOURCE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Returns the next unique source ID for the mixer. Used by both song play_from and sample engine.
 pub fn next_source_id() -> u64 {
     SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-/// How many samples `duration` lasts at `sample_rate`, to the nearest one
-/// (half a sample rounds up). Every conversion of a time to a sample count
-/// goes through this, so two that should agree, such as a loop boundary and
-/// the crossfade scheduled on it, never differ by a sample from rounding
-/// one way here and the other there.
-pub fn duration_to_samples(duration: std::time::Duration, sample_rate: u32) -> u64 {
-    (duration.as_secs_f64() * sample_rate as f64).round() as u64
 }
 
 /// Type alias for the channel sender used to add sources to the mixer.

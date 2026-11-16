@@ -164,24 +164,7 @@ where
     times.iter().map(|time| sampled[time].clone()).collect()
 }
 
-/// The shows a song registers: every show its `.light` files hold, in file
-/// order and then their order in the file, as the player has them -- the
-/// order same-time cues from different shows fire in. Empty when the song
-/// has no DSL lighting loaded. Their palette slots are the song's: the show's
-/// default, or the colour the song's own `palette:` overrides it with (not a
-/// playlist entry's, which only a play of the song from that entry has).
-pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    crate::lighting::parser::resolve_shows(shows_in(song.dsl_lighting_shows()), song.palette())
-}
-
-/// [`registered_shows`] of a song's `.light` files, for a song still being
-/// built from them.
-pub fn shows_in(files: &[crate::songs::DslLightingShow]) -> Vec<LightShow> {
-    files
-        .iter()
-        .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-        .collect()
-}
+pub use crate::songs::{registered_shows, shows_in};
 
 /// An offline evaluation against the loaded lighting system, plus what the
 /// system says about how the shows reach the rig.

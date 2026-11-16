@@ -16,19 +16,27 @@ publish = false
 # shares (see crates/mtrack-rules-wasm).
 tsify = ["dep:tsify-next", "dep:wasm-bindgen"]
 # What the player's own tests reach for in this crate's modules.
-test-util = []
+test-util = ["dep:hound"]
 
 [dependencies]
 config = "0.15.19"
 hostname = "0.4"
+# Writes the WAV files tests are made of (the `test-util` feature).
+hound = { version = "3.5.1", optional = true }
 indexmap = { version = "2", features = ["serde"] }
 midly = "0.5.3"
 parking_lot = "0.12"
 pest = "2.8"
 pest_derive = "2.8"
+rand = "0.10"
+rayon = "1.11.0"
+rtrb = "0.3"
+rubato = "3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 strum = { version = "0.28", features = ["derive"] }
+# Decodes audio files: a song's length and channels are read from them.
+symphonia = { version = "0.6", features = ["all"] }
 thiserror = "2.0.18"
 # The blocking pool, for the file writes a server makes from async code.
 tokio = { version = "1.50.0", features = ["rt"] }
@@ -39,5 +47,6 @@ tsify-next = { version = "0.5", default-features = false, features = ["js"], opt
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
+hound = "3.5.1"
 serial_test = "3.4.0"
 tempfile = "3.26.0"

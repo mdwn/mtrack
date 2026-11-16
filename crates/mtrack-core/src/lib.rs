@@ -17,9 +17,16 @@
 
 pub mod audio;
 pub mod config;
+pub mod dmx;
 pub mod lighting;
+pub mod midi;
+pub mod playlist;
 pub mod position;
 pub mod section_loop;
+pub mod song_cache;
 pub mod songs;
 pub mod tempo;
+#[cfg(any(test, feature = "test-util"))]
+pub mod testutil;
 pub mod util;
+pub mod webui;

@@ -14,8 +14,46 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
-use super::universe::{dim_rate, dim_step, DEFAULT_DIM_TICKS};
+/// The frames a second the effects loop and the universe threads run at.
+pub const FRAMES_PER_SECOND: u64 = 44;
+
+/// The target number of updates per second: [`FRAMES_PER_SECOND`].
+pub const TARGET_HZ: f64 = FRAMES_PER_SECOND as f64;
+
+/// The ticks a full transition takes before any dimming time is set, and
+/// under none: one, so a write lands next tick.
+pub const DEFAULT_DIM_TICKS: f64 = 1.0;
+
+/// A MIDI DMX dimming time as the ticks a full transition takes, at
+/// [[`TARGET_HZ`]]: one tick for none.
+pub fn dim_ticks(dimming: Duration) -> f64 {
+    if dimming.is_zero() {
+        DEFAULT_DIM_TICKS
+    } else {
+        dimming.as_secs_f64() * TARGET_HZ
+    }
+}
+
+/// What a MIDI DMX channel moves a tick, dimming from `current` to `target`
+/// over `ticks`; over none, infinite (or no number), which [`dim_step`] and
+/// `dimmed_at` take to the target at once.
+pub fn dim_rate(current: f64, target: f64, ticks: f64) -> f64 {
+    (target - current) / ticks
+}
+
+/// Where a MIDI DMX channel at `current`, moving `rate` a tick, is a tick
+/// on: at `target` once there, or at once with no rate (an instant write).
+pub fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
+    if rate > 0.0 {
+        (current + rate).min(target)
+    } else if rate == 0.0 {
+        target
+    } else {
+        (current + rate).max(target)
+    }
+}
 
 /// Stores an f64 in an AtomicU64 via bit representation.
 fn store_f64(atom: &AtomicU64, val: f64) {
@@ -283,7 +321,7 @@ impl MidiDmxStore {
     }
 
     /// Returns true if any slot has been written to.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn has_active_slots(&self) -> bool {
         self.slots.iter().any(|s| s.active.load(Ordering::Relaxed))
     }
@@ -362,7 +400,6 @@ impl MidiDmxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dmx::universe::{dim_ticks, TARGET_HZ};
     use std::time::Duration;
 
     /// A store with one slot at (1, 1), dimming over `ticks` frames.

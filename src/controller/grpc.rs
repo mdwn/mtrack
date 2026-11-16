@@ -33,6 +33,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use tonic_health::pb::health_server::{Health, HealthServer};
 use tracing::{info, span, Level};
 
+use crate::songs::SongProto;
 use crate::util::FaultKind;
 
 use crate::{

@@ -30,8 +30,8 @@ static EFFECT_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// two cues' ids either side of it (#669). Never back: other tests take ids
 /// from the counter at the same time, and must not be given ones already
 /// out.
-#[cfg(test)]
-pub(crate) fn advance_effect_id_counter_short_of_power_of_ten(short_by: u64) -> u64 {
+#[cfg(any(test, feature = "test-util"))]
+pub fn advance_effect_id_counter_short_of_power_of_ten(short_by: u64) -> u64 {
     let mut boundary = 0;
     EFFECT_ID_COUNTER
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -184,7 +184,7 @@ fn fire<'a>(
 
 /// How an effect a show fires really ends (see [`effect_ends`]).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct EffectEnd {
+pub struct EffectEnd {
     /// The cue that fired it, by its place among the cues given.
     pub cue: usize,
     /// Its place among that cue's effects.
@@ -214,7 +214,7 @@ impl EffectEnd {
 /// two groups that share a fixture keep both moves on it. The show's end,
 /// the lint and the analysis all take an effect's end from here. An effect a
 /// stopped sequence never fires has none.
-pub(crate) fn effect_ends<'a>(cues: impl IntoIterator<Item = &'a Cue>) -> Vec<EffectEnd> {
+pub fn effect_ends<'a>(cues: impl IntoIterator<Item = &'a Cue>) -> Vec<EffectEnd> {
     let cues: Vec<&Cue> = cues.into_iter().collect();
     // In time order, same-time cues as given, as the timeline sorts them.
     let mut order: Vec<usize> = (0..cues.len()).collect();
@@ -334,7 +334,7 @@ impl LightingTimeline {
     }
 
     /// Creates a new lighting timeline from DSL cues (for testing)
-    pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
+    pub fn new_with_cues(cues: Vec<Cue>) -> Self {
         let mut timeline = Self {
             cues,
             current_time: Duration::ZERO,
@@ -549,7 +549,7 @@ impl LightingTimeline {
     /// When each effect the show cues ends of itself or is cut short, as the
     /// show's end reckons it (see [`effect_ends`]); one left frozen for good
     /// never does, and is not here.
-    pub(crate) fn effect_ends(&self) -> Vec<Duration> {
+    pub fn effect_ends(&self) -> Vec<Duration> {
         effect_ends(&self.cues)
             .into_iter()
             .filter_map(|end| end.end)

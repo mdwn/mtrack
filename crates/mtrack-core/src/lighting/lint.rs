@@ -654,7 +654,7 @@ const PAST_END_TOLERANCE: Duration = Duration::from_millis(25);
 /// tens of milliseconds, so nothing that short can be seen, and a list padded
 /// with them hides the one window that matters (#534). A millisecond is well
 /// under a frame and well over any rounding.
-pub(crate) const MIN_REPORTED_SPAN: Duration = Duration::from_millis(1);
+pub const MIN_REPORTED_SPAN: Duration = Duration::from_millis(1);
 
 /// When a replace-blend effect starts and ends, and the effect itself.
 type Span<'a> = (Duration, Duration, &'a Effect);

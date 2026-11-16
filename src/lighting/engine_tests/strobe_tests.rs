@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::lighting::effects::*;
-use crate::lighting::engine::tests::common::create_test_fixture;
 use crate::lighting::engine::EffectEngine;
+use crate::testutil::lighting::create_test_fixture;
 use std::collections::HashMap;
 use std::time::Duration;
 

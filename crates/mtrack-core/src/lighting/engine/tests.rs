@@ -36,8 +36,6 @@ mod formatting_tests;
 #[cfg(test)]
 mod layer_commands_tests;
 #[cfg(test)]
-mod loop_crossfade_tests;
-#[cfg(test)]
 mod pulse_tests;
 #[cfg(test)]
 mod rainbow_tests;
@@ -47,8 +45,6 @@ mod seeking_tests;
 mod sequence_and_layer_control_tests;
 #[cfg(test)]
 mod static_effect_tests;
-#[cfg(test)]
-mod strobe_tests;
 #[cfg(test)]
 mod tempo_aware_tests;
 #[cfg(test)]

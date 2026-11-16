@@ -22,7 +22,7 @@ pub use crate::{patch, tempo};
 #[path = "../../mtrack-core/src/lighting/channels.rs"]
 pub mod channels;
 pub mod effects;
-#[path = "../../../src/lighting/findings.rs"]
+#[path = "../../mtrack-core/src/lighting/findings.rs"]
 pub mod findings;
 #[path = "../../../src/lighting/fit/types.rs"]
 mod fit_types;

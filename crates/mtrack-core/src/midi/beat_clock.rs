@@ -19,7 +19,7 @@ use super::playback::{MidiTiming, TempoWalk};
 const CLOCKS_PER_BEAT: u64 = 24;
 
 /// Pre-computed MIDI beat clock: a list of absolute timestamps for each 0xF8 tick.
-pub(crate) struct PrecomputedBeatClock {
+pub struct PrecomputedBeatClock {
     /// Absolute timestamps for each clock tick.
     ticks: Vec<Duration>,
 }
@@ -30,8 +30,8 @@ impl PrecomputedBeatClock {
     /// Walks through the tempo map, computing the absolute time of every clock tick
     /// (24 per quarter note). Between tempo changes, ticks are evenly spaced at the
     /// current tempo's interval.
-    #[cfg(test)]
-    pub(crate) fn from_tempo_info(
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn from_tempo_info(
         tempo_map: &[super::playback::TempoEntry],
         ticks_per_beat: u16,
         total_ticks: u64,
@@ -40,8 +40,8 @@ impl PrecomputedBeatClock {
     }
 
     /// [`Self::from_timing_until`] for a tempo map given as its parts.
-    #[cfg(test)]
-    pub(crate) fn from_tempo_info_until(
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn from_tempo_info_until(
         tempo_map: &[super::playback::TempoEntry],
         ticks_per_beat: u16,
         total_ticks: u64,
@@ -103,7 +103,7 @@ impl PrecomputedBeatClock {
     }
 
     /// Returns the slice of ticks starting from the first tick at or after `start_time`.
-    pub(crate) fn ticks_from(&self, start_time: Duration) -> &[Duration] {
+    pub fn ticks_from(&self, start_time: Duration) -> &[Duration] {
         let idx = self.ticks.partition_point(|t| *t < start_time);
         &self.ticks[idx..]
     }

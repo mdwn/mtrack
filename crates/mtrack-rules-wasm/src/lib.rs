@@ -56,7 +56,7 @@ pub mod tempo_config;
 pub mod metronome_config;
 
 /// The player's beat grid (`src/audio/beat_grid.rs`).
-#[path = "../../../src/audio/beat_grid.rs"]
+#[path = "../../mtrack-core/src/audio/beat_grid.rs"]
 #[allow(dead_code)]
 pub mod beat_grid;
 
@@ -120,7 +120,7 @@ pub mod guessed_tempo;
 mod ambient_mode;
 
 /// Whose ambient settings are up (`src/playlist/ambient_source.rs`).
-#[path = "../../../src/playlist/ambient_source.rs"]
+#[path = "../../mtrack-core/src/playlist/ambient_source.rs"]
 mod ambient_source;
 
 /// Where a mover points (`src/state/pose.rs`).
