@@ -112,6 +112,25 @@ void main() {
     expect(await two, bytesOf('two'));
   });
 
+  test('fetches go in the order asked, whatever the cache\'s pace', () async {
+    final slow = _SlowFirstRead(() async => root);
+    final ordered = LightingAssets(
+      client: () => client,
+      isReady: () => ready,
+      cache: slow,
+    )..linkChanged(ready: true);
+    addTearDown(ordered.dispose);
+    fake.assets = {'a/one.glb': bytesOf('one'), 'a/two.glb': bytesOf('two')};
+    final one = ordered.get('a/one.glb');
+    final two = ordered.get('a/two.glb');
+    await pump();
+    expect(fake.assetsAsked, isEmpty, reason: 'the first lookup is not over');
+    slow.release.complete();
+    expect(await one, bytesOf('one'));
+    expect(await two, bytesOf('two'));
+    expect(fake.assetsAsked, ['a/one.glb', 'a/two.glb']);
+  });
+
   test('two asks for one asset share its fetch', () async {
     fake.assets = {'a/one.glb': bytesOf('one')};
     final results = await Future.wait([
@@ -257,4 +276,21 @@ void main() {
     expect(assets.tooOld, isFalse);
     expect(assets.failures, 0);
   });
+}
+
+/// A cache whose first read does not answer until [release] is completed.
+class _SlowFirstRead extends LightingAssetCache {
+  _SlowFirstRead(super.directory);
+
+  final Completer<void> release = Completer<void>();
+  bool _held = false;
+
+  @override
+  Future<Uint8List?> read(String path) async {
+    if (!_held) {
+      _held = true;
+      await release.future;
+    }
+    return super.read(path);
+  }
 }
