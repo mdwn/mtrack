@@ -24,8 +24,9 @@
 #   app   the phone app's own checks: format, analyze, test (and its build)
 #
 # The web UI is more than src/webui: its rules module is a WebAssembly build of
-# crates/mtrack-rules-wasm, which takes files from the player's own source by
-# `#[path]`. Those are read from the crate here, so the list cannot fall behind
+# crates/mtrack-rules-wasm, which takes files from the player's own source and
+# from crates/mtrack-core by `#[path]`. (Anything under crates/ counts for the
+# web UI already, so only the files under src/ need finding.) Those are read from the crate here, so the list cannot fall behind
 # it. A file taken that way may declare modules of its own, which live in the
 # directory named after it, so that directory counts too.
 #

@@ -21,6 +21,9 @@ default = ["tsify"]
 # the same feature (as a no-op) so the `cfg_attr` in the shared sources is a
 # known one there.
 tsify = []
+# What the player's tests reach for in the sources `mtrack-core` shares; a
+# no-op here, declared so the `cfg` in those sources is a known one.
+test-util = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

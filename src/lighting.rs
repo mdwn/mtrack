@@ -12,26 +12,24 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+pub use mtrack_core::lighting::{channels, effects, fixture_data, geometry, parser, types};
+
 pub mod analyze;
 pub mod asset_store;
 pub mod brightness_changes;
-pub mod channels;
 #[cfg(test)]
 mod consistency_tests;
 pub mod diff;
 pub mod distill;
-pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod export;
 pub mod files;
 pub mod findings;
 pub mod fit;
-pub mod fixture_data;
 pub mod fixture_patch;
 pub mod fixture_test;
 pub mod gdtf;
-pub mod geometry;
 #[cfg(test)]
 mod golden_tests;
 pub mod import;
@@ -41,7 +39,8 @@ pub mod library;
 pub mod lint;
 pub mod mvr;
 pub mod mvr_types;
-pub mod parser;
+#[cfg(test)]
+mod parser_tests;
 pub mod patch;
 pub mod project_files;
 pub mod readiness;
@@ -51,7 +50,6 @@ pub mod system;
 // re-exported here so existing `lighting::tempo::…` paths keep working.
 pub use crate::tempo;
 pub mod timeline;
-pub mod types;
 pub mod validation;
 pub mod venue_patch;
 pub mod venue_rows;

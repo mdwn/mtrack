@@ -257,6 +257,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The player's hardware-free code is a crate of its own, `mtrack-core`** (`crates/mtrack-core`):
+  the configuration files' types and loaders, tempo maps, positions, the light show language (its
+  parser, effects and fixture types) and the file helpers they share moved there from `src/`,
+  unchanged, and the player re-exports each module at the path it had, so nothing that uses `mtrack`
+  sees a difference. The crate builds with no audio, MIDI, DMX or Bluetooth library, and CI holds it
+  to that. A log line from the moved code names `mtrack_core::…` as its target where it named
+  `mtrack::…`; the default filter (`mtrack=info`) takes both. It is not on crates.io: it must be
+  published there before the next `mtrack` release, because crates.io takes no crate whose
+  dependency it does not have.
 - **The web UI's light view reads the gRPC stream `WatchStage`**: the stage plot, the 3D view,
   the fixture test and the lighting editor's live plan now take the stage (the venue's fixtures,
   their values, poses and cells) from the same gRPC-Web stream the phone app uses, instead of the

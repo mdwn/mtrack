@@ -11,20 +11,20 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! The modules of the player's `src/lighting/effects` the parser needs:
+//! The modules of the player's `crates/mtrack-core/src/lighting/effects` the parser needs:
 //! colours, tempo-aware rates and the effect types. The player's
 //! `effects.rs` also carries the fixture, state and pointing modules,
 //! which build on the venue and are not the parser's.
 
-#[path = "../../../../src/lighting/effects/color.rs"]
+#[path = "../../../mtrack-core/src/lighting/effects/color.rs"]
 mod color;
-#[path = "../../../../src/lighting/effects/error.rs"]
+#[path = "../../../mtrack-core/src/lighting/effects/error.rs"]
 mod error;
-#[path = "../../../../src/lighting/effects/pointing.rs"]
+#[path = "../../../mtrack-core/src/lighting/effects/pointing.rs"]
 mod pointing;
-#[path = "../../../../src/lighting/effects/tempo_aware.rs"]
+#[path = "../../../mtrack-core/src/lighting/effects/tempo_aware.rs"]
 mod tempo_aware;
-#[path = "../../../../src/lighting/effects/types.rs"]
+#[path = "../../../mtrack-core/src/lighting/effects/types.rs"]
 mod types;
 
 pub use color::{Color, NAMED_COLORS};

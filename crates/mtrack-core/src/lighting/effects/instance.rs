@@ -1,0 +1,567 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use std::time::{Duration, Instant};
+
+use super::types::{BlendMode, EffectLayer, EffectType, DEFAULT_BLEND, DEFAULT_LAYER};
+
+/// How far through a fade of `duration` it is `elapsed` in: from 0 at its
+/// start to 1 at its end, held there after (and from the start of one with
+/// no duration), as [`crossfade_progress`] counts a loop's crossfade.
+///
+/// [`crossfade_progress`]: crate::section_loop::crossfade_progress
+pub fn fade_progress(elapsed: Duration, duration: Duration) -> f64 {
+    crate::section_loop::crossfade_progress(elapsed, duration).clamp(0.0, 1.0)
+}
+
+/// An instance of an effect with timing and targeting information.
+/// All effects have a finite duration — there are no perpetual or permanent effects.
+#[derive(Debug, Clone)]
+pub struct EffectInstance {
+    pub id: String,
+    pub effect_type: EffectType,
+    pub target_fixtures: Vec<String>, // Fixture names or group names
+    pub priority: u8,                 // Higher priority overrides lower
+    pub layer: EffectLayer,           // Layer for layering system
+    pub blend_mode: BlendMode,        // How to blend with other effects
+    pub start_time: Option<Instant>,  // Real-time instant when effect started
+    pub cue_time: Option<Duration>, // Song time when effect was supposed to start (for deterministic randomness)
+    pub up_time: Option<Duration>,  // Fade in duration (0% to 100%)
+    pub hold_time: Option<Duration>, // Time at full intensity (100%)
+    pub down_time: Option<Duration>, // Fade out duration (100% to 0%)
+    pub enabled: bool,
+    /// `per: cell`: targets expand to their cells when the effect starts
+    /// (design §17.3).
+    pub per_cell: bool,
+    /// Phase spread in degrees across the ordered targets, for `rainbow`
+    /// and `cycle`; zero keeps them in phase.
+    pub spread: f64,
+    /// For a `move` without `from`: each target's pose when the effect
+    /// started, captured from the engine's pose memory. Empty otherwise.
+    pub start_poses: std::collections::HashMap<String, super::pointing::Pose>,
+    /// The show `offset` at this effect's cue, in seconds: the tempo map its
+    /// tempo-aware speed or frequency is read against is shifted by it, as
+    /// the cue times were (#525).
+    pub tempo_offset_secs: f64,
+    /// Song time this cued effect has spent on a frozen layer: it renders
+    /// on song time less this, so it resumes where it stopped and keeps to
+    /// the song after.
+    pub score_frozen: Duration,
+    /// Where the effect was when its layer's speed master last changed: its
+    /// base elapsed (score time less time frozen) and its own elapsed then.
+    /// A speed change applies from there on, so the look carries on faster
+    /// or slower from where it was rather than jumping. Zero for an effect
+    /// started since, which runs at its layer's speed from its cue.
+    pub speed_from: Duration,
+    pub elapsed_from: Duration,
+    /// Rendered on engine time even when the frame has a song time: the
+    /// effect has been through a layer freeze with no song time to measure
+    /// it by, whose unfreeze shifts its `start_time` so it resumes where it
+    /// stopped -- song time ran on meanwhile, so rendering on it would jump.
+    pub engine_timed: bool,
+    /// The sequences this effect was cued through, innermost first, if
+    /// any: `stop sequence` takes out the effects cued through that
+    /// sequence by name, and only those.
+    pub sequences: Vec<String>,
+    /// When the engine started this effect, among every effect any engine
+    /// in the process has started: the last tie-break between effects on
+    /// one layer at one priority, start time and cue time, so the one
+    /// started later goes on top (#669). Zero until it starts.
+    pub start_order: u64,
+}
+
+impl EffectInstance {
+    pub fn new(
+        id: String,
+        effect_type: EffectType,
+        target_fixtures: Vec<String>,
+        up_time: Option<Duration>,
+        hold_time: Option<Duration>,
+        down_time: Option<Duration>,
+    ) -> Self {
+        let hold_time = hold_time.or_else(|| effect_type.default_hold());
+        Self {
+            id,
+            effect_type,
+            target_fixtures,
+            priority: 0,
+            layer: DEFAULT_LAYER,
+            blend_mode: DEFAULT_BLEND,
+            start_time: None,
+            cue_time: None,
+            up_time,
+            hold_time,
+            down_time,
+            enabled: true,
+            per_cell: false,
+            spread: 0.0,
+            start_poses: std::collections::HashMap::new(),
+            tempo_offset_secs: 0.0,
+            score_frozen: Duration::ZERO,
+            speed_from: Duration::ZERO,
+            elapsed_from: Duration::ZERO,
+            engine_timed: false,
+            sequences: Vec::new(),
+            start_order: 0,
+        }
+    }
+
+    /// Whether this effect was cued through the sequence `name`, directly
+    /// or inside another: by its name exactly, so stopping `verse` leaves
+    /// `verse_two` running (#591).
+    pub fn is_from_sequence(&self, name: &str) -> bool {
+        self.sequences.iter().any(|s| s == name)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_timing(mut self, start_time: Option<Instant>, hold_time: Option<Duration>) -> Self {
+        self.start_time = start_time;
+        self.hold_time = hold_time;
+        self
+    }
+
+    /// Calculate the crossfade multiplier for this effect at the given elapsed time.
+    /// All effects have a finite up/hold/down lifecycle.
+    pub fn calculate_crossfade_multiplier(&self, elapsed: Duration) -> f64 {
+        let up_time = self.up_time.unwrap_or(Duration::ZERO);
+        let hold_time = self.hold_time.unwrap_or(Duration::ZERO);
+        let down_time = self.down_time.unwrap_or(Duration::ZERO);
+
+        let up_end = up_time;
+        let hold_end = up_time + hold_time;
+        let total_end = up_time + hold_time + down_time;
+
+        // Small epsilon to make boundary checks inclusive and avoid flapping
+        let eps = Duration::from_micros(1);
+
+        if !up_time.is_zero() && elapsed < up_end + eps {
+            // Fade in phase (0% to 100%)
+            fade_progress(elapsed, up_time)
+        } else if elapsed <= hold_end + eps {
+            // Hold phase (100%)
+            1.0
+        } else if !down_time.is_zero() && elapsed < total_end + eps {
+            // Fade out phase (100% to 0%)
+            1.0 - fade_progress(elapsed.saturating_sub(hold_end), down_time)
+        } else if elapsed > total_end + eps {
+            // Effect has ended
+            0.0
+        } else {
+            1.0
+        }
+    }
+
+    /// How long the effect lasts (see [`EffectType::total_duration`]).
+    pub fn total_duration(&self) -> Duration {
+        self.effect_type
+            .total_duration(self.up_time, self.hold_time, self.down_time)
+    }
+
+    /// Whether the effect has run its course at `elapsed` of its own time:
+    /// exactly at its end, not a margin before it. A microsecond's grace
+    /// used to retire every effect early, so one ending on the downbeat the
+    /// next cue starts on left the rig dark for that microsecond (#536).
+    /// Cued effects are judged on score time, which is exact, and an expired
+    /// effect is removed, so there is nothing to flap.
+    pub fn has_reached_terminal_state(&self, elapsed: Duration) -> bool {
+        elapsed >= self.total_duration()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::lighting::effects::color::Color;
+    use crate::lighting::effects::tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
+    use crate::lighting::effects::types::{
+        ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,
+    };
+
+    fn static_effect(duration: Duration) -> EffectType {
+        EffectType::Static {
+            parameters: HashMap::new(),
+            duration,
+        }
+    }
+
+    fn dimmer_effect(start: f64, end: f64, dur: Duration) -> EffectType {
+        EffectType::Dimmer {
+            start_level: start,
+            end_level: end,
+            duration: dur,
+            curve: DimmerCurve::Linear,
+        }
+    }
+
+    fn strobe_effect(duration: Duration) -> EffectType {
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(10.0),
+            duration,
+        }
+    }
+
+    fn color_cycle_effect(duration: Duration) -> EffectType {
+        EffectType::ColorCycle {
+            colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Fade,
+            duration,
+        }
+    }
+
+    fn chase_effect(duration: Duration) -> EffectType {
+        EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+            duration,
+        }
+    }
+
+    fn rainbow_effect(duration: Duration) -> EffectType {
+        EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(0.5),
+            saturation: 1.0,
+            brightness: 1.0,
+            duration,
+        }
+    }
+
+    fn make_instance(effect_type: EffectType) -> EffectInstance {
+        EffectInstance::new(
+            "test".to_string(),
+            effect_type,
+            vec!["fixture1".to_string()],
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn make_instance_timed(
+        effect_type: EffectType,
+        up: Option<Duration>,
+        hold: Option<Duration>,
+        down: Option<Duration>,
+    ) -> EffectInstance {
+        EffectInstance::new(
+            "test".to_string(),
+            effect_type,
+            vec!["fixture1".to_string()],
+            up,
+            hold,
+            down,
+        )
+    }
+
+    // ── new — timing defaults ──────────────────────────────────────
+
+    #[test]
+    fn new_static_sets_hold_from_duration() {
+        let inst = make_instance(static_effect(Duration::from_secs(5)));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn new_strobe_sets_hold_from_duration() {
+        let inst = make_instance(strobe_effect(Duration::from_secs(3)));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn new_color_cycle_sets_hold_from_duration() {
+        let inst = make_instance(color_cycle_effect(Duration::from_secs(10)));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn new_dimmer_no_default_timing() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(3)));
+        assert!(inst.up_time.is_none());
+        assert!(inst.hold_time.is_none());
+        assert!(inst.down_time.is_none());
+    }
+
+    #[test]
+    fn new_defaults_layer_and_blend() {
+        let inst = make_instance(static_effect(Duration::from_secs(5)));
+        assert_eq!(inst.layer, EffectLayer::BACKGROUND);
+        assert_eq!(inst.blend_mode, BlendMode::Replace);
+        assert_eq!(inst.priority, 0);
+        assert!(inst.enabled);
+    }
+
+    #[test]
+    fn new_with_user_timing_overrides() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(1)),
+        );
+        assert_eq!(inst.up_time, Some(Duration::from_secs(1)));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(2)));
+        assert_eq!(inst.down_time, Some(Duration::from_secs(1)));
+    }
+
+    // ── calculate_crossfade_multiplier ─────────────────────────────
+
+    #[test]
+    fn crossfade_hold_only() {
+        let inst = make_instance(static_effect(Duration::from_secs(2)));
+        // hold=2s → at t=0 → 1.0, at t=1s → 1.0, at t=3s → 0.0
+        assert!((inst.calculate_crossfade_multiplier(Duration::ZERO) - 1.0).abs() < 1e-9);
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(1)) - 1.0).abs() < 1e-9);
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(3)) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_with_hold_and_down() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            None,
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+        );
+        // hold=1s, down=2s → hold_end=1s, total_end=3s
+        // At t=2s → 1s into 2s fade-out → 0.5
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(2));
+        assert!((mult - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_fade_in_phase() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        // At t=1s, midway through 2s fade-in → 0.5
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(1));
+        assert!((mult - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_hold_phase_after_fade_in() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        // After 1s fade-in, at t=2s → in hold phase → 1.0
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(2));
+        assert!((mult - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_fade_out_phase() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            None,
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+        );
+        // hold=1s, down=2s → hold_end=1s, total_end=3s
+        // At t=2s → 1s into 2s fade-out → 0.5
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(2));
+        assert!((mult - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_after_total_end() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(1)),
+        );
+        // total = 3s, at t=4s → 0.0
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(4));
+        assert!((mult - 0.0).abs() < 1e-9);
+    }
+
+    // ── total_duration ─────────────────────────────────────────────
+
+    #[test]
+    fn total_duration_static() {
+        let inst = make_instance(static_effect(Duration::from_secs(5)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn total_duration_static_with_up_down() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+            None, // hold defaults to effect duration
+            Some(Duration::from_secs(1)),
+        );
+        // up(1) + hold(5) + down(1) = 7
+        assert_eq!(inst.total_duration(), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn total_duration_dimmer() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(3)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn total_duration_strobe() {
+        let inst = make_instance(strobe_effect(Duration::from_secs(5)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn total_duration_color_cycle() {
+        let inst = make_instance(color_cycle_effect(Duration::from_secs(10)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn total_duration_chase() {
+        let inst = make_instance(chase_effect(Duration::from_secs(8)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn total_duration_rainbow() {
+        let inst = make_instance(rainbow_effect(Duration::from_secs(6)));
+        assert_eq!(inst.total_duration(), Duration::from_secs(6));
+    }
+
+    #[test]
+    fn total_duration_with_timing_override() {
+        let inst = make_instance_timed(
+            static_effect(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(1)),
+        );
+        // up(1) + hold(2, overridden) + down(1) = 4
+        assert_eq!(inst.total_duration(), Duration::from_secs(4));
+    }
+
+    // ── has_reached_terminal_state ─────────────────────────────────
+
+    #[test]
+    fn terminal_dimmer_zero_duration() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::ZERO));
+        assert!(inst.has_reached_terminal_state(Duration::ZERO));
+    }
+
+    #[test]
+    fn terminal_dimmer_at_end() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(2)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn terminal_dimmer_not_yet() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(2)));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn terminal_static_at_end() {
+        let inst = make_instance(static_effect(Duration::from_secs(3)));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(2)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn terminal_strobe_at_end() {
+        let inst = make_instance(strobe_effect(Duration::from_secs(2)));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn terminal_color_cycle_at_end() {
+        let inst = make_instance(color_cycle_effect(Duration::from_secs(5)));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(3)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(5)));
+    }
+
+    // ── builder helpers ────────────────────────────────────────────
+
+    #[test]
+    fn with_priority_sets_priority() {
+        let inst = make_instance(static_effect(Duration::from_secs(5))).with_priority(5);
+        assert_eq!(inst.priority, 5);
+    }
+
+    #[test]
+    fn with_timing_sets_fields() {
+        let now = Instant::now();
+        let inst = make_instance(static_effect(Duration::from_secs(5)))
+            .with_timing(Some(now), Some(Duration::from_secs(10)));
+        assert_eq!(inst.start_time, Some(now));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(10)));
+    }
+
+    // ── fade_progress ──────────────────────────────────────────────
+
+    #[test]
+    fn fade_progress_runs_from_zero_to_one_and_holds() {
+        let fade = Duration::from_millis(400);
+        assert_eq!(fade_progress(Duration::ZERO, fade), 0.0);
+        assert_eq!(
+            fade_progress(Duration::from_millis(100), fade).to_bits(),
+            (0.1f64 / 0.4f64).to_bits()
+        );
+        assert_eq!(fade_progress(Duration::from_millis(400), fade), 1.0);
+        assert_eq!(fade_progress(Duration::from_secs(3), fade), 1.0);
+        // No fade is over at once.
+        assert_eq!(fade_progress(Duration::ZERO, Duration::ZERO), 1.0);
+    }
+
+    #[test]
+    fn fade_out_level_is_the_same_with_and_without_a_fade_in() {
+        let hold = Duration::from_secs(2);
+        let down = Duration::from_secs(1);
+        let mut without = make_instance(static_effect(Duration::from_secs(2)));
+        without.hold_time = Some(hold);
+        without.down_time = Some(down);
+        let mut with = make_instance(static_effect(Duration::from_secs(2)));
+        with.up_time = Some(Duration::from_millis(500));
+        with.hold_time = Some(hold);
+        with.down_time = Some(down);
+        for ms in [0, 250, 500, 1000, 2000, 2250, 2500, 2999, 3000, 3001] {
+            let at = Duration::from_millis(ms);
+            let shifted = at + Duration::from_millis(500);
+            assert_eq!(
+                without.calculate_crossfade_multiplier(at).to_bits(),
+                with.calculate_crossfade_multiplier(shifted).to_bits(),
+                "at {ms}ms"
+            );
+        }
+        assert_eq!(
+            with.calculate_crossfade_multiplier(Duration::from_millis(250)),
+            0.5
+        );
+    }
+}

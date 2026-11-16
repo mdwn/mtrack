@@ -14,7 +14,7 @@
 
 // The stage rig math, checked as plain numbers (no browser): the pose and
 // mounting conventions the 3D view relies on, pinned against the Rust
-// pointing math in src/lighting/effects/pointing.rs.
+// pointing math in crates/mtrack-core/src/lighting/effects/pointing.rs.
 
 import type { RigModel } from "../../src/gen/rules/mtrack_rules";
 import { test, expect } from "@playwright/test";

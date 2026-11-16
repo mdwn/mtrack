@@ -1,0 +1,598 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+use std::{error::Error, time::Duration};
+
+pub use super::midi_event::{
+    Aftertouch, ChannelAftertouch, ControlChange, MidiEvent as Event, NoteOff, NoteOn, PitchBend,
+    ProgramChange,
+};
+use midly::{
+    live::LiveEvent,
+    num::{u14, u4, u7},
+};
+use serde::{Deserialize, Serialize};
+
+const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
+
+/// A YAML representation of the MIDI configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Midi {
+    /// The MIDI device.
+    device: String,
+
+    /// Controls how long to wait before playback of a MIDI file starts.
+    #[serde(default)]
+    playback_delay: Option<String>,
+
+    /// Enable MIDI beat clock output (24 ppqn timing clock).
+    #[serde(default)]
+    beat_clock: Option<bool>,
+
+    /// Keep the beat clock free-running at the last known tempo once a song
+    /// stops, until the next song starts. Only meaningful when `beat_clock` is
+    /// enabled.
+    #[serde(default)]
+    persist_tempo: Option<bool>,
+
+    /// What the beat clock does where a loop goes back (a section loop's
+    /// jump, a looping song's next pass). Only meaningful when `beat_clock`
+    /// is enabled.
+    #[serde(default)]
+    beat_clock_seams: Option<BeatClockSeams>,
+}
+
+/// What the beat clock does where a loop goes back.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BeatClockSeams {
+    /// Its pulses run straight on through the seam, from the first in the
+    /// stretch gone back to; nothing else is sent. Gear counting pulses
+    /// counts on past the loop.
+    #[default]
+    RunThrough,
+    /// Stop, then a Song Position Pointer to where the loop goes back to (the
+    /// nearest 16th note) and Continue, or Start at the top of the song, so
+    /// gear that follows song position goes back with it. Some gear treats
+    /// Continue as Start, or cuts its notes at Stop.
+    Relocate,
+}
+
+impl Midi {
+    /// New will create a new MIDI configuration.
+    pub fn new(device: &str, playback_delay: Option<String>) -> Midi {
+        Midi {
+            device: device.to_string(),
+            playback_delay,
+            beat_clock: None,
+            persist_tempo: None,
+            beat_clock_seams: None,
+        }
+    }
+
+    /// Returns the device from the configuration.
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+
+    /// Returns the playback delay from the configuration.
+    pub fn playback_delay(&self) -> Result<Duration, Box<dyn Error>> {
+        super::parse_playback_delay(&self.playback_delay, DEFAULT_MIDI_PLAYBACK_DELAY)
+    }
+
+    /// Returns whether beat clock output is enabled.
+    pub fn beat_clock(&self) -> bool {
+        self.beat_clock.unwrap_or(false)
+    }
+
+    /// Returns whether the beat clock should keep free-running at the last known
+    /// tempo once a song stops, until the next song starts.
+    pub fn persist_tempo(&self) -> bool {
+        self.persist_tempo.unwrap_or(false)
+    }
+
+    /// What the beat clock does where a loop goes back.
+    pub fn beat_clock_seams(&self) -> BeatClockSeams {
+        self.beat_clock_seams.unwrap_or_default()
+    }
+
+    /// Validates the MIDI configuration for semantic issues.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.device.trim().is_empty() {
+            errors.push("midi device must not be empty".to_string());
+        }
+        errors.extend(super::playback_delay_problem("midi", &self.playback_delay));
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Implementers must convert to a MIDI live event.
+pub trait ToMidiEvent {
+    /// Converts the implementer to a MIDI live event.
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
+}
+
+/// Creates a note on MIDI event.
+#[cfg(any(test, feature = "test-util"))]
+pub fn note_on(channel: u8, key: u8, velocity: u8) -> Event {
+    Event::NoteOn(NoteOn {
+        channel,
+        key,
+        velocity,
+    })
+}
+
+impl ToMidiEvent for Event {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        match self {
+            Event::NoteOff(e) => e.to_midi_event(),
+            Event::NoteOn(e) => e.to_midi_event(),
+            Event::Aftertouch(e) => e.to_midi_event(),
+            Event::ControlChange(e) => e.to_midi_event(),
+            Event::ProgramChange(e) => e.to_midi_event(),
+            Event::ChannelAftertouch(e) => e.to_midi_event(),
+            Event::PitchBend(e) => e.to_midi_event(),
+        }
+    }
+}
+
+impl ToMidiEvent for NoteOff {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::NoteOff {
+                key: parse_u7(self.key)?,
+                vel: parse_u7(self.velocity)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for NoteOn {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::NoteOn {
+                key: parse_u7(self.key)?,
+                vel: parse_u7(self.velocity)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for Aftertouch {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::Aftertouch {
+                key: parse_u7(self.key)?,
+                vel: parse_u7(self.velocity)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for ControlChange {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::Controller {
+                controller: parse_u7(self.controller)?,
+                value: parse_u7(self.value)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for ProgramChange {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::ProgramChange {
+                program: parse_u7(self.program)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for ChannelAftertouch {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::ChannelAftertouch {
+                vel: parse_u7(self.velocity)?,
+            },
+        })
+    }
+}
+
+impl ToMidiEvent for PitchBend {
+    fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        Ok(LiveEvent::Midi {
+            channel: parse_channel(self.channel)?,
+            message: midly::MidiMessage::PitchBend {
+                bend: midly::PitchBend(parse_u14(self.bend)?),
+            },
+        })
+    }
+}
+
+/// Parses a channel from the config. Input is expected to be [1, 16].
+fn parse_channel(channel: u8) -> Result<u4, Box<dyn Error>> {
+    match channel.checked_sub(1).and_then(u4::try_from) {
+        Some(val) => Ok(val),
+        None => Err(format!("error parsing channel: {} is invalid", channel).into()),
+    }
+}
+
+/// Parses a raw u7 value.
+fn parse_u7(raw: u8) -> Result<u7, Box<dyn Error>> {
+    match u7::try_from(raw) {
+        Some(val) => Ok(val),
+        None => Err(format!("error parsing u7 value: {} is invalid", raw).into()),
+    }
+}
+
+// Parses a raw u14 value.
+fn parse_u14(raw: u16) -> Result<u14, Box<dyn Error>> {
+    match u14::try_from(raw) {
+        Some(val) => Ok(val),
+        None => Err(format!("error parsing u14 value: {} is invalid", raw).into()),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use config::{Config, File, FileFormat};
+    use midly::{
+        live::LiveEvent,
+        num::{u14, u4, u7},
+    };
+
+    use crate::config::midi::ToMidiEvent;
+
+    /// The ranges the web UI's editor bounds each field by are the ones
+    /// this parsing takes: both ends of each read, one past either refused.
+    #[test]
+    fn the_editors_ranges_are_what_parsing_takes() {
+        use super::super::midi_event::MidiEventShapes;
+        let shapes = MidiEventShapes::new();
+        for kind in &shapes.kinds {
+            let json = serde_json::to_value(kind).unwrap();
+            for field in json.as_object().unwrap().keys().filter(|k| *k != "type") {
+                let (lo, hi) = shapes.ranges[field.as_str()];
+                let with = |v: i64| -> Option<Result<(), String>> {
+                    let mut json = json.clone();
+                    json[field.as_str()] = v.into();
+                    let event: super::Event = serde_json::from_value(json).ok()?;
+                    Some(event.to_midi_event().map(|_| ()).map_err(|e| e.to_string()))
+                };
+                assert_eq!(with(lo.into()), Some(Ok(())), "{field} at {lo}");
+                assert_eq!(with(hi.into()), Some(Ok(())), "{field} at {hi}");
+                if let Some(result) = with(i64::from(hi) + 1) {
+                    assert!(result.is_err(), "{field} at {}", hi + 1);
+                }
+                if lo > 0 {
+                    assert!(
+                        with(i64::from(lo) - 1).unwrap().is_err(),
+                        "{field} below {lo}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn note_off() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: note_off
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::NoteOff {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn note_on() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: note_on
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::NoteOn {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn aftertouch() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: aftertouch
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::Aftertouch {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn control_change() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: control_change
+            channel: 7
+            controller: 5
+            value: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::Controller {
+                    controller: u7::from(5),
+                    value: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn program_change() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: program_change
+            channel: 7
+            program: 5
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::ProgramChange {
+                    program: u7::from(5),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn channel_aftertouch() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: channel_aftertouch
+            channel: 7
+            velocity: 5
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::ChannelAftertouch { vel: u7::from(5) },
+            },
+        )
+    }
+
+    #[test]
+    fn pitch_bend() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: pitch_bend
+            channel: 7
+            bend: 200
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(u14::from(200)),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn midi_device_and_delay() {
+        let midi = super::Midi::new("my-device", Some("500ms".to_string()));
+        assert_eq!(midi.device(), "my-device");
+        assert_eq!(
+            midi.playback_delay().unwrap(),
+            std::time::Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn midi_playback_delay_default() {
+        let midi = super::Midi::new("dev", None);
+        assert_eq!(midi.playback_delay().unwrap(), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn beat_clock_default_is_false() {
+        let midi = super::Midi::new("dev", None);
+        assert!(!midi.beat_clock());
+    }
+
+    #[test]
+    fn beat_clock_deserialization() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(midi.beat_clock());
+        Ok(())
+    }
+
+    #[test]
+    fn persist_tempo_default_is_false() {
+        let midi = super::Midi::new("dev", None);
+        assert!(!midi.persist_tempo());
+    }
+
+    #[test]
+    fn persist_tempo_deserialization() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+            persist_tempo: true
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(midi.persist_tempo());
+        Ok(())
+    }
+
+    #[test]
+    fn beat_clock_seams_default_runs_through() {
+        let midi = super::Midi::new("dev", None);
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::RunThrough);
+    }
+
+    #[test]
+    fn beat_clock_seams_round_trips() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+            beat_clock_seams: relocate
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::Relocate);
+        let written = serde_json::to_value(&midi)?;
+        assert_eq!(written["beat_clock_seams"], "relocate");
+        let back: super::Midi = serde_json::from_value(written)?;
+        assert_eq!(back.beat_clock_seams(), super::BeatClockSeams::Relocate);
+        let yaml = r#"
+            device: test
+            beat_clock_seams: run_through
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::RunThrough);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_midi_to_dmx_key_is_ignored() -> Result<(), Box<dyn Error>> {
+        // The live MIDI to DMX pass-through is gone. A profile that still
+        // carries its key loads, and the key has no effect.
+        let yaml = r#"
+            device: test
+            midi_to_dmx:
+              - midi_channel: 10
+                universe: "main"
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(midi.device(), "test");
+        let yaml = crate::util::to_yaml_string(&midi)?;
+        assert!(!yaml.contains("midi_to_dmx"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_channel_boundary_values() -> Result<(), Box<dyn Error>> {
+        // Channel 1 (min valid) -> u4(0)
+        let ch = super::parse_channel(1)?;
+        assert_eq!(u8::from(ch), 0);
+
+        // Channel 16 (max valid) -> u4(15)
+        let ch = super::parse_channel(16)?;
+        assert_eq!(u8::from(ch), 15);
+
+        // Channel 17 (out of range) -> error
+        assert!(super::parse_channel(17).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_u7_boundary_values() -> Result<(), Box<dyn Error>> {
+        assert_eq!(u8::from(super::parse_u7(0)?), 0);
+        assert_eq!(u8::from(super::parse_u7(127)?), 127);
+        assert!(super::parse_u7(128).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_u14_boundary_values() -> Result<(), Box<dyn Error>> {
+        assert_eq!(u16::from(super::parse_u14(0)?), 0);
+        assert_eq!(u16::from(super::parse_u14(16383)?), 16383);
+        assert!(super::parse_u14(16384).is_err());
+        Ok(())
+    }
+
+    fn assert_yaml_matches_midi(
+        yaml: String,
+        expected_event: midly::live::LiveEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let event = Config::builder()
+            .add_source(File::from_str(&yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize::<super::Event>()?
+            .to_midi_event()?;
+
+        if expected_event == event {
+            Ok(())
+        } else {
+            Err("expected event did not match".into())
+        }
+    }
+}

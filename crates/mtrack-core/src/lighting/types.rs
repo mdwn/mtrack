@@ -1,0 +1,1241 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+
+pub use super::fixture_data::{
+    Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FunctionStep, GdtfSource,
+    MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Venue, VenueSource,
+};
+pub use super::geometry::Vec3;
+
+/// The variable-strobe function of a fixture's channels: the first
+/// "strobe" function on the "strobe" channel, which the engine drives and
+/// the strobe fields describe.
+pub fn strobe_function(channel_defs: &HashMap<String, ChannelDef>) -> Option<&ChannelFunction> {
+    let def = channel_defs.get(STROBE_CHANNEL)?;
+    def.functions.get(strobe_function_index(def)?)
+}
+
+/// Where [`strobe_function`] is among the strobe channel's functions.
+fn strobe_function_index(def: &ChannelDef) -> Option<usize> {
+    def.functions.iter().position(|f| f.name == STROBE_FUNCTION)
+}
+
+impl Cell {
+    /// Whether the cell has a dimmer of its own (see
+    /// [`has_dimmer_channel`](crate::lighting::effects::has_dimmer_channel)).
+    pub fn has_dimmer(&self) -> bool {
+        crate::lighting::effects::has_dimmer_channel(&self.channels)
+    }
+}
+
+impl ChannelDef {
+    /// Creates a plain channel definition with only an offset — the shape a
+    /// v1 DSL channel map entry carries.
+    pub fn at(offset: u16) -> ChannelDef {
+        ChannelDef {
+            offset,
+            fine: None,
+            range: None,
+            functions: Vec::new(),
+            mirrors: Vec::new(),
+        }
+    }
+
+    /// Every byte offset this channel writes: its own, then its mirrors'.
+    pub fn all_offsets(&self) -> impl Iterator<Item = u16> + '_ {
+        std::iter::once(self.offset).chain(self.fine).chain(
+            self.mirrors
+                .iter()
+                .flat_map(|(c, f)| std::iter::once(*c).chain(*f)),
+        )
+    }
+}
+
+impl StrobeCurve {
+    /// The DSL keyword.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            StrobeCurve::Period => "period",
+            StrobeCurve::Linear => "linear",
+            StrobeCurve::Declared => "declared",
+        }
+    }
+
+    /// The curve a fixture gets when nothing says otherwise: as declared
+    /// for a GDTF fixture (the spec's rule: the function's table, linear
+    /// in hertz when it has only endpoints); period for a hand-written
+    /// type, which declares no curve — mtrack's behaviour before the
+    /// setting existed.
+    pub fn automatic(gdtf_sourced: bool) -> StrobeCurve {
+        if gdtf_sourced {
+            StrobeCurve::Declared
+        } else {
+            StrobeCurve::Period
+        }
+    }
+}
+
+impl MovementLimits {
+    /// Whether any limit is set.
+    pub fn is_empty(&self) -> bool {
+        self.max_pan_speed.is_none() && self.max_tilt_speed.is_none()
+    }
+}
+
+/// The canonical channel name the strobe fields describe.
+const STROBE_CHANNEL: &str = "strobe";
+
+/// The function name used for the variable-strobe range.
+const STROBE_FUNCTION: &str = "strobe";
+
+/// A fixture type as the v1 DSL states it: a plain channel offset map plus
+/// the three standalone strobe fields. This is a parse-time surface, not a
+/// model — conversion into [`FixtureType`] is the single normalization
+/// point, so there is no manual step to forget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FixtureTypeV1 {
+    /// The name of the fixture type.
+    pub name: String,
+    /// Channel name → 1-based offset.
+    pub channels: HashMap<String, u16>,
+    /// Maximum strobe frequency in Hz (if known).
+    pub max_strobe_frequency: Option<f64>,
+    /// Minimum strobe frequency in Hz (if known).
+    pub min_strobe_frequency: Option<f64>,
+    /// First DMX value where variable strobe begins (if known).
+    pub strobe_dmx_offset: Option<u8>,
+}
+
+impl From<FixtureTypeV1> for FixtureType {
+    fn from(v1: FixtureTypeV1) -> FixtureType {
+        let channel_defs = v1
+            .channels
+            .into_iter()
+            .map(|(name, offset)| (name, ChannelDef::at(offset)))
+            .collect();
+        FixtureType::from_parts(
+            v1.name,
+            channel_defs,
+            v1.max_strobe_frequency,
+            v1.min_strobe_frequency,
+            v1.strobe_dmx_offset,
+        )
+    }
+}
+
+impl FixtureType {
+    /// Creates a new fixture type from plain channel offsets. For the full
+    /// v1 surface (strobe fields included), convert a [`FixtureTypeV1`]
+    /// with `.into()`.
+    pub fn new(name: String, channels: HashMap<String, u16>) -> FixtureType {
+        FixtureTypeV1 {
+            name,
+            channels,
+            ..FixtureTypeV1::default()
+        }
+        .into()
+    }
+
+    /// Creates a new fixture type from structured channel definitions. The
+    /// v1 strobe fields are derived from the strobe channel's variable
+    /// strobe function so consumers of either view see the same values.
+    pub fn from_channel_defs(
+        name: String,
+        channel_defs: HashMap<String, ChannelDef>,
+    ) -> FixtureType {
+        FixtureType::from_parts(name, channel_defs, None, None, None)
+    }
+
+    /// The single normalization point every constructor funnels through.
+    ///
+    /// Explicit v1 strobe fields win over values derived from a strobe
+    /// function; when all three are present and the strobe channel carries
+    /// no function yet, one is synthesized so the structured view and the
+    /// v1 view always agree.
+    pub fn from_parts(
+        name: String,
+        channel_defs: HashMap<String, ChannelDef>,
+        max_strobe_frequency: Option<f64>,
+        min_strobe_frequency: Option<f64>,
+        strobe_dmx_offset: Option<u8>,
+    ) -> FixtureType {
+        let channels = channel_defs
+            .iter()
+            .map(|(name, def)| (name.clone(), def.offset))
+            .collect();
+        let mut fixture_type = FixtureType {
+            name,
+            channel_defs,
+            channels,
+            source: None,
+            movement: MovementLimits::default(),
+            strobe_curve: None,
+            cells: Vec::new(),
+            rig: None,
+            aim: None,
+            max_strobe_frequency: None,
+            min_strobe_frequency: None,
+            strobe_dmx_offset: None,
+        };
+        fixture_type.derive_strobe_fields();
+        if max_strobe_frequency.is_some() {
+            fixture_type.max_strobe_frequency = max_strobe_frequency;
+        }
+        if min_strobe_frequency.is_some() {
+            fixture_type.min_strobe_frequency = min_strobe_frequency;
+        }
+        if strobe_dmx_offset.is_some() {
+            fixture_type.strobe_dmx_offset = strobe_dmx_offset;
+        }
+        fixture_type.reconcile_strobe_function();
+        fixture_type
+    }
+
+    /// Fills the v1 strobe fields from the strobe channel's variable strobe
+    /// function, if it is declared with a frequency range.
+    fn derive_strobe_fields(&mut self) {
+        let Some(func) = strobe_function(&self.channel_defs) else {
+            return;
+        };
+        let Some(physical) = func.physical.filter(|p| p.unit == PhysicalUnit::Hertz) else {
+            return;
+        };
+        self.strobe_dmx_offset = Some(func.dmx_from);
+        self.min_strobe_frequency = Some(physical.from.min(physical.to));
+        self.max_strobe_frequency = Some(physical.from.max(physical.to));
+    }
+
+    /// Makes the strobe channel's variable-strobe function agree with the
+    /// v1 strobe fields, so the structured view and the field view carry
+    /// the same information. Explicit fields have already won by the time
+    /// this runs, so a disagreeing function is *rewritten*, not skipped —
+    /// skipping would leave the two views the constructors promise agree
+    /// silently diverged. An agreeing function is left untouched (its
+    /// dmx_to and physical orientation may carry intent the fields can't
+    /// express). Requires all three fields and a strobe channel; partial
+    /// fields stay fields.
+    fn reconcile_strobe_function(&mut self) {
+        let (Some(offset), Some(min), Some(max)) = (
+            self.strobe_dmx_offset,
+            self.min_strobe_frequency,
+            self.max_strobe_frequency,
+        ) else {
+            return;
+        };
+        let Some(def) = self.channel_defs.get_mut(STROBE_CHANNEL) else {
+            return;
+        };
+        if let Some(func) = strobe_function_index(def).map(|i| &mut def.functions[i]) {
+            let agrees = func.dmx_from == offset
+                && func.physical.is_some_and(|p| {
+                    p.unit == PhysicalUnit::Hertz
+                        && p.from.min(p.to) == min
+                        && p.from.max(p.to) == max
+                });
+            if !agrees {
+                func.dmx_from = offset;
+                // An override can push the start past the old end; the
+                // fields carry no end of their own, so open the range up.
+                if func.dmx_to < offset {
+                    func.dmx_to = u8::MAX;
+                }
+                func.physical = Some(PhysicalRange {
+                    from: min,
+                    to: max,
+                    unit: PhysicalUnit::Hertz,
+                });
+            }
+            return;
+        }
+        def.functions.push(ChannelFunction {
+            steps: Vec::new(),
+            name: STROBE_FUNCTION.to_string(),
+            dmx_from: offset,
+            dmx_to: u8::MAX,
+            physical: Some(PhysicalRange {
+                from: min,
+                to: max,
+                unit: PhysicalUnit::Hertz,
+            }),
+        });
+    }
+
+    /// Gets the name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the coarse channel offsets — the v1 view.
+    pub fn channels(&self) -> &HashMap<String, u16> {
+        &self.channels
+    }
+
+    /// Gets the structured channel definitions.
+    pub fn channel_defs(&self) -> &HashMap<String, ChannelDef> {
+        &self.channel_defs
+    }
+
+    /// Gets the GDTF source, if this type is referential.
+    pub fn source(&self) -> Option<&GdtfSource> {
+        self.source.as_ref()
+    }
+
+    /// Sets the GDTF source, making this type referential.
+    pub fn set_source(&mut self, source: GdtfSource) {
+        self.source = Some(source);
+    }
+
+    /// Gets the movement limits.
+    pub fn movement(&self) -> &MovementLimits {
+        &self.movement
+    }
+
+    /// Sets the movement limits.
+    pub fn set_movement(&mut self, movement: MovementLimits) {
+        self.movement = movement;
+    }
+
+    /// The strobe curve the type states; `None` is automatic.
+    pub fn strobe_curve(&self) -> Option<StrobeCurve> {
+        self.strobe_curve
+    }
+
+    /// The strobe curve the engine uses: the stated one, or the automatic.
+    pub fn effective_strobe_curve(&self) -> StrobeCurve {
+        self.strobe_curve
+            .unwrap_or_else(|| StrobeCurve::automatic(self.source.is_some()))
+    }
+
+    /// Sets (or, with `None`, clears) the strobe curve.
+    pub fn set_strobe_curve(&mut self, curve: Option<StrobeCurve>) {
+        self.strobe_curve = curve;
+    }
+
+    /// The cells of a pixel fixture, in the manufacturer's order.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// Sets the cells. The fixture-level channels are the caller's to keep
+    /// ganged with them (the parser and the distiller both do).
+    pub fn set_cells(&mut self, cells: Vec<Cell>) {
+        self.cells = cells;
+    }
+
+    /// The rig model's asset-store path, when the type has one.
+    pub fn rig(&self) -> Option<&str> {
+        self.rig.as_deref()
+    }
+
+    /// Sets (or clears) the rig model's asset-store path.
+    pub fn set_rig(&mut self, rig: Option<String>) {
+        self.rig = rig;
+    }
+
+    /// The aim calibration through the rig's geometry, when the type has
+    /// a rig and it reduces to one.
+    pub fn aim(&self) -> Option<crate::lighting::effects::AimCalibration> {
+        self.aim
+    }
+
+    /// Sets (or clears) the aim calibration.
+    pub fn set_aim(&mut self, aim: Option<crate::lighting::effects::AimCalibration>) {
+        self.aim = aim;
+    }
+
+    /// The DMX footprint: the highest byte offset any channel occupies —
+    /// fine bytes, mirrors and every cell's channels included. A patch
+    /// that starts at address `a` uses `a ..= a + footprint - 1`.
+    pub fn footprint(&self) -> u16 {
+        let cells = self
+            .cells
+            .iter()
+            .flat_map(|c| c.channels.values())
+            .flat_map(|d| d.all_offsets());
+        self.channel_defs
+            .values()
+            .flat_map(|d| d.all_offsets())
+            .chain(cells)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Gets the maximum strobe frequency.
+    pub fn max_strobe_frequency(&self) -> Option<f64> {
+        self.max_strobe_frequency
+    }
+
+    /// Gets the minimum strobe frequency.
+    pub fn min_strobe_frequency(&self) -> Option<f64> {
+        self.min_strobe_frequency
+    }
+
+    /// Gets the strobe DMX offset.
+    pub fn strobe_dmx_offset(&self) -> Option<u8> {
+        self.strobe_dmx_offset
+    }
+}
+
+impl FixtureType {
+    /// Whether the channel definitions carry anything the v1 form cannot
+    /// say: a fine byte, a physical range, or functions beyond the single
+    /// strobe function the v1 strobe fields already describe. Such a type
+    /// renders — and must live — in the rich form of a `.fixture` file.
+    pub fn uses_rich_channels(&self) -> bool {
+        !self.cells.is_empty()
+            || self.channel_defs.values().any(|def| {
+                def.fine.is_some()
+                    || def.range.is_some()
+                    || def.functions.len() > 1
+                    || def
+                        .functions
+                        .iter()
+                        .any(|function| function.name != STROBE_FUNCTION)
+            })
+            || self
+                .channel_defs
+                .iter()
+                .any(|(name, def)| name != STROBE_CHANNEL && !def.functions.is_empty())
+    }
+}
+
+/// A physical value as the DSL writes it: `270deg`, `0.5hz`. Six decimals
+/// with trailing zeros trimmed — a strobe rate can be well under a
+/// millihertz, which the coordinate formatter's three would round away.
+fn fmt_physical(value: f64, unit: PhysicalUnit) -> String {
+    let unit = match unit {
+        PhysicalUnit::Degrees => "deg",
+        PhysicalUnit::Hertz => "hz",
+    };
+    let mut text = format!("{value:.6}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if text == "-0" {
+        text = "0".to_string();
+    }
+    format!("{text}{unit}")
+}
+
+impl fmt::Display for FixtureType {
+    /// Renders the DSL form the type needs: the v1 `channel_map` form when
+    /// the channels are plain offsets (plus the three strobe fields, which
+    /// carry the same values as a synthesized strobe function), and the
+    /// rich `channel` form when any channel has a fine byte, a range or
+    /// functions — which only a `.fixture` file may hold.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.uses_rich_channels() {
+            writeln!(f, "fixture_type \"{}\" {{", self.name)?;
+            // Channels a cell owns are written inside its block; the
+            // fixture-level copies are derived from them on parse.
+            let derived = |name: &str, def: &ChannelDef| {
+                self.cells
+                    .iter()
+                    .any(|c| c.channels.get(name).is_some_and(|d| d.offset == def.offset))
+            };
+            let mut defs: Vec<_> = self
+                .channel_defs
+                .iter()
+                .filter(|(name, def)| !derived(name, def))
+                .collect();
+            defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+            for (name, def) in defs {
+                fmt_channel_line(f, "  ", name, def)?;
+            }
+            for cell in &self.cells {
+                writeln!(
+                    f,
+                    "  cell \"{}\" at ({}, {}, {}) {{",
+                    cell.name,
+                    fmt_coord(cell.offset[0]),
+                    fmt_coord(cell.offset[1]),
+                    fmt_coord(cell.offset[2])
+                )?;
+                let mut defs: Vec<_> = cell.channels.iter().collect();
+                defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+                for (name, def) in defs {
+                    fmt_channel_line(f, "    ", name, def)?;
+                }
+                writeln!(f, "  }}")?;
+            }
+            if !self.movement.is_empty() {
+                writeln!(f, "  movement {{")?;
+                if let Some(speed) = self.movement.max_pan_speed {
+                    writeln!(f, "    max_pan_speed: {}deg/s", fmt_coord(speed))?;
+                }
+                if let Some(speed) = self.movement.max_tilt_speed {
+                    writeln!(f, "    max_tilt_speed: {}deg/s", fmt_coord(speed))?;
+                }
+                writeln!(f, "  }}")?;
+            }
+            if let Some(curve) = self.strobe_curve {
+                writeln!(f, "  strobe_curve: {}", curve.keyword())?;
+            }
+            return write!(f, "}}");
+        }
+        writeln!(f, "fixture_type \"{}\" {{", self.name)?;
+        writeln!(f, "  channels: {}", self.channels.len())?;
+        writeln!(f, "  channel_map: {{")?;
+        let mut entries: Vec<_> = self.channels.iter().collect();
+        entries.sort_by_key(|(_, v)| *v);
+        for (i, (name, offset)) in entries.iter().enumerate() {
+            let comma = if i + 1 < entries.len() { "," } else { "" };
+            writeln!(f, "    \"{}\": {}{}", name, offset, comma)?;
+        }
+        writeln!(f, "  }}")?;
+        if let Some(v) = self.max_strobe_frequency {
+            writeln!(f, "  max_strobe_frequency: {v}")?;
+        }
+        if let Some(v) = self.min_strobe_frequency {
+            writeln!(f, "  min_strobe_frequency: {v}")?;
+        }
+        if let Some(v) = self.strobe_dmx_offset {
+            writeln!(f, "  strobe_dmx_offset: {v}")?;
+        }
+        if let Some(curve) = self.strobe_curve {
+            writeln!(f, "  strobe_curve: {}", curve.keyword())?;
+        }
+        write!(f, "}}")
+    }
+}
+
+/// One rich `channel` line, with its function block when it has one.
+fn fmt_channel_line(
+    f: &mut fmt::Formatter<'_>,
+    indent: &str,
+    name: &str,
+    def: &ChannelDef,
+) -> fmt::Result {
+    write!(f, "{indent}channel \"{name}\" @ {}", def.offset)?;
+    if let Some(fine) = def.fine {
+        write!(f, " fine {fine}")?;
+    }
+    if let Some(range) = def.range {
+        write!(
+            f,
+            " range {}..{}",
+            fmt_physical(range.from, range.unit),
+            fmt_physical(range.to, range.unit)
+        )?;
+    }
+    if def.functions.is_empty() {
+        return writeln!(f);
+    }
+    writeln!(f, " {{")?;
+    for function in &def.functions {
+        write!(
+            f,
+            "{indent}  function \"{}\" {}..{}",
+            function.name, function.dmx_from, function.dmx_to
+        )?;
+        if let Some(physical) = function.physical {
+            write!(
+                f,
+                " {}..{}",
+                fmt_physical(physical.from, physical.unit),
+                fmt_physical(physical.to, physical.unit)
+            )?;
+        }
+        writeln!(f)?;
+    }
+    writeln!(f, "{indent}}}")
+}
+
+/// The fixture-level channels a set of cells implies: the first cell's
+/// channels, each mirroring the same-named channel of every other cell, so
+/// the whole fixture still shows one colour to a show that never says
+/// `per: cell`. Cells must all carry the same channel names.
+pub fn ganged_from_cells(cells: &[Cell]) -> Result<HashMap<String, ChannelDef>, String> {
+    let Some(first) = cells.first() else {
+        return Ok(HashMap::new());
+    };
+    let mut names: Vec<&String> = first.channels.keys().collect();
+    names.sort();
+    for cell in &cells[1..] {
+        let mut theirs: Vec<&String> = cell.channels.keys().collect();
+        theirs.sort();
+        if theirs != names {
+            return Err(format!(
+                "cell \"{}\" has channels {:?} but cell \"{}\" has {:?}; every cell must carry \
+                 the same channels",
+                cell.name, theirs, first.name, names
+            ));
+        }
+    }
+    let mut out = HashMap::new();
+    for (name, def) in &first.channels {
+        let mut ganged = def.clone();
+        ganged.mirrors = cells[1..]
+            .iter()
+            .map(|c| {
+                let d = &c.channels[name];
+                (d.offset, d.fine)
+            })
+            .collect();
+        out.insert(name.clone(), ganged);
+    }
+    Ok(out)
+}
+
+impl Fixture {
+    /// Creates a new fixture.
+    pub fn new(
+        name: String,
+        fixture_type: String,
+        universe: u16,
+        start_channel: u16,
+        tags: Vec<String>,
+    ) -> Fixture {
+        Fixture {
+            name,
+            fixture_type,
+            universe,
+            start_channel,
+            tags,
+            position: None,
+            rotation: None,
+            mode: None,
+            beam_angle: None,
+        }
+    }
+
+    /// Patches the fixture in a named mode of its type (`None` for a native
+    /// type, which has none).
+    pub fn with_mode(mut self, mode: Option<String>) -> Fixture {
+        self.mode = mode;
+        self
+    }
+
+    /// The mode the fixture line names, if any; `None` means its type's
+    /// default.
+    pub fn mode(&self) -> Option<&str> {
+        self.mode.as_deref()
+    }
+
+    /// Places the fixture.
+    pub fn with_position(mut self, position: Option<Vec3>) -> Fixture {
+        self.position = position;
+        self
+    }
+
+    /// Orients the fixture.
+    pub fn with_rotation(mut self, rotation: Option<Vec3>) -> Fixture {
+        self.rotation = rotation;
+        self
+    }
+
+    /// States the beam angle the unit really has, in degrees.
+    pub fn with_beam_angle(mut self, beam_angle: Option<f64>) -> Fixture {
+        self.beam_angle = beam_angle;
+        self
+    }
+
+    /// Gets the beam angle the venue states, if any; `None` means the
+    /// fixture type's own.
+    pub fn beam_angle(&self) -> Option<f64> {
+        self.beam_angle
+    }
+
+    /// Gets the position, if the venue places this fixture.
+    pub fn position(&self) -> Option<Vec3> {
+        self.position
+    }
+
+    /// Gets the mounting rotation, if the venue states one.
+    pub fn rotation(&self) -> Option<Vec3> {
+        self.rotation
+    }
+
+    /// Gets the name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the fixture type.
+    pub fn fixture_type(&self) -> &str {
+        &self.fixture_type
+    }
+
+    /// Gets the universe.
+    pub fn universe(&self) -> u16 {
+        self.universe
+    }
+
+    /// Gets the start channel.
+    pub fn start_channel(&self) -> u16 {
+        self.start_channel
+    }
+
+    /// Gets the tags on this fixture.
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+}
+
+impl Venue {
+    /// Creates a new venue.
+    pub fn new(name: String, fixtures: HashMap<String, Fixture>) -> Venue {
+        Venue {
+            name,
+            fixtures,
+            focus_points: BTreeMap::new(),
+            source: None,
+        }
+    }
+
+    /// Binds the venue's focus points.
+    pub fn with_focus_points(mut self, focus_points: BTreeMap<String, Vec3>) -> Venue {
+        self.focus_points = focus_points;
+        self
+    }
+
+    /// Records where the venue was seeded from.
+    pub fn with_source(mut self, source: Option<VenueSource>) -> Venue {
+        self.source = source;
+        self
+    }
+
+    /// Gets the name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the fixtures.
+    pub fn fixtures(&self) -> &HashMap<String, Fixture> {
+        &self.fixtures
+    }
+
+    /// Gets the focus points.
+    pub fn focus_points(&self) -> &BTreeMap<String, Vec3> {
+        &self.focus_points
+    }
+
+    /// Gets the import provenance, if the venue was seeded from an MVR.
+    pub fn source(&self) -> Option<&VenueSource> {
+        self.source.as_ref()
+    }
+
+    /// The fixtures sorted by patch, the order the DSL form lists them in.
+    pub fn fixtures_by_patch(&self) -> Vec<&Fixture> {
+        let mut fixtures: Vec<_> = self.fixtures.values().collect();
+        fixtures.sort_by(|a, b| {
+            (a.universe, a.start_channel, &a.name).cmp(&(b.universe, b.start_channel, &b.name))
+        });
+        fixtures
+    }
+}
+
+/// A coordinate as the DSL writes it: millimeter precision, no exponent, no
+/// negative zero — the grammar's `signed_number` reads it back exactly.
+pub fn fmt_coord(value: f64) -> String {
+    let rounded = (value * 1000.0).round() / 1000.0;
+    if rounded == 0.0 || !rounded.is_finite() {
+        "0".to_string()
+    } else {
+        format!("{rounded}")
+    }
+}
+
+/// A stage triple in DSL form.
+pub fn fmt_vec3(v: &Vec3) -> String {
+    format!(
+        "({}, {}, {})",
+        fmt_coord(v[0]),
+        fmt_coord(v[1]),
+        fmt_coord(v[2])
+    )
+}
+
+/// A fixture-type reference as the DSL accepts it: bare when it is an
+/// identifier, quoted otherwise ("Astera PixelBrick").
+fn fmt_type_reference(name: &str) -> String {
+    let mut chars = name.chars();
+    let bare = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        name.to_string()
+    } else {
+        format!("\"{name}\"")
+    }
+}
+
+impl fmt::Display for Fixture {
+    /// One venue line, without the leading indent or trailing newline.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "fixture \"{}\" {}",
+            self.name,
+            fmt_type_reference(&self.fixture_type)
+        )?;
+        // Directly after the type, before the patch: the mode is part of
+        // what the fixture *is*, the way the type is.
+        if let Some(mode) = &self.mode {
+            write!(f, " mode \"{mode}\"")?;
+        }
+        write!(f, " @ {}:{}", self.universe, self.start_channel)?;
+        if !self.tags.is_empty() {
+            let tags: Vec<String> = self.tags.iter().map(|t| format!("\"{t}\"")).collect();
+            write!(f, " tags [{}]", tags.join(", "))?;
+        }
+        if let Some(position) = &self.position {
+            write!(f, " position {}", fmt_vec3(position))?;
+        }
+        if let Some(rotation) = &self.rotation {
+            write!(f, " rotation {}", fmt_vec3(rotation))?;
+        }
+        // Plain `Display`: whole numbers without a `.0`, never an exponent.
+        if let Some(beam_angle) = self.beam_angle {
+            write!(f, " beam_angle {beam_angle}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Venue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "venue \"{}\" {{", self.name)?;
+        if let Some(source) = &self.source {
+            writeln!(
+                f,
+                "  imported from mvr(\"{}\") origin {}",
+                source.mvr,
+                fmt_vec3(&source.origin)
+            )?;
+        }
+        for fix in self.fixtures_by_patch() {
+            writeln!(f, "  {fix}")?;
+        }
+        for (name, point) in &self.focus_points {
+            writeln!(f, "  focus \"{name}\" {}", fmt_vec3(point))?;
+        }
+        write!(f, "}}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── FixtureType ────────────────────────────────────────────────
+
+    #[test]
+    fn fixture_type_new() {
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        let ft = FixtureType::new("RGB Par".to_string(), channels);
+        assert_eq!(ft.name(), "RGB Par");
+        assert_eq!(ft.channels().len(), 3);
+        assert_eq!(ft.max_strobe_frequency(), None);
+        assert_eq!(ft.min_strobe_frequency(), None);
+        assert_eq!(ft.strobe_dmx_offset(), None);
+        // The structured view mirrors the plain offsets.
+        assert_eq!(ft.channel_defs().len(), 3);
+        assert_eq!(ft.channel_defs().get("red").unwrap().offset, 1);
+        assert_eq!(ft.footprint(), 3);
+    }
+
+    #[test]
+    fn fixture_type_strobe_fields() {
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Strobe".to_string(),
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(1.0),
+            strobe_dmx_offset: Some(128),
+            ..FixtureTypeV1::default()
+        }
+        .into();
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(1.0));
+        assert_eq!(ft.strobe_dmx_offset(), Some(128));
+    }
+
+    #[test]
+    fn fixture_type_v1_conversion_synthesizes_strobe_function() {
+        // From<FixtureTypeV1> is the single normalization point — no manual
+        // step: the strobe function appears as part of the conversion.
+        let mut channels = HashMap::new();
+        channels.insert("strobe".to_string(), 4);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Brick".to_string(),
+            channels,
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(0.4),
+            strobe_dmx_offset: Some(7),
+        }
+        .into();
+
+        let def = ft.channel_defs().get("strobe").unwrap();
+        assert_eq!(def.functions.len(), 1);
+        let func = &def.functions[0];
+        assert_eq!(func.name, "strobe");
+        assert_eq!(func.dmx_from, 7);
+        assert_eq!(func.dmx_to, 255);
+        let physical = func.physical.unwrap();
+        assert_eq!(physical.from, 0.4);
+        assert_eq!(physical.to, 25.0);
+        assert_eq!(physical.unit, PhysicalUnit::Hertz);
+    }
+
+    #[test]
+    fn fixture_type_partial_strobe_fields_stay_fields() {
+        // Only max is known — nothing to synthesize, and the field must
+        // survive as-is for the strobe strategies that read it.
+        let mut channels = HashMap::new();
+        channels.insert("strobe".to_string(), 2);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Strobe".to_string(),
+            channels,
+            max_strobe_frequency: Some(20.0),
+            ..FixtureTypeV1::default()
+        }
+        .into();
+        assert_eq!(ft.max_strobe_frequency(), Some(20.0));
+        assert!(ft
+            .channel_defs()
+            .get("strobe")
+            .unwrap()
+            .functions
+            .is_empty());
+    }
+
+    #[test]
+    fn fixture_type_from_channel_defs_derives_strobe_fields() {
+        let mut defs = HashMap::new();
+        defs.insert("red".to_string(), ChannelDef::at(1));
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 4,
+                fine: None,
+                range: None,
+                functions: vec![
+                    ChannelFunction {
+                        steps: Vec::new(),
+                        name: "off".to_string(),
+                        dmx_from: 0,
+                        dmx_to: 6,
+                        physical: None,
+                    },
+                    ChannelFunction {
+                        steps: Vec::new(),
+                        name: "strobe".to_string(),
+                        dmx_from: 7,
+                        dmx_to: 255,
+                        physical: Some(PhysicalRange {
+                            from: 0.4,
+                            to: 25.0,
+                            unit: PhysicalUnit::Hertz,
+                        }),
+                    },
+                ],
+                mirrors: Vec::new(),
+            },
+        );
+        let ft = FixtureType::from_channel_defs("PixelBrick".to_string(), defs);
+        // The v1 view is derived, so consumers of either view agree.
+        assert_eq!(ft.strobe_dmx_offset(), Some(7));
+        assert_eq!(ft.min_strobe_frequency(), Some(0.4));
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.channels().get("strobe"), Some(&4));
+    }
+
+    #[test]
+    fn fixture_type_footprint_includes_fine_bytes() {
+        let mut defs = HashMap::new();
+        defs.insert(
+            "pan".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: Some(2),
+                range: Some(PhysicalRange {
+                    from: -270.0,
+                    to: 270.0,
+                    unit: PhysicalUnit::Degrees,
+                }),
+                functions: Vec::new(),
+                mirrors: Vec::new(),
+            },
+        );
+        let ft = FixtureType::from_channel_defs("Mover".to_string(), defs);
+        assert_eq!(ft.footprint(), 2);
+        // The v1 view exposes only the coarse byte.
+        assert_eq!(ft.channels().get("pan"), Some(&1));
+    }
+
+    #[test]
+    fn fixture_type_footprint_includes_every_cell() {
+        // The highest byte is the last cell's fine byte, which only the
+        // cells (and the ganged mirrors) know about.
+        let cell = |name: &str, offset: u16| Cell {
+            name: name.to_string(),
+            channels: HashMap::from([(
+                "red".to_string(),
+                ChannelDef {
+                    fine: Some(offset + 1),
+                    ..ChannelDef::at(offset)
+                },
+            )]),
+            offset: [0.0; 3],
+        };
+        let cells = vec![cell("1", 2), cell("2", 4)];
+        let mut defs = ganged_from_cells(&cells).unwrap();
+        defs.insert("dimmer".to_string(), ChannelDef::at(1));
+        let mut ft = FixtureType::from_channel_defs("Bar".to_string(), defs);
+        ft.set_cells(cells.clone());
+        assert_eq!(ft.footprint(), 5);
+        // Cells alone, with nothing ganged, still count.
+        let mut bare = FixtureType::from_channel_defs("Bare".to_string(), HashMap::new());
+        bare.set_cells(cells);
+        assert_eq!(bare.footprint(), 5);
+        assert_eq!(
+            FixtureType::from_channel_defs("Empty".to_string(), HashMap::new()).footprint(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_fixture_line_names_its_mode_after_its_type() {
+        let f = Fixture::new("Brick8".into(), "Astera-PixelBrick".into(), 1, 29, vec![])
+            .with_mode(Some("9: RGBWS".into()));
+        assert_eq!(f.mode(), Some("9: RGBWS"));
+        assert_eq!(
+            f.to_string(),
+            "fixture \"Brick8\" Astera-PixelBrick mode \"9: RGBWS\" @ 1:29"
+        );
+        // Serialized only when present: a venue without modes reads as before.
+        let plain = Fixture::new("A".into(), "Par".into(), 1, 1, vec![]);
+        assert!(serde_json::to_value(&plain).unwrap().get("mode").is_none());
+        assert_eq!(serde_json::to_value(&f).unwrap()["mode"], "9: RGBWS");
+    }
+
+    #[test]
+    // The v1 form is what a plain type renders as, byte for byte: the
+    // rich form (fine, range, functions) exists since P1c-3 but only a
+    // type that needs it uses it.
+    fn fixture_type_display_is_unchanged_v1_form() {
+        // The Display output must stay exactly what today's grammar
+        // round-trips — the rich model has no DSL rendering yet.
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("strobe".to_string(), 4);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Brick".to_string(),
+            channels,
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(0.4),
+            strobe_dmx_offset: Some(7),
+        }
+        .into();
+        let output = ft.to_string();
+        assert!(output.contains("channel_map: {"), "{output}");
+        assert!(output.contains("\"red\": 1,"), "{output}");
+        assert!(output.contains("max_strobe_frequency: 25"), "{output}");
+        assert!(output.contains("strobe_dmx_offset: 7"), "{output}");
+        assert!(!output.contains("functions"), "{output}");
+    }
+
+    #[test]
+    fn fixture_type_serialization_surface_is_unchanged() {
+        // FixtureType serializes into webui/MCP responses. The rich model
+        // is internal-only for now, so the JSON must not grow fields until
+        // the features consuming it ship.
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        let mut ft = FixtureType::new("Par".to_string(), channels);
+        ft.set_source(GdtfSource {
+            path: "library/par.gdtf".to_string(),
+        });
+        let json = serde_json::to_value(&ft).unwrap();
+        let keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "channels",
+                "max_strobe_frequency",
+                "min_strobe_frequency",
+                "name",
+                "strobe_dmx_offset"
+            ],
+            "serialized surface changed: {json}"
+        );
+    }
+
+    #[test]
+    fn from_parts_rewrites_a_disagreeing_strobe_function() {
+        // Explicit fields win — and the function must follow, or the two
+        // views the constructors promise agree would silently diverge.
+        // This is the P1a override path: a .fixture override's strobe
+        // fields on top of a GDTF-distilled function.
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 4,
+                fine: None,
+                range: None,
+                functions: vec![ChannelFunction {
+                    steps: Vec::new(),
+                    name: "strobe".to_string(),
+                    dmx_from: 7,
+                    dmx_to: 200,
+                    physical: Some(PhysicalRange {
+                        from: 0.4,
+                        to: 25.0,
+                        unit: PhysicalUnit::Hertz,
+                    }),
+                }],
+                mirrors: Vec::new(),
+            },
+        );
+        let ft =
+            FixtureType::from_parts("Brick".to_string(), defs, Some(99.0), Some(50.0), Some(210));
+
+        // The getters carry the explicit values...
+        assert_eq!(ft.max_strobe_frequency(), Some(99.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(50.0));
+        assert_eq!(ft.strobe_dmx_offset(), Some(210));
+        // ...and the function was rewritten to agree.
+        let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
+        assert_eq!(func.dmx_from, 210);
+        // The override pushed the start past the old end (200), so the
+        // range opened up rather than inverting.
+        assert_eq!(func.dmx_to, u8::MAX);
+        let physical = func.physical.unwrap();
+        assert_eq!((physical.from, physical.to), (50.0, 99.0));
+    }
+
+    #[test]
+    fn the_strobe_fields_describe_the_strobe_function_the_engine_drives() {
+        // Two functions named "strobe": the first, with no rate range, is
+        // the one the engine drives, so there is no rate to derive. The
+        // fields came from the second before, and the first was rewritten
+        // to the second's range.
+        let function = |dmx_from, dmx_to, physical| ChannelFunction {
+            steps: Vec::new(),
+            name: "strobe".to_string(),
+            dmx_from,
+            dmx_to,
+            physical,
+        };
+        let hz = PhysicalRange {
+            from: 1.0,
+            to: 20.0,
+            unit: PhysicalUnit::Hertz,
+        };
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: None,
+                range: None,
+                functions: vec![function(8, 15, None), function(16, 255, Some(hz))],
+                mirrors: Vec::new(),
+            },
+        );
+        let ft = FixtureType::from_parts("Twin".to_string(), defs, None, None, None);
+        assert_eq!(
+            (ft.strobe_dmx_offset(), ft.max_strobe_frequency()),
+            (None, None)
+        );
+        let functions = &ft.channel_defs()["strobe"].functions;
+        assert_eq!((functions[0].dmx_from, functions[0].physical), (8, None));
+    }
+
+    #[test]
+    fn from_parts_leaves_an_agreeing_strobe_function_untouched() {
+        // Agreement is checked orientation-insensitively: a descending
+        // physical range and a custom dmx_to carry intent the fields can't
+        // express, and must survive.
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 4,
+                fine: None,
+                range: None,
+                functions: vec![ChannelFunction {
+                    steps: Vec::new(),
+                    name: "strobe".to_string(),
+                    dmx_from: 7,
+                    dmx_to: 200,
+                    physical: Some(PhysicalRange {
+                        from: 25.0,
+                        to: 0.4,
+                        unit: PhysicalUnit::Hertz,
+                    }),
+                }],
+                mirrors: Vec::new(),
+            },
+        );
+        let ft = FixtureType::from_parts("Brick".to_string(), defs, Some(25.0), Some(0.4), Some(7));
+        let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
+        assert_eq!(func.dmx_to, 200);
+        let physical = func.physical.unwrap();
+        assert_eq!((physical.from, physical.to), (25.0, 0.4));
+    }
+
+    // ── Fixture ────────────────────────────────────────────────────
+
+    #[test]
+    fn fixture_new() {
+        let f = Fixture::new(
+            "par1".to_string(),
+            "RGB Par".to_string(),
+            1,
+            10,
+            vec!["front".to_string(), "wash".to_string()],
+        );
+        assert_eq!(f.name(), "par1");
+        assert_eq!(f.fixture_type(), "RGB Par");
+        assert_eq!(f.universe(), 1);
+        assert_eq!(f.start_channel(), 10);
+        assert_eq!(f.tags(), &["front", "wash"]);
+    }
+
+    #[test]
+    fn fixture_no_tags() {
+        let f = Fixture::new("spot1".to_string(), "Spot".to_string(), 2, 1, vec![]);
+        assert!(f.tags().is_empty());
+    }
+
+    // ── Venue ──────────────────────────────────────────────────────
+
+    #[test]
+    fn venue_new() {
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "par1".to_string(),
+            Fixture::new("par1".to_string(), "RGB".to_string(), 1, 1, vec![]),
+        );
+
+        let v = Venue::new("Club".to_string(), fixtures);
+        assert_eq!(v.name(), "Club");
+        assert_eq!(v.fixtures().len(), 1);
+        assert!(v.fixtures().contains_key("par1"));
+    }
+}

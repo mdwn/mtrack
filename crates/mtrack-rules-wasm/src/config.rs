@@ -17,45 +17,45 @@
 //! is in the player. Every `#[path]` here names a player source; the
 //! Makefile reads them for the UI build's dependencies.
 
-#[path = "../../../src/config/audio.rs"]
+#[path = "../../mtrack-core/src/config/audio.rs"]
 mod audio;
-#[path = "../../../src/config/controller.rs"]
+#[path = "../../mtrack-core/src/config/controller.rs"]
 mod controller;
-#[path = "../../../src/config/dmx.rs"]
+#[path = "../../mtrack-core/src/config/dmx.rs"]
 mod dmx;
-#[path = "../../../src/config/duration.rs"]
+#[path = "../../mtrack-core/src/config/duration.rs"]
 mod duration;
-#[path = "../../../src/config/fade.rs"]
+#[path = "../../mtrack-core/src/config/fade.rs"]
 mod fade;
-#[path = "../../../src/config/kind_data.rs"]
+#[path = "../../mtrack-core/src/config/kind_data.rs"]
 mod kind_data;
-#[path = "../../../src/config/length.rs"]
+#[path = "../../mtrack-core/src/config/length.rs"]
 pub mod length;
-#[path = "../../../src/config/lighting.rs"]
+#[path = "../../mtrack-core/src/config/lighting.rs"]
 mod lighting;
-#[path = "../../../src/config/midi.rs"]
+#[path = "../../mtrack-core/src/config/midi.rs"]
 mod midi;
-#[path = "../../../src/config/midi_event.rs"]
+#[path = "../../mtrack-core/src/config/midi_event.rs"]
 mod midi_event;
-#[path = "../../../src/config/notification.rs"]
+#[path = "../../mtrack-core/src/config/notification.rs"]
 mod notification;
-#[path = "../../../src/config/pilot.rs"]
+#[path = "../../mtrack-core/src/config/pilot.rs"]
 pub mod pilot;
-#[path = "../../../src/config/playlist_settings.rs"]
+#[path = "../../mtrack-core/src/config/playlist_settings.rs"]
 mod playlist_settings;
-#[path = "../../../src/config/profile.rs"]
+#[path = "../../mtrack-core/src/config/profile.rs"]
 mod profile;
-#[path = "../../../src/config/samples.rs"]
+#[path = "../../mtrack-core/src/config/samples.rs"]
 mod samples;
-#[path = "../../../src/config/section.rs"]
+#[path = "../../mtrack-core/src/config/section.rs"]
 mod section;
-#[path = "../../../src/config/statusevents.rs"]
+#[path = "../../mtrack-core/src/config/statusevents.rs"]
 mod statusevents;
-#[path = "../../../src/config/track.rs"]
+#[path = "../../mtrack-core/src/config/track.rs"]
 mod track;
-#[path = "../../../src/config/trackmappings.rs"]
+#[path = "../../mtrack-core/src/config/trackmappings.rs"]
 mod trackmappings;
-#[path = "../../../src/config/trigger.rs"]
+#[path = "../../mtrack-core/src/config/trigger.rs"]
 mod trigger;
 
 pub use crate::tempo_config::TempoConfig;

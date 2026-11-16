@@ -32,8 +32,7 @@ use crate::lighting::effects::LayerSet;
 use crate::proto::player;
 use crate::util::{filename_display, FileStamp};
 
-mod file_kind;
-pub use file_kind::{
+pub use mtrack_core::songs::{
     extension_of, has_exact_extension, has_extension, is_yaml_config, FileKind, AUDIO_EXTENSIONS,
     LIGHTING_EXTENSIONS, MIDI_EXTENSIONS, YAML_EXTENSIONS,
 };
