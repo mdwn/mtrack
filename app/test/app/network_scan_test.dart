@@ -337,6 +337,37 @@ void main() {
         expect(h.probe!.attempts, isEmpty);
       });
 
+      scenario('the refusal goes when a player is found on the network', (
+        h,
+        _,
+      ) {
+        h.session.startScan();
+        h.settle();
+        h.probe!.addresses = const [];
+        h.session.scanNetwork();
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.notScannable);
+        h.browser!.appear(
+          const FoundPlayer(
+            name: 'stage',
+            hosts: ['192.168.1.20'],
+            port: 43234,
+          ),
+        );
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.idle);
+      });
+
+      scenario('the refusal goes on looking again', (h, _) {
+        h.probe!.addresses = const [];
+        h.session.scanNetwork();
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.notScannable);
+        h.session.startScan();
+        h.settle();
+        expect(h.session.networkScan, NetworkScan.idle);
+      });
+
       scenario('with interfaces that cannot be listed is not scannable', (
         h,
         _,
