@@ -33,6 +33,7 @@ rtrb = "0.3"
 rubato = "3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 strum = { version = "0.28", features = ["derive"] }
 # Decodes audio files: a song's length and channels are read from them.
 symphonia = { version = "0.6", features = ["all"] }

@@ -24,6 +24,7 @@ pub mod lighting;
 pub mod midi;
 pub mod playlist;
 pub mod position;
+pub mod project;
 pub mod section_loop;
 pub mod song_cache;
 pub mod songs;

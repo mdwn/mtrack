@@ -245,6 +245,19 @@ pub async fn start(
     // Otherwise treat it as a project directory and look for mtrack.yaml inside.
     let player_path = &super::migrate::resolve_config_path(path);
 
+    // A pull that was cut short left the project part-way between two
+    // revisions: it is finished before the project is read.
+    // One that cannot be finished does not stop the player: it starts on the
+    // files that are there, and says so, rather than not at all.
+    #[cfg(feature = "hub")]
+    match crate::hub::sync::recover(player_path) {
+        Ok(true) => info!("Finished a pull from the hub that was cut short"),
+        Ok(false) => {}
+        Err(e) => tracing::error!(
+            "{e}. Starting on the project as it is, which may be part of two revisions"
+        ),
+    }
+
     // Load or create config
     let player_config = match config::Player::deserialize(player_path) {
         Ok(cfg) => cfg,
