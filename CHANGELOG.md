@@ -271,6 +271,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`RUST_LOG=mtrack::config=debug`) has to name `mtrack_core::config` now. It is not on crates.io:
   it must be published there before the next `mtrack` release, because crates.io takes no crate
   whose dependency it does not have.
+- **Songs, playlists and the light show engine are in `mtrack-core` too**: loading a song (its
+  config, its audio files' lengths and channels, its click-derived beat grid, its MIDI file and its
+  light shows), playlists, the song cache, the effect engine, the timeline of a song's shows and the
+  lint moved there with what they are built from (sample sources and audio decoding, crossfades, the
+  metronome and the pilot, MIDI playback timing, the store of MIDI-set DMX values), so a project can
+  be loaded and checked, and a show evaluated, with no hardware. Audio devices and the mixer, MIDI
+  devices, DMX output, the controllers and `mtrack verify` stay in the player, and the same
+  `mtrack::…` paths are re-exported. One call changed for code that uses `mtrack` as a library:
+  `Song::to_proto` is now the method of a trait, `mtrack::songs::SongProto`, which has to be in
+  scope to call it.
 - **The web UI's light view reads the gRPC stream `WatchStage`**: the stage plot, the 3D view,
   the fixture test and the lighting editor's live plan now take the stage (the venue's fixtures,
   their values, poses and cells) from the same gRPC-Web stream the phone app uses, instead of the

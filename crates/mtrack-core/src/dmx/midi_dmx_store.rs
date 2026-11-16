@@ -27,7 +27,7 @@ pub const TARGET_HZ: f64 = FRAMES_PER_SECOND as f64;
 pub const DEFAULT_DIM_TICKS: f64 = 1.0;
 
 /// A MIDI DMX dimming time as the ticks a full transition takes, at
-/// [[`TARGET_HZ`]]: one tick for none.
+/// [`TARGET_HZ`]: one tick for none.
 pub fn dim_ticks(dimming: Duration) -> f64 {
     if dimming.is_zero() {
         DEFAULT_DIM_TICKS

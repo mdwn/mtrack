@@ -3620,7 +3620,7 @@ mod test {
 
     #[test]
     fn song_new_from_config_with_midi() -> Result<(), Box<dyn Error>> {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let song_config =
             crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
                 .expect("Failed to deserialize song1.yaml");
@@ -3637,7 +3637,7 @@ mod test {
 
     #[test]
     fn song_new_from_config_with_midi_event() -> Result<(), Box<dyn Error>> {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let song_config =
             crate::config::Song::deserialize(assets.join("songs/song2.yaml").as_path())
                 .expect("Failed to deserialize song2.yaml");
@@ -3651,7 +3651,7 @@ mod test {
 
     #[test]
     fn song_new_from_config_multichannel() -> Result<(), Box<dyn Error>> {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let song_config =
             crate::config::Song::deserialize(assets.join("songs/song3.yaml").as_path())
                 .expect("Failed to deserialize song3.yaml");
@@ -3666,7 +3666,7 @@ mod test {
 
     #[test]
     fn song_new_from_config_eight_channels() -> Result<(), Box<dyn Error>> {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let song_config =
             crate::config::Song::deserialize(assets.join("songs/song4.yaml").as_path())
                 .expect("Failed to deserialize song4.yaml");
@@ -4051,7 +4051,7 @@ mod test {
 
     #[test]
     fn track_new_multichannel_without_file_channel() {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let config = crate::config::Track::new("stereo".to_string(), "2Channel44.1k.wav", None);
         let err = super::Track::new(&assets, &config)
             .err()
@@ -4266,7 +4266,7 @@ mod test {
 
     #[test]
     fn song_get_config_roundtrip() -> Result<(), Box<dyn Error>> {
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let song_config =
             crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
                 .expect("Failed to deserialize song1.yaml");
@@ -4440,7 +4440,8 @@ sections:
         let song = super::Song {
             tracks: vec![super::Track {
                 name: "track".to_string(),
-                file: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav"),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/1Channel44.1k.wav"),
                 file_channel: 1,
                 sample_rate: 48000,
                 sample_format: crate::audio::SampleFormat::Int,
@@ -4458,7 +4459,8 @@ sections:
         let song = super::Song {
             tracks: vec![super::Track {
                 name: "track".to_string(),
-                file: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav"),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/1Channel44.1k.wav"),
                 file_channel: 1,
                 sample_rate: 44100,
                 sample_format: crate::audio::SampleFormat::Float,

@@ -27,6 +27,11 @@ use crate::lighting::channels::dmx_byte;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
+// The frame rate and the dimming arithmetic the MIDI DMX store shares with
+// the universe threads are `mtrack-core`'s, with the store.
+pub(crate) use super::midi_dmx_store::{
+    dim_rate, dim_step, dim_ticks, DEFAULT_DIM_TICKS, FRAMES_PER_SECOND, TARGET_HZ,
+};
 
 /// A DMX universe is 512 channels.
 const UNIVERSE_SIZE: usize = 512;
@@ -82,10 +87,6 @@ impl FrameClock {
         self.due()
     }
 }
-
-pub(crate) use super::midi_dmx_store::{
-    dim_rate, dim_step, dim_ticks, DEFAULT_DIM_TICKS, FRAMES_PER_SECOND, TARGET_HZ,
-};
 
 /// Where a channel written at `from`, moving `rate` a tick toward `target`,
 /// is `ticks` ticks on: [`dim_step`] once for each whole tick, as the store

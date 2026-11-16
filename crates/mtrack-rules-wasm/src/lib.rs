@@ -15,7 +15,8 @@
 //! rules for the web UI, as a WebAssembly module.
 //!
 //! The module is the player's own `crates/mtrack-core/src/tempo.rs`, `crates/mtrack-core/src/config/tempo.rs`,
-//! `crates/mtrack-core/src/config/metronome.rs`, `src/audio/beat_grid.rs`,
+//! `crates/mtrack-core/src/config/metronome.rs`,
+//! `crates/mtrack-core/src/audio/beat_grid.rs`,
 //! `src/lighting/patch.rs` and the light show parser (`crates/mtrack-core/src/lighting/parser/*`
 //! with the effect types it builds), compiled as they are, so the UI places
 //! measures, beats, signatures, accents and cues exactly where the player
@@ -55,7 +56,7 @@ pub mod tempo_config;
 #[allow(dead_code)]
 pub mod metronome_config;
 
-/// The player's beat grid (`src/audio/beat_grid.rs`).
+/// The player's beat grid (`crates/mtrack-core/src/audio/beat_grid.rs`).
 #[path = "../../mtrack-core/src/audio/beat_grid.rs"]
 #[allow(dead_code)]
 pub mod beat_grid;
@@ -119,7 +120,8 @@ pub mod guessed_tempo;
 #[path = "../../../src/dmx/engine/ambient_mode.rs"]
 mod ambient_mode;
 
-/// Whose ambient settings are up (`src/playlist/ambient_source.rs`).
+/// Whose ambient settings are up
+/// (`crates/mtrack-core/src/playlist/ambient_source.rs`).
 #[path = "../../mtrack-core/src/playlist/ambient_source.rs"]
 mod ambient_source;
 

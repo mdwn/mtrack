@@ -11,9 +11,11 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! What mtrack reads and checks with no audio, MIDI or DMX hardware: the
-//! configuration files, tempo maps and the light show language. The player
-//! re-exports each module at the path it had there.
+//! What mtrack does with no audio, MIDI or DMX hardware: it reads a project
+//! (the configuration files, songs and their audio, playlists and light
+//! shows), checks it, and works out what a show does. Playing it through
+//! devices is the player's. The player re-exports each module at the path it
+//! had there.
 
 pub mod audio;
 pub mod config;

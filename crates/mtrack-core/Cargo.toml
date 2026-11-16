@@ -1,6 +1,6 @@
 [package]
 name = "mtrack-core"
-description = "What mtrack reads and checks without any hardware: its configuration, tempo maps and light shows."
+description = "What mtrack does without any hardware: reads a project's configuration, songs, playlists and light shows, checks them, and works out what a show does."
 license = "GPL-3.0"
 version = "0.18.1"
 authors = ["Michael Wilson <mike@mdwn.dev>"]

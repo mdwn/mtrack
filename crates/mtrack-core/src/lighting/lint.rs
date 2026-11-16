@@ -1980,7 +1980,7 @@ show "T" {
         }
 
         let mut files = Vec::new();
-        shows_in(std::path::Path::new("examples"), &mut files);
+        shows_in(std::path::Path::new("../../examples"), &mut files);
         assert!(!files.is_empty(), "no example shows were found to check");
 
         let mut offenders = Vec::new();
