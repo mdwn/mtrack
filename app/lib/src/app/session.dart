@@ -710,6 +710,14 @@ class Session extends ChangeNotifier {
     _notify();
   }
 
+  // "Not on a network it can scan" was true when the button was pressed.
+  // A player found on the network since, or a new look, makes it stale.
+  void _forgetNotScannable() {
+    if (_networkScan == NetworkScan.notScannable) {
+      _networkScan = NetworkScan.idle;
+    }
+  }
+
   // Ends a scan of the network and forgets what it found.
   void _stopSweep() {
     _sweepEpoch++;
@@ -1450,6 +1458,8 @@ class Session extends ChangeNotifier {
     if (!keepError) {
       _connectError = null;
     }
+    // Looking again: the phone may be on another network by now.
+    _forgetNotScannable();
     // The network is searched whatever Bluetooth is doing.
     _startBrowse();
     final adapter = await _link.adapterState();
@@ -1522,6 +1532,9 @@ class Session extends ChangeNotifier {
       _browse = browser.browse().listen(
         (players) {
           _wifiFound = [...players]..sort((a, b) => a.name.compareTo(b.name));
+          if (_wifiFound.isNotEmpty) {
+            _forgetNotScannable();
+          }
           _notify();
         },
         onError: (Object _) => failed(),
