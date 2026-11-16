@@ -79,6 +79,7 @@ class LightingAssets extends ChangeNotifier {
 
   final Map<String, Future<Uint8List?>> _asked = {};
   Future<void> _queue = Future<void>.value();
+  Future<void> _lookup = Future<void>.value();
   AssetDownload? _current;
 
   /// Moves when the link goes, so fetches queued before it fail rather than
@@ -165,11 +166,29 @@ class LightingAssets extends ChangeNotifier {
     return future;
   }
 
+  /// Looks [path] up in the cache, and fetches it on a miss. The lookups run
+  /// one after another, so that fetches are queued in the order they were
+  /// asked for and not in the order the disk happened to answer.
   Future<Uint8List?> _get(String path) async {
-    final cached = await _cache?.read(path);
-    if (cached != null) {
-      return cached;
+    final before = _lookup;
+    final looked = Completer<void>();
+    _lookup = looked.future;
+    final Future<Uint8List?> fetched;
+    try {
+      await before;
+      final cached = await _cache?.read(path);
+      if (cached != null) {
+        return cached;
+      }
+      // Takes its place in the queue before the next lookup starts.
+      fetched = _queued(path);
+    } finally {
+      looked.complete();
     }
+    return fetched;
+  }
+
+  Future<Uint8List?> _queued(String path) async {
     final link = _link;
     _count++;
     _notify();
