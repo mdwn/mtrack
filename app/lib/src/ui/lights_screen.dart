@@ -14,7 +14,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../app/session.dart';
 import '../app/stage_pusher.dart';

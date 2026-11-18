@@ -13,8 +13,8 @@
 //
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mtrack_remote/src/app/player_link.dart';
 import 'package:mtrack_remote/src/ui/lights_screen.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';

@@ -15,9 +15,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/app/lighting_assets.dart';
 import 'package:mtrack_remote/src/ui/lights_screen.dart';
