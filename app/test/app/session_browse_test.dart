@@ -11,6 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+import 'dart:async';
+
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
@@ -439,5 +441,64 @@ void main() {
       h.settle();
       expect(h.browser!.browsing, isFalse);
     }, player: moved);
+  });
+
+  group('in the background', () {
+    scenario('the browse is paused, keeping what it found, and starts again '
+        'on return', (h, _) {
+      h.session.startScan();
+      h.settle();
+      h.browser!.appear(stage);
+      h.session.setForeground(false);
+      h.settle();
+      expect(h.browser!.browsing, isFalse);
+      expect(h.session.wifiFound, [stage]);
+      h.session.setForeground(true);
+      h.settle();
+      expect(h.browser!.starts, 2);
+      expect(h.session.browseFailed, isFalse);
+      h.browser!.appear(rehearsal);
+      expect(h.session.wifiFound, [rehearsal, stage]);
+    });
+
+    scenario('a browse that failed while away is tried again on return', (
+      h,
+      _,
+    ) {
+      // iOS ends a suspended app's Bonjour connection: the failure can come
+      // before the app is told it is in the background.
+      h.session.startScan();
+      h.settle();
+      h.browser!.fail(StateError('DefunctConnection'));
+      h.settle();
+      expect(h.session.browseFailed, isTrue);
+      h.session.setForeground(false);
+      h.session.setForeground(true);
+      h.settle();
+      expect(h.session.browseFailed, isFalse);
+      expect(h.browser!.starts, 2);
+      h.browser!.appear(stage);
+      expect(h.session.wifiFound, [stage]);
+    });
+
+    scenario('nothing is browsed on return once a player is chosen', (h, _) {
+      h.session.startScan();
+      h.settle();
+      h.browser!.appear(stage);
+      h.session.setForeground(false);
+      unawaited(h.session.connectToFound(stage));
+      h.settle();
+      h.session.setForeground(true);
+      h.settle();
+      expect(h.browser!.browsing, isFalse);
+      expect(h.browser!.starts, 1);
+    });
+
+    scenario('a return with nothing browsing starts nothing', (h, _) {
+      h.session.setForeground(false);
+      h.session.setForeground(true);
+      h.settle();
+      expect(h.browser!.starts, 0);
+    });
   });
 }

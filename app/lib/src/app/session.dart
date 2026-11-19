@@ -315,6 +315,7 @@ class Session extends ChangeNotifier {
   Timer? _browseTimer;
   bool _browseSettling = false;
   bool _browseFailed = false;
+  bool _browsePaused = false;
   Completer<FoundPlayer?>? _refinding;
 
   NetworkScan _networkScan = NetworkScan.idle;
@@ -1667,6 +1668,7 @@ class Session extends ChangeNotifier {
     _browseSettling = false;
     _wifiFound = const [];
     _browseFailed = false;
+    _browsePaused = false;
     if (browse != null) {
       unawaited(browse.cancel());
     }
@@ -1946,6 +1948,33 @@ class Session extends ChangeNotifier {
   void setForeground(bool foreground) {
     _foreground = foreground;
     _updateWake();
+    _browseInForeground(foreground);
+  }
+
+  /// Browses only while the app is in the foreground. iOS cuts a suspended
+  /// app's connection to its Bonjour service, which fails the browse, and
+  /// nothing would start it again on return: the connect screen would say
+  /// the network could not be searched until Look again. So the browse is
+  /// paused in the background, keeping what it found, and started again on
+  /// return; one that failed in the meantime is tried again too.
+  void _browseInForeground(bool foreground) {
+    if (!foreground) {
+      final browse = _browse;
+      if (browse == null) {
+        return;
+      }
+      _browse = null;
+      _browsePaused = true;
+      _browseTimer?.cancel();
+      _browseTimer = null;
+      _browseSettling = false;
+      unawaited(browse.cancel());
+      return;
+    }
+    if (_browsePaused || _browseFailed) {
+      _browsePaused = false;
+      _startBrowse();
+    }
   }
 
   void _setPhase(ConnectionPhase phase) {
