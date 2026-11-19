@@ -415,13 +415,13 @@ on a device:
 
 ## Identifiers
 
-The application id `dev.mdwn.mtrack_remote` is a placeholder. Flutter has no single place for it;
-change it in all of these:
+The application id is `com.nonchord.mtrack`, the same on Android and iOS. Flutter has no single
+place for it; change it in all of these:
 
 - `android/app/build.gradle.kts`: `namespace` and `applicationId`.
 - `android/app/src/main/kotlin/.../MainActivity.kt`: the `package` line, and the directory it is in.
-- `ios/Runner.xcodeproj/project.pbxproj`: every `PRODUCT_BUNDLE_IDENTIFIER` (iOS cannot have an
-  underscore, so it is `dev.mdwn.mtrackRemote`, and `.RunnerTests` beside it).
+- `ios/Runner.xcodeproj/project.pbxproj`: every `PRODUCT_BUNDLE_IDENTIFIER` (`.RunnerTests` beside
+  it for the tests; iOS cannot have an underscore).
 
 The display name, "mtrack", is `android:label` in `AndroidManifest.xml` and `CFBundleDisplayName`
 in `ios/Runner/Info.plist`.
