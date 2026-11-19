@@ -37,7 +37,7 @@ concurrency:
 
 env:
   # The Flutter release the app is built and tested with. Move it deliberately.
-  FLUTTER_VERSION: '3.47.9'
+  FLUTTER_VERSION: '3.50.0'
 
 jobs:
   # Says which jobs a pull request's changes call for. A push to main was

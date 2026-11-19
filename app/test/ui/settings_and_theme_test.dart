@@ -14,8 +14,8 @@
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mtrack_remote/src/ui/licences.dart';
 import 'package:mtrack_remote/src/ui/settings_sheet.dart';
 import 'package:mtrack_remote/src/ui/theme.dart';

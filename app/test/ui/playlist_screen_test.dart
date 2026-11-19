@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mtrack_remote/gen/player/v1/player.pb.dart' as pp;
 import 'package:mtrack_remote/src/ui/widgets.dart';
 

@@ -13,9 +13,9 @@
 //
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mtrack_remote/src/app/ports.dart';
 import 'package:mtrack_remote/src/app/session.dart';
 import 'package:mtrack_remote/src/demo/demo_channel.dart';
@@ -28,7 +28,8 @@ import 'fake_stage.dart';
 import 'fake_wifi.dart';
 import 'rig.dart';
 
-/// The bundled fonts, loaded so text measures as it does on a phone.
+/// The bundled fonts, loaded so text measures as it does on a phone. Run once
+/// per UI test file by `test/ui/flutter_test_config.dart`, not by each test.
 Future<void> loadAppFonts() async {
   const fonts = {
     'Nunito': 'assets/fonts/nunito/Nunito.ttf',
@@ -247,7 +248,6 @@ void appTest(
   RememberedPlayer? player,
 }) {
   testWidgets(name, (tester) async {
-    await loadAppFonts();
     final rig = Rig();
     setup?.call(rig);
     rig.publish();
