@@ -1,4 +1,4 @@
-package dev.mdwn.mtrack_remote
+package com.nonchord.mtrack
 
 import io.flutter.embedding.android.FlutterActivity
 
