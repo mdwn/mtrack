@@ -2,9 +2,9 @@ name: mtrack phone app
 # The Flutter app under app/. On a pull request its jobs run only when what
 # they are built from changes (scripts/ci-changes.sh), so a Rust or web UI PR
 # pays for no more of it than it touches: the app's own checks for the app
-# and the protocol it speaks, and the Android build for those and for the web
-# UI, whose stage page the app ships (the Lights tab). A push to main runs
-# them when any of the paths below changed.
+# and the protocol it speaks, and the Android and iOS builds for those and
+# for the web UI, whose stage page the app ships (the Lights tab). A push to
+# main runs them when any of the paths below changed.
 on:
   push:
     branches:
@@ -168,20 +168,34 @@ jobs:
         path: app/build/app/outputs/flutter-apk/app-debug.apk
         retention-days: 7
 
-  # Checks that the iOS project still builds. Main only: a macOS runner costs
-  # many times what a Linux one does, and PR time is a budget. Unsigned, so
-  # nothing here can be installed on a phone. It builds without the stage
-  # page (the Android job is what checks that): the page's toolchain is not
-  # set up on macOS for an app nobody can install from here.
+  # Checks that the iOS project still builds, with the stage page in it, as
+  # the Android job does for the APK. A macOS runner costs many times what a
+  # Linux one does, so on a pull request this runs only when the Android job
+  # does: for a change to the app, its protocol or the web UI. Unsigned, so
+  # nothing here can be installed on a phone.
   ios:
     name: Build the iOS app
-    if: github.event_name == 'push'
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.app == 'true' || needs.changes.outputs.ui == 'true') }}
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v7
     - name: Install protoc
       # The runner's Homebrew protoc is new enough for proto3 optional.
       run: brew install protobuf
+    # The stage page's toolchain, as in the Android job.
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '22'
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
+    - uses: Swatinem/rust-cache@v2
     - uses: subosito/flutter-action@v2
       with:
         flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -189,6 +203,19 @@ jobs:
         cache: true
     - name: Generate protobuf messages
       run: make gen-app-proto
+    - name: Build the stage page into the app's assets
+      run: make app-stage-assets
     - name: Build without signing
       working-directory: app
       run: flutter build ios --no-codesign --debug
+    - name: Check the app has the stage page
+      # The same files the APK is checked for.
+      run: |
+        assets=app/build/ios/iphoneos/Runner.app/Frameworks/App.framework/flutter_assets/assets
+        (cd "$assets" && find stage -type f) > app-files.txt
+        for wanted in '^stage/stage\.html$' '^stage/assets/stage-.*\.js$' \
+            '^stage/assets/stage-.*\.css$' '^stage/assets/mtrack_rules_bg-.*\.wasm$' \
+            '^stage/assets/Stage3DView-.*\.js$' '^stage/assets/three-.*\.js$'; do
+          grep -Eq "$wanted" app-files.txt ||
+            { echo "The app has no $wanted"; exit 1; }
+        done

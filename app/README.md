@@ -334,16 +334,21 @@ Android app" job of the app workflow uploads `mtrack-remote-debug-apk` (kept for
 from the run's page, copy it to the phone and open it (Android asks to allow installing from the
 source). It is signed with the debug key, so it is for trying, not for a store.
 
-The iOS project is built (`flutter build ios --no-codesign --debug`) on pushes to main only, to check
-that it compiles. Running it on an iPhone needs Xcode and an Apple developer account for signing.
+The iOS project is built (`flutter build ios --no-codesign --debug`), with the stage page, when the
+Android one is, and the app is checked for the page as the APK is. It is unsigned, so there is no
+iOS artifact to install: running it on an iPhone needs Xcode and an Apple developer account for
+signing.
 
 Bluetooth does not work in the Android emulator or the iOS simulator, so the radio path needs a
 real phone.
 
 ## What is not verified without a phone
 
-Everything above `lib/src/ble/` and `lib/src/platform/` is tested against fakes. These have not run
-on a device:
+Everything above `lib/src/ble/` and `lib/src/platform/` is tested against fakes. On an iPhone SE
+(3rd generation, iOS 27.2), with a release build signed for development, the app has connected to a
+player over Wi-Fi; found it over Bluetooth, paired with it at the system's prompt and connected; and
+shown the stage in the Lights tab. The details below have not been checked on it, and what they
+say has not run on a device:
 
 - Scanning, filtering on the service, and the signal strength the scan reports.
 - Connecting, the MTU request (517 on Android), service discovery and subscribing to notifications.
@@ -410,8 +415,7 @@ on a device:
   a JavaScript call carrying a layout of tens of kilobytes goes through; that touches do not reach
   the page and the tab bar still works over it; that the server survives the app's time in the
   background, or is replaced when it does not; what the web view does when the system kills its
-  renderer; and what a screen reader says for the stage. The iOS build in CI does not carry the
-  page.
+  renderer; and what a screen reader says for the stage.
 
 ## Identifiers
 
