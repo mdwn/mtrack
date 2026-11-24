@@ -40,11 +40,7 @@ use super::utils::{
 };
 
 /// A `.light` file as written.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Document {
     /// Its `include`s, in order, when it has any.
@@ -74,7 +70,7 @@ pub struct Document {
 }
 
 /// The kinds of item a file holds.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentItem {
@@ -88,11 +84,7 @@ pub enum DocumentItem {
 /// What reading a file as a [`Document`] gives: the document, or why the
 /// editor cannot hold the file (it does not parse, or it defines what the
 /// editor does not edit).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DocumentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,7 +96,7 @@ pub struct DocumentResult {
 }
 
 /// An `include "…"` as written, and the file it names.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Include {
     /// The path as written, relative to the file's folder.
@@ -125,7 +117,7 @@ pub struct Include {
 
 /// A `palette { }` block as written: the colour slots a file's effects may
 /// refer to as `palette.<slot>`, each with its default colour.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PaletteSection {
     pub slots: Vec<PaletteSlot>,
@@ -148,7 +140,7 @@ pub struct PaletteSection {
 }
 
 /// A `name: colour` of a palette.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PaletteSlot {
     pub name: String,
@@ -160,7 +152,7 @@ pub struct PaletteSlot {
 }
 
 /// A `tempo { }` block as written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoSection {
     pub start: DurationValue,
@@ -204,7 +196,7 @@ pub struct TempoSection {
 
 /// A comment inside a `tempo { }` block: above the field it names (or on
 /// that field's line, `inline`); `end` for one after the last field.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoComment {
     pub at: TempoField,
@@ -212,7 +204,7 @@ pub struct TempoComment {
     pub text: String,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TempoField {
@@ -247,7 +239,7 @@ impl TempoField {
 }
 
 /// One entry of a tempo block's `changes:`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoChange {
     pub timestamp: Timestamp,
@@ -281,7 +273,7 @@ pub struct TempoChange {
 }
 
 /// A number with its unit, as a tempo block's `start:` is written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DurationValue {
     pub value: f64,
@@ -295,7 +287,7 @@ pub struct DurationValue {
 
 /// A duration as written (`0.0s`, `500ms`) and the value and unit it reads
 /// as.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WrittenDuration {
     pub text: String,
@@ -305,7 +297,7 @@ pub struct WrittenDuration {
 
 /// A cue's or a tempo change's position: a time (`@MM:SS.mmm`, `@S.sss`)
 /// in milliseconds, or a bar and beat (`@bar/beat`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Timestamp {
     #[serde(rename = "type")]
@@ -326,7 +318,7 @@ pub struct Timestamp {
     pub beat: Option<f64>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampKind {
@@ -335,7 +327,7 @@ pub enum TimestampKind {
 }
 
 /// A `sequence "name"(params), length: … { }` definition.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Sequence {
     pub name: String,
@@ -371,7 +363,7 @@ pub struct Sequence {
 
 /// A `name: value` in a sequence's parameter list or a reference's
 /// arguments; a declared parameter with no default is its name alone.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceArg {
     pub name: String,
@@ -384,7 +376,7 @@ pub struct SequenceArg {
 }
 
 /// A `show "name" { }`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LightShow {
     /// As written; `""` for a show written without a name (the only show
@@ -417,7 +409,7 @@ pub struct LightShow {
 }
 
 /// One `@time` and everything written under it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Cue {
     pub timestamp: Timestamp,
@@ -472,7 +464,7 @@ pub struct Cue {
 }
 
 /// An `offset N measures` line as written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OffsetLine {
     pub measures: u32,
@@ -487,7 +479,7 @@ pub struct OffsetLine {
 }
 
 /// The kinds of line a cue holds.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CueLine {
@@ -502,7 +494,7 @@ pub enum CueLine {
 }
 
 /// An inline `loop { } repeats: n` block, as written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct InlineLoop {
     pub text: String,
@@ -517,11 +509,7 @@ pub struct InlineLoop {
 }
 
 /// An effect line: its groups and its parameters.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CueEffect {
     pub groups: Vec<String>,
@@ -551,7 +539,7 @@ pub struct CueEffect {
 /// value as its text (a colour with its quotes, `50%`, `$level`), so a
 /// repeated name and a spelling survive a save. The editor's forms read
 /// and set them by name ([`super::edit`]).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct EffectParams {
     #[serde(rename = "type")]
@@ -565,7 +553,7 @@ pub struct EffectParams {
 }
 
 /// A `name: value` parameter as written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -581,7 +569,7 @@ pub struct Param {
 
 /// The comments written around one element of a list -- a parameter, an
 /// argument, a group name -- for a save to write back in place.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Remarks {
     /// The comment lines above it, as written (`# …`, `// …`).
@@ -605,7 +593,7 @@ impl Remarks {
 }
 
 /// A `clear(…)`, `freeze(…)`, `unfreeze(…)` or `master(…)`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LayerCommand {
     pub command: LayerCommandType,
@@ -655,11 +643,7 @@ impl LayerCommand {
 
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
 /// "name"`.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceRef {
     pub name: String,

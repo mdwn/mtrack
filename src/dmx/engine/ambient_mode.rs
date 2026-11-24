@@ -25,7 +25,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// so every surface takes a mode the same way (any case, spaces trimmed).
 /// The TypeScript type says the same names (the `serde` attribute below is
 /// read only by tsify).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", serde(rename_all = "lowercase"))]
 #[derive(
     Clone,

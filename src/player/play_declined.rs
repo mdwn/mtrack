@@ -22,7 +22,7 @@ use serde::Serialize;
 pub const PLAY_DECLINED_KEY: &str = "mtrack-play-declined";
 
 /// Why a play started no song.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayDeclined {

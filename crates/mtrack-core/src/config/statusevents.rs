@@ -22,7 +22,7 @@ use super::midi;
 use super::midi_event::MidiEvent;
 
 /// The configuration for emitting status events.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct StatusEvents {
     /// The events to emit to clear the status.

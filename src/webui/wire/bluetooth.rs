@@ -19,7 +19,7 @@ use serde::Serialize;
 
 /// What `GetBluetooth` answers, and what every change to it answers: the
 /// Bluetooth controller as it is now.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BluetoothStatus {
     /// Whether the running config has a Bluetooth controller.
@@ -35,7 +35,7 @@ pub struct BluetoothStatus {
 }
 
 /// Whether phones may pair.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PairingWindow {
     pub open: bool,
@@ -44,7 +44,7 @@ pub struct PairingWindow {
 }
 
 /// A phone paired with the player.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct BluetoothPhone {
     /// `AA:BB:CC:DD:EE:FF`.

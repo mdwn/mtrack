@@ -27,7 +27,7 @@ pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the DMX configuration.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
@@ -179,7 +179,7 @@ impl Dmx {
 }
 
 /// A YAML representation of a DMX universe configuration.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Universe {
     /// The OpenLighting universe.

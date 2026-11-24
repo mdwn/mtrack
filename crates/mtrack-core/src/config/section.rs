@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A named section of a song defined by measure boundaries.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct Section {
     /// Display name for this section (e.g., "verse", "chorus").

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Group constraint types for role-based group resolution
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub enum GroupConstraint {
     /// All of these tags must be present
@@ -37,7 +37,7 @@ pub enum GroupConstraint {
 }
 
 /// Group definition with role-based constraints
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LogicalGroup {
     /// The name of the group
@@ -124,7 +124,7 @@ pub const RETIRED_INLINE_FIXTURES: &str = "dmx.lighting.fixtures is no longer su
      are patched in venue files — run `mtrack migrate --apply` to move these into one";
 
 /// A YAML representation of the lighting configuration.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Lighting {
@@ -171,7 +171,7 @@ fn is_default_layers(layers: &[String]) -> bool {
 }
 
 /// Directory configuration for loading fixture types and venues.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Directories {
     /// Directory containing fixture type definitions.

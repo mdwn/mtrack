@@ -18,7 +18,7 @@
 use serde::Serialize;
 
 /// A fade's curve.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum FadeCurve {
@@ -31,7 +31,7 @@ pub enum FadeCurve {
 /// A fade as configured, for status reports: a `null` `exclude` is the
 /// default (a fade-out's `loop_crossfade_cut`, a fade-in's none), as is a
 /// `null` `lights` (the length).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FadeStatus {
     pub length: String,

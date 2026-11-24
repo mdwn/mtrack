@@ -26,7 +26,7 @@ use std::time::Duration;
 use mtrack_rules_wasm::metronome_config::{MetronomeChange, MetronomeConfig, Subdivision};
 use mtrack_rules_wasm::tempo_config::{TempoChangeConfig, TempoConfig, TransitionConfig};
 use mtrack_rules_wasm::{
-    bounds, signature_parse, BeatGrid, GridQuery, NormalizedTempo, Snap, TempoQuery, TempoSource,
+    bounds, parse_signature, BeatGrid, GridQuery, NormalizedTempo, Snap, TempoQuery, TempoSource,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -632,7 +632,7 @@ fn exports_equal_the_players_rules() {
         "4/4", "7/8", "6/8", " 3 / 4 ", "5/3", "0/4", "4/0", "4", "", "abc", "12/16", "33/8",
         "4/64",
     ] {
-        let got = signature_parse(Some(raw.into())).map(|s| s.0);
+        let got = parse_signature(Some(raw.into())).map(|s| s.0);
         let expected = mtrack_rules_wasm::tempo_config::parse_time_signature(raw)
             .ok()
             .map(|s| (s.numerator, s.denominator));
@@ -840,9 +840,9 @@ fn absurd_magnitudes_are_refused_not_walked() {
         assert_eq!(TempoSource::Config { config }.to_tempo_map().err(), why);
     }
     assert_eq!(bounds::tempo_config(&config), None);
-    assert_eq!(signature_parse(None), None);
+    assert_eq!(parse_signature(None), None);
     assert_eq!(
-        signature_parse(Some("7/8".into())).map(|s| s.0),
+        parse_signature(Some("7/8".into())).map(|s| s.0),
         Some((7, 8))
     );
 }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// audio sample rendered onto a dedicated virtual track, and its label is
 /// shown in the web UI around the hint position. Moving a hint is a config
 /// edit — no re-recording of a full-length pilot track.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct PilotConfig {
     /// The output track name hint audio plays on. Route it by adding this
@@ -34,7 +34,7 @@ pub struct PilotConfig {
 }
 
 /// A single pilot hint.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct PilotHint {
     /// Where the hint anchors in the song.
@@ -55,7 +55,7 @@ pub struct PilotHint {
 }
 
 /// A hint position: a measure/beat on the beat grid, or an absolute time.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum HintPosition {
@@ -71,7 +71,7 @@ pub enum HintPosition {
 }
 
 /// Alignment of a hint's audio relative to its anchor position.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 #[serde(rename_all = "lowercase")]
 pub enum HintAlign {

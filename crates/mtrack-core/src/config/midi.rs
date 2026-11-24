@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the MIDI configuration.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Midi {
     /// The MIDI device.
@@ -54,7 +54,7 @@ pub struct Midi {
 }
 
 /// What the beat clock does where a loop goes back.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(
     Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
 )]

@@ -27,7 +27,7 @@ use serde::Serialize;
 /// Deliberately says nothing about whether audio reached the room. `Healthy`
 /// means the callback is running and being handed buffers — a device can still
 /// accept every one and produce nothing, which is not observable from here.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputStatus {

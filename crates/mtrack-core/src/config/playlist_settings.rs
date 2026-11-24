@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// A fade as written in a playlist: a length alone, or with its settings.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum FadeConfig {
@@ -120,7 +120,7 @@ fn optional_string_or_number<'de, D: serde::Deserializer<'de>>(
 
 /// An entry's fades as written, for an editor that sets them per entry:
 /// `None` for none.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EntryFades {
@@ -132,7 +132,7 @@ pub struct EntryFades {
 
 /// An entry's `auto_play` as written: `true` (at once), `false`, or the gap
 /// before it starts (`2s`, `500ms`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum AutoPlayConfig {
@@ -192,7 +192,7 @@ impl<'de> Deserialize<'de> for AutoPlayConfig {
 
 /// Ambient light as written: under `dmx.lighting.ambient`, or a playlist's
 /// `ambient`, whose settings override the player's one by one.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Ambient {

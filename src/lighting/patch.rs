@@ -29,7 +29,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The addresses one fixture occupies.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatchSpan {
     /// The fixture's name.
@@ -105,7 +105,7 @@ fn gangs(spans: &[PatchSpan]) -> Vec<Gang<'_>> {
 
 /// Two fixtures (or gangs of them) patched over part of each other's
 /// addresses: each writes over the other.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PatchOverlap {
     /// The first member of the gang that starts first (by address, then
@@ -229,7 +229,7 @@ pub const UNIVERSE_SIZE: u32 = 512;
 
 /// A fixture whose footprint runs past the end of its universe: the
 /// addresses past 512 do not exist, so its last channels are never sent.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PatchOverrun {
     pub fixture: String,

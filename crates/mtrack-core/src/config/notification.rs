@@ -68,7 +68,7 @@ pub fn section_key(section_name: &str) -> String {
 ///     verse: /path/to/verse_announce.wav
 ///     chorus: /path/to/chorus_announce.wav
 /// ```
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct NotificationConfig {

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// A venue's fixture row, as the editor holds it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct VenueRow {
     pub name: String,
@@ -39,7 +39,7 @@ pub struct VenueRow {
 
 /// Why a fixture row cannot be saved (the editor's
 /// `lighting.venueRow.<problem>`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RowProblem {
@@ -55,7 +55,7 @@ pub enum RowProblem {
 }
 
 /// A row and what stops it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RowProblems {
     pub row: u32,
@@ -63,7 +63,7 @@ pub struct RowProblems {
 }
 
 /// A fixture type's channel row, as the editor holds it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct ChannelRow {
     pub name: String,
@@ -74,7 +74,7 @@ pub struct ChannelRow {
 
 /// Why a channel row cannot be saved (the editor's
 /// `lighting.channelRow.<problem>`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ChannelProblem {
@@ -85,7 +85,7 @@ pub enum ChannelProblem {
 }
 
 /// A channel row and what stops it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ChannelProblems {
     pub row: u32,

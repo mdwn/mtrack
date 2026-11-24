@@ -70,7 +70,7 @@ pub fn is_yaml_config(path: &Path) -> bool {
 }
 
 /// What a file is to the player, by its extension.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileKind {

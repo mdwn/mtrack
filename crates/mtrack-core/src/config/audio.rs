@@ -22,7 +22,7 @@ const DEFAULT_BUFFER_SIZE: usize = 1024;
 const DEFAULT_BUFFER_THREADS: usize = 2;
 
 /// Which resampling algorithm to use when source and output sample rates differ.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(
     Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
 )]
@@ -105,7 +105,7 @@ impl<'de> Deserialize<'de> for StreamBufferSize {
 }
 
 /// A YAML representation of the audio configuration.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Audio {
     /// The audio device. Defaults to empty rather than failing

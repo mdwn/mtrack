@@ -19,7 +19,7 @@ use serde::Serialize;
 
 /// The config as written, and its checksum (`GetConfig`'s answer, and what a
 /// save answers beside the reload).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StoreSnapshot {
     pub yaml: String,
@@ -28,7 +28,7 @@ pub struct StoreSnapshot {
 
 /// A config save's answer: the config after it, and what became of its
 /// hardware reload.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ConfigSaved {
     #[serde(flatten)]
@@ -42,7 +42,7 @@ pub struct ConfigSaved {
 /// (`failed`), with why when it was not applied. A save while a song plays
 /// is kept and its reload deferred, so "Saved" alone would read as a change
 /// already in effect.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ConfigReload {
     pub applied: bool,
@@ -65,7 +65,7 @@ pub struct ConfigReload {
 
 /// A config or profile file saved or deleted, with what became of the
 /// hardware reload.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FileSaved {
     /// `saved` or `deleted`.
@@ -81,7 +81,7 @@ pub struct FileSaved {
 }
 
 /// A profile file, and the sections it has.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ProfileFileInfo {
     /// The file's name, extension included (`stage.yml`): what the web UI
@@ -107,7 +107,7 @@ pub struct ProfileFileInfo {
 }
 
 /// A profile file, read and as written.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ProfileFile {
     /// The profile as a JSON value, so its f32s are widened as the JSON has
@@ -120,7 +120,7 @@ pub struct ProfileFile {
 }
 
 /// Where the sample was stored.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SampleUploaded {
     /// Always `uploaded`.

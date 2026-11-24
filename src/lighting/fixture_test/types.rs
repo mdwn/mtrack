@@ -19,7 +19,7 @@
 use serde::Serialize;
 
 /// What a mode lets a test do.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ControlSupport {
     /// The mode mixes colour (RGB or CMY).
@@ -34,14 +34,14 @@ pub struct ControlSupport {
     pub levels: Vec<String>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct HzRange {
     pub min_hz: f64,
     pub max_hz: f64,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DegreeRange {
     pub min: f64,
@@ -49,7 +49,7 @@ pub struct DegreeRange {
 }
 
 /// One channel of the fixture as a test frame sets it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FrameChannel {
     /// 1-based offset within the fixture.
@@ -63,7 +63,7 @@ pub struct FrameChannel {
 }
 
 /// How a test sets a mode's level.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimmerControl {

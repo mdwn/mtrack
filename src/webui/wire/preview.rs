@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::webui::wire::messages::StageValues;
 
 /// What a song's shows do at each asked time.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Preview {
     pub song: String,
@@ -36,7 +36,7 @@ pub struct Preview {
 }
 
 /// The stage at one asked time.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PreviewEvaluation {
     /// Seconds.
@@ -47,7 +47,7 @@ pub struct PreviewEvaluation {
 }
 
 /// An effect running at the evaluated time.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PreviewEffect {
     pub id: String,
@@ -65,7 +65,7 @@ pub struct PreviewEffect {
 }
 
 /// One `.light` file found under the songs directory.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightFileInfo {
     pub name: String,
@@ -74,7 +74,7 @@ pub struct LightFileInfo {
 }
 
 /// `ListLightingGroups`: the groups a cue can target.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingGroups {
     pub groups: Vec<LightingGroup>,
@@ -87,7 +87,7 @@ pub struct LightingGroups {
     pub resolved: Option<bool>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingGroup {
     pub name: String,
@@ -96,7 +96,7 @@ pub struct LightingGroup {
 }
 
 /// `ValidateLightShow`: whether a show parses, and why not.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingValidation {
     pub valid: bool,

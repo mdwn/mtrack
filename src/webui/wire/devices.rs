@@ -23,7 +23,7 @@ use crate::player::AudioOutputHealth;
 /// Whether a device can stream. A device
 /// this player already holds is reported from its health (`in_use`), not
 /// opened again; the fields a case does not decide are absent.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AudioProbe {
     pub outcome: ProbeKind,
@@ -38,7 +38,7 @@ pub struct AudioProbe {
     pub health: Option<Option<AudioOutputHealth>>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeKind {
@@ -52,7 +52,7 @@ pub enum ProbeKind {
 
 /// A channel's noise floor, and the stream it
 /// was measured on.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct NoiseFloor {
     /// The measurement's f32s widened, as the JSON has always carried them.
@@ -71,7 +71,7 @@ pub struct NoiseFloor {
 /// so the probe opens the device the way saving this profile would. Probing
 /// with defaults would answer a question nobody asked — a WING opens fine at
 /// some formats and refuses the one that matters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct ProbeAudioRequest {
     pub device: String,
