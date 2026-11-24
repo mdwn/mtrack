@@ -292,6 +292,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             active_section,
             looping,
             reactive_loop_state,
+            is_paused: status.paused,
             pending_start_ms: status.pending_start.map(|d| d.as_millis() as u64),
             pilot_hints,
             tempo,

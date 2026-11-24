@@ -76,7 +76,7 @@ test.describe("Section editor preview transport", () => {
     await expect(page.locator(".playhead-info")).toContainText("120");
   });
 
-  test("pause on the playing current song fires Stop then Seek", async ({
+  test("pause on the playing current song preserves its position with Pause", async ({
     page,
   }) => {
     await sendWs(page, wsId, playbackState({ is_playing: true }));
@@ -84,28 +84,26 @@ test.describe("Section editor preview transport", () => {
     const playPause = page.locator(".preview-btn").first();
     await expect(playPause).toHaveClass(/preview-btn--live/);
 
-    const stopPromise = page.waitForRequest((req) =>
-      req.url().includes("/Stop"),
-    );
-    const seekPromise = page.waitForRequest((req) =>
-      req.url().includes("/Seek"),
-    );
+    const paused = page.waitForRequest((req) => req.url().endsWith("/Pause"));
     await playPause.click();
-    await stopPromise;
-    await seekPromise;
+    await paused;
   });
 
-  test("stop rewinds the stopped current song to the top", async ({ page }) => {
-    await sendWs(page, wsId, playbackState());
+  test("stop rewinds the paused current song to the top", async ({ page }) => {
+    await sendWs(
+      page,
+      wsId,
+      playbackState({ is_paused: true, pending_start_ms: 5000 }),
+    );
 
     const stopBtn = page.locator(".preview-btn").nth(1);
     await expect(stopBtn).toBeEnabled();
 
-    const seekPromise = page.waitForRequest((req) =>
-      req.url().includes("/Seek"),
+    const stopPromise = page.waitForRequest((req) =>
+      req.url().includes("/Stop"),
     );
     await stopBtn.click();
-    await seekPromise;
+    await stopPromise;
   });
 
   test("arrow keys near the start clamp instead of seeking negative", async ({
