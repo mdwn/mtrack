@@ -94,6 +94,8 @@ pub struct PlayerStatus {
     /// position kept for the next play while stopped. Every loop jump has
     /// already put it back as it fell due.
     pub elapsed: Result<Option<Duration>, String>,
+    /// Whether playback was paused at the pending start position.
+    pub paused: bool,
     /// The position the next play starts at, while one is kept.
     pub pending_start: Option<Duration>,
     pub active_section: Option<SectionBounds>,
@@ -284,24 +286,29 @@ impl Player {
     /// The status without the DMX engine's reads: what the transport
     /// snapshot is made from, at its poll rate.
     pub(crate) async fn transport_status(&self) -> PlayerStatus {
+        // Read playing, elapsed and the resume point on the same side of a pause or resume.
+        let join = self.join.lock().await;
         let playlist = self.get_playlist();
         let current_song = playlist.current();
-        let playing = self.is_playing().await;
+        let playing = join.is_some();
         let elapsed = self.elapsed().await.map_err(|e| e.to_string());
-        let (pending_start, auto_play, ending) = {
+        let (pending_start, paused, auto_play, ending) = {
             let transport = self.transport.lock();
             (
                 transport.pending_start.map(|p| p.position),
+                transport.is_paused(),
                 transport.auto_play_status(),
                 transport.ending_status(),
             )
         };
+        drop(join);
         PlayerStatus {
             playlist,
             current_song,
             playing,
             elapsed,
             pending_start,
+            paused,
             active_section: self.active_section(),
             reactive_loop_state: self.reactive_loop_state(),
             locked: self.is_locked(),

@@ -412,6 +412,7 @@ pub(super) fn playback_to_proto(playback: &wire::Playback) -> proto::Playback {
             }),
         looping: playback.looping,
         reactive_loop_state: Some(loop_state_to_proto(&playback.reactive_loop_state)),
+        is_paused: playback.is_paused,
         pending_start: playback.pending_start_ms.map(millis),
         pilot_hints: playback
             .pilot_hints
@@ -1123,6 +1124,7 @@ mod tests {
             reactive_loop_state: wire::LoopState::LoopArmed {
                 section_name: "verse".to_string(),
             },
+            is_paused: false,
             pending_start_ms: Some(4_000),
             pilot_hints: vec![wire::ResolvedPilotHint {
                 label: "cue".to_string(),
@@ -1293,6 +1295,7 @@ mod tests {
             active_section: None,
             looping: false,
             reactive_loop_state: wire::LoopState::Idle,
+            is_paused: false,
             pending_start_ms: None,
             pilot_hints: vec![],
             tempo: None,
@@ -1395,6 +1398,7 @@ mod tests {
             active_section: None,
             looping: false,
             reactive_loop_state: wire::LoopState::Idle,
+            is_paused: false,
             pending_start_ms: None,
             pilot_hints: vec![],
             tempo: None,

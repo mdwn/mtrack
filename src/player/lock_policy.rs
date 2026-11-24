@@ -100,6 +100,7 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "Previous"),
     (Grpc, "Next"),
     (Grpc, "NavigateToSong"),
+    (Grpc, "Pause"),
     (Grpc, "Stop"),
     (Grpc, "SwitchToPlaylist"),
     (Grpc, "Status"),
@@ -225,6 +226,7 @@ mod tests {
     fn the_table_names_operations_per_surface() {
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
+        assert!(open_while_locked(Grpc, "Pause"));
         assert!(!open_while_locked(Mcp, "Play"));
         assert!(!open_while_locked(Grpc, "UpdateAudio"));
         // The phone's status stream and its Wi-Fi lookup are reads.

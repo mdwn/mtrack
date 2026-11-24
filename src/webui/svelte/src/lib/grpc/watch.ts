@@ -187,6 +187,7 @@ export function mapPlayback(p: PlaybackMessage): Playback {
       : null,
     looping: p.looping,
     reactive_loop_state: loopState(p.reactiveLoopState),
+    is_paused: p.isPaused,
     pending_start_ms: msOrNull(p.pendingStart),
     pilot_hints: p.pilotHints.map((h) => ({
       label: h.label,

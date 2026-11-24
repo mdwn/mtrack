@@ -101,6 +101,7 @@ describe("a playback event, in the shape the store holds", () => {
       looping: true,
       reactiveLoopState: { state: "looping", sectionName: "verse" },
       pendingStart: dur(12),
+      isPaused: true,
       pilotHints: [
         {
           label: "cue",
@@ -161,6 +162,7 @@ describe("a playback event, in the shape the store holds", () => {
       active_section: { name: "verse", start_ms: 4000, end_ms: 20500 },
       looping: true,
       reactive_loop_state: { state: "looping", section_name: "verse" },
+      is_paused: true,
       pending_start_ms: 12000,
       pilot_hints: [
         {
@@ -208,6 +210,7 @@ describe("a playback event, in the shape the store holds", () => {
       active_section: null,
       looping: false,
       reactive_loop_state: { state: "idle" },
+      is_paused: false,
       pending_start_ms: null,
       pilot_hints: [],
       tempo: null,
