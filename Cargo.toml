@@ -145,7 +145,7 @@ reqwest = { version = "0.13", features = ["json", "stream"], optional = true }
 ratatui = "0.30"
 crossterm = "0.29"
 
-rmcp = { version = "3.4", default-features = false, features = [
+rmcp = { version = "3.9", default-features = false, features = [
     "server",
     "macros",
     "schemars",
