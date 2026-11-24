@@ -33,7 +33,7 @@ pub fn beam_angle_valid(degrees: f64) -> bool {
 }
 
 /// The physical unit a channel value or range is expressed in.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhysicalUnit {
     /// Degrees (pan/tilt angles).
@@ -43,7 +43,7 @@ pub enum PhysicalUnit {
 }
 
 /// A physical value range (e.g. -270°..270°, 0.3 Hz..25 Hz).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PhysicalRange {
     /// The value at the low end of the DMX range.
@@ -56,7 +56,7 @@ pub struct PhysicalRange {
 
 /// A function of a channel: a named DMX sub-range, optionally mapped to a
 /// physical value range (e.g. "strobe" over DMX 64..255 as 0.3 Hz..25 Hz).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelFunction {
     /// The function name.
@@ -76,7 +76,7 @@ pub struct ChannelFunction {
 
 /// One step of a function's table: DMX `dmx_from..=dmx_to` runs linearly
 /// over the physical values `from..to` (equal when the step holds a value).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FunctionStep {
     pub dmx_from: u8,
@@ -89,7 +89,7 @@ pub struct FunctionStep {
 /// where it sits in the fixture's frame. The fixture-level channels stay
 /// ganged (the first cell's, mirroring the rest); a show that says
 /// `per: cell` reaches these.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
@@ -102,7 +102,7 @@ pub struct Cell {
 }
 
 /// A structured channel definition.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelDef {
     /// 1-based offset of the (coarse) byte within the fixture.
@@ -125,7 +125,7 @@ pub struct ChannelDef {
 ///
 /// The type is the whole archive, not one of its modes (venue-exchange
 /// design §22): every venue fixture of it states its own mode.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GdtfSource {
     /// Path to the GDTF archive, relative to the config directory.
@@ -137,7 +137,7 @@ pub struct GdtfSource {
 /// function's own table, linear in hertz where it has none. A unit whose
 /// firmware does otherwise (the Astera PixelBrick runs on a period curve)
 /// says so in its record; see [`StrobeCurve::automatic`].
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray,
 )]
@@ -155,7 +155,7 @@ pub enum StrobeCurve {
 }
 
 /// Movement limits — not part of GDTF; measured or configured per fixture.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MovementLimits {
     /// Maximum pan speed in degrees per second.
@@ -175,7 +175,7 @@ pub struct MovementLimits {
 /// from serialization: `FixtureType` serializes into webui/MCP responses,
 /// and that surface must not change until the features consuming the rich
 /// model ship. The distill cache stores its own representation.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FixtureType {
@@ -234,7 +234,7 @@ pub struct FixtureType {
 }
 
 /// A fixture definition.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Fixture {
     /// The name of the fixture.
@@ -278,7 +278,7 @@ pub struct Fixture {
 /// Where a venue was seeded from. Provenance, not a reference: the loader
 /// never opens the MVR, and everything in the venue file is the user's to
 /// edit. Re-import reads it to merge a revised MVR rather than replace.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VenueSource {
     /// The MVR archive, relative to the project directory.
@@ -289,7 +289,7 @@ pub struct VenueSource {
 }
 
 /// A venue definition.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Venue {

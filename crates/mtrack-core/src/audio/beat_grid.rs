@@ -28,11 +28,7 @@ use serde::{Deserialize, Serialize};
 /// Contains the absolute time of every detected beat and identifies which
 /// beats are measure boundaries (accented clicks). This is the ground truth
 /// from the audio — no assumptions about note values or BPM.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BeatGrid {
     /// Absolute time in seconds of each detected beat.

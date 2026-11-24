@@ -20,7 +20,7 @@ use serde::Serialize;
 
 use crate::lighting::findings::{LibraryFinding, Severity, VenueError, Warning};
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Readiness {
     /// Whether the player has a DMX engine.
@@ -44,7 +44,7 @@ pub struct Readiness {
     pub checks: Vec<Check>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessVenue {
     pub name: String,
@@ -56,7 +56,7 @@ pub struct ReadinessVenue {
 
 /// The fixture types the venue uses, those it cannot, and the library's
 /// own findings.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessTypes {
     pub in_use: Vec<String>,
@@ -65,7 +65,7 @@ pub struct ReadinessTypes {
 }
 
 /// A fixture whose type or mode does not resolve, and why.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct UnresolvedFixture {
     pub fixture: String,
@@ -74,7 +74,7 @@ pub struct UnresolvedFixture {
     pub reason: String,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessGroup {
     pub name: String,
@@ -84,7 +84,7 @@ pub struct ReadinessGroup {
 }
 
 /// A song's lighting.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessShow {
     pub song: String,
@@ -97,7 +97,7 @@ pub struct ReadinessShow {
 
 /// The DMX universes the venue uses, those with no output, and what olad
 /// says of them.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessOutput {
     pub universes: Vec<u16>,
@@ -107,7 +107,7 @@ pub struct ReadinessOutput {
 }
 
 /// Whether olad answered, and the universes it has no output patched for.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct OladPatch {
     pub reachable: bool,
@@ -115,7 +115,7 @@ pub struct OladPatch {
 }
 
 /// One of the overview's checks.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckKey {
@@ -127,7 +127,7 @@ pub enum CheckKey {
 }
 
 /// A check's verdict: its worst finding's severity, or `ready`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckState {
@@ -138,7 +138,7 @@ pub enum CheckState {
 }
 
 /// A check, its verdict, what its card says and what it found.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Check {
     pub key: CheckKey,
@@ -150,7 +150,7 @@ pub struct Check {
 }
 
 /// A part of a check's summary (the page's `lighting.hub.summary.<kind>`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Summary {
@@ -193,7 +193,7 @@ pub enum Summary {
 }
 
 /// Something a check found, and where it is fixed.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Finding {
     pub severity: Severity,
@@ -204,7 +204,7 @@ pub struct Finding {
 }
 
 /// What a finding is (the page's `lighting.hub.finding.<kind>`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FindingWhat {
@@ -249,7 +249,7 @@ pub enum FindingWhat {
 }
 
 /// Where a finding is fixed (the page's `lighting.hub.fix.<kind>`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Fix {

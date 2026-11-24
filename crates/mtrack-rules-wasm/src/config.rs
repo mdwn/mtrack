@@ -78,8 +78,7 @@ pub mod ambient {
 /// The values each of a config's choices takes: every variant of the
 /// player's own enums (`VariantArray`), as `serde` writes them: what the
 /// config editor's selects offer.
-#[derive(serde::Serialize, tsify_next::Tsify)]
-#[tsify(into_wasm_abi)]
+#[derive(serde::Serialize, tsify::Tsify)]
 pub struct ConfigChoices {
     pub trigger_actions: Vec<trigger::TriggerInputAction>,
     pub velocity_curves: Vec<trigger::VelocityCurve>,

@@ -17,5 +17,5 @@
 
 /// A stage-space triple: meters, right-handed Z-up, origin downstage-center
 /// on the deck, +x stage-left, +y upstage, +z up. (For a rotation, degrees.)
-#[cfg_attr(feature = "tsify", tsify_next::declare)]
+#[cfg_attr(feature = "tsify", tsify::declare)]
 pub type Vec3 = [f64; 3];

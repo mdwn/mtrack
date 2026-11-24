@@ -58,11 +58,7 @@ pub fn synthesize_click(freq: f64, volume: f64, sample_rate: u32) -> Vec<f32> {
 
 /// A YAML representation of a song's metronome: a virtual click track
 /// generated from the song's beat grid, routable like any other track.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeConfig {
     /// Tri-state switch: absent = the block enables the metronome (and a
@@ -113,7 +109,7 @@ pub struct MetronomeConfig {
 }
 
 /// The metronome subdivision: even ticks per beat or a clave pattern.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Subdivision {
@@ -124,7 +120,7 @@ pub enum Subdivision {
 }
 
 /// The supported clave patterns (3-2 direction).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaveKind {
@@ -153,7 +149,7 @@ impl Default for Subdivision {
 }
 
 /// A positional change to the metronome feel, anchored at a measure.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeChange {
     /// The 1-indexed measure the change takes effect at.
@@ -167,7 +163,7 @@ pub struct MetronomeChange {
 }
 
 /// The pair of click sounds used by the metronome.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct MetronomeSounds {
     /// The sound for accented (downbeat / group start) clicks.
@@ -185,7 +181,7 @@ pub struct MetronomeSounds {
 }
 
 /// A single click sound: synthesized (freq/volume) or a sample file.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct ClickSound {
     /// Path to a sample file (relative to the song directory). When set,

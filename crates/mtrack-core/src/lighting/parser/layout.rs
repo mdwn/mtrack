@@ -44,11 +44,7 @@ const TAIL: Duration = Duration::from_secs(5);
 const MAX_GRID_LINES: usize = 100_000;
 
 /// A file laid out in time.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct Layout {
     /// Why the file could not be laid out: it does not parse, or does not
@@ -73,7 +69,7 @@ pub struct Layout {
 }
 
 /// A tempo map's bar and beat lines and tempo stretches.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TempoLayout {
     /// Where bar 1 is.
@@ -84,7 +80,7 @@ pub struct TempoLayout {
 
 /// A stretch of the tempo lane with one tempo and metre: from each change,
 /// each ramp's end and each barline a mid-bar signature change governs from.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TempoSpan {
     pub start_ms: f64,
@@ -100,7 +96,7 @@ pub struct TempoSpan {
 }
 
 /// A bar or beat line.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GridLine {
     pub ms: f64,
@@ -111,7 +107,7 @@ pub struct GridLine {
     pub kind: GridLineKind,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum GridLineKind {
@@ -120,7 +116,7 @@ pub enum GridLineKind {
 }
 
 /// A show's cues in time.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ShowLayout {
     pub name: String,
@@ -136,7 +132,7 @@ pub struct ShowLayout {
 
 /// A sequence's cues on its own timeline, with its parameters at their
 /// defaults.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SequenceLayout {
     pub name: String,
@@ -154,7 +150,7 @@ pub struct SequenceLayout {
 }
 
 /// One written cue, where the player fires it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct CueLayout {
     /// Its place among the show's written cues.
@@ -180,7 +176,7 @@ pub struct CueLayout {
 }
 
 /// An effect on the timeline, with its written end.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EffectLayout {
     pub kind: EffectKind,
@@ -200,7 +196,7 @@ pub struct EffectLayout {
 }
 
 /// Where a sequence reference's passes run.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PassLayout {
     pub sequence: String,

@@ -30,7 +30,7 @@ use super::palette::{slot_of, REFERENCE_PREFIX};
 use super::utils::parse_color_string;
 
 /// An edit of a file's palette, as the editor makes it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PaletteEdit {
@@ -47,11 +47,7 @@ pub enum PaletteEdit {
 }
 
 /// What an edit of a palette gives: the document with it made, or why not.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PaletteEditResult {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,7 +59,7 @@ pub struct PaletteEditResult {
 }
 
 /// Why a palette edit was refused.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PaletteEditError {
     pub code: PaletteEditCode,
@@ -76,7 +72,7 @@ pub struct PaletteEditError {
     pub uses: Vec<PaletteUse>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PaletteEditCode {
@@ -93,7 +89,7 @@ pub enum PaletteEditCode {
 }
 
 /// One place a slot is referred to.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PaletteUse {
     pub container: PaletteContainer,
@@ -109,7 +105,7 @@ pub struct PaletteUse {
     pub param: String,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PaletteContainer {

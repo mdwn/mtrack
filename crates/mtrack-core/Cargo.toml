@@ -13,7 +13,7 @@ categories = ["multimedia", "multimedia::audio"]
 [features]
 # Derives the TypeScript types of the structs the web UI's rules module
 # shares (see crates/mtrack-rules-wasm).
-tsify = ["dep:tsify-next", "dep:wasm-bindgen"]
+tsify = ["dep:tsify", "dep:wasm-bindgen"]
 # What the player's own tests reach for in this crate's modules.
 test-util = ["dep:hound"]
 
@@ -43,7 +43,7 @@ tokio = { version = "1.50.0", features = ["rt"] }
 tracing = "0.1.44"
 yaml-rust2 = "0.11"
 # Only with the `tsify` feature (see [features]).
-tsify-next = { version = "0.5", default-features = false, features = ["js"], optional = true }
+tsify = { version = "0.5.8", default-features = false, features = ["js"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]

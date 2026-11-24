@@ -40,7 +40,7 @@ use super::utils::{unquoted, BLEND_KEYWORDS};
 use super::writer::{dropped, length_text, number};
 
 /// An edit of an effect line's parameters, as a form makes it.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum EffectEdit {
@@ -72,7 +72,7 @@ pub enum EffectEdit {
 /// The words an effect line's form offers, off the parser's own tables:
 /// each effect and the parameters it reads, and the values each keyword
 /// parameter takes.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Vocabulary {
     pub effects: Vec<EffectWords>,
@@ -88,7 +88,7 @@ pub struct Vocabulary {
 }
 
 /// An effect and the parameters it reads (`EffectKind::params`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EffectWords {
     pub kind: EffectKind,
@@ -125,11 +125,7 @@ pub use super::effect_parse::MoveParam;
 /// An effect's parameters as a form shows them: the last value of each
 /// name as written (a `to:` read as `focus`, a focus point and a `from:`
 /// without their quotes), and its colours without theirs.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(into_wasm_abi, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EffectView {
     pub values: HashMap<String, String>,

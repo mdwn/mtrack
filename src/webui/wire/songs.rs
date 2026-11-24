@@ -28,14 +28,14 @@ pub use crate::songs::FileKind;
 
 /// The songs the player knows, and those that failed to load
 /// (`ListSongs`, detailed).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongList {
     pub songs: Vec<SongInfo>,
     pub failures: Vec<SongFailure>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongInfo {
     pub name: String,
@@ -67,7 +67,7 @@ pub struct SongInfo {
 
 /// A song's lighting palette (`SongPalette`): what its shows declare, and
 /// the colours the song itself overrides.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(hashmap_as_object))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct SongPalette {
     /// The slots its shows declare, in order, each with its default.
@@ -78,14 +78,14 @@ pub struct SongPalette {
 }
 
 /// A palette slot and its default colour as `#rrggbb`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SlotColor {
     pub name: String,
     pub color: String,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongFailure {
     pub name: String,
@@ -97,7 +97,7 @@ pub struct SongFailure {
 
 /// `GuessSongTempo`: a tempo map suggested for the song,
 /// and where it came from.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TempoGuess {
     pub source: TempoGuessSource,
@@ -107,7 +107,7 @@ pub struct TempoGuess {
 }
 
 /// What a tempo guess was read from.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TempoGuessSource {
@@ -118,7 +118,7 @@ pub enum TempoGuessSource {
 }
 
 /// A file in a song's directory (`ListSongFiles`).
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongFile {
     pub name: String,
@@ -127,7 +127,7 @@ pub struct SongFile {
 }
 
 /// `BrowseDirectory`: a directory under the config root, directories first.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Browse {
     /// Relative to `root`.
@@ -136,7 +136,7 @@ pub struct Browse {
     pub entries: Vec<BrowseEntry>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BrowseEntry {
     pub name: String,
@@ -147,7 +147,7 @@ pub struct BrowseEntry {
 }
 
 /// `BulkImportSongs`: the songs made, by directory.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BulkImport {
     pub created: Vec<String>,
@@ -156,7 +156,7 @@ pub struct BulkImport {
     pub failed: Vec<ImportFailure>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ImportFailure {
     pub name: String,

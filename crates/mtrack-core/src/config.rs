@@ -67,6 +67,9 @@ pub use self::metronome::MetronomeConfig;
 pub use self::midi::BeatClockSeams;
 pub use self::midi::Midi;
 pub use self::midi::ToMidiEvent;
+/// What the web UI's MIDI event editor offers; built by the rules module.
+#[cfg(feature = "tsify")]
+pub use self::midi_event::MidiEventShapes;
 pub use self::pilot::PilotConfig;
 pub use self::player::{MetronomeDefaults, Player};
 #[allow(unused_imports)]

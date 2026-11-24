@@ -23,7 +23,7 @@ use crate::lighting::mvr_types::{MvrExport, MvrImport, MvrPlan, SceneView};
 
 /// What an import would do, and the file
 /// seen from above.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrInspection {
     pub file_name: String,
@@ -33,7 +33,7 @@ pub struct MvrInspection {
 
 /// The plan (`write` false), or what the
 /// import did (`write` true), with the venue's reload and its load failure.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrImportAnswer {
     pub write: bool,
@@ -50,7 +50,7 @@ pub struct MvrImportAnswer {
 
 /// What an export would hold, and
 /// the name a download would carry.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrExportSummary {
     #[serde(flatten)]
@@ -59,14 +59,14 @@ pub struct MvrExportSummary {
 }
 
 /// Where the kept copy is.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrKept {
     pub kept: String,
 }
 
 /// The focus points made.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct AimPoints {
     pub created: Vec<AimPoint>,
@@ -78,7 +78,7 @@ pub struct AimPoints {
 }
 
 /// A focus point made where a fixed fixture's rest beam meets the deck.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct AimPoint {
     pub name: String,

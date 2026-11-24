@@ -298,7 +298,7 @@ impl Effect {
 }
 
 /// Layer control command types (grandMA-inspired)
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerCommandType {
@@ -370,7 +370,7 @@ impl LayerCommandParam {
 
 /// The effect keywords of the grammar: which effect a line names, before
 /// its parameters are read.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectKind {

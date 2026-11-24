@@ -237,9 +237,9 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tsify_next::Tsify;
+use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsError, JsValue};
 
 pub use beat_grid::BeatGrid;
 pub use lighting::parser::document::{
@@ -260,6 +260,23 @@ pub use tempo_config::{TempoConfig, TransitionConfig};
 /// `None`, or [`tempo_validate`] says the value is not a tempo config.
 fn read<T: DeserializeOwned>(value: JsValue) -> Option<T> {
     serde_wasm_bindgen::from_value(value).ok()
+}
+
+/// Hands a value back to the page. It is serialized here, inside the
+/// export, not in wasm-bindgen's conversion of the return value: that
+/// conversion cannot fail, so a value that would not serialize could only
+/// throw past the wasm frames, skipping their destructors and leaking
+/// whatever was alive (tsify#65). An export answering `Option` answers
+/// `None` for it, as [`read`] does for a value that will not deserialize.
+fn give<T: Tsify + Serialize>(value: &T) -> Option<Ts<T>> {
+    Ts::from_rust(value).ok()
+}
+
+/// [`give`] for an export that always has an answer: a value that would
+/// not serialize is thrown to the page as an error once the export has
+/// returned, with nothing left behind in the wasm heap.
+fn give_or_throw<T: Tsify + Serialize>(value: &T) -> Result<Ts<T>, JsError> {
+    Ts::from_rust(value).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// The magnitudes past which a question is refused rather than asked: no
@@ -403,7 +420,6 @@ pub enum GridQuery {
 
 /// A position on a beat grid, with everything the UI asks about it.
 #[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct GridPosition {
     /// The measure, 1-based; 0 for the count-in before bar 1, whose clicks
     /// the click track plays but no section or marker can name.
@@ -469,10 +485,10 @@ impl GridQuery {
 
 /// [`GridQuery::answer`], for the web UI.
 #[wasm_bindgen]
-pub fn grid_query(grid: BeatGridJs, query: GridQueryJs) -> Option<GridPosition> {
+pub fn grid_query(grid: BeatGridJs, query: GridQueryJs) -> Option<Ts<GridPosition>> {
     let grid: BeatGrid = read(JsValue::from(grid))?;
     let query: GridQuery = read(JsValue::from(query))?;
-    query.answer(&grid)
+    give(&query.answer(&grid)?)
 }
 
 // ── Tempo map ───────────────────────────────────────────────────────────────
@@ -536,7 +552,6 @@ pub enum TempoQuery {
 /// A point on a tempo map: its time, its position, and the tempo and
 /// signatures in force there.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct TempoPoint {
     /// Song time in milliseconds.
     pub ms: f64,
@@ -644,13 +659,13 @@ impl TempoPoint {
 /// [`TempoQuery::answer`], for the web UI. `source` may be `null` for a
 /// show with no tempo at all, whose spans are in seconds alone.
 #[wasm_bindgen]
-pub fn tempo_query(source: Option<TempoSourceJs>, query: TempoQueryJs) -> Option<TempoPoint> {
+pub fn tempo_query(source: Option<TempoSourceJs>, query: TempoQueryJs) -> Option<Ts<TempoPoint>> {
     let source: Option<TempoSource> = match source {
         Some(source) => Some(read(JsValue::from(source))?),
         None => None,
     };
     let query: TempoQuery = read(JsValue::from(query))?;
-    query.answer(source.as_ref())
+    give(&query.answer(source.as_ref())?)
 }
 
 /// The distance between two times on a tempo map, as the position walk
@@ -659,7 +674,6 @@ pub fn tempo_query(source: Option<TempoSourceJs>, query: TempoQueryJs) -> Option
 /// (`TempoMap::measures_between`, fractional within a bar). What the
 /// timeline names a dragged length by.
 #[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct TempoDistance {
     pub ms: f64,
     pub beats: f64,
@@ -694,7 +708,6 @@ pub fn tempo_validate(config: TempoConfigJs) -> Option<String> {
 /// A tempo config put in the order a save requires, and how many changes
 /// that cost.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct NormalizedTempo {
     /// The config with its changes in bar order and each position held
     /// once.
@@ -707,10 +720,10 @@ pub struct NormalizedTempo {
 /// `to_tempo_map` requires, the last change at a position winning. `None`
 /// for a value that is not a tempo config.
 #[wasm_bindgen]
-pub fn tempo_normalize(config: TempoConfigJs) -> Option<NormalizedTempo> {
+pub fn tempo_normalize(config: TempoConfigJs) -> Option<Ts<NormalizedTempo>> {
     let config: TempoConfig = read(JsValue::from(config))?;
     let (config, duplicates) = config.normalized();
-    Some(NormalizedTempo {
+    give(&NormalizedTempo {
         config,
         duplicates: u32::try_from(duplicates).ok()?,
     })
@@ -718,7 +731,6 @@ pub fn tempo_normalize(config: TempoConfigJs) -> Option<NormalizedTempo> {
 
 /// A time signature as `[numerator, denominator]`.
 #[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct Signature(pub (u32, u32));
 
@@ -726,7 +738,12 @@ pub struct Signature(pub (u32, u32));
 /// `tempo:` block parses it (`parse_time_signature`); `None` when it is not
 /// a signature the player accepts, or not a string.
 #[wasm_bindgen]
-pub fn signature_parse(raw: Option<String>) -> Option<Signature> {
+pub fn signature_parse(raw: Option<String>) -> Option<Ts<Signature>> {
+    give(&parse_signature(raw)?)
+}
+
+/// What [`signature_parse`] answers, before it is handed to the page.
+pub fn parse_signature(raw: Option<String>) -> Option<Signature> {
     tempo_config::parse_time_signature(&raw?)
         .ok()
         .map(|sig| Signature((sig.numerator, sig.denominator)))
@@ -738,7 +755,6 @@ pub fn signature_parse(raw: Option<String>) -> Option<Signature> {
 /// the disk for it: the sources of the files it includes (fetched by the
 /// UI), and the song's tempo map for a file with no tempo block.
 #[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(from_wasm_abi)]
 pub struct LayoutRequest {
     pub source: String,
     /// The file's path (as the lighting API names it), which its
@@ -825,22 +841,25 @@ impl LayoutRequest {
 /// [`LayoutRequest::answer`], for the web UI: a request that is not one
 /// (no source) lays out as an error.
 #[wasm_bindgen]
-pub fn layout(request: LayoutRequestJs) -> Layout {
-    match read::<LayoutRequest>(JsValue::from(request)) {
+pub fn layout(request: LayoutRequestJs) -> Result<Ts<Layout>, JsError> {
+    give_or_throw(&match read::<LayoutRequest>(JsValue::from(request)) {
         Some(request) => request.answer(),
         None => Layout {
             error: Some("the layout request is not one".to_string()),
             ..Layout::default()
         },
-    }
+    })
 }
 
 /// A `.light` file as written (`parser::document::document`): the editing
 /// model, read off the one grammar. `path` is the file's path, which its
 /// `include`s resolve against.
 #[wasm_bindgen]
-pub fn document(source: &str, path: Option<String>) -> DocumentResult {
-    lighting::parser::document::document(source, path.as_deref().map(Path::new))
+pub fn document(source: &str, path: Option<String>) -> Result<Ts<DocumentResult>, JsError> {
+    give_or_throw(&lighting::parser::document::document(
+        source,
+        path.as_deref().map(Path::new),
+    ))
 }
 
 /// The document written back as DSL text (`writer::write`): what a save
@@ -871,10 +890,10 @@ pub fn tempo_write(tempo: TempoSectionJs) -> Option<String> {
 /// a removed parameter's comments kept in place. `None` for a value that
 /// is not an effect or an edit.
 #[wasm_bindgen]
-pub fn effect_edit(effect: CueEffectJs, edit: EffectEditJs) -> Option<CueEffect> {
+pub fn effect_edit(effect: CueEffectJs, edit: EffectEditJs) -> Option<Ts<CueEffect>> {
     let effect: CueEffect = read(JsValue::from(effect))?;
     let edit: EffectEdit = read(JsValue::from(edit))?;
-    Some(effect.edited(&edit))
+    give(&effect.edited(&edit))
 }
 
 /// A file's palette with an edit made (`Document::palette_edited`): a slot
@@ -882,7 +901,10 @@ pub fn effect_edit(effect: CueEffectJs, edit: EffectEditJs) -> Option<CueEffect>
 /// or removed (refused, with the uses listed, while something refers to
 /// it). A value that is not a document or an edit is refused as `unknown`.
 #[wasm_bindgen]
-pub fn palette_edit(document: DocumentJs, edit: PaletteEditJs) -> PaletteEditResult {
+pub fn palette_edit(
+    document: DocumentJs,
+    edit: PaletteEditJs,
+) -> Result<Ts<PaletteEditResult>, JsError> {
     let refused = |slot: &str| PaletteEditResult {
         document: None,
         error: Some(lighting::parser::palette_edit::PaletteEditError {
@@ -892,30 +914,32 @@ pub fn palette_edit(document: DocumentJs, edit: PaletteEditJs) -> PaletteEditRes
         }),
     };
     let Some(document) = read::<Document>(JsValue::from(document)) else {
-        return refused("");
+        return give_or_throw(&refused(""));
     };
     let Some(edit) = read::<PaletteEdit>(JsValue::from(edit)) else {
-        return refused("");
+        return give_or_throw(&refused(""));
     };
-    document.palette_edited(&edit)
+    give_or_throw(&document.palette_edited(&edit))
 }
 
 /// An effect's parameters as its form shows them (`EffectParams::view`).
 #[wasm_bindgen]
-pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
+pub fn effect_view(effect: EffectParamsJs) -> Option<Ts<EffectView>> {
     let effect: EffectParams = read(JsValue::from(effect))?;
-    Some(effect.view())
+    give(&effect.view())
 }
 
 /// The words an effect line's form offers (`edit::vocabulary`), its layers
 /// those the player has (`layers`, bottom to top); the defaults when left
 /// out or not a set.
 #[wasm_bindgen]
-pub fn vocabulary(layers: Option<Vec<String>>) -> lighting::parser::edit::Vocabulary {
+pub fn vocabulary(
+    layers: Option<Vec<String>>,
+) -> Result<Ts<lighting::parser::edit::Vocabulary>, JsError> {
     let layers = layers
         .and_then(|names| lighting::effects::LayerSet::new(names).ok())
         .unwrap_or_default();
-    lighting::parser::edit::vocabulary(&layers)
+    give_or_throw(&lighting::parser::edit::vocabulary(&layers))
 }
 
 /// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)`, `cmy(...)`, `cmyk(...)` or a name,
@@ -948,16 +972,19 @@ pub fn fixture_type_name(source: &str) -> Option<String> {
 
 /// The effect a click on a timeline lane adds (`edit::new_effect`).
 #[wasm_bindgen]
-pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
-    lighting::parser::edit::new_effect(layer.as_deref(), by_bars)
+pub fn effect_new(layer: Option<String>, by_bars: bool) -> Result<Ts<CueEffect>, JsError> {
+    give_or_throw(&lighting::parser::edit::new_effect(
+        layer.as_deref(),
+        by_bars,
+    ))
 }
 
 /// A sequence reference set to play `count` passes, as its block dragged
 /// to a length says (`SequenceRef::with_loop_count`).
 #[wasm_bindgen]
-pub fn reference_loop(reference: SequenceRefJs, count: f64) -> Option<SequenceRef> {
+pub fn reference_loop(reference: SequenceRefJs, count: f64) -> Option<Ts<SequenceRef>> {
     let reference: SequenceRef = read(JsValue::from(reference))?;
-    reference.with_loop_count(count)
+    give(&reference.with_loop_count(count)?)
 }
 
 /// The duration an effect dragged to `ms` long from `at_ms` is written as
@@ -1032,13 +1059,13 @@ pub fn transition_text(transition: TransitionConfigJs) -> Option<String> {
 /// transition, as the player reads it (`document::transition`); `None`
 /// for `snap` and for text that is not a transition.
 #[wasm_bindgen]
-pub fn transition_read(text: &str) -> Option<TransitionConfig> {
+pub fn transition_read(text: &str) -> Option<Ts<TransitionConfig>> {
     use tempo::TempoTransition;
-    match lighting::parser::document::transition(text)? {
-        TempoTransition::Snap => None,
-        TempoTransition::Beats(n, _) => Some(TransitionConfig::Beats(n)),
-        TempoTransition::Measures(n, _) => Some(TransitionConfig::Measures(n)),
-    }
+    give(&match lighting::parser::document::transition(text)? {
+        TempoTransition::Snap => return None,
+        TempoTransition::Beats(n, _) => TransitionConfig::Beats(n),
+        TempoTransition::Measures(n, _) => TransitionConfig::Measures(n),
+    })
 }
 
 /// `value` in `from` (`s` or `ms`) written in `to` instead, the same time
@@ -1070,45 +1097,43 @@ pub fn passes_by(pass_ends: PassEndsJs, until_ms: f64) -> Option<u32> {
 /// `DEFAULT_TIME_SIGNATURE`): what the editor's new tempo block starts
 /// at.
 #[wasm_bindgen]
-pub fn tempo_defaults() -> wire_messages::PlaybackTempo {
+pub fn tempo_defaults() -> Result<Ts<wire_messages::PlaybackTempo>, JsError> {
     let sig = tempo::DEFAULT_TIME_SIGNATURE;
-    wire_messages::PlaybackTempo {
+    give_or_throw(&wire_messages::PlaybackTempo {
         bpm: tempo::DEFAULT_BPM,
         time_signature: (sig.numerator, sig.denominator),
-    }
+    })
 }
 
 /// The MIDI events a config can name, and each field's range: what the
 /// trigger editor offers and bounds its inputs by.
 #[wasm_bindgen]
-pub fn midi_event_shapes() -> config::MidiEventShapes {
-    config::MidiEventShapes::new()
+pub fn midi_event_shapes() -> Result<Ts<config::MidiEventShapes>, JsError> {
+    give_or_throw(&config::MidiEventShapes::new())
 }
 
 /// Ambient light's modes, in the order the dashboard offers them.
 #[derive(Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct AmbientModes(pub Vec<dmx::engine::AmbientMode>);
 
 /// Every ambient light mode: the dashboard's mode buttons.
 #[wasm_bindgen]
-pub fn ambient_modes() -> AmbientModes {
-    AmbientModes(dmx::engine::AmbientMode::ALL.to_vec())
+pub fn ambient_modes() -> Result<Ts<AmbientModes>, JsError> {
+    give_or_throw(&AmbientModes(dmx::engine::AmbientMode::ALL.to_vec()))
 }
 
 /// The values each of a config's choices takes: what the config editor's
 /// selects offer.
 #[wasm_bindgen]
-pub fn config_choices() -> config::ConfigChoices {
-    config::ConfigChoices::default()
+pub fn config_choices() -> Result<Ts<config::ConfigChoices>, JsError> {
+    give_or_throw(&config::ConfigChoices::default())
 }
 
 // ── Metronome ───────────────────────────────────────────────────────────────
 
 /// Per-beat accent levels: 0 silent, 1 normal, 2 half, 3 accent.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct AccentPattern(pub Vec<u8>);
 
@@ -1121,12 +1146,12 @@ pub fn accent_pattern(
     metronome: MetronomeConfigJs,
     measure: u32,
     beats: u32,
-) -> Option<AccentPattern> {
+) -> Option<Ts<AccentPattern>> {
     if measure > bounds::MAX_MEASURES || beats > bounds::MAX_PATTERN_BEATS {
         return None;
     }
     let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
-    Some(AccentPattern(
+    give(&AccentPattern(
         metronome.accent_pattern_at(measure, beats as usize),
     ))
 }
@@ -1136,25 +1161,24 @@ pub fn accent_pattern(
 /// change at or before the measure. `None` for a value that is not a
 /// metronome config.
 #[wasm_bindgen]
-pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Subdivision> {
+pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Ts<Subdivision>> {
     if measure > bounds::MAX_MEASURES {
         return None;
     }
     let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
-    Some(metronome.subdivision_at(measure).0.clone())
+    give(metronome.subdivision_at(measure).0)
 }
 
 /// The built-in synthesized click of each role
 /// (`MetronomeSounds::builtin`): what a fresh sound override starts at.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct BuiltinSounds(pub metronome_config::MetronomeSounds);
 
 /// [`BuiltinSounds`], for the web UI.
 #[wasm_bindgen]
-pub fn metronome_sounds() -> BuiltinSounds {
-    BuiltinSounds(metronome_config::MetronomeSounds::builtin())
+pub fn metronome_sounds() -> Result<Ts<BuiltinSounds>, JsError> {
+    give_or_throw(&BuiltinSounds(metronome_config::MetronomeSounds::builtin()))
 }
 
 /// The extensions of the audio files the player reads as tracks, in any
@@ -1181,8 +1205,8 @@ pub fn midi_extensions() -> Vec<String> {
 /// What the file `name` is to the player, by its extension in any case
 /// (`songs::FileKind::of`). Never `directory`.
 #[wasm_bindgen]
-pub fn file_kind(name: &str) -> songs::FileKind {
-    songs::FileKind::of(std::path::Path::new(name))
+pub fn file_kind(name: &str) -> Result<Ts<songs::FileKind>, JsError> {
+    give_or_throw(&songs::FileKind::of(std::path::Path::new(name)))
 }
 
 /// The samples of a synthesized click at `freq` Hz and `volume`, at
@@ -1198,7 +1222,6 @@ pub fn click_samples(freq: f64, volume: f64, sample_rate: u32) -> Option<Vec<f32
 /// A clave's half-beat offsets in the first and second measure of its
 /// cycle (`ClaveKind::half_beats`).
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct ClaveHalfBeats {
     pub first: Vec<u32>,
     pub second: Vec<u32>,
@@ -1207,10 +1230,10 @@ pub struct ClaveHalfBeats {
 /// [`ClaveHalfBeats`] of a clave, for the web UI; `None` for a value that
 /// is not a clave.
 #[wasm_bindgen]
-pub fn clave_half_beats(kind: ClaveKindJs) -> Option<ClaveHalfBeats> {
+pub fn clave_half_beats(kind: ClaveKindJs) -> Option<Ts<ClaveHalfBeats>> {
     let (first, second) = read::<metronome_config::ClaveKind>(JsValue::from(kind))?.half_beats();
     let offsets = |hits: &[usize]| hits.iter().map(|&h| h as u32).collect();
-    Some(ClaveHalfBeats {
+    give(&ClaveHalfBeats {
         first: offsets(first),
         second: offsets(second),
     })
@@ -1247,15 +1270,15 @@ pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
 /// what every stage view draws a fixture in. Black for a value that is
 /// not channels.
 #[wasm_bindgen]
-pub fn fixture_color(channels: ChannelValuesJs) -> Triple {
+pub fn fixture_color(channels: ChannelValuesJs) -> Result<Ts<Triple>, JsError> {
     let values = read::<ChannelValues>(JsValue::from(channels))
         .map(|ChannelValues(values)| values)
         .unwrap_or_default();
-    Triple(lighting::channels::shown_color(
+    give_or_throw(&Triple(lighting::channels::shown_color(
         values
             .iter()
             .filter_map(|(name, value)| Some((name.as_str(), (*value)?))),
-    ))
+    )))
 }
 
 /// The file name an MVR export of `venue` writes (`export_file_name`):
@@ -1268,7 +1291,6 @@ pub fn mvr_export_name(output: Option<String>, venue: &str) -> Option<String> {
 
 /// A direction or a rotation in stage space: `[x, y, z]`.
 #[derive(Serialize, Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct Triple(pub [f64; 3]);
 
@@ -1276,9 +1298,9 @@ pub struct Triple(pub [f64; 3]);
 /// points at rest (`pointing::rest_beam`): what the plan draws its beam
 /// along. `None` for a value that is not a rotation.
 #[wasm_bindgen]
-pub fn rest_beam(rotation: TripleJs) -> Option<Triple> {
+pub fn rest_beam(rotation: TripleJs) -> Option<Ts<Triple>> {
     let Triple(rotation) = read(JsValue::from(rotation))?;
-    Some(Triple(lighting::effects::rest_beam(rotation)))
+    give(&Triple(lighting::effects::rest_beam(rotation)))
 }
 
 /// The gRPC metadata a declined play names its reason under
@@ -1318,7 +1340,6 @@ pub fn fade_length_text(text: &str) -> Option<String> {
 /// a gap before its song (the config's clock: `2s`, `1.5s`, `500ms`, `2m`;
 /// `true` is none), or text it refuses (`2`, a number with no unit).
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AutoPlayReading {
     Off,
@@ -1334,19 +1355,21 @@ pub enum AutoPlayReading {
 /// [`AutoPlayReading`] of `text`, read through the config's own
 /// deserializer and `AutoPlayConfig::parse`.
 #[wasm_bindgen]
-pub fn auto_play_read(text: &str) -> AutoPlayReading {
+pub fn auto_play_read(text: &str) -> Result<Ts<AutoPlayReading>, JsError> {
     let value = serde_json::Value::String(text.to_string());
-    match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
-        Ok(Ok(None)) => AutoPlayReading::Off,
-        Ok(Ok(Some(gap))) => {
-            let ms = gap.as_secs_f64() * 1000.0;
-            AutoPlayReading::Gap {
-                ms,
-                text: gap_text(ms),
+    give_or_throw(
+        &match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
+            Ok(Ok(None)) => AutoPlayReading::Off,
+            Ok(Ok(Some(gap))) => {
+                let ms = gap.as_secs_f64() * 1000.0;
+                AutoPlayReading::Gap {
+                    ms,
+                    text: gap_text(ms),
+                }
             }
-        }
-        _ => AutoPlayReading::Invalid,
-    }
+            _ => AutoPlayReading::Invalid,
+        },
+    )
 }
 
 /// A gap of `ms` milliseconds as a reader is shown it, as the config's
@@ -1385,7 +1408,6 @@ pub struct VenueRows(pub Vec<lighting::venue_rows::VenueRow>);
 
 /// The rows that cannot be saved, and why.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct RowProblemList(pub Vec<lighting::venue_rows::RowProblems>);
 
@@ -1396,7 +1418,6 @@ pub struct ChannelRows(pub Vec<lighting::venue_rows::ChannelRow>);
 
 /// The channel rows that cannot be saved, and why.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct ChannelProblemList(pub Vec<lighting::venue_rows::ChannelProblems>);
 
@@ -1405,10 +1426,13 @@ pub struct ChannelProblemList(pub Vec<lighting::venue_rows::ChannelProblems>);
 /// a type in `gdtf_types` must name its mode. `None` for a value that is
 /// not rows.
 #[wasm_bindgen]
-pub fn venue_row_problems(rows: VenueRowsJs, gdtf_types: Vec<String>) -> Option<RowProblemList> {
+pub fn venue_row_problems(
+    rows: VenueRowsJs,
+    gdtf_types: Vec<String>,
+) -> Option<Ts<RowProblemList>> {
     let VenueRows(rows) = read(JsValue::from(rows))?;
     let from_gdtf = |t: &str| gdtf_types.iter().any(|g| g == t);
-    Some(RowProblemList(lighting::venue_rows::venue_row_problems(
+    give(&RowProblemList(lighting::venue_rows::venue_row_problems(
         &rows, from_gdtf,
     )))
 }
@@ -1417,9 +1441,9 @@ pub fn venue_row_problems(rows: VenueRowsJs, gdtf_types: Vec<String>) -> Option<
 /// (`venue_rows::channel_row_problems`). `None` for a value that is not
 /// rows.
 #[wasm_bindgen]
-pub fn channel_row_problems(rows: ChannelRowsJs) -> Option<ChannelProblemList> {
+pub fn channel_row_problems(rows: ChannelRowsJs) -> Option<Ts<ChannelProblemList>> {
     let ChannelRows(rows) = read(JsValue::from(rows))?;
-    Some(ChannelProblemList(
+    give(&ChannelProblemList(
         lighting::venue_rows::channel_row_problems(&rows),
     ))
 }
@@ -1428,7 +1452,6 @@ pub fn channel_row_problems(rows: ChannelRowsJs) -> Option<ChannelProblemList> {
 
 /// The player's fixed limits the UI bounds its inputs by.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 pub struct Limits {
     /// The channels of a DMX universe (`patch::UNIVERSE_SIZE`).
     pub universe_size: u32,
@@ -1446,14 +1469,14 @@ pub struct Limits {
 
 /// [`Limits`], for the web UI.
 #[wasm_bindgen]
-pub fn limits() -> Limits {
-    Limits {
+pub fn limits() -> Result<Ts<Limits>, JsError> {
+    give_or_throw(&Limits {
         universe_size: patch::UNIVERSE_SIZE,
         gain_db: (track_gains::MIN_GAIN_DB, track_gains::MAX_GAIN_DB),
         signature_numerator_max: tempo::SONG_MAX_NUMERATOR,
         signature_denominators: tempo::SONG_DENOMINATORS.to_vec(),
         beam_angle_max: lighting::fixture_data::MAX_BEAM_ANGLE,
-    }
+    })
 }
 
 /// Whether `degrees` is a venue fixture's beam angle
@@ -1466,14 +1489,13 @@ pub fn beam_angle_valid(degrees: f64) -> bool {
 /// What a show can ask of a fixture, in the order a fixture's page lists
 /// them (`Want::ALL`).
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct Wants(pub Vec<lighting::findings::Want>);
 
 /// [`Wants`], for the web UI.
 #[wasm_bindgen]
-pub fn wants() -> Wants {
-    Wants(lighting::findings::Want::ALL.to_vec())
+pub fn wants() -> Result<Ts<Wants>, JsError> {
+    give_or_throw(&Wants(lighting::findings::Want::ALL.to_vec()))
 }
 
 // ── DMX patch ───────────────────────────────────────────────────────────────
@@ -1485,13 +1507,11 @@ pub struct PatchSpans(pub Vec<PatchSpan>);
 
 /// The gangs a candidate patch would partially overlap.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct PatchOverlaps(pub Vec<PatchOverlap>);
 
 /// The spans that run past the end of their universe.
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
 #[serde(transparent)]
 pub struct PatchOverruns(pub Vec<PatchOverrun>);
 
@@ -1503,10 +1523,10 @@ pub struct PatchOverruns(pub Vec<PatchOverrun>);
 /// not a list of spans (an address or footprint that is not a whole number
 /// in 0..=65535).
 #[wasm_bindgen]
-pub fn patch_overlaps(spans: PatchSpansJs, candidate: PatchSpanJs) -> Option<PatchOverlaps> {
+pub fn patch_overlaps(spans: PatchSpansJs, candidate: PatchSpanJs) -> Option<Ts<PatchOverlaps>> {
     let spans: PatchSpans = read(JsValue::from(spans))?;
     let candidate: PatchSpan = read(JsValue::from(candidate))?;
-    Some(PatchOverlaps(patch::overlaps_with(&spans.0, &candidate)))
+    give(&PatchOverlaps(patch::overlaps_with(&spans.0, &candidate)))
 }
 
 /// `PatchSpan::last`, for the web UI: the last address a span uses,
@@ -1520,7 +1540,7 @@ pub fn patch_last(span: PatchSpanJs) -> Option<u32> {
 /// address 512, by universe, address, name. `None` for a value that is not
 /// a list of spans.
 #[wasm_bindgen]
-pub fn patch_overruns(spans: PatchSpansJs) -> Option<PatchOverruns> {
+pub fn patch_overruns(spans: PatchSpansJs) -> Option<Ts<PatchOverruns>> {
     let spans: PatchSpans = read(JsValue::from(spans))?;
-    Some(PatchOverruns(patch::venue_overruns(&spans.0)))
+    give(&PatchOverruns(patch::venue_overruns(&spans.0)))
 }

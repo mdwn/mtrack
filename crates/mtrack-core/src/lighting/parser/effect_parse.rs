@@ -231,7 +231,7 @@ const MOVE_KIND_PARAMS: [&str; MOVE_PARAMS.len() + MOVE_ALIASES.len() + 2] = {
 };
 
 /// A `move`'s target and start parameters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 #[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MoveParam {

@@ -18,7 +18,7 @@
 use serde::Serialize;
 
 /// Serializable info about an audio device for the web UI.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone)]
 pub struct AudioDeviceInfo {
     pub name: String,
@@ -36,7 +36,7 @@ pub struct AudioDeviceInfo {
 }
 
 /// A supported sample format for an audio device.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, PartialEq, Eq, Hash)]
 pub struct SupportedFormat {
     pub sample_format: String,
@@ -44,7 +44,7 @@ pub struct SupportedFormat {
 }
 
 /// Serializable info about a MIDI device for the web UI.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize)]
 pub struct MidiDeviceInfo {
     pub name: String,
@@ -53,7 +53,7 @@ pub struct MidiDeviceInfo {
 }
 
 /// Noise floor statistics for a single channel.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize)]
 pub struct NoiseFloorStats {
     pub peak: f32,
@@ -62,7 +62,7 @@ pub struct NoiseFloorStats {
 }
 
 /// Calibrated parameters for a single channel.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize)]
 pub struct ChannelCalibration {
     pub channel: u16,

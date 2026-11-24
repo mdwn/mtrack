@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::player::{ControllerStatus, HardwareStatusSnapshot};
 
 /// The build, the hardware and the controllers, as the web UI holds them.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Status {
     pub build: BuildInfo,
@@ -28,7 +28,7 @@ pub struct Status {
     pub locked: bool,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BuildInfo {
     pub version: String,

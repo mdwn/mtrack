@@ -20,7 +20,7 @@ use serde::Serialize;
 
 /// A guessed tempo map: what the web UI suggests for a song's `tempo:`
 /// block or a show's `tempo {}` block.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GuessedTempo {
     pub start_seconds: f64,
@@ -36,7 +36,7 @@ pub struct GuessedTempo {
 }
 
 /// A single tempo or time-signature change.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GuessedTempoChange {
     pub measure: u32,

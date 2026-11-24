@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Identifies the type of an mtrack YAML configuration file.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigKind {
