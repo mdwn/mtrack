@@ -68,6 +68,7 @@ const IDLE: PlaybackState = {
   looping: false,
   available_sections: [],
   active_section: null,
+  is_paused: false,
   pending_start_ms: null,
   reactive_loop_state: { state: "idle" },
   pilot_hints: [],

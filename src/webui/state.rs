@@ -294,6 +294,7 @@ pub async fn current_playback(player: &Player) -> wire::Playback {
         active_section,
         looping,
         reactive_loop_state,
+        is_paused: status.paused,
         pending_start_ms: status.pending_start.map(|d| d.as_millis() as u64),
         pilot_hints,
         tempo,

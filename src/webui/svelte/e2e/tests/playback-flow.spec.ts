@@ -29,7 +29,7 @@ test.describe("Playback State Transitions", () => {
     wsId = `playback-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
     // Intercept gRPC calls so play/stop don't fail
-    await stubPlayerService(page);
+    await stubPlayerService(page, { reply: "framed" });
 
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toContainText(
@@ -44,7 +44,7 @@ test.describe("Playback State Transitions", () => {
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
   });
 
-  test("play button becomes stop when playing", async ({ page }) => {
+  test("play button becomes pause when playing", async ({ page }) => {
     // Click play
     await page.getByRole("button", { name: "Play" }).click();
 
@@ -75,7 +75,23 @@ test.describe("Playback State Transitions", () => {
       /playing/i,
     );
     // Play button should become Pause; the dedicated Stop button becomes enabled.
-    await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+    const pause = page
+      .locator(".playback-card__body")
+      .getByRole("button", { name: "Pause" });
+    await expect(pause).toBeVisible();
+    const request = page.waitForRequest((req) => req.url().endsWith("/Pause"));
+    await pause.click();
+    await request;
+    await sendWatch(page, wsId, {
+      ...PLAYBACK_STATE,
+      is_playing: false,
+      is_paused: true,
+      pending_start_ms: 1000,
+      elapsed_ms: 1000,
+    });
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /paused/i,
+    );
     await expect(page.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 

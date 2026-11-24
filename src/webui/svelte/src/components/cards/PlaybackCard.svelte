@@ -52,13 +52,14 @@
     }
   }
 
-  async function stop() {
+  async function pauseOrStop(action: "pause" | "stop") {
     loading = true;
     try {
-      await playerClient.stop({});
+      if (action === "pause") await playerClient.pause({});
+      else await playerClient.stop({});
     } catch (e) {
-      console.error("stop failed:", e);
-      showError(get(t)("playback.error.stop"));
+      console.error(action + " failed:", e);
+      showError(get(t)("playback.error." + action));
     } finally {
       loading = false;
     }
@@ -288,7 +289,8 @@
     switch (e.code) {
       case "Space":
         e.preventDefault();
-        if ($playbackStore.is_playing) stop();
+        if (e.repeat || loading) return;
+        if ($playbackStore.is_playing) pauseOrStop("pause");
         else play();
         break;
       case "ArrowRight":
@@ -404,6 +406,8 @@
       </span>
       {#if $playbackStore.is_playing}
         {$t("playback.playing")}
+      {:else if $playbackStore.is_paused}
+        {$t("playback.paused")}
       {:else}
         {$t("playback.stopped")}
       {/if}
@@ -543,9 +547,10 @@
         </button>
         <button
           class="btn-icon-circle"
-          onclick={stop}
+          onclick={() => pauseOrStop("stop")}
           disabled={loading ||
             (!$playbackStore.is_playing &&
+              $playbackStore.pending_start_ms == null &&
               !$playbackStore.ending &&
               !$playbackStore.auto_play)}
           title={$t("playback.stopTooltip")}
@@ -558,7 +563,9 @@
         <button
           class="btn-play"
           class:btn-play--playing={$playbackStore.is_playing}
-          onclick={$playbackStore.is_playing ? stop : play}
+          onclick={$playbackStore.is_playing
+            ? () => pauseOrStop("pause")
+            : play}
           disabled={loading}
           title={$playbackStore.is_playing
             ? $t("playback.pauseTooltip")

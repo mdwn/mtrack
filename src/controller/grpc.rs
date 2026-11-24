@@ -51,18 +51,19 @@ use crate::{
         GetSongResponse, GetTrackGainsRequest, GetTrackGainsResponse, ListLightShowsRequest,
         ListLightShowsResponse, ListPlaylistsRequest, ListPlaylistsResponse, ListSongsRequest,
         ListSongsResponse, LoopSectionRequest, LoopSectionResponse, NavigateToSongRequest,
-        NavigateToSongResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest,
-        PlayResponse, PlaySongFromRequest, PlaylistEntry, PlaylistSummary, PreviousRequest,
-        PreviousResponse, RemoveProfileRequest, SavePlaylistRequest, SectionAckRequest,
-        SectionAckResponse, SeekRequest, SeekResponse, SeekToSectionRequest, SetAmbientModeRequest,
-        SetAmbientModeResponse, SetLockRequest, SetLockResponse, SetTrackGainRequest,
-        SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song, StageFrame,
-        StageLayout, StageUpdate, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, TrackNames,
-        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
-        UpdateMidiRequest, UpdateProfileRequest, UpdateSongSettingsRequest, WatchRequest,
-        WatchStageRequest, WatchStatusRequest, FILE_DESCRIPTOR_SET,
+        NavigateToSongResponse, NextRequest, NextResponse, PauseRequest, PauseResponse,
+        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PlaylistEntry,
+        PlaylistSummary, PreviousRequest, PreviousResponse, RemoveProfileRequest,
+        SavePlaylistRequest, SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse,
+        SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse, SetLockRequest,
+        SetLockResponse, SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest,
+        SetTrackMuteResponse, Song, StageFrame, StageLayout, StageUpdate, StatusRequest,
+        StatusResponse, StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        StopSectionLoopRequest, StopSectionLoopResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse, TrackGain, TrackNames, UpdateAudioRequest, UpdateConfigResponse,
+        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
+        UpdateSongSettingsRequest, WatchRequest, WatchStageRequest, WatchStatusRequest,
+        FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -807,6 +808,14 @@ impl PlayerService for PlayerServer {
         Ok(Response::new(NavigateToSongResponse {
             song: Some(song.to_proto()?),
         }))
+    }
+
+    async fn pause(&self, _: Request<PauseRequest>) -> Result<Response<PauseResponse>, Status> {
+        self.player
+            .pause()
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(PauseResponse {}))
     }
 
     async fn stop(&self, _: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
@@ -1877,6 +1886,31 @@ mod test {
         assert!(song.is_some());
         assert_eq!(song.unwrap().name, "Song 1");
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_pause_resume_and_stop() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{PauseRequest, PlayFromRequest};
+
+        let (player, mut client, _device) = setup_grpc().await?;
+        player.set_locked(true);
+        let start = Duration::from_millis(250);
+        client
+            .play_from(PlayFromRequest {
+                start_time: Some(start.try_into()?),
+            })
+            .await?;
+        client.pause(PauseRequest {}).await?;
+        let held = player.pending_start().expect("pause keeps a resume point");
+        assert!(player.is_paused());
+        assert!(held >= start);
+        client.play(PlayRequest {}).await?;
+        assert!(player.elapsed().await?.expect("song resumed") >= held);
+        client.pause(PauseRequest {}).await?;
+        client.stop(StopRequest {}).await?;
+        assert!(!player.is_paused());
+        assert_eq!(player.pending_start(), None);
         Ok(())
     }
 

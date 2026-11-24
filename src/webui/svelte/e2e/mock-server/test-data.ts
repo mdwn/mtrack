@@ -397,6 +397,7 @@ export const PLAYBACK_STATE = {
   available_sections: [],
   active_section: null,
   reactive_loop_state: { state: "idle" },
+  is_paused: false,
   pending_start_ms: null,
   pilot_hints: [],
   tempo: null,

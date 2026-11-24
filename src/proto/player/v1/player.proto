@@ -121,6 +121,9 @@ message NavigateToSongResponse {
 // playing song.
 message StopRequest {}
 
+message PauseRequest {}
+message PauseResponse {}
+
 // StopResponse is the response message after requesting the player to stop.
 message StopResponse {
     // Song is the song that was stopped.
@@ -1372,6 +1375,7 @@ message Playback {
     // What comes after the current song and how it arrives. Absent with no
     // current song.
     optional NextUp next = 29;
+    bool is_paused = 30;
 }
 
 // PlaybackTrack is an output track of the current song, with its mixer
@@ -1709,6 +1713,9 @@ service PlayerService {
 
     // Stop will stop the currently playing song.
     rpc Stop(StopRequest) returns (StopResponse);
+
+    // Hold the current position. A subsequent Play resumes there.
+    rpc Pause(PauseRequest) returns (PauseResponse);
 
     // SwitchToPlaylist will switch the player to a different playlist.
     rpc SwitchToPlaylist(SwitchToPlaylistRequest) returns (SwitchToPlaylistResponse);

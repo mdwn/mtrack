@@ -189,6 +189,7 @@ function playback(p: Partial<Playback>) {
               : undefined,
         }
       : undefined,
+    isPaused: p.is_paused,
     pendingStart: durationOrUndefined(p.pending_start_ms),
     pilotHints: p.pilot_hints?.map((h) => ({
       label: h.label,

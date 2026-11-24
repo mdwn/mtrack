@@ -81,6 +81,8 @@ pub struct Playback {
     pub reactive_loop_state: LoopState,
     /// Start position for the next play, set by seeking while stopped.
     pub pending_start_ms: Option<u64>,
+    #[serde(default)]
+    pub is_paused: bool,
     pub pilot_hints: Vec<ResolvedPilotHint>,
     /// The tempo and metre from the song's tempo map, at the playhead.
     pub tempo: Option<PlaybackTempo>,
