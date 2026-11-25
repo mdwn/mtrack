@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.5] - 2026-11-25
+
+Upgrade notes: what an existing setup can notice. Each is described in full below.
+
+- **Pause in the web UI pauses.** The dashboard's pause button, Space and the mini player now hold
+  the song where it is, and Play carries on from there. They used to stop it, so the next Play
+  started the song from the top. The **Stop** button still rewinds to the top.
+- **Stop after a pause answers with the song.** A gRPC `Stop` or MCP `stop` while a song is paused,
+  or while a position is cued by a seek with nothing playing, clears that position and returns the
+  current song. It used to answer "song not playing" (gRPC) or `"stopped": null` (MCP).
+
+### Added
+
+- **A `Pause` call on the gRPC player service.** It holds the current song's position for the next
+  `Play`, as OSC's pause already did, and is allowed while the player is locked. The web UI's
+  playback status carries `is_paused`, and the dashboard shows **Paused**.
+
+### Fixed
+
+- **The web UI's pause stopped the song.** The dashboard's pause button, Space and the mini player
+  sent a stop, so the next Play started the song over. They now pause on the player's own clock,
+  with the player locked or not. The song editor's preview pause did a stop and a seek, and resumed
+  a little off where it stopped. It now pauses the same way.
+
 ## [0.18.4] - 2026-11-14
 
 Upgrade notes: what an existing setup can notice. Each is described in full below.
