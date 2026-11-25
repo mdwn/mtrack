@@ -123,13 +123,64 @@ pub fn evaluate_show<F>(
     focus_points: &HashMap<String, [f64; 3]>,
     fallback_tempo_map: Option<&TempoMap>,
     times: &[Duration],
-    mut resolve_groups: F,
+    resolve_groups: F,
 ) -> Vec<Evaluation>
 where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
+    // Times already in order, none twice, are read straight into the
+    // answer: nothing is kept twice, as a long show sampled at every frame
+    // would otherwise be.
+    if times.windows(2).all(|pair| pair[0] < pair[1]) {
+        let mut evaluations = Vec::with_capacity(times.len());
+        evaluate_show_each(
+            shows,
+            fixtures,
+            focus_points,
+            fallback_tempo_map,
+            times,
+            resolve_groups,
+            |engine, time| evaluations.push(snapshot(engine, time)),
+        );
+        return evaluations;
+    }
+    let mut sampled: HashMap<Duration, Evaluation> = HashMap::new();
+    evaluate_show_each(
+        shows,
+        fixtures,
+        focus_points,
+        fallback_tempo_map,
+        times,
+        resolve_groups,
+        |engine, time| {
+            sampled.insert(time, snapshot(engine, time));
+        },
+    );
+    times.iter().map(|time| sampled[time].clone()).collect()
+}
+
+/// As [`evaluate_show`], handing `read` the engine at each requested time
+/// and keeping nothing: what is read there, and what becomes of it, is the
+/// caller's. [`snapshot`] reads what `evaluate_show` answers; the wire the
+/// engine holds ([`EffectEngine::wire`]) is the bytes the rig would, for
+/// about half the work. A whole show at every frame is read this way, one
+/// frame in memory at a time.
+///
+/// `read` is called once for each distinct time, earliest first, whatever
+/// order `times` is in.
+pub fn evaluate_show_each<F>(
+    shows: Vec<LightShow>,
+    fixtures: &[FixtureInfo],
+    focus_points: &HashMap<String, [f64; 3]>,
+    fallback_tempo_map: Option<&TempoMap>,
+    times: &[Duration],
+    mut resolve_groups: F,
+    mut read: impl FnMut(&EffectEngine, Duration),
+) where
+    F: FnMut(EffectInstance) -> EffectInstance,
+{
     let Some(&last) = times.iter().max() else {
-        return Vec::new();
+        return;
     };
     let mut timeline = LightingTimeline::new(shows);
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
@@ -155,13 +206,71 @@ where
     let mut ascending = times.to_vec();
     ascending.sort();
     ascending.dedup();
-    let mut sampled: HashMap<Duration, Evaluation> = HashMap::with_capacity(ascending.len());
     // As with a live start, an effect that will not start (a cue targeting
     // a group with no fixtures in this venue) is no reason to abandon it.
-    let _ = engine.replay_sampled(history, &ascending, |engine, time| {
-        sampled.insert(time, snapshot(engine, time));
-    });
-    times.iter().map(|time| sampled[time].clone()).collect()
+    let _ = engine.replay_sampled(history, &ascending, |engine, time| read(engine, time));
+}
+
+/// As [`evaluate_show_each`], on up to `workers` threads: the distinct
+/// times, in order, are split into that many runs, each replayed on a
+/// thread of its own, and what `read` made of each time is answered with
+/// it, earliest first.
+///
+/// A time reads as if evaluated alone ([`evaluate_show`]), so a run that
+/// starts mid-show reads what one from the top does there, and reaching its
+/// first time costs a replay of the cues before it with no frame read,
+/// which is small beside reading the frames. One thing is not the same
+/// twice: an effect's id, which is numbered as it starts.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_show_parallel<T, F, R>(
+    shows: &[LightShow],
+    fixtures: &[FixtureInfo],
+    focus_points: &HashMap<String, [f64; 3]>,
+    fallback_tempo_map: Option<&TempoMap>,
+    times: &[Duration],
+    workers: usize,
+    resolve_groups: F,
+    read: R,
+) -> Vec<(Duration, T)>
+where
+    T: Send,
+    F: Fn(EffectInstance) -> EffectInstance + Sync,
+    R: Fn(&EffectEngine, Duration) -> T + Sync,
+{
+    let mut ascending = times.to_vec();
+    ascending.sort();
+    ascending.dedup();
+    if ascending.is_empty() {
+        return Vec::new();
+    }
+    let run = ascending.len().div_ceil(workers.max(1));
+    let (resolve_groups, read) = (&resolve_groups, &read);
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = ascending
+            .chunks(run)
+            .map(|times| {
+                scope.spawn(move || {
+                    let mut out = Vec::with_capacity(times.len());
+                    evaluate_show_each(
+                        shows.to_vec(),
+                        fixtures,
+                        focus_points,
+                        fallback_tempo_map,
+                        times,
+                        resolve_groups,
+                        |engine, time| out.push((time, read(engine, time))),
+                    );
+                    out
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .flat_map(|run| match run.join() {
+                Ok(out) => out,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    })
 }
 
 pub use crate::songs::{registered_shows, shows_in};
@@ -472,6 +581,140 @@ show "T" {
             .find(|f| f.name == fixture)
             .and_then(|f| f.channels.get(channel).copied())
             .unwrap_or(0)
+    }
+
+    /// A show with something of each kind going on at once, over tempo.
+    const BUSY: &str = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Busy" {
+    @1/1
+    a, b: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, duration: 6s
+    c: pulse duration: 500ms, layer: foreground, blend_mode: multiply
+    @2/1
+    c, d: cycle color: "red", color: "green", color: "blue", speed: 1measure, layer: midground, duration: 4s
+    @2/3
+    a: strobe frequency: 8, duration: 1s, layer: foreground, blend_mode: add
+    @3/1
+    b, d: dimmer start_level: 0.0, end_level: 1.0, duration: 2s, curve: linear, layer: foreground, blend_mode: replace
+    @4/1
+    a, b, c, d: chase duration: 1s, direction: left_to_right
+    @5/1
+    a: static color: "green", duration: 3s
+}
+"#;
+
+    fn busy_fixtures() -> Vec<FixtureInfo> {
+        ["a", "b", "c", "d"]
+            .iter()
+            .zip([1, 4, 7, 10])
+            .map(|(name, address)| rgb_fixture(name, address))
+            .collect()
+    }
+
+    /// Every twentieth of a second of [`BUSY`], past its end.
+    fn busy_times() -> Vec<Duration> {
+        (0..=280).map(|i| Duration::from_millis(i * 50)).collect()
+    }
+
+    #[test]
+    fn each_reads_every_distinct_time_once_earliest_first() {
+        let asked = [3.0, 1.0, 3.0, 2.0].map(Duration::from_secs_f64);
+        let mut read = Vec::new();
+        evaluate_show_each(
+            shows(BUSY),
+            &busy_fixtures(),
+            &HashMap::new(),
+            None,
+            &asked,
+            |e| e,
+            |_, time| read.push(time),
+        );
+        assert_eq!(read, [1.0, 2.0, 3.0].map(Duration::from_secs_f64));
+    }
+
+    /// Times out of order and asked twice are answered as asked, each as
+    /// the same time asked alone in order is.
+    #[test]
+    fn times_out_of_order_read_as_the_same_times_in_order() {
+        let fixtures = busy_fixtures();
+        let ordered = eval(BUSY, &fixtures, &[1.0, 2.25, 4.5]);
+        let shuffled = eval(BUSY, &fixtures, &[4.5, 1.0, 4.5, 2.25]);
+        for (asked, at) in [(0, 2), (1, 0), (2, 2), (3, 1)] {
+            assert_eq!(shuffled[asked].time, ordered[at].time);
+            assert_eq!(shuffled[asked].fixtures, ordered[at].fixtures);
+        }
+    }
+
+    /// Split over threads, every time reads the fixtures and poses it does
+    /// in one run from the top, however many threads there are -- more than
+    /// there are times included.
+    #[test]
+    fn a_show_split_over_threads_reads_as_one_run_does() {
+        let fixtures = busy_fixtures();
+        let times = busy_times();
+        let one = evaluate_show(shows(BUSY), &fixtures, &HashMap::new(), None, &times, |e| e);
+        assert!(
+            one.iter().filter(|e| e.is_dark() == Some(false)).count() > 100,
+            "the show has light in it to compare"
+        );
+        for workers in [0, 1, 3, 8, 1000] {
+            let split = evaluate_show_parallel(
+                &shows(BUSY),
+                &fixtures,
+                &HashMap::new(),
+                None,
+                &times,
+                workers,
+                |e| e,
+                snapshot,
+            );
+            assert_eq!(split.len(), one.len(), "{workers} workers");
+            for ((time, split), one) in split.iter().zip(&one) {
+                assert_eq!(*time, one.time, "{workers} workers");
+                assert_eq!(
+                    split.fixtures, one.fixtures,
+                    "{workers} workers at {time:?}"
+                );
+                assert_eq!(split.poses, one.poses, "{workers} workers at {time:?}");
+            }
+        }
+    }
+
+    /// The bytes the wire holds for a universe are the ones the snapshot
+    /// names channel by channel: a frame read off the wire is the same
+    /// frame.
+    #[test]
+    fn a_universe_read_off_the_wire_holds_what_the_snapshot_names() {
+        let fixtures = busy_fixtures();
+        let mut frames = 0;
+        evaluate_show_each(
+            shows(BUSY),
+            &fixtures,
+            &HashMap::new(),
+            None,
+            &busy_times(),
+            |e| e,
+            |engine, time| {
+                let universe = engine.wire().universe(1);
+                let named = snapshot(engine, time);
+                for (fixture, address) in ["a", "b", "c", "d"].iter().zip([1usize, 4, 7, 10]) {
+                    for (offset, colour) in ["red", "green", "blue"].iter().enumerate() {
+                        assert_eq!(
+                            universe[address - 1 + offset],
+                            channel(&named, fixture, colour),
+                            "{fixture} {colour} at {time:?}"
+                        );
+                    }
+                }
+                frames += 1;
+            },
+        );
+        assert_eq!(frames, busy_times().len());
     }
 
     const BLUE_5S: &str = r#"

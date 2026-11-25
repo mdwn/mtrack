@@ -79,6 +79,19 @@ impl Wire {
         self.bytes.get(&(universe, channel)).copied()
     }
 
+    /// The 512 bytes `universe` holds, channel 1 first: a channel no
+    /// frame has written at 0, as a universe starts. A frame of a show as
+    /// the rig receives it, with no name looked up to read it.
+    pub fn universe(&self, universe: u16) -> [u8; 512] {
+        let mut held = [0; 512];
+        for (&(of, channel), &byte) in &self.bytes {
+            if of == universe && (1..=512).contains(&channel) {
+                held[usize::from(channel) - 1] = byte;
+            }
+        }
+        held
+    }
+
     /// The channels the last frame wrote.
     pub fn written(&self) -> &HashSet<(u16, u16)> {
         &self.written
@@ -117,6 +130,23 @@ mod tests {
                 value,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_universe_is_its_512_bytes_with_zero_where_nothing_was_written() {
+        let mut wire = Wire::default();
+        let mut sent = frame(&[(1, 200), (512, 9)]);
+        sent.push(DmxCommand {
+            universe: 2,
+            channel: 1,
+            value: 77,
+        });
+        wire.send(&sent, &HashSet::new());
+        let one = wire.universe(1);
+        assert_eq!((one[0], one[1], one[511]), (200, 0, 9));
+        assert_eq!(one.iter().filter(|&&b| b != 0).count(), 2);
+        assert_eq!(wire.universe(2)[0], 77);
+        assert_eq!(wire.universe(3), [0; 512]);
     }
 
     #[test]
