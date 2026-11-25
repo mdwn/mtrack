@@ -487,7 +487,7 @@ pub fn evaluate_with_system(
         &focus_points,
         fallback_tempo_map,
         times,
-        |mut effect| {
+        |effect| {
             effect_groups.insert(effect.id.clone(), effect.target_fixtures.clone());
             resolve_targets(&group_map, effect)
         },
