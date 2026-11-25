@@ -28,11 +28,44 @@ use crate::lighting::effects::DmxCommand;
 /// frames a play-through would have, and every fixture snapshot reads its
 /// bytes back from it -- so what the state says a channel holds is what
 /// the universe holds.
+/// The channels of a universe.
+const CHANNELS: usize = 512;
+
+/// Where channel `channel` (1-based) is held in its universe, if a universe
+/// has it.
+fn slot(channel: u16) -> Option<usize> {
+    let at = usize::from(channel).checked_sub(1)?;
+    (at < CHANNELS).then_some(at)
+}
+
+/// One universe as the wire holds it.
+#[derive(Clone, Debug)]
+struct Held {
+    /// Each channel's byte, 0 until a frame writes it.
+    bytes: [u8; CHANNELS],
+    /// Whether a frame has ever written each channel.
+    written: [bool; CHANNELS],
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self {
+            bytes: [0; CHANNELS],
+            written: [false; CHANNELS],
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Wire {
-    /// Every channel (universe, DMX channel) a frame has written, at the
-    /// byte it was last sent.
-    bytes: HashMap<(u16, u16), u8>,
+    /// Each universe a frame has written a channel of, with the byte each
+    /// channel was last sent. Every frame is written here and every
+    /// snapshot read back from here, so a channel is found by its number
+    /// and not looked up by it.
+    universes: HashMap<u16, Box<Held>>,
+    /// A byte sent to a channel no universe has (below 1, above 512), kept
+    /// as it was sent.
+    strays: HashMap<(u16, u16), u8>,
     /// The channels the last frame wrote.
     written: HashSet<(u16, u16)>,
     /// The universes there is an output for, when that is known (the live
@@ -66,8 +99,17 @@ impl Wire {
             })
             .collect();
         for command in frame.into_iter().chain(&released) {
-            self.bytes
-                .insert((command.universe, command.channel), command.value);
+            match slot(command.channel) {
+                Some(at) => {
+                    let held = self.universes.entry(command.universe).or_default();
+                    held.bytes[at] = command.value;
+                    held.written[at] = true;
+                }
+                None => {
+                    self.strays
+                        .insert((command.universe, command.channel), command.value);
+                }
+            }
         }
         self.written = written;
         released
@@ -76,20 +118,22 @@ impl Wire {
     /// The byte `channel` of `universe` holds, if a frame has ever written
     /// it.
     pub fn byte(&self, universe: u16, channel: u16) -> Option<u8> {
-        self.bytes.get(&(universe, channel)).copied()
+        match slot(channel) {
+            Some(at) => {
+                let held = self.universes.get(&universe)?;
+                held.written[at].then_some(held.bytes[at])
+            }
+            None => self.strays.get(&(universe, channel)).copied(),
+        }
     }
 
     /// The 512 bytes `universe` holds, channel 1 first: a channel no
     /// frame has written at 0, as a universe starts. A frame of a show as
     /// the rig receives it, with no name looked up to read it.
-    pub fn universe(&self, universe: u16) -> [u8; 512] {
-        let mut held = [0; 512];
-        for (&(of, channel), &byte) in &self.bytes {
-            if of == universe && (1..=512).contains(&channel) {
-                held[usize::from(channel) - 1] = byte;
-            }
-        }
-        held
+    pub fn universe(&self, universe: u16) -> [u8; CHANNELS] {
+        self.universes
+            .get(&universe)
+            .map_or([0; CHANNELS], |held| held.bytes)
     }
 
     /// The channels the last frame wrote.
@@ -101,7 +145,9 @@ impl Wire {
     /// bytes held for any other are dropped: they never reached a rig.
     pub fn set_outputs(&mut self, outputs: Option<HashSet<u16>>) {
         if let Some(outputs) = &outputs {
-            self.bytes
+            self.universes
+                .retain(|universe, _| outputs.contains(universe));
+            self.strays
                 .retain(|(universe, _), _| outputs.contains(universe));
             self.written
                 .retain(|(universe, _)| outputs.contains(universe));
@@ -130,6 +176,20 @@ mod tests {
                 value,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_byte_sent_to_a_channel_no_universe_has_is_held_as_sent() {
+        let mut wire = Wire::default();
+        wire.send(&frame(&[(0, 5), (513, 6), (512, 7)]), &HashSet::new());
+        assert_eq!((wire.byte(1, 0), wire.byte(1, 513)), (Some(5), Some(6)));
+        assert_eq!(wire.byte(1, 512), Some(7));
+        assert_eq!(wire.byte(1, 1), None, "never written");
+        assert_eq!(wire.byte(2, 512), None, "another universe");
+        // Neither is one of the universe's 512.
+        assert_eq!(wire.universe(1).iter().filter(|&&b| b != 0).count(), 1);
+        wire.set_outputs(Some(HashSet::from([2])));
+        assert_eq!((wire.byte(1, 0), wire.byte(1, 512)), (None, None));
     }
 
     #[test]
