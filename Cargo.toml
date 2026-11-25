@@ -205,5 +205,9 @@ path = "src/lib.rs"
 name = "mixer"
 harness = false
 
+[[bench]]
+name = "lighting_evaluate"
+harness = false
+
 [package.metadata.cargo-shear]
 ignored = ["prost"]
