@@ -77,6 +77,11 @@ pub(crate) struct FixtureRegistry {
     /// Each pixel fixture's sub-fixture names (`parent/cell`), in cell
     /// order (design §17.3).
     cells: HashMap<String, Vec<String>>,
+    /// The channels that carry a level or colour
+    /// ([`EffectEngine::level_channels`]), once a frame has asked: they
+    /// change only when a fixture is registered, and every frame sent
+    /// reads them.
+    levels: Option<HashSet<(u16, u16)>>,
     /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
     /// Only built during tests for validation; not needed in production.
     #[cfg(test)]
@@ -88,6 +93,7 @@ impl FixtureRegistry {
         Self {
             fixtures: HashMap::new(),
             cells: HashMap::new(),
+            levels: None,
             #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
         }
@@ -100,6 +106,7 @@ impl FixtureRegistry {
     }
 
     fn register(&mut self, fixture: FixtureInfo) {
+        self.levels = None;
         // A pixel fixture's cells register beside it as sub-fixtures: the
         // parent's patch and rotation, the cell's channels, a position of
         // the parent's plus the rotated cell offset, no pan or tilt.
@@ -698,8 +705,14 @@ impl EffectEngine {
     /// patched levels and colours the last frame wrote and this one does
     /// not going to 0. Answers those, to send after the frame.
     pub fn send(&mut self, frame: &[DmxCommand]) -> Vec<DmxCommand> {
-        let levels = self.level_channels();
-        self.wire.send(frame, &levels)
+        let levels = self
+            .fixtures
+            .levels
+            .take()
+            .unwrap_or_else(|| self.level_channels());
+        let released = self.wire.send(frame, &levels);
+        self.fixtures.levels = Some(levels);
+        released
     }
 
     /// From now on a start from history (see [`Self::start_from`]) sends
