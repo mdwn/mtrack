@@ -282,14 +282,11 @@
     };
   }
 
-  /** Play/pause. The player has no native pause, so pausing stops playback
-   * and stores the position as the pending seek; play resumes from it. */
+  /** Pause on the player clock so Play resumes at the same position. */
   async function previewPlayPause() {
     try {
       if (isCurrentSong && $playbackStore.is_playing) {
-        const at = smoothElapsedMs;
-        await playerClient.stop({});
-        await playerClient.seek({ position: msToProtoDuration(at) });
+        await playerClient.pause({});
       } else if (isCurrentSong) {
         await playerClient.play({});
       } else {
@@ -306,11 +303,11 @@
   /** Full stop: also rewinds the resume point to the top. */
   async function previewStop() {
     try {
-      if (isCurrentSong && $playbackStore.is_playing) {
+      if (
+        isCurrentSong &&
+        ($playbackStore.is_playing || $playbackStore.pending_start_ms != null)
+      ) {
         await playerClient.stop({});
-      }
-      if (isCurrentSong) {
-        await playerClient.seek({ position: msToProtoDuration(0) });
       }
     } catch (e) {
       console.error("preview stop failed:", e);

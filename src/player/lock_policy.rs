@@ -93,6 +93,7 @@ pub const OPEN_WHILE_LOCKED: &[(Surface, &str)] = &[
     (Grpc, "SeekToSection"),
     (Grpc, "Previous"),
     (Grpc, "Next"),
+    (Grpc, "Pause"),
     (Grpc, "Stop"),
     (Grpc, "SwitchToPlaylist"),
     (Grpc, "Status"),
@@ -163,6 +164,7 @@ mod tests {
         assert!(!open_while_locked(Web, "PUT /playlists/{name}"));
         // Names are per surface.
         assert!(open_while_locked(Grpc, "Play"));
+        assert!(open_while_locked(Grpc, "Pause"));
         assert!(!open_while_locked(Mcp, "Play"));
         assert!(!open_while_locked(Grpc, "UpdateAudio"));
     }

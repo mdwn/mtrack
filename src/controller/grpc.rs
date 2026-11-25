@@ -29,15 +29,15 @@ use crate::{
         CancelAutoPlayResponse, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
         GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
-        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
-        PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest,
-        SeekResponse, SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse,
-        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song,
-        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
-        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        PauseRequest, PauseResponse, PlayFromRequest, PlayRequest, PlayResponse,
+        PlaySongFromRequest, PreviousRequest, PreviousResponse, RemoveProfileRequest,
+        SectionAckRequest, SectionAckResponse, SeekRequest, SeekResponse, SeekToSectionRequest,
+        SetAmbientModeRequest, SetAmbientModeResponse, SetTrackGainRequest, SetTrackGainResponse,
+        SetTrackMuteRequest, SetTrackMuteResponse, Song, StatusRequest, StatusResponse,
+        StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
+        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain,
+        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
+        UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -441,6 +441,14 @@ impl PlayerService for PlayerServer {
         Ok(Response::new(NextResponse {
             song: Some(navigated(self.player.next().await)?),
         }))
+    }
+
+    async fn pause(&self, _: Request<PauseRequest>) -> Result<Response<PauseResponse>, Status> {
+        self.player
+            .pause()
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(PauseResponse {}))
     }
 
     async fn stop(&self, _: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
@@ -1176,6 +1184,59 @@ mod test {
         assert!(song.is_some());
         assert_eq!(song.unwrap().name, "Song 1");
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_pause_resume_and_stop() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{PauseRequest, PlayFromRequest};
+
+        // The assets' songs are half a second long: a slow runner finished
+        // one before the pause reached it. Twenty seconds leaves no race.
+        let dir = tempfile::tempdir()?;
+        let song_dir = dir.path().join("songs").join("long");
+        std::fs::create_dir_all(&song_dir)?;
+        std::fs::copy("assets/20-sec-long.wav", song_dir.join("track.wav"))?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: Long\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\n",
+        )?;
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        let playlists = HashMap::from([("all_songs".to_string(), playlist::from_songs(songs)?)]);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        let mut client = serve_grpc(player.clone()).await?;
+        player.set_locked(true);
+        let start = Duration::from_millis(250);
+        client
+            .play_from(PlayFromRequest {
+                start_time: Some(start.try_into()?),
+            })
+            .await?;
+        client.pause(PauseRequest {}).await?;
+        let held = player.pending_start().expect("pause keeps a resume point");
+        assert!(player.is_paused());
+        assert!(held >= start);
+        client.play(PlayRequest {}).await?;
+        assert!(player.elapsed().await?.expect("song resumed") >= held);
+        eventually(|| device.is_playing(), "the song never resumed");
+        client.pause(PauseRequest {}).await?;
+        client.stop(StopRequest {}).await?;
+        assert!(!player.is_paused());
+        assert_eq!(player.pending_start(), None);
         Ok(())
     }
 

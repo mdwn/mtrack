@@ -47,7 +47,7 @@
     busy = true;
     try {
       if ($playbackStore.is_playing) {
-        await playerClient.stop({});
+        await playerClient.pause({});
       } else {
         await playerClient.play({});
       }
@@ -196,7 +196,7 @@
     onclick={togglePlay}
     disabled={busy}
     aria-label={$playbackStore.is_playing
-      ? $t("playback.stop")
+      ? $t("playback.pause")
       : $t("playback.play")}
   >
     {#if $playbackStore.is_playing}

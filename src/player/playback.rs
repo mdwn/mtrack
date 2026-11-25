@@ -1027,9 +1027,12 @@ impl Player {
                 // A paused or stopped seek is represented as a pending start
                 // while no playback task is active. Stop must still reset that
                 // position so the next play begins at zero.
+                let positioned_song = self
+                    .pending_start()
+                    .and_then(|_| self.get_playlist().current());
                 self.clear_pending_start();
                 info!("Player is not active, cleared any preserved position.");
-                return (None, false);
+                return (positioned_song, false);
             }
         };
         let broken_to_prev = self.take_loop_break();
