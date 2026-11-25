@@ -45,6 +45,7 @@ mod parser_tests;
 pub mod patch;
 pub mod project_files;
 pub mod readiness;
+pub mod render;
 pub mod stage_model;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);

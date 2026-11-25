@@ -397,6 +397,26 @@ enum Commands {
         #[arg(long)]
         hostname: Option<String>,
     },
+    /// Renders a song's light show to a file: every frame the rig would be
+    /// sent, as the bytes of its universes (`crate::lighting::render`).
+    /// Hidden, and so out of `--help` and the CLI reference, while nothing
+    /// reads the file.
+    #[command(hide = true)]
+    RenderLightShow {
+        /// The song, by name.
+        song: String,
+        /// The file to write.
+        out: String,
+        /// The project directory, or its config file.
+        #[arg(short, long, default_value = ".")]
+        project: String,
+        /// Frames for each second of the song. 44 is what a rig is sent.
+        #[arg(long, default_value_t = 44)]
+        frames_per_second: u32,
+        /// Override the hostname used to select a hardware profile.
+        #[arg(long)]
+        hostname: Option<String>,
+    },
     /// Pairs a project with the mtrack hub, uploads it, or pulls it. Hidden,
     /// and so out of `--help` and the CLI reference, while it has no UI.
     #[cfg(feature = "hub")]
@@ -647,6 +667,13 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             check,
             hostname,
         } => local::verify(&config, check, hostname)?,
+        Commands::RenderLightShow {
+            song,
+            out,
+            project,
+            frames_per_second,
+            hostname,
+        } => local::render_light_show(&project, hostname, &song, &out, frames_per_second)?,
         #[cfg(feature = "hub")]
         Commands::Hub { command } => hub::run(command).await?,
     }
