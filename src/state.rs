@@ -249,11 +249,21 @@ fn lay_bytes<'a>(
                 }
             }
         };
-        let mut covered = info
+        // Whether any byte `each_name` or a cell would read is there, found
+        // without naming one: a fixture the bytes cover is, by its first
+        // channel as a rule.
+        let covered = info
             .cells
             .iter()
-            .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()));
-        each_name(&mut |_, b| covered |= b.is_some());
+            .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()))
+            || info.channel_defs.iter().any(|(channel, def)| {
+                let fine = fine_named(channel);
+                at(def.offset).is_some()
+                    || (fine && def.fine.and_then(at).is_some())
+                    || def.mirrors.iter().any(|&(coarse, mirror_fine)| {
+                        at(coarse).is_some() || (fine && mirror_fine.and_then(at).is_some())
+                    })
+            });
         if !covered {
             continue;
         }
@@ -316,7 +326,12 @@ fn lay_bytes<'a>(
             if !snapshot.cells.is_empty() {
                 for (cell, channel, b) in cell_bytes {
                     if let Some(values) = snapshot.cells.get_mut(cell) {
-                        values.insert(channel.to_string(), b);
+                        match values.get_mut(channel) {
+                            Some(held) => *held = b,
+                            None => {
+                                values.insert(channel.to_string(), b);
+                            }
+                        }
                     }
                 }
             }
