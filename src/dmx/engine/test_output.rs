@@ -269,11 +269,7 @@ mod tests {
         // The stage views draw the same bytes, over the show's state.
         let overlay = engine.test_overlay().read().clone().expect("drawn");
         assert_eq!(overlay.channels, green_test().channels);
-        let drawn = crate::state::engine_snapshot(
-            &engine.effect_engine.lock(),
-            Some(&overlay),
-            &Default::default(),
-        );
+        let drawn = crate::state::engine_snapshot(&engine.effect_engine.lock(), Some(&overlay));
         assert_eq!(drawn.under_test, vec!["par"]);
         let par = drawn.fixtures.iter().find(|f| f.name == "par").unwrap();
         assert_eq!(

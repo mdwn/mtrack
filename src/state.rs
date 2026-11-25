@@ -507,36 +507,17 @@ pub fn start_sampler_cancellable(
     tokio::spawn(sampler_loop_cancellable(effect_engine, overlay, tx, cancel))
 }
 
-/// Builds the dimmer map by querying the fixture registry on the blocking
-/// thread pool (the effect engine uses a `parking_lot::Mutex` shared with
-/// a std::thread, so we must never block a tokio worker on it).
-async fn init_dimmer_map(effect_engine: &Arc<Mutex<EffectEngine>>) -> HashMap<String, bool> {
-    let engine_ref = effect_engine.clone();
-    tokio::task::spawn_blocking(move || {
-        let engine = engine_ref.lock();
-        engine
-            .get_fixture_registry()
-            .iter()
-            .map(|(name, info)| (name.clone(), info.has_dimmer()))
-            .collect()
-    })
-    .await
-    .unwrap_or_default()
-}
-
 /// Samples the current fixture state from the effect engine (on the blocking
 /// thread pool) and returns a snapshot, or `None` if the blocking task panicked.
 async fn sample_tick(
     effect_engine: &Arc<Mutex<EffectEngine>>,
     overlay: Option<&TestOverlayHandle>,
-    has_dimmer_map: &HashMap<String, bool>,
 ) -> Option<Arc<StateSnapshot>> {
     let engine_ref = effect_engine.clone();
-    let has_dimmer_map = has_dimmer_map.clone();
     let overlay = overlay.and_then(|o| o.read().clone());
     let snapshot = tokio::task::spawn_blocking(move || {
         let engine = engine_ref.lock();
-        engine_snapshot(&engine, overlay.as_ref(), &has_dimmer_map)
+        engine_snapshot(&engine, overlay.as_ref())
     })
     .await
     .ok()?;
@@ -548,7 +529,6 @@ async fn sample_tick(
 pub(crate) fn engine_snapshot(
     engine: &EffectEngine,
     overlay: Option<&TestOverlay>,
-    has_dimmer_map: &HashMap<String, bool>,
 ) -> StateSnapshot {
     // A cell's sub-fixture is part of its fixture, not a fixture of
     // its own to the stream (design §17.4): its state folds into the
@@ -557,7 +537,6 @@ pub(crate) fn engine_snapshot(
     // What the rig shows: mid-crossfade, the blend going out (#555).
     let mut fixtures = fixture_snapshots_with_cells(
         engine.shown_fixture_states(),
-        has_dimmer_map,
         registry,
         engine.wire(),
         StrobeRates::Live,
@@ -591,13 +570,12 @@ async fn sampler_loop(
 ) {
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-    let has_dimmer_map = init_dimmer_map(&effect_engine).await;
     let mut first = true;
 
     loop {
         interval.tick().await;
 
-        if let Some(snapshot) = sample_tick(&effect_engine, None, &has_dimmer_map).await {
+        if let Some(snapshot) = sample_tick(&effect_engine, None).await {
             // An idle rig must not wake subscribers twenty times a second:
             // a snapshot equal to the last one is not a change. The first
             // one always goes out, so a subscriber waiting on the sampler
@@ -624,7 +602,6 @@ async fn sampler_loop_cancellable(
 ) {
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-    let has_dimmer_map = init_dimmer_map(&effect_engine).await;
     let mut first = true;
 
     loop {
@@ -633,8 +610,7 @@ async fn sampler_loop_cancellable(
             _ = interval.tick() => {}
         }
 
-        if let Some(snapshot) = sample_tick(&effect_engine, overlay.as_ref(), &has_dimmer_map).await
-        {
+        if let Some(snapshot) = sample_tick(&effect_engine, overlay.as_ref()).await {
             // An idle rig must not wake subscribers twenty times a second:
             // a snapshot equal to the last one is not a change. The first
             // one always goes out, so a subscriber waiting on the sampler
@@ -657,7 +633,6 @@ async fn sampler_loop_cancellable(
 /// `registry` knows the fixture's channel.
 pub(crate) fn compute_fixture_snapshots(
     states: &HashMap<String, FixtureState>,
-    _has_dimmer_map: &HashMap<String, bool>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) -> Vec<FixtureSnapshot> {
     let mut snapshots: Vec<FixtureSnapshot> = states
@@ -694,12 +669,11 @@ pub(crate) fn compute_fixture_snapshots(
 /// `cells`. The one builder both the sampler and the evaluators use.
 pub(crate) fn fixture_snapshots_with_cells(
     states: &HashMap<String, FixtureState>,
-    has_dimmer_map: &HashMap<String, bool>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
     wire: &crate::lighting::engine::Wire,
     rates: StrobeRates,
 ) -> Vec<FixtureSnapshot> {
-    let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map, registry);
+    let mut fixtures = compute_fixture_snapshots(states, registry);
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
     drop_unsent_primaries(&mut fixtures, registry);
     attach_cell_snapshots(&mut fixtures, states, registry);
@@ -987,9 +961,7 @@ mod tests {
             ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("test_fixture".to_string(), fixture_state);
-
-        let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].name, "test_fixture");
@@ -1012,9 +984,7 @@ mod tests {
             ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("fixture_with_dimmer".to_string(), fixture_state);
-
-        let has_dimmer = HashMap::from([("fixture_with_dimmer".to_string(), true)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 255);
@@ -1028,7 +998,7 @@ mod tests {
         states.insert("alpha".to_string(), FixtureState::new());
         states.insert("middle".to_string(), FixtureState::new());
 
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new(), &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
 
         assert_eq!(snapshots[0].name, "alpha");
         assert_eq!(snapshots[1].name, "middle");
@@ -1038,7 +1008,7 @@ mod tests {
     #[test]
     fn test_compute_fixture_snapshots_empty() {
         let states = HashMap::new();
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new(), &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
         assert!(snapshots.is_empty());
     }
 
@@ -1051,15 +1021,13 @@ mod tests {
             ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("dark_fixture".to_string(), fixture_state);
-
-        let has_dimmer = HashMap::new();
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 0);
     }
 
     #[test]
-    fn test_compute_fixture_snapshots_unknown_fixture_in_dimmer_map() {
+    fn test_compute_fixture_snapshots_fixture_the_registry_does_not_know() {
         let mut states = HashMap::new();
         let mut fixture_state = FixtureState::new();
         fixture_state.channels.insert(
@@ -1068,9 +1036,7 @@ mod tests {
         );
         states.insert("unknown_fixture".to_string(), fixture_state);
 
-        // has_dimmer_map doesn't contain this fixture - should default to false
-        let has_dimmer = HashMap::from([("other_fixture".to_string(), true)]);
-        let snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 128);
     }
@@ -1188,13 +1154,6 @@ mod tests {
         engine
     }
 
-    fn dimmers() -> HashMap<String, bool> {
-        ["front", "side", "far", "other"]
-            .into_iter()
-            .map(|n| (n.to_string(), true))
-            .collect()
-    }
-
     fn rgb(snapshot: &StateSnapshot, name: &str) -> [u8; 4] {
         let f = snapshot
             .fixtures
@@ -1207,7 +1166,7 @@ mod tests {
     #[test]
     fn a_fixture_test_shows_on_the_venue_fixtures_it_covers() {
         let engine = overlay_rig();
-        let show = engine_snapshot(&engine, None, &dimmers());
+        let show = engine_snapshot(&engine, None);
         assert_eq!(rgb(&show, "front"), [255, 0, 0, 255]);
         assert!(show.under_test.is_empty());
 
@@ -1216,7 +1175,7 @@ mod tests {
             universe: 1,
             channels: vec![(11, 255), (12, 255), (13, 0), (14, 0)],
         };
-        let tested = engine_snapshot(&engine, Some(&overlay), &dimmers());
+        let tested = engine_snapshot(&engine, Some(&overlay));
         // Fully covered.
         assert_eq!(rgb(&tested, "front"), [255, 255, 0, 0]);
         // Partly covered (13, 14 are its dimmer and red): only those.
@@ -1227,13 +1186,13 @@ mod tests {
         assert!(tested.fixtures.iter().all(|f| f.name != "other"));
 
         // Released: the show again, nothing marked.
-        assert_eq!(engine_snapshot(&engine, None, &dimmers()), show);
+        assert_eq!(engine_snapshot(&engine, None), show);
     }
 
     #[test]
     fn a_covered_pan_turns_the_head() {
         let engine = overlay_rig();
-        let rest = engine_snapshot(&engine, None, &dimmers());
+        let rest = engine_snapshot(&engine, None);
         let rest_pose = rest.poses.iter().find(|p| p.name == "mover").unwrap();
         assert_eq!(rest_pose.pan, 0.0);
 
@@ -1249,7 +1208,7 @@ mod tests {
             universe: 1,
             channels: bytes.iter().map(|(o, b)| (29 + o, *b)).collect(),
         };
-        let tested = engine_snapshot(&engine, Some(&overlay), &dimmers());
+        let tested = engine_snapshot(&engine, Some(&overlay));
         let pose = tested.poses.iter().find(|p| p.name == "mover").unwrap();
         assert!((pose.pan - 45.0).abs() < 0.01, "{}", pose.pan);
         assert_eq!(pose.tilt, 0.0, "tilt is not covered");
@@ -1265,7 +1224,7 @@ mod tests {
             .1;
         let mut both = overlay.clone();
         both.channels.push((32, tilt));
-        let tilted = engine_snapshot(&engine, Some(&both), &dimmers());
+        let tilted = engine_snapshot(&engine, Some(&both));
         let pose = tilted.poses.iter().find(|p| p.name == "mover").unwrap();
         assert!((pose.tilt - 30.0).abs() < 1.1, "{}", pose.tilt);
         assert_ne!(pose.aim, rest_pose.aim);
@@ -1468,9 +1427,8 @@ mod tests {
         // Seed the snapshot as `sample_tick` would: only the fixture-level
         // state feeds `compute_fixture_snapshots` (sub-fixture states are
         // filtered out before this point).
-        let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
         let bar_only: HashMap<String, FixtureState> = HashMap::from([("Bar".to_string(), bed)]);
-        let mut snapshots = compute_fixture_snapshots(&bar_only, &has_dimmer, &HashMap::new());
+        let mut snapshots = compute_fixture_snapshots(&bar_only, &HashMap::new());
         let channels_before = snapshots[0].channels.clone();
 
         attach_cell_snapshots(&mut snapshots, &states, &registry);
@@ -1517,7 +1475,7 @@ mod tests {
             .iter()
             .map(|c| (c.channel, c.value))
             .collect();
-        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("Bar".to_string(), true)]));
+        let snapshot = engine_snapshot(&engine, None);
         let cell = &snapshot.fixtures[0].cells["2"];
         assert_eq!(cell.get("red"), sent.get(&red_2));
         assert_eq!(cell["red"], 76, "0.3 of 65535 is 0x4CCD: coarse 76");
@@ -1538,9 +1496,7 @@ mod tests {
             ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let states = HashMap::from([("Bar".to_string(), bed.clone())]);
-
-        let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
-        let mut snapshots = compute_fixture_snapshots(&states, &has_dimmer, &HashMap::new());
+        let mut snapshots = compute_fixture_snapshots(&states, &HashMap::new());
         let before = snapshots.clone();
 
         attach_cell_snapshots(&mut snapshots, &states, &registry);
@@ -1665,7 +1621,6 @@ mod tests {
 
         let snapshots = fixture_snapshots_with_cells(
             &states,
-            &HashMap::new(),
             &registry,
             &Default::default(),
             StrobeRates::Live,
@@ -1722,7 +1677,6 @@ mod tests {
             [("bar".to_string(), state)].into_iter().collect();
         let snapshots = fixture_snapshots_with_cells(
             &states,
-            &HashMap::new(),
             &registry,
             &Default::default(),
             StrobeRates::Live,
@@ -1790,7 +1744,7 @@ mod tests {
         // Out to the rig, whose bytes the snapshot reads.
         engine.send(&frame);
         let sent: HashMap<u16, u8> = frame.iter().map(|c| (c.channel, c.value)).collect();
-        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("f".to_string(), true)]));
+        let snapshot = engine_snapshot(&engine, None);
         let f = &snapshot.fixtures[0];
         for (name, address) in [("dimmer", 1), ("cyan", 2), ("magenta", 3), ("yellow", 4)] {
             assert_eq!(f.channels.get(name), sent.get(&address), "{name}");

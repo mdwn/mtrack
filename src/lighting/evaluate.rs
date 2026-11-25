@@ -430,12 +430,6 @@ pub fn evaluate_with_system(
 /// engine's own state -- the song time it last rendered at, as it renders
 /// them -- which is what makes this a measurement rather than a prediction.
 pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
-    let has_dimmer: HashMap<String, bool> = engine
-        .get_fixture_registry()
-        .iter()
-        .map(|(name, info)| (name.clone(), info.has_dimmer()))
-        .collect();
-
     let mut active_effects: Vec<(u64, EvaluatedEffect)> = engine
         .get_active_effects()
         .values()
@@ -477,7 +471,6 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     // What the rig shows: mid-crossfade, the blend going out (#555).
     let mut fixtures = crate::state::fixture_snapshots_with_cells(
         engine.shown_fixture_states(),
-        &has_dimmer,
         registry,
         engine.wire(),
         crate::state::StrobeRates::Instant,

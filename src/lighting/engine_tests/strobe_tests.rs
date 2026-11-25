@@ -1200,7 +1200,6 @@ fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
         let registry = engine.get_fixture_registry();
         crate::state::fixture_snapshots_with_cells(
             engine.shown_fixture_states(),
-            &HashMap::new(),
             registry,
             engine.wire(),
             rates,

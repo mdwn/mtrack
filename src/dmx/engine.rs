@@ -4363,11 +4363,7 @@ mod test {
             );
             let shown = |engine: &Engine| -> (u8, u8, u8) {
                 let effect_engine = engine.effect_engine.lock();
-                let snapshot = crate::state::engine_snapshot(
-                    &effect_engine,
-                    None,
-                    &std::collections::HashMap::new(),
-                );
+                let snapshot = crate::state::engine_snapshot(&effect_engine, None);
                 let wash = snapshot.fixtures.iter().find(|f| f.name == "wash");
                 let channel = |name: &str| {
                     wash.and_then(|f| f.channels.get(name).copied())
@@ -4431,13 +4427,8 @@ mod test {
                     None,
                 ),
             );
-            let view = |engine: &Engine| {
-                crate::state::engine_snapshot(
-                    &engine.effect_engine.lock(),
-                    None,
-                    &std::collections::HashMap::new(),
-                )
-            };
+            let view =
+                |engine: &Engine| crate::state::engine_snapshot(&engine.effect_engine.lock(), None);
             let red =
                 "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n}\n";
 
@@ -4562,11 +4553,7 @@ mod test {
                 ),
             );
             let view = |engine: &Engine| -> (u8, u8, u8) {
-                let snapshot = crate::state::engine_snapshot(
-                    &engine.effect_engine.lock(),
-                    None,
-                    &std::collections::HashMap::new(),
-                );
+                let snapshot = crate::state::engine_snapshot(&engine.effect_engine.lock(), None);
                 let wash = snapshot.fixtures.iter().find(|f| f.name == "wash");
                 let channel = |name: &str| {
                     wash.and_then(|f| f.channels.get(name).copied())
