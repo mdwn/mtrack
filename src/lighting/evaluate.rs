@@ -213,14 +213,72 @@ pub fn evaluate_show_each<F>(
 
 /// As [`evaluate_show_each`], on up to `workers` threads: the distinct
 /// times, in order, are split into that many runs, each replayed on a
-/// thread of its own, and what `read` made of each time is answered with
-/// it, earliest first.
+/// thread of its own. Each run starts from what `begin` makes it and
+/// `read` adds each of its times to that; the runs' results are answered
+/// earliest first. A run that writes its frames into one buffer of its own
+/// allocates nothing a frame.
 ///
 /// A time reads as if evaluated alone ([`evaluate_show`]), so a run that
 /// starts mid-show reads what one from the top does there, and reaching its
 /// first time costs a replay of the cues before it with no frame read,
 /// which is small beside reading the frames. One thing is not the same
 /// twice: an effect's id, which is numbered as it starts.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_show_runs<A, F, B, R>(
+    shows: &[LightShow],
+    fixtures: &[FixtureInfo],
+    focus_points: &HashMap<String, [f64; 3]>,
+    fallback_tempo_map: Option<&TempoMap>,
+    times: &[Duration],
+    workers: usize,
+    resolve_groups: F,
+    begin: B,
+    read: R,
+) -> Vec<A>
+where
+    A: Send,
+    F: Fn(EffectInstance) -> EffectInstance + Sync,
+    B: Fn(usize) -> A + Sync,
+    R: Fn(&mut A, &EffectEngine, Duration) + Sync,
+{
+    let mut ascending = times.to_vec();
+    ascending.sort();
+    ascending.dedup();
+    if ascending.is_empty() {
+        return Vec::new();
+    }
+    let run = ascending.len().div_ceil(workers.max(1));
+    let (resolve_groups, begin, read) = (&resolve_groups, &begin, &read);
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = ascending
+            .chunks(run)
+            .map(|times| {
+                scope.spawn(move || {
+                    let mut out = begin(times.len());
+                    evaluate_show_each(
+                        shows.to_vec(),
+                        fixtures,
+                        focus_points,
+                        fallback_tempo_map,
+                        times,
+                        resolve_groups,
+                        |engine, time| read(&mut out, engine, time),
+                    );
+                    out
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| match run.join() {
+                Ok(out) => out,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    })
+}
+
+/// As [`evaluate_show_runs`], answering what `read` made of each time with
+/// it, earliest first.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_show_parallel<T, F, R>(
     shows: &[LightShow],
@@ -237,40 +295,20 @@ where
     F: Fn(EffectInstance) -> EffectInstance + Sync,
     R: Fn(&EffectEngine, Duration) -> T + Sync,
 {
-    let mut ascending = times.to_vec();
-    ascending.sort();
-    ascending.dedup();
-    if ascending.is_empty() {
-        return Vec::new();
-    }
-    let run = ascending.len().div_ceil(workers.max(1));
-    let (resolve_groups, read) = (&resolve_groups, &read);
-    std::thread::scope(|scope| {
-        let runs: Vec<_> = ascending
-            .chunks(run)
-            .map(|times| {
-                scope.spawn(move || {
-                    let mut out = Vec::with_capacity(times.len());
-                    evaluate_show_each(
-                        shows.to_vec(),
-                        fixtures,
-                        focus_points,
-                        fallback_tempo_map,
-                        times,
-                        resolve_groups,
-                        |engine, time| out.push((time, read(engine, time))),
-                    );
-                    out
-                })
-            })
-            .collect();
-        runs.into_iter()
-            .flat_map(|run| match run.join() {
-                Ok(out) => out,
-                Err(panic) => std::panic::resume_unwind(panic),
-            })
-            .collect()
-    })
+    evaluate_show_runs(
+        shows,
+        fixtures,
+        focus_points,
+        fallback_tempo_map,
+        times,
+        workers,
+        resolve_groups,
+        Vec::with_capacity,
+        |out: &mut Vec<(Duration, T)>, engine, time| out.push((time, read(engine, time))),
+    )
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 pub use crate::songs::{registered_shows, shows_in};
@@ -336,6 +374,75 @@ fn check_times(times: &[Duration]) -> Result<(), EvaluateError> {
     Ok(())
 }
 
+/// The rig a venue gives a set of shows: its fixtures and focus points, and
+/// the fixtures each group the shows name resolves to there. The one reading
+/// of a venue for an offline evaluation, whoever asks.
+#[derive(Default)]
+pub struct VenueRig {
+    pub fixtures: Vec<FixtureInfo>,
+    pub focus_points: HashMap<String, [f64; 3]>,
+    pub groups: HashMap<String, Vec<String>>,
+    /// Why the current venue's fixtures could not be loaded, when it has
+    /// one and they could not: the rig is then empty.
+    pub venue_error: Option<String>,
+}
+
+impl VenueRig {
+    /// The current venue's rig for `shows`. With no current venue there is
+    /// no rig, and that is not an error.
+    pub fn of(system: &mut crate::lighting::system::LightingSystem, shows: &[LightShow]) -> Self {
+        let mut venue_error = None;
+        let fixtures = match system.load_current_venue_fixtures() {
+            Ok(fixtures) => fixtures,
+            // No current venue at all is not an error here: there is
+            // simply no rig, as without a system.
+            Err(_) if system.get_current_venue().is_none() => Vec::new(),
+            Err(fault) => {
+                venue_error = Some(fault.reason);
+                Vec::new()
+            }
+        };
+        let focus_points = system.current_focus_points();
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        for name in crate::lighting::readiness::group_names(shows) {
+            let resolved = system.resolve_logical_group_graceful(&name);
+            groups.insert(name, resolved);
+        }
+        Self {
+            fixtures,
+            focus_points,
+            groups,
+            venue_error,
+        }
+    }
+
+    /// `effect` with its groups resolved to this rig's fixtures
+    /// ([`resolve_targets`]).
+    pub fn resolve(&self, effect: EffectInstance) -> EffectInstance {
+        resolve_targets(&self.groups, effect)
+    }
+}
+
+/// `effect` aimed at fixtures: each target that is a group of `groups`
+/// replaced by the fixtures it resolved to.
+fn resolve_targets(
+    groups: &HashMap<String, Vec<String>>,
+    mut effect: EffectInstance,
+) -> EffectInstance {
+    effect.target_fixtures = effect
+        .target_fixtures
+        .iter()
+        .flat_map(|target| match groups.get(target) {
+            Some(resolved) => resolved.clone(),
+            // Not a known group — already a fixture name, or a name
+            // that resolves to nothing. Either way, leave it for the
+            // engine to accept or reject.
+            None => vec![target.clone()],
+        })
+        .collect();
+    effect
+}
+
 /// Evaluates `shows` against the venue the lighting system has loaded: its
 /// fixtures, focus points and logical groups. With no system (no DMX device)
 /// there is no venue, and every fixture list is empty.
@@ -355,29 +462,14 @@ pub fn evaluate_with_system(
     system: Option<&parking_lot::Mutex<crate::lighting::system::LightingSystem>>,
 ) -> Result<SystemEvaluation, EvaluateError> {
     check_times(times)?;
-    let mut venue_error = None;
-    let (fixtures, focus_points, group_map) = match system {
-        Some(system) => {
-            let mut guard = system.lock();
-            let fixtures = match guard.load_current_venue_fixtures() {
-                Ok(fixtures) => fixtures,
-                // No current venue at all is not an error here: there is
-                // simply no rig, as without a system.
-                Err(_) if guard.get_current_venue().is_none() => Vec::new(),
-                Err(fault) => {
-                    venue_error = Some(fault.reason);
-                    Vec::new()
-                }
-            };
-            let focus_points = guard.current_focus_points();
-            let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
-            for name in crate::lighting::readiness::group_names(&shows) {
-                let resolved = guard.resolve_logical_group_graceful(&name);
-                group_map.insert(name, resolved);
-            }
-            (fixtures, focus_points, group_map)
-        }
-        None => (Vec::new(), HashMap::new(), HashMap::new()),
+    let VenueRig {
+        fixtures,
+        focus_points,
+        groups: group_map,
+        venue_error,
+    } = match system {
+        Some(system) => VenueRig::of(&mut system.lock(), &shows),
+        None => VenueRig::default(),
     };
 
     let targeted = group_map.values().flatten().cloned().collect();
@@ -397,18 +489,7 @@ pub fn evaluate_with_system(
         times,
         |mut effect| {
             effect_groups.insert(effect.id.clone(), effect.target_fixtures.clone());
-            effect.target_fixtures = effect
-                .target_fixtures
-                .iter()
-                .flat_map(|target| match group_map.get(target) {
-                    Some(resolved) => resolved.clone(),
-                    // Not a known group — already a fixture name, or a name
-                    // that resolves to nothing. Either way, leave it for the
-                    // engine to accept or reject.
-                    None => vec![target.clone()],
-                })
-                .collect();
-            effect
+            resolve_targets(&group_map, effect)
         },
     );
     Ok(SystemEvaluation {
