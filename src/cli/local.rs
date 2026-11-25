@@ -181,26 +181,32 @@ pub fn render_light_show(
 
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let started = std::time::Instant::now();
-    let mut file = std::io::BufWriter::new(
-        std::fs::File::create(out).map_err(|e| format!("cannot write {out}: {e}"))?,
-    );
-    let rendered = crate::lighting::render::render_song(
-        &mut system,
-        &song,
-        frames_per_second,
-        workers,
-        &mut file,
-    );
-    let header = match rendered {
+    // Written beside `out` and moved onto it once whole, so a show that is
+    // not rendered leaves whatever was at `out` as it was.
+    let partial = format!("{out}.partial");
+    let written = (|| -> Result<crate::lighting::render::Header, Box<dyn Error>> {
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(&partial).map_err(|e| format!("cannot write {partial}: {e}"))?,
+        );
+        let header = crate::lighting::render::render_song(
+            &mut system,
+            &song,
+            frames_per_second,
+            workers,
+            &mut file,
+        )
+        .map_err(|e| format!("{}: {e}", song.name()))?;
+        std::io::Write::flush(&mut file).map_err(|e| format!("cannot write {partial}: {e}"))?;
+        std::fs::rename(&partial, out).map_err(|e| format!("cannot write {out}: {e}"))?;
+        Ok(header)
+    })();
+    let header = match written {
         Ok(header) => header,
         Err(e) => {
-            // Nothing of a show that was not rendered is left behind.
-            drop(file);
-            let _ = std::fs::remove_file(out);
-            return Err(format!("{}: {e}", song.name()).into());
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
         }
     };
-    std::io::Write::flush(&mut file).map_err(|e| format!("cannot write {out}: {e}"))?;
     println!(
         "{}: {} frames of {} universe{} at {} a second, in {:.1} s, to {out}",
         song.name(),
@@ -1344,6 +1350,30 @@ mod tests {
             // Past the show's end the level and the colour are sent 0.
             let after = &frames[25 * UNIVERSE_BYTES..26 * UNIVERSE_BYTES];
             assert_eq!(after[..4], [0, 0, 0, 0]);
+        }
+
+        /// A song with no show is not rendered, and a file already at the
+        /// path is left as it was.
+        #[test]
+        fn a_song_with_no_show_leaves_the_file_that_was_there() {
+            let tmp = super::brightness_changes_tests::project(BLUE);
+            std::fs::write(
+                tmp.path().join("songs/Song/song.yaml"),
+                "kind: song\nname: Song\ntracks:\n  - name: track\n    file: track.wav\n",
+            )
+            .unwrap();
+            let out = tmp.path().join("song.frames");
+            std::fs::write(&out, "kept").unwrap();
+            let refused = render_light_show(
+                tmp.path().to_str().unwrap(),
+                Some("host".into()),
+                "Song",
+                out.to_str().unwrap(),
+                10,
+            );
+            assert!(refused.unwrap_err().to_string().contains("no light show"));
+            assert_eq!(std::fs::read_to_string(&out).unwrap(), "kept");
+            assert!(!tmp.path().join("song.frames.partial").exists());
         }
 
         #[test]
