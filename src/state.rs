@@ -217,42 +217,43 @@ enum Fill {
 /// fixture's cells are drawn on their own (`cells`) where one differs
 /// from what its fixture's channels show, each from what it shows now.
 /// Answers the fixtures it touched, sorted.
-fn lay_bytes(
+fn lay_bytes<'a>(
     fixtures: &mut Vec<FixtureSnapshot>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: impl IntoIterator<Item = (&'a String, &'a crate::lighting::effects::FixtureInfo)>,
     read: impl Fn(u16, u16) -> Option<u8>,
     fill: Fill,
 ) -> Vec<String> {
     use crate::lighting::channels::is_position_channel;
+    use std::borrow::Cow;
     let mut touched = Vec::new();
     for (name, info) in registry {
         if info.parent.is_some() {
             continue;
         }
         let at = |offset: u16| read(info.universe, info.dmx_channel(offset)?);
-        // Each name with the byte it reads, `None` where none is read.
         let fine_named = |channel: &str| fill == Fill::Covered || is_position_channel(channel);
-        let mut names: Vec<(String, Option<u8>)> = Vec::new();
-        for (channel, def) in &info.channel_defs {
-            names.push((channel.clone(), at(def.offset)));
-            if let Some(fine) = def.fine.filter(|_| fine_named(channel)) {
-                names.push((fine_name(channel), at(fine)));
-            }
-            for ((mirror, coarse), fine) in mirror_sections(channel, def) {
-                names.push((mirror, at(coarse)));
-                if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(channel)) {
-                    names.push((mirror_fine, at(fine)));
+        // Each name with the byte it reads, `None` where none is read. Read
+        // twice: once to find whether the bytes cover the fixture at all,
+        // once to lay them, so a frame builds no list of names in between.
+        let each_name = |f: &mut dyn FnMut(Cow<'_, str>, Option<u8>)| {
+            for (channel, def) in &info.channel_defs {
+                f(Cow::Borrowed(channel.as_str()), at(def.offset));
+                if let Some(fine) = def.fine.filter(|_| fine_named(channel)) {
+                    f(Cow::Owned(fine_name(channel)), at(fine));
+                }
+                for ((mirror, coarse), fine) in mirror_sections(channel, def) {
+                    f(Cow::Owned(mirror), at(coarse));
+                    if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(channel)) {
+                        f(Cow::Owned(mirror_fine), at(fine));
+                    }
                 }
             }
-        }
-        let mut cell_bytes: Vec<(String, String, Option<u8>)> = Vec::new();
-        for cell in &info.cells {
-            for (channel, def) in &cell.channels {
-                cell_bytes.push((cell.name.clone(), channel.clone(), at(def.offset)));
-            }
-        }
-        let covered = names.iter().any(|(_, b)| b.is_some())
-            || cell_bytes.iter().any(|(_, _, b)| b.is_some());
+        };
+        let mut covered = info
+            .cells
+            .iter()
+            .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()));
+        each_name(&mut |_, b| covered |= b.is_some());
         if !covered {
             continue;
         }
@@ -260,7 +261,13 @@ fn lay_bytes(
             Fill::Covered => None,
             Fill::Fixture => Some(0),
         };
-        let snapshot = match fixtures.iter().position(|f| &f.name == name) {
+        // Snapshots are kept in name order, so one is found by halving;
+        // a list that is not falls back to looking at each.
+        let found = fixtures
+            .binary_search_by(|f| f.name.as_str().cmp(name.as_str()))
+            .ok()
+            .or_else(|| fixtures.iter().position(|f| &f.name == name));
+        let snapshot = match found {
             Some(i) => &mut fixtures[i],
             None => {
                 let at = fixtures.partition_point(|f| f.name.as_str() < name.as_str());
@@ -269,45 +276,62 @@ fn lay_bytes(
                     FixtureSnapshot {
                         strobe_hz: None,
                         name: name.clone(),
-                        channels: HashMap::new(),
+                        channels: HashMap::with_capacity(info.channel_defs.len()),
                         cells: Default::default(),
                     },
                 );
                 &mut fixtures[at]
             }
         };
-        let cell_bytes: Vec<(String, String, u8)> = cell_bytes
-            .into_iter()
-            .filter_map(|(cell, channel, b)| Some((cell, channel, b.or(unread)?)))
-            .collect();
-        // Every cell is drawn on its own once any differs from its
-        // fixture, each starting from what it shows now.
-        if snapshot.cells.is_empty()
-            && cell_bytes
+        if !info.cells.is_empty() {
+            let cell_bytes: Vec<(&str, &str, u8)> = info
+                .cells
                 .iter()
-                .any(|(_, channel, b)| snapshot.channels.get(channel).copied().unwrap_or(0) != *b)
-        {
-            for cell in &info.cells {
-                let values = cell
-                    .channels
-                    .keys()
-                    .filter_map(|c| snapshot.channels.get(c).map(|v| (c.clone(), *v)))
-                    .collect();
-                snapshot.cells.insert(cell.name.clone(), values);
+                .flat_map(|cell| {
+                    cell.channels.iter().filter_map(|(channel, def)| {
+                        Some((
+                            cell.name.as_str(),
+                            channel.as_str(),
+                            at(def.offset).or(unread)?,
+                        ))
+                    })
+                })
+                .collect();
+            // Every cell is drawn on its own once any differs from its
+            // fixture, each starting from what it shows now.
+            if snapshot.cells.is_empty()
+                && cell_bytes.iter().any(|(_, channel, b)| {
+                    snapshot.channels.get(*channel).copied().unwrap_or(0) != *b
+                })
+            {
+                for cell in &info.cells {
+                    let values = cell
+                        .channels
+                        .keys()
+                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c.clone(), *v)))
+                        .collect();
+                    snapshot.cells.insert(cell.name.clone(), values);
+                }
             }
-        }
-        if !snapshot.cells.is_empty() {
-            for (cell, channel, b) in cell_bytes {
-                if let Some(values) = snapshot.cells.get_mut(&cell) {
-                    values.insert(channel, b);
+            if !snapshot.cells.is_empty() {
+                for (cell, channel, b) in cell_bytes {
+                    if let Some(values) = snapshot.cells.get_mut(cell) {
+                        values.insert(channel.to_string(), b);
+                    }
                 }
             }
         }
-        for (channel, b) in names {
-            if let Some(b) = b.or(unread) {
-                snapshot.channels.insert(channel, b);
+        each_name(&mut |channel, b| {
+            let Some(b) = b.or(unread) else {
+                return;
+            };
+            match snapshot.channels.get_mut(channel.as_ref()) {
+                Some(held) => *held = b,
+                None => {
+                    snapshot.channels.insert(channel.into_owned(), b);
+                }
             }
-        }
+        });
         touched.push(name.clone());
     }
     touched.sort();
@@ -372,11 +396,27 @@ pub(crate) fn fill_dark_fixtures(
     fixtures: &mut Vec<FixtureSnapshot>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) {
+    // Only the fixtures with no snapshot are read: on a frame where every
+    // fixture has one, none is.
+    let held: std::collections::HashSet<&str> = fixtures.iter().map(|f| f.name.as_str()).collect();
+    let missing: Vec<(&String, &crate::lighting::effects::FixtureInfo)> = registry
+        .iter()
+        .filter(|(name, info)| info.parent.is_none() && !held.contains(name.as_str()))
+        .collect();
+    if missing.is_empty() {
+        fixtures.sort_by(|a, b| a.name.cmp(&b.name));
+        return;
+    }
     let mut dark = Vec::new();
-    lay_bytes(&mut dark, registry, |_, _| Some(0), Fill::Fixture);
+    lay_bytes(
+        &mut dark,
+        missing.iter().copied(),
+        |_, _| Some(0),
+        Fill::Fixture,
+    );
     // A fixture with no channels at all is still there, dark.
-    for (name, info) in registry {
-        if info.parent.is_none() && !dark.iter().any(|d: &FixtureSnapshot| &d.name == name) {
+    for (name, _) in missing {
+        if !dark.iter().any(|d: &FixtureSnapshot| &d.name == name) {
             dark.push(FixtureSnapshot {
                 strobe_hz: None,
                 name: name.clone(),
@@ -385,7 +425,6 @@ pub(crate) fn fill_dark_fixtures(
             });
         }
     }
-    dark.retain(|d| !fixtures.iter().any(|f| f.name == d.name));
     fixtures.extend(dark);
     fixtures.sort_by(|a, b| a.name.cmp(&b.name));
 }
@@ -625,7 +664,7 @@ pub(crate) fn compute_fixture_snapshots(
         .iter()
         .map(|(name, state)| {
             let info = registry.get(name);
-            let mut channels = HashMap::new();
+            let mut channels = HashMap::with_capacity(state.channels.len());
 
             for (channel_name, channel_state) in &state.channels {
                 channels.insert(
