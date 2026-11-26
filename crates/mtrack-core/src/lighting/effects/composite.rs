@@ -277,11 +277,12 @@ impl Composite {
     /// The colour channels to write and their values. `takes` is which of
     /// the channels the target has, for the white a colour-less fixture
     /// shows.
-    fn colours(&self, level: &Level, takes: Takes) -> Vec<(&'static str, f64)> {
-        let Takes {
+    fn colours(&self, level: &Level, mixing: Mixing) -> Vec<(&'static str, f64)> {
+        let Mixing {
             channels: takes,
             cmy,
-        } = takes;
+            ..
+        } = mixing;
         let relative = |i: usize, by: f64| {
             if by > 0.0 {
                 self.light[i] / by
@@ -315,21 +316,27 @@ impl Composite {
     }
 }
 
-/// Which colour channels a fixture or cell takes, and whether it mixes
-/// subtractively.
-#[derive(Clone, Copy)]
-struct Takes {
+/// What compositing asks of a fixture's or a cell's channels: which colour
+/// channels it takes, whether it mixes subtractively, and whether it has a
+/// dimmer of its own. The channels fix the answers, so a fixture works its
+/// own out once ([`FixtureInfo::mixing`]) and not for every frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mixing {
     /// Red, green and blue also on a CMY fixture, which turns them into
     /// its flags at output.
     channels: [bool; 4],
     cmy: bool,
+    dimmer: bool,
 }
 
-fn takes<V>(channels: &HashMap<String, V>) -> Takes {
-    let cmy = has_cmy(channels);
-    Takes {
-        channels: COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy)),
-        cmy,
+impl Mixing {
+    pub fn of<V>(channels: &HashMap<String, V>) -> Self {
+        let cmy = has_cmy(channels);
+        Mixing {
+            channels: COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy)),
+            cmy,
+            dimmer: has_dimmer_channel(channels),
+        }
     }
 }
 
@@ -346,13 +353,21 @@ pub(super) fn resolve_plain<V>(state: &mut FixtureState, channels: &HashMap<Stri
     if state.ops.is_empty() {
         return;
     }
+    resolve_mixed(state, Mixing::of(channels));
+}
+
+/// [`resolve_plain`] for channels already asked what they take.
+pub(super) fn resolve_mixed(state: &mut FixtureState, mixing: Mixing) {
+    if state.ops.is_empty() {
+        return;
+    }
     let ops = std::mem::take(&mut state.ops);
     state.groups = 0;
-    let has_dimmer = has_dimmer_channel(channels);
+    let has_dimmer = mixing.dimmer;
     let seed = Seed::of(state, has_dimmer);
     let composite = Composite::new(&ops, &seed);
     let level = if has_dimmer { Level::Own } else { Level::Plain };
-    for (name, value) in composite.colours(&level, takes(channels)) {
+    for (name, value) in composite.colours(&level, mixing) {
         put(state, composite.top, name, value);
     }
     if has_dimmer {
@@ -371,7 +386,7 @@ pub fn resolve_fixture(
     info: &FixtureInfo,
 ) {
     if info.cells.is_empty() {
-        resolve_plain(parent, &info.channels);
+        resolve_mixed(parent, info.mixing());
         return;
     }
     let parent_ops = std::mem::take(&mut parent.ops);
@@ -418,7 +433,7 @@ pub fn resolve_fixture(
 
     if let Some(g) = &ganged {
         let (level, dimmer) = level(g);
-        for (name, value) in g.colours(&level, takes(&info.cells[0].channels)) {
+        for (name, value) in g.colours(&level, Mixing::of(&info.cells[0].channels)) {
             put(parent, g.top, name, value);
         }
         if let Some(dimmer) = dimmer {
@@ -429,7 +444,7 @@ pub fn resolve_fixture(
     for (cell, c) in &per_cell {
         let state = cells.get_mut(&cell.name).expect("a cell with ops");
         let (level, dimmer) = level(c);
-        for (name, value) in c.colours(&level, takes(&cell.channels)) {
+        for (name, value) in c.colours(&level, Mixing::of(&cell.channels)) {
             put(state, c.top, name, value);
         }
         if let Some(dimmer) = dimmer {

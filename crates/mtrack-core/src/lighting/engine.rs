@@ -1534,7 +1534,7 @@ impl EffectEngine {
             if let Some(parent) = &info.parent {
                 parents.insert(parent);
             } else if info.cells.is_empty() {
-                state.resolve(&info.channels);
+                state.resolve_for(info);
             } else {
                 parents.insert(&info.name);
             }

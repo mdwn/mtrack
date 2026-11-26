@@ -28,7 +28,7 @@ mod tests;
 
 // Re-export public items
 pub use color::{Color, NAMED_COLORS};
-pub use composite::resolve_fixture;
+pub use composite::{resolve_fixture, Mixing};
 pub use error::EffectError;
 #[cfg(any(test, feature = "test-util"))]
 pub use fixture::declared_dmx;
