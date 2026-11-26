@@ -230,6 +230,12 @@ impl FixtureState {
         composite::resolve_plain(self, channels);
     }
 
+    /// [`Self::resolve`] for a fixture with no cells, by what it worked out
+    /// of its channels when it was made ([`FixtureInfo::mixing`]).
+    pub fn resolve_for(&mut self, fixture: &FixtureInfo) {
+        composite::resolve_mixed(self, fixture.mixing());
+    }
+
     /// Blend this fixture state with another
     pub fn blend_with(&mut self, other: &FixtureState) {
         self.physical.blend_with(&other.physical);

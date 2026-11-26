@@ -491,6 +491,8 @@ pub struct FixtureInfo {
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
     cached_profile: FixtureProfile,
+    /// What compositing asks of `channels` (computed once at construction)
+    cached_mixing: super::composite::Mixing,
 }
 
 impl FixtureInfo {
@@ -504,6 +506,7 @@ impl FixtureInfo {
         max_strobe_frequency: Option<f64>,
     ) -> Self {
         let capabilities = Self::derive_capabilities(&channels);
+        let mixing = super::composite::Mixing::of(&channels);
         let profile = FixtureProfile::from_capabilities(&capabilities);
         let channel_defs = channels
             .iter()
@@ -530,6 +533,7 @@ impl FixtureInfo {
             parent: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
+            cached_mixing: mixing,
         }
     }
 
@@ -639,6 +643,20 @@ impl FixtureInfo {
     #[inline]
     pub fn has_dimmer(&self) -> bool {
         self.has_capability(FixtureCapabilities::DIMMING)
+    }
+
+    /// What compositing asks of this fixture's channels
+    /// ([`Mixing`](super::composite::Mixing)), as they were when it was
+    /// made.
+    #[inline]
+    pub fn mixing(&self) -> super::composite::Mixing {
+        debug_assert_eq!(
+            self.cached_mixing,
+            super::composite::Mixing::of(&self.channels),
+            "{}'s channels changed after it was made",
+            self.name
+        );
+        self.cached_mixing
     }
 
     /// Get the cached fixture profile
@@ -1285,6 +1303,34 @@ mod tests {
         );
         assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
         assert!(!speed_only.has_capability(FixtureCapabilities::TILTING));
+    }
+
+    /// What a fixture worked out of its channels when it was made is what
+    /// asking them again says, for each kind of colour mixing.
+    #[test]
+    fn a_fixtures_mixing_is_what_its_channels_say() {
+        use crate::lighting::effects::composite::Mixing;
+        for channels in [
+            &["red", "green", "blue"][..],
+            &["dimmer", "red", "green", "blue", "white"],
+            &["dimmer", "cyan", "magenta", "yellow"],
+            &["dimmer", "strobe"],
+            &[],
+        ] {
+            let channels = make_channels(channels);
+            let fixture = FixtureInfo::new(
+                "a".to_string(),
+                1,
+                1,
+                "t".to_string(),
+                channels.clone(),
+                None,
+            );
+            assert_eq!(fixture.mixing(), Mixing::of(&channels), "{channels:?}");
+        }
+        let rgb = Mixing::of(&make_channels(&["red", "green", "blue"]));
+        let cmy = Mixing::of(&make_channels(&["dimmer", "cyan", "magenta", "yellow"]));
+        assert_ne!(rgb, cmy, "the two mix differently");
     }
 
     #[test]
