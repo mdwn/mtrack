@@ -385,7 +385,7 @@ impl FixtureState {
         };
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
-        let cell_owned = |channel: &str| {
+        let cell_owned = |channel: Name| {
             fixture_info
                 .cells
                 .first()
@@ -393,12 +393,10 @@ impl FixtureState {
         };
 
         for (channel_name, state) in &self.channels {
-            if physical.iter().any(|(name, _)| channel_name == *name)
-                || cell_owned(channel_name.as_str())
-            {
+            if physical.iter().any(|(name, _)| channel_name == *name) || cell_owned(channel_name) {
                 continue;
             }
-            if let Some(def) = fixture_info.channel_defs.get(channel_name.as_str()) {
+            if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                 let value = state.value;
                 commands
                     .extend(super::physical::resolve_normalized(def, value).filter_map(command));

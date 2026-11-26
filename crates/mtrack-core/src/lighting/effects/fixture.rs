@@ -424,13 +424,18 @@ impl FixtureProfile {
 /// Whether a fixture mixes colour subtractively
 /// ([`crate::lighting::channels::mixes_subtractively`]).
 pub fn has_cmy(channels: &impl ChannelSet) -> bool {
-    crate::lighting::channels::mixes_subtractively(|c| channels.has(c))
+    [names::CYAN, names::MAGENTA, names::YELLOW]
+        .iter()
+        .all(|cmy| channels.has_name(*cmy))
+        && ![names::RED, names::GREEN, names::BLUE]
+            .iter()
+            .any(|rgb| channels.has_name(*rgb))
 }
 
 /// Whether a channel map has a dimmer of its own: a fixture's, or a
 /// cell's. Without one, the level is carried on the colour channels.
 pub fn has_dimmer_channel(channels: &impl ChannelSet) -> bool {
-    channels.has("dimmer")
+    channels.has_name(names::DIMMER)
 }
 
 /// The name a pixel fixture's cell registers under beside it: the
@@ -492,7 +497,16 @@ pub struct FixtureInfo {
     cached_profile: FixtureProfile,
     /// What compositing asks of `channels` (computed once at construction)
     cached_mixing: super::composite::Mixing,
+    /// Each named byte the fixture holds on the wire ([`Self::wire_names`]),
+    /// once something has asked.
+    cached_wire_names: std::sync::OnceLock<Vec<WireName>>,
 }
+
+/// One byte of a fixture on the wire, as a snapshot names it: the name, the
+/// offset from the fixture's address, and whether every reading names it
+/// (a channel's own byte, a mirror's, a position's fine byte) or only one
+/// that names everything (any other fine byte).
+pub type WireName = (crate::lighting::names::Name, u16, bool);
 
 impl FixtureInfo {
     /// Create a new FixtureInfo, computing and caching capabilities and profile.
@@ -533,6 +547,7 @@ impl FixtureInfo {
             cached_capabilities: capabilities,
             cached_profile: profile,
             cached_mixing: mixing,
+            cached_wire_names: std::sync::OnceLock::new(),
         }
     }
 
@@ -656,6 +671,20 @@ impl FixtureInfo {
             self.name
         );
         self.cached_mixing
+    }
+
+    /// Each named byte the fixture holds on the wire, worked out by `make`
+    /// the first time it is asked for and kept: the channel definitions fix
+    /// it, and every frame's snapshot reads it.
+    pub fn wire_names(&self, make: impl Fn(&FixtureInfo) -> Vec<WireName>) -> &[WireName] {
+        let kept = self.cached_wire_names.get_or_init(|| make(self));
+        debug_assert_eq!(
+            *kept,
+            make(self),
+            "{}'s channel definitions changed after its bytes were named",
+            self.name
+        );
+        kept
     }
 
     /// Get the cached fixture profile

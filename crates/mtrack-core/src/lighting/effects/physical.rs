@@ -94,6 +94,14 @@ pub enum PhysicalParameter {
 
 impl PhysicalParameter {
     /// The canonical channel name (the distiller's, and the v1 map's).
+    /// [`Self::channel`] as a name.
+    pub fn name(self) -> crate::lighting::names::Name {
+        match self {
+            PhysicalParameter::Pan => crate::lighting::names::PAN,
+            PhysicalParameter::Tilt => crate::lighting::names::TILT,
+        }
+    }
+
     pub fn channel(self) -> &'static str {
         match self {
             PhysicalParameter::Pan => "pan",

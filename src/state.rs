@@ -24,8 +24,9 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::channels::{fine_name, mirror_name, CMY_OF_RGB};
+use crate::lighting::channels::{fine_name, mirror_name};
 use crate::lighting::effects::FixtureState;
+use crate::lighting::names::{self, Name};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all channels at 0-255.
@@ -149,7 +150,7 @@ fn poses_from_bytes<'a>(
         });
         let mut moved = false;
         for parameter in [PhysicalParameter::Pan, PhysicalParameter::Tilt] {
-            let Some(def) = info.channel_defs.get(parameter.channel()) else {
+            let Some(def) = info.channel_defs.get(parameter.name()) else {
                 continue;
             };
             let Some(coarse) = at(def.offset) else {
@@ -209,6 +210,33 @@ enum Fill {
     Fixture,
 }
 
+/// Each named byte of a fixture on the wire ([`FixtureInfo::wire_names`]):
+/// every channel's own byte, its fine byte, and each mirror's and its fine
+/// byte, under the names a snapshot gives them. A fine byte is named by
+/// every reading only for a position.
+///
+/// [`FixtureInfo::wire_names`]: crate::lighting::effects::FixtureInfo::wire_names
+fn wire_names(
+    info: &crate::lighting::effects::FixtureInfo,
+) -> Vec<crate::lighting::effects::WireName> {
+    use crate::lighting::channels::is_position_channel;
+    let mut names = Vec::new();
+    for (channel, def) in &info.channel_defs {
+        let position = is_position_channel(&channel);
+        names.push((channel, def.offset, true));
+        if let Some(fine) = def.fine {
+            names.push((Name::of(&fine_name(&channel)), fine, position));
+        }
+        for ((mirror, coarse), fine) in mirror_sections(&channel, def) {
+            names.push((Name::of(&mirror), coarse, true));
+            if let Some((mirror_fine, fine)) = fine {
+                names.push((Name::of(&mirror_fine), fine, position));
+            }
+        }
+    }
+    names
+}
+
 /// Lays bytes read off DMX channels (`read`: universe, 1-based channel)
 /// over the snapshots of the fixtures `registry` patches there, a fixture
 /// with no snapshot yet getting one: the one reading of a fixture's
@@ -223,47 +251,25 @@ fn lay_bytes<'a>(
     read: impl Fn(u16, u16) -> Option<u8>,
     fill: Fill,
 ) -> Vec<String> {
-    use crate::lighting::channels::is_position_channel;
-    use std::borrow::Cow;
     let mut touched = Vec::new();
     for (name, info) in registry {
         if info.parent.is_some() {
             continue;
         }
         let at = |offset: u16| read(info.universe, info.dmx_channel(offset)?);
-        let fine_named = |channel: &str| fill == Fill::Covered || is_position_channel(channel);
-        // Each name with the byte it reads, `None` where none is read. Read
-        // twice: once to find whether the bytes cover the fixture at all,
-        // once to lay them, so a frame builds no list of names in between.
-        let each_name = |f: &mut dyn FnMut(Cow<'_, str>, Option<u8>)| {
-            for (channel, def) in &info.channel_defs {
-                f(Cow::Borrowed(channel.as_str()), at(def.offset));
-                if let Some(fine) = def.fine.filter(|_| fine_named(&channel)) {
-                    f(Cow::Owned(fine_name(&channel)), at(fine));
-                }
-                for ((mirror, coarse), fine) in mirror_sections(&channel, def) {
-                    f(Cow::Owned(mirror), at(coarse));
-                    if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(&channel)) {
-                        f(Cow::Owned(mirror_fine), at(fine));
-                    }
-                }
-            }
-        };
-        // Whether any byte `each_name` or a cell would read is there, found
-        // without naming one: a fixture the bytes cover is, by its first
-        // channel as a rule.
+        // Each named byte this reading names: all of them, or all but the
+        // fine bytes that are not a position's.
+        let names = info
+            .wire_names(wire_names)
+            .iter()
+            .filter(|(_, _, always)| *always || fill == Fill::Covered);
+        // Whether any byte a name or a cell would read is there: a fixture
+        // the bytes cover is, by its first channel as a rule.
         let covered = info
             .cells
             .iter()
             .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()))
-            || info.channel_defs.iter().any(|(channel, def)| {
-                let fine = fine_named(&channel);
-                at(def.offset).is_some()
-                    || (fine && def.fine.and_then(at).is_some())
-                    || def.mirrors.iter().any(|&(coarse, mirror_fine)| {
-                        at(coarse).is_some() || (fine && mirror_fine.and_then(at).is_some())
-                    })
-            });
+            || names.clone().any(|(_, offset, _)| at(*offset).is_some());
         if !covered {
             continue;
         }
@@ -296,16 +302,12 @@ fn lay_bytes<'a>(
             }
         };
         if !info.cells.is_empty() {
-            let cell_bytes: Vec<(&str, &str, u8)> = info
+            let cell_bytes: Vec<(&str, Name, u8)> = info
                 .cells
                 .iter()
                 .flat_map(|cell| {
                     cell.channels.iter().filter_map(|(channel, def)| {
-                        Some((
-                            cell.name.as_str(),
-                            channel.as_str(),
-                            at(def.offset).or(unread)?,
-                        ))
+                        Some((cell.name.as_str(), channel, at(def.offset).or(unread)?))
                     })
                 })
                 .collect();
@@ -328,27 +330,16 @@ fn lay_bytes<'a>(
             if !snapshot.cells.is_empty() {
                 for (cell, channel, b) in cell_bytes {
                     if let Some(values) = snapshot.cells.get_mut(cell) {
-                        match values.get_mut(channel) {
-                            Some(held) => *held = b,
-                            None => {
-                                values.insert(channel.to_string(), b);
-                            }
-                        }
+                        values.insert(channel, b);
                     }
                 }
             }
         }
-        each_name(&mut |channel, b| {
-            let Some(b) = b.or(unread) else {
-                return;
-            };
-            match snapshot.channels.get_mut(channel.as_ref()) {
-                Some(held) => *held = b,
-                None => {
-                    snapshot.channels.insert(channel.into_owned(), b);
-                }
+        for &(channel, offset, _) in names {
+            if let Some(b) = at(offset).or(unread) {
+                snapshot.channels.insert(channel, b);
             }
-        });
+        }
         touched.push(name.clone());
     }
     touched.sort();
@@ -660,8 +651,8 @@ pub(crate) fn compute_fixture_snapshots(
 
             for (channel_name, channel_state) in &state.channels {
                 channels.insert(
-                    channel_name.to_string(),
-                    wire_byte(info, &channel_name, channel_state.value),
+                    channel_name,
+                    wire_byte(info, channel_name, channel_state.value),
                 );
             }
 
@@ -707,7 +698,7 @@ pub(crate) fn fixture_snapshots_with_cells(
 /// or an 8-bit channel's byte for a name the fixture has no channel by.
 fn wire_byte(
     info: Option<&crate::lighting::effects::FixtureInfo>,
-    channel: &str,
+    channel: Name,
     value: f64,
 ) -> u8 {
     crate::lighting::effects::coarse_byte(
@@ -732,7 +723,7 @@ fn drop_unsent_primaries(
             continue;
         };
         if crate::lighting::effects::has_cmy(&info.channel_defs) {
-            for (rgb, _) in CMY_OF_RGB {
+            for rgb in [names::RED, names::GREEN, names::BLUE] {
                 snapshot.channels.remove(rgb);
             }
         }
@@ -845,12 +836,17 @@ fn attach_pointing(
         for (channel, resolved) in
             crate::lighting::effects::resolve_physical(&state.physical, &info.channel_defs)
         {
-            let def = &info.channel_defs[channel];
+            let (name, fine) = match channel {
+                "pan" => (names::PAN, names::PAN_FINE),
+                "tilt" => (names::TILT, names::TILT_FINE),
+                other => (Name::of(other), Name::of(&fine_name(other))),
+            };
+            let def = &info.channel_defs[name];
             for (offset, byte) in resolved.bytes {
                 if offset == def.offset {
-                    snapshot.channels.insert(channel.to_string(), byte);
+                    snapshot.channels.insert(name, byte);
                 } else if Some(offset) == def.fine {
-                    snapshot.channels.insert(fine_name(channel), byte);
+                    snapshot.channels.insert(fine, byte);
                 }
             }
         }

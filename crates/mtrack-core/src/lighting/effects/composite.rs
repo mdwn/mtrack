@@ -36,15 +36,13 @@ use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::lerp;
 use crate::lighting::names::{self, ChannelSet, Name};
 
-/// The internal channel an effect's level is set under. Never a real
-/// channel, never written out: [`FixtureState::set_channel`] turns it into
-/// an op.
+/// The internal channel an effect's level is set under
+/// ([`names::INTENSITY`]). Never a real channel, never written out:
+/// [`FixtureState::set_channel`] turns it into an op.
+#[cfg(test)]
 pub const INTENSITY: &str = "_intensity";
 
 /// The colour channels that are composited, in the order of the arrays.
-const COLOUR: [&str; 4] = ["red", "green", "blue", "white"];
-
-/// [`COLOUR`] as names.
 #[inline]
 fn colour() -> [Name; 4] {
     [names::RED, names::GREEN, names::BLUE, names::WHITE]
@@ -53,7 +51,7 @@ fn colour() -> [Name; 4] {
 /// What an [`Op`] sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpKind {
-    /// One of [`COLOUR`], by index.
+    /// One of [`colour`], by index.
     Colour(usize),
     /// The level.
     Intensity,
@@ -340,7 +338,7 @@ impl Mixing {
     pub fn of(channels: &impl ChannelSet) -> Self {
         let cmy = has_cmy(channels);
         Mixing {
-            channels: COLOUR.map(|c| channels.has(c) || (c != "white" && cmy)),
+            channels: colour().map(|c| channels.has_name(c) || (c != names::WHITE && cmy)),
             cmy,
             dimmer: has_dimmer_channel(channels),
         }

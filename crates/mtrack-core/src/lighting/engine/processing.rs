@@ -273,7 +273,7 @@ fn apply_static_effect(
     // The level goes through the fixture profile rather than being matched against a
     // channel name: it is a level to composite with the colour, whatever the
     // fixture's hardware, not a channel to write.
-    let level = parameters.get("dimmer").copied();
+    let level = parameters.get(crate::lighting::names::DIMMER).copied();
 
     let fixture_states =
         build_fixture_states_with_info(fixture_registry, effect, |fixture, profile| {

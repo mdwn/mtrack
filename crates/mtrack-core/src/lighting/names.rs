@@ -66,6 +66,8 @@ known! {
     YELLOW = "yellow",
     PAN = "pan",
     TILT = "tilt",
+    PAN_FINE = "pan_fine",
+    TILT_FINE = "tilt_fine",
     INTENSITY = "_intensity",
 }
 
@@ -268,10 +270,20 @@ impl<T: AsName + ?Sized> AsName for &T {
 /// or a map by string as a fixture type is read from its file.
 pub trait ChannelSet {
     fn has(&self, name: &str) -> bool;
+
+    /// [`Self::has`] by a name already held, which a [`NameMap`] answers
+    /// without looking the text up.
+    fn has_name(&self, name: Name) -> bool {
+        self.has(name.as_str())
+    }
 }
 
 impl<V> ChannelSet for NameMap<V> {
     fn has(&self, name: &str) -> bool {
+        self.contains_key(name)
+    }
+
+    fn has_name(&self, name: Name) -> bool {
         self.contains_key(name)
     }
 }
