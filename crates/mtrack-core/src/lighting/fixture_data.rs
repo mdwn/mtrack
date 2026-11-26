@@ -191,6 +191,7 @@ pub struct FixtureType {
 
     /// Coarse channel offsets, derived from `channel_defs`. Kept as a
     /// separate map so `channels()` can hand out the v1 view by reference.
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number>"))]
     pub(super) channels: NameMap<u16>,
 
     /// The GDTF archive + mode this type is distilled from, if referential.
