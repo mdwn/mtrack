@@ -30,7 +30,7 @@ fn test_validate_fixture_capabilities_rgb_missing_red() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -52,7 +52,7 @@ fn test_validate_fixture_capabilities_rgb_missing_green() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -72,7 +72,7 @@ fn test_validate_fixture_capabilities_rgb_missing_blue() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -91,7 +91,7 @@ fn test_validate_fixture_capabilities_strobe_missing() {
         1,
         1,
         "Strobe".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -111,7 +111,7 @@ fn test_validate_fixture_capabilities_moving_head_missing_pan() {
         1,
         1,
         "MovingHead".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -131,7 +131,7 @@ fn test_validate_fixture_capabilities_moving_head_missing_tilt() {
         1,
         1,
         "MovingHead".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -389,7 +389,7 @@ fn test_validate_effect_compatibility_color_cycle_no_rgb() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -431,7 +431,7 @@ fn test_validate_effect_compatibility_rainbow_no_rgb() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -551,7 +551,7 @@ fn a_colour_cue_on_a_mixed_group_plays_on_every_fixture() {
         1,
         1,
         "Par".to_string(),
-        channels(&[("red", 1), ("green", 2), ("blue", 3)]),
+        channels(&[("red", 1), ("green", 2), ("blue", 3)]).into(),
         None,
     ));
     engine.register_fixture(FixtureInfo::new(
@@ -559,7 +559,7 @@ fn a_colour_cue_on_a_mixed_group_plays_on_every_fixture() {
         1,
         10,
         "Dimmer".to_string(),
-        channels(&[("dimmer", 1)]),
+        channels(&[("dimmer", 1)]).into(),
         None,
     ));
     let parameters: HashMap<String, f64> = [

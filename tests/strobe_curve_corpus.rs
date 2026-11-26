@@ -230,7 +230,7 @@ fn tabled_fixture_type() -> FixtureType {
     ]
     .into_iter()
     .collect();
-    FixtureType::from_channel_defs("Tabled".to_string(), channel_defs)
+    FixtureType::from_channel_defs("Tabled".to_string(), channel_defs.into())
 }
 
 /// A strobe function that starts at byte 0, with no "open" range before
@@ -257,7 +257,7 @@ fn bottomless_fixture_type() -> FixtureType {
     ]
     .into_iter()
     .collect();
-    FixtureType::from_channel_defs("Bottomless".to_string(), channel_defs)
+    FixtureType::from_channel_defs("Bottomless".to_string(), channel_defs.into())
 }
 
 /// The example fixture types, the tabled one and the bottomless one, each under the curve

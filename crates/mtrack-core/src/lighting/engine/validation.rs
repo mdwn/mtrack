@@ -93,7 +93,14 @@ pub(crate) fn validate_effect(
 #[cfg(test)]
 fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> FixtureInfo {
     let ch: HashMap<String, u16> = channels.iter().map(|(n, o)| (n.to_string(), *o)).collect();
-    FixtureInfo::new(name.to_string(), 1, 1, fixture_type.to_string(), ch, None)
+    FixtureInfo::new(
+        name.to_string(),
+        1,
+        1,
+        fixture_type.to_string(),
+        ch.into(),
+        None,
+    )
 }
 
 /// The targets an effect keeps: those that can do what it asks, by the rule

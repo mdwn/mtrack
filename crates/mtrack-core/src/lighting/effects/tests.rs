@@ -49,7 +49,7 @@ fn test_fixture_capabilities() {
         1,
         1,
         "RGB_Par".to_string(),
-        rgb_channels,
+        rgb_channels.into(),
         None, // RGB_Par doesn't have strobe
     );
 
@@ -67,7 +67,7 @@ fn test_fixture_capabilities() {
         1,
         5,
         "Strobe".to_string(),
-        strobe_channels,
+        strobe_channels.into(),
         Some(20.0), // Test strobe fixture max frequency
     );
 
@@ -110,7 +110,7 @@ fn test_capabilities_performance() {
         1,
         1,
         "Moving_Head".to_string(),
-        channels,
+        channels.into(),
         Some(15.0), // Moving head max strobe frequency
     );
 

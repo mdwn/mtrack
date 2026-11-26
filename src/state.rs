@@ -36,11 +36,11 @@ use crate::lighting::EffectEngine;
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureSnapshot {
     pub name: String,
-    pub channels: HashMap<String, u8>,
+    pub channels: crate::lighting::names::NameMap<u8>,
     /// Per-cell values (design §17.4), by cell name, only while a
     /// per-cell effect drives at least one cell of this fixture; empty
     /// otherwise, when every cell shows the fixture's own channels.
-    pub cells: std::collections::BTreeMap<String, HashMap<String, u8>>,
+    pub cells: std::collections::BTreeMap<String, crate::lighting::names::NameMap<u8>>,
     /// The rate the fixture is strobing at, in hertz, when it is: its
     /// strobe byte read back through its own strobe rule
     /// ([`FixtureInfo::strobe_hz`](crate::lighting::effects::FixtureInfo::strobe_hz)),
@@ -238,12 +238,12 @@ fn lay_bytes<'a>(
         let each_name = |f: &mut dyn FnMut(Cow<'_, str>, Option<u8>)| {
             for (channel, def) in &info.channel_defs {
                 f(Cow::Borrowed(channel.as_str()), at(def.offset));
-                if let Some(fine) = def.fine.filter(|_| fine_named(channel)) {
-                    f(Cow::Owned(fine_name(channel)), at(fine));
+                if let Some(fine) = def.fine.filter(|_| fine_named(&channel)) {
+                    f(Cow::Owned(fine_name(&channel)), at(fine));
                 }
-                for ((mirror, coarse), fine) in mirror_sections(channel, def) {
+                for ((mirror, coarse), fine) in mirror_sections(&channel, def) {
                     f(Cow::Owned(mirror), at(coarse));
-                    if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(channel)) {
+                    if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(&channel)) {
                         f(Cow::Owned(mirror_fine), at(fine));
                     }
                 }
@@ -257,7 +257,7 @@ fn lay_bytes<'a>(
             .iter()
             .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()))
             || info.channel_defs.iter().any(|(channel, def)| {
-                let fine = fine_named(channel);
+                let fine = fine_named(&channel);
                 at(def.offset).is_some()
                     || (fine && def.fine.and_then(at).is_some())
                     || def.mirrors.iter().any(|&(coarse, mirror_fine)| {
@@ -286,7 +286,9 @@ fn lay_bytes<'a>(
                     FixtureSnapshot {
                         strobe_hz: None,
                         name: name.clone(),
-                        channels: HashMap::with_capacity(info.channel_defs.len()),
+                        channels: crate::lighting::names::NameMap::with_capacity(
+                            info.channel_defs.len(),
+                        ),
                         cells: Default::default(),
                     },
                 );
@@ -435,7 +437,7 @@ pub(crate) fn fill_dark_fixtures(
             dark.push(FixtureSnapshot {
                 strobe_hz: None,
                 name: name.clone(),
-                channels: HashMap::new(),
+                channels: Default::default(),
                 cells: Default::default(),
             });
         }
@@ -668,7 +670,7 @@ pub(crate) fn compute_fixture_snapshots(
                 // from its byte once the registry is at hand.
                 strobe_hz: state.strobe_hz,
                 name: name.clone(),
-                channels,
+                channels: channels.into(),
                 cells: Default::default(),
             }
         })
@@ -799,14 +801,14 @@ fn attach_mirrors(
         };
         let mut extra = Vec::new();
         for (name, def) in &info.channel_defs {
-            if def.mirrors.is_empty() || cell_owned(name) {
+            if def.mirrors.is_empty() || cell_owned(&name) {
                 continue;
             }
             let Some(&coarse) = snapshot.channels.get(name) else {
                 continue;
             };
-            let fine = snapshot.channels.get(&fine_name(name)).copied();
-            for ((mirror, _), mirror_fine) in mirror_sections(name, def) {
+            let fine = snapshot.channels.get(&fine_name(&name)).copied();
+            for ((mirror, _), mirror_fine) in mirror_sections(&name, def) {
                 extra.push((mirror, coarse));
                 if let (Some(fine), Some((mirror_fine, _))) = (fine, mirror_fine) {
                     extra.push((mirror_fine, fine));
@@ -886,7 +888,7 @@ pub(crate) fn attach_cell_snapshots(
             ));
             // Each cell channel at the coarse byte it goes out as on the
             // cell's own channel, as the DMX output resolves it.
-            let values: HashMap<String, u8> = parent_state
+            let values: crate::lighting::names::NameMap<u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
                 .map(|(name, value)| {
@@ -931,8 +933,14 @@ mod tests {
     fn pose_snapshots_carry_the_beam_and_its_footprint() {
         use crate::lighting::effects::{FixtureInfo, Pose};
         let mut registry = HashMap::new();
-        let mut mover =
-            FixtureInfo::new("m".to_string(), 1, 1, "T".to_string(), HashMap::new(), None);
+        let mut mover = FixtureInfo::new(
+            "m".to_string(),
+            1,
+            1,
+            "T".to_string(),
+            Default::default(),
+            None,
+        );
         mover.position = Some([0.0, 3.5, 4.0]);
         mover.rotation = Some([0.0, 0.0, 180.0]);
         registry.insert("m".to_string(), mover);
@@ -1072,7 +1080,7 @@ mod tests {
             strobe_hz: None,
             cells: Default::default(),
             name: "test".to_string(),
-            channels,
+            channels: channels.into(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.name, "test");
@@ -1086,7 +1094,7 @@ mod tests {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "f1".to_string(),
-                channels: HashMap::new(),
+                channels: Default::default(),
                 cells: Default::default(),
             }],
             active_effects: vec!["effect1".to_string()],
@@ -1282,7 +1290,7 @@ mod tests {
                 1,
                 1,
                 "rgb".to_string(),
-                channels,
+                channels.into(),
                 None,
             );
             engine.lock().register_fixture(fixture);
@@ -1315,7 +1323,7 @@ mod tests {
                 1,
                 1,
                 "T".to_string(),
-                channels,
+                channels.into(),
                 None,
             ));
         }
@@ -1383,17 +1391,25 @@ mod tests {
                 ("red".to_string(), ChannelDef::at(base)),
                 ("green".to_string(), ChannelDef::at(base + 1)),
                 ("blue".to_string(), ChannelDef::at(base + 2)),
-            ]),
+            ])
+            .into(),
             offset: [x, 0.0, 0.0],
         };
         let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
         let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
-        let mut channels: HashMap<String, u16> =
+        let mut channels: crate::lighting::names::NameMap<u16> =
             ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
         channels.insert("dimmer".to_string(), 1);
         let mut defs = ganged;
         defs.insert("dimmer".to_string(), ChannelDef::at(1));
-        let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Bar".to_string(), channels, None);
+        let mut info = FixtureInfo::new(
+            name.to_string(),
+            1,
+            1,
+            "Bar".to_string(),
+            channels.into(),
+            None,
+        );
         info.channel_defs = defs;
         info.cells = cells;
         info
@@ -1404,11 +1420,8 @@ mod tests {
     /// `parent` set so `attach_cell_snapshots` folds its state back in.
     fn sub_fixture(parent: &str, cell: &Cell) -> FixtureInfo {
         let name = crate::lighting::effects::cell_fixture_name(parent, &cell.name);
-        let channels: HashMap<String, u16> = cell
-            .channels
-            .iter()
-            .map(|(n, d)| (n.clone(), d.offset))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u16> =
+            cell.channels.iter().map(|(n, d)| (n, d.offset)).collect();
         let mut sub = FixtureInfo::new(name, 1, 1, "Bar".to_string(), channels, None);
         sub.channel_defs = cell.channels.clone();
         sub.parent = Some(parent.to_string());
@@ -1543,13 +1556,13 @@ mod tests {
             FixtureSnapshot {
                 strobe_hz: None,
                 name: "Aaa".to_string(),
-                channels: HashMap::new(),
+                channels: Default::default(),
                 cells: Default::default(),
             },
             FixtureSnapshot {
                 strobe_hz: None,
                 name: "Zzz".to_string(),
-                channels: HashMap::new(),
+                channels: Default::default(),
                 cells: Default::default(),
             },
         ];
@@ -1592,7 +1605,7 @@ mod tests {
             1,
             1,
             "Mover".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         let mut defs = HashMap::new();
@@ -1613,7 +1626,7 @@ mod tests {
             );
         }
         defs.insert("dimmer".to_string(), ChannelDef::at(5));
-        info = info.with_channel_defs(defs);
+        info = info.with_channel_defs(defs.into());
         let registry: HashMap<String, _> = [("m".to_string(), info)].into_iter().collect();
 
         let mut state = FixtureState::new();
@@ -1665,7 +1678,7 @@ mod tests {
             1,
             1,
             "Bar".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         let mut defs = HashMap::new();
@@ -1680,7 +1693,7 @@ mod tests {
             },
         );
         defs.insert("dimmer".to_string(), ChannelDef::at(4));
-        info = info.with_channel_defs(defs);
+        info = info.with_channel_defs(defs.into());
         let registry: HashMap<String, _> = [("bar".to_string(), info)].into_iter().collect();
 
         let mut state = FixtureState::new();
@@ -1718,7 +1731,14 @@ mod tests {
                 .into_iter()
                 .map(|(n, o)| (n.to_string(), o))
                 .collect();
-        let mut info = FixtureInfo::new("f".to_string(), 1, 1, "T".to_string(), channels, None);
+        let mut info = FixtureInfo::new(
+            "f".to_string(),
+            1,
+            1,
+            "T".to_string(),
+            channels.into(),
+            None,
+        );
         // A 16-bit dimmer, its fine byte at 5: the snapshot shows the
         // coarse byte on the wire, the high byte of the 16-bit value.
         info.channel_defs.get_mut("dimmer").unwrap().fine = Some(5);

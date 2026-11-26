@@ -28,7 +28,7 @@ pub fn create_test_fixture(name: &str, universe: u16, address: u16) -> FixtureIn
         universe,
         address,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     )
 }

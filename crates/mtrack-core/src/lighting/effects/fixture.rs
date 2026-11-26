@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::color::Color;
@@ -20,7 +21,7 @@ use super::composite::INTENSITY;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::{base_channel, is_position_channel, CMY_OF_RGB};
-use crate::lighting::names::{self, NameMap};
+use crate::lighting::names::{self, ChannelSet, NameMap};
 use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// The one internal contribution a level makes, whatever the fixture's
@@ -422,14 +423,14 @@ impl FixtureProfile {
 
 /// Whether a fixture mixes colour subtractively
 /// ([`crate::lighting::channels::mixes_subtractively`]).
-pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
-    crate::lighting::channels::mixes_subtractively(|c| channels.contains_key(c))
+pub fn has_cmy(channels: &impl ChannelSet) -> bool {
+    crate::lighting::channels::mixes_subtractively(|c| channels.has(c))
 }
 
 /// Whether a channel map has a dimmer of its own: a fixture's, or a
 /// cell's. Without one, the level is carried on the colour channels.
-pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
-    channels.contains_key("dimmer")
+pub fn has_dimmer_channel(channels: &impl ChannelSet) -> bool {
+    channels.has("dimmer")
 }
 
 /// The name a pixel fixture's cell registers under beside it: the
@@ -450,7 +451,7 @@ pub struct FixtureInfo {
     pub universe: u16,
     pub address: u16,
     pub fixture_type: String,
-    pub channels: HashMap<String, u16>,
+    pub channels: NameMap<u16>,
     pub max_strobe_frequency: Option<f64>,
     pub min_strobe_frequency: Option<f64>,
     pub strobe_dmx_offset: Option<u8>,
@@ -467,7 +468,7 @@ pub struct FixtureInfo {
     /// The structured channel definitions — fine bytes, physical ranges,
     /// function tables — that physical values resolve through. Mirrors
     /// `channels` for a fixture type that declares nothing more.
-    pub channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+    pub channel_defs: NameMap<crate::lighting::types::ChannelDef>,
     /// Movement limits, when the fixture type declares them.
     pub movement: crate::lighting::types::MovementLimits,
     /// How a strobe rate maps onto the strobe channel's DMX range, resolved
@@ -500,7 +501,7 @@ impl FixtureInfo {
         universe: u16,
         address: u16,
         fixture_type: String,
-        channels: HashMap<String, u16>,
+        channels: NameMap<u16>,
         max_strobe_frequency: Option<f64>,
     ) -> Self {
         let capabilities = Self::derive_capabilities(&channels);
@@ -545,14 +546,14 @@ impl FixtureInfo {
     /// structured ones (fine bytes, ranges, functions).
     pub fn with_channel_defs(
         mut self,
-        channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+        channel_defs: NameMap<crate::lighting::types::ChannelDef>,
     ) -> Self {
         self.channel_defs = channel_defs;
         self
     }
 
     /// Derive fixture capabilities from available channels
-    fn derive_capabilities(channels: &HashMap<String, u16>) -> FixtureCapabilities {
+    fn derive_capabilities(channels: &NameMap<u16>) -> FixtureCapabilities {
         let mut capabilities = FixtureCapabilities::NONE;
 
         // Colour: an RGB triple, or a CMY one (subtractive mixing, written
@@ -578,7 +579,7 @@ impl FixtureInfo {
         // A head moves on any channel that carries where it points: `pan`,
         // a GDTF profile's `pan:1`, a fine byte.
         for channel in channels.keys().filter(|c| is_position_channel(c)) {
-            capabilities = capabilities.with(match base_channel(channel) {
+            capabilities = capabilities.with(match base_channel(&channel) {
                 "pan" => FixtureCapabilities::PANNING,
                 _ => FixtureCapabilities::TILTING,
             });
@@ -886,7 +887,7 @@ mod tests {
             1,
             1,
             "generic_par".to_string(),
-            make_channels(&["red", "green", "blue"]),
+            make_channels(&["red", "green", "blue"]).into(),
             None,
         )
     }
@@ -897,7 +898,7 @@ mod tests {
             1,
             1,
             "par_with_dimmer".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer"]),
+            make_channels(&["red", "green", "blue", "dimmer"]).into(),
             None,
         )
     }
@@ -910,7 +911,8 @@ mod tests {
             "moving_head".to_string(),
             make_channels(&[
                 "red", "green", "blue", "white", "dimmer", "strobe", "pan", "tilt",
-            ]),
+            ])
+            .into(),
             None,
         )
     }
@@ -934,7 +936,7 @@ mod tests {
             1,
             1,
             "cmy_spot".to_string(),
-            make_channels(&["dimmer", "cyan", "magenta", "yellow"]),
+            make_channels(&["dimmer", "cyan", "magenta", "yellow"]).into(),
             None,
         );
         assert!(cmy.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -946,7 +948,7 @@ mod tests {
             1,
             1,
             "partial".to_string(),
-            make_channels(&["dimmer", "cyan", "magenta"]),
+            make_channels(&["dimmer", "cyan", "magenta"]).into(),
             None,
         );
         assert!(!partial.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -1024,7 +1026,7 @@ mod tests {
             1,
             1,
             "type".to_string(),
-            make_channels(&["red", "green"]),
+            make_channels(&["red", "green"]).into(),
             None,
         );
         assert!(!f.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -1037,7 +1039,7 @@ mod tests {
             1,
             1,
             "type".to_string(),
-            make_channels(&["ct"]),
+            make_channels(&["ct"]).into(),
             None,
         );
         assert!(f.has_capability(FixtureCapabilities::COLOR_TEMPERATURE));
@@ -1051,7 +1053,7 @@ mod tests {
                 1,
                 1,
                 "type".to_string(),
-                make_channels(&[channel]),
+                make_channels(&[channel]).into(),
                 None,
             );
             assert!(
@@ -1265,7 +1267,7 @@ mod tests {
             2,
             10,
             "generic_spot".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer"]),
+            make_channels(&["red", "green", "blue", "dimmer"]).into(),
             Some(25.0),
         );
         assert_eq!(f.name, "spot1");
@@ -1286,7 +1288,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "pan:1", "tilt_fine"]),
+            make_channels(&["dimmer", "pan:1", "tilt_fine"]).into(),
             None,
         );
         assert!(sectioned.has_capability(FixtureCapabilities::PANNING));
@@ -1296,7 +1298,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "pan_speed"]),
+            make_channels(&["dimmer", "pan_speed"]).into(),
             None,
         );
         assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
@@ -1321,7 +1323,7 @@ mod tests {
                 1,
                 1,
                 "t".to_string(),
-                channels.clone(),
+                channels.clone().into(),
                 None,
             );
             assert_eq!(fixture.mixing(), Mixing::of(&channels), "{channels:?}");
@@ -1338,7 +1340,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "red"]),
+            make_channels(&["dimmer", "red"]).into(),
             None,
         );
         let without = FixtureInfo::new(
@@ -1346,7 +1348,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer_fine"]),
+            make_channels(&["red", "green", "blue", "dimmer_fine"]).into(),
             None,
         );
         assert!(with.has_dimmer());

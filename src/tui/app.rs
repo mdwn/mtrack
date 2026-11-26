@@ -186,7 +186,7 @@ mod tests {
         FixtureSnapshot {
             strobe_hz: None,
             name: name.to_string(),
-            channels: map,
+            channels: map.into(),
             cells: Default::default(),
         }
     }

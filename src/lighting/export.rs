@@ -31,6 +31,7 @@
 pub mod gdtf;
 
 pub use super::mvr_types::{FixedFixture, MvrExport};
+use crate::lighting::names::NameMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
@@ -589,10 +590,10 @@ fn render_scene(
 }
 
 /// Whether a type has a pose to aim: a pan or a tilt channel.
-fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
+fn has_pose(channels: &NameMap<ChannelDef>) -> bool {
     channels
         .keys()
-        .any(|channel| super::engine::is_position_channel(channel))
+        .any(|channel| super::engine::is_position_channel(&channel))
 }
 
 /// How far, in degrees, a fixed fixture's beam may pass from a focus point
@@ -1190,7 +1191,7 @@ mod tests {
             .fixture_type
             .channels()
             .iter()
-            .map(|(n, o)| (n.clone(), *o))
+            .map(|(n, o)| (n.to_string(), *o))
             .collect();
         channels.sort_by_key(|(_, o)| *o);
         assert_eq!(

@@ -380,7 +380,7 @@ pub fn stage_frame(
     wire::StageValues {
         fixtures: fixtures
             .iter()
-            .map(|f| (f.name.clone(), f.channels.clone()))
+            .map(|f| (f.name.clone(), f.channels.to_map()))
             .collect(),
         poses: poses.iter().map(|p| (p.name.clone(), p.clone())).collect(),
         // Per-cell values, by fixture then cell, only for fixtures a
@@ -388,7 +388,13 @@ pub fn stage_frame(
         cells: fixtures
             .iter()
             .filter(|f| !f.cells.is_empty())
-            .map(|f| (f.name.clone(), f.cells.clone()))
+            .map(|f| {
+                let cells = f
+                    .cells
+                    .iter()
+                    .map(|(cell, values)| (cell.clone(), values.to_map()));
+                (f.name.clone(), cells.collect())
+            })
             .collect(),
         // The rate a strobing fixture flashes at: the stage views flash at
         // it rather than guess from the byte.
@@ -1303,13 +1309,13 @@ metronome: {}
             crate::state::FixtureSnapshot {
                 strobe_hz: Some(12.5),
                 name: "brick".to_string(),
-                channels: std::collections::HashMap::from([("strobe".to_string(), 200)]),
+                channels: std::collections::HashMap::from([("strobe".to_string(), 200)]).into(),
                 cells: Default::default(),
             },
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
                 name: "par".to_string(),
-                channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                channels: std::collections::HashMap::from([("red".to_string(), 255)]).into(),
                 cells: Default::default(),
             },
         ];
@@ -1323,19 +1329,19 @@ metronome: {}
         let mut cells = std::collections::BTreeMap::new();
         cells.insert(
             "1".to_string(),
-            std::collections::HashMap::from([("red".to_string(), 255u8)]),
+            crate::lighting::names::NameMap::from([("red", 255u8)]),
         );
         let fixtures = vec![
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
                 name: "bar".to_string(),
-                channels: std::collections::HashMap::new(),
+                channels: Default::default(),
                 cells,
             },
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
                 name: "wash1".to_string(),
-                channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                channels: std::collections::HashMap::from([("red".to_string(), 255)]).into(),
                 cells: Default::default(),
             },
         ];

@@ -34,7 +34,7 @@ use super::fixture::{has_cmy, has_dimmer_channel, FixtureInfo};
 use super::state::{blend_value, ChannelState, FixtureState};
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::lerp;
-use crate::lighting::names::{self, Name};
+use crate::lighting::names::{self, ChannelSet, Name};
 
 /// The internal channel an effect's level is set under. Never a real
 /// channel, never written out: [`FixtureState::set_channel`] turns it into
@@ -337,10 +337,10 @@ pub struct Mixing {
 }
 
 impl Mixing {
-    pub fn of<V>(channels: &HashMap<String, V>) -> Self {
+    pub fn of(channels: &impl ChannelSet) -> Self {
         let cmy = has_cmy(channels);
         Mixing {
-            channels: COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy)),
+            channels: COLOUR.map(|c| channels.has(c) || (c != "white" && cmy)),
             cmy,
             dimmer: has_dimmer_channel(channels),
         }
@@ -355,7 +355,7 @@ fn put(state: &mut FixtureState, layer: EffectLayer, name: Name, value: f64) {
 
 /// Composites `state`'s ops into plain channels for a fixture with
 /// `channels`, and drops the ops.
-pub(super) fn resolve_plain<V>(state: &mut FixtureState, channels: &HashMap<String, V>) {
+pub(super) fn resolve_plain(state: &mut FixtureState, channels: &impl ChannelSet) {
     if state.ops.is_empty() {
         return;
     }
@@ -804,7 +804,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            channels(parent),
+            channels(parent).into(),
             None,
         );
         info.cells = ["1", "2"]

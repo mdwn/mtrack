@@ -46,7 +46,7 @@ pub fn generic(name: &str, universe: u16, address: u16, channels: &[&str]) -> Fi
         universe,
         address,
         "Generic".to_string(),
-        channels,
+        channels.into(),
         None,
     )
 }
@@ -260,7 +260,7 @@ pub fn mover(name: &str, address: u16) -> FixtureInfo {
         1,
         address,
         "Mover".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     let mut defs = HashMap::new();
@@ -293,7 +293,7 @@ pub fn mover(name: &str, address: u16) -> FixtureInfo {
         },
     );
     defs.insert("dimmer".to_string(), ChannelDef::at(5));
-    info = info.with_channel_defs(defs);
+    info = info.with_channel_defs(defs.into());
     info.position = Some([0.0, 3.0, 0.0]);
     info.rotation = Some([0.0, 0.0, 0.0]);
     info

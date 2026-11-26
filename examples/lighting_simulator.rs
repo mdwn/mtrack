@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 1,
                 address - 5,
                 "RGBW".to_string(),
-                channels,
+                channels.into(),
                 None,
             ),
         );

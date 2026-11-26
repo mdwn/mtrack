@@ -38,7 +38,7 @@ fn test_static_replace_blend_mode() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -57,7 +57,7 @@ fn test_static_replace_blend_mode() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -124,7 +124,7 @@ fn test_static_effect_timing() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -285,7 +285,7 @@ fn test_static_effect_with_up_time() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -448,7 +448,7 @@ fn test_static_effect_with_down_time() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -731,7 +731,7 @@ fn test_static_effect_fade_out() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -817,7 +817,7 @@ fn dimmerless_rgb_fixture(name: &str, address: u16) -> FixtureInfo {
         1,
         address,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     )
 }
@@ -880,7 +880,7 @@ fn test_static_level_uses_the_dimmer_channel_when_present() {
         1,
         1,
         "RGB_Dimmer_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
 

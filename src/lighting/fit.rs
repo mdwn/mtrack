@@ -157,7 +157,7 @@ impl FitFixture {
             capabilities: info.capabilities(),
             tally: GroupCapabilities::from_fixtures([info]),
             color_wheel: !info.capabilities().contains(FixtureCapabilities::RGB_COLOR)
-                && info.channels.keys().any(|name| is_wheel_channel(name)),
+                && info.channels.keys().any(|name| is_wheel_channel(&name)),
         }
     }
 

@@ -38,7 +38,7 @@ fn create_fixture_with_strobe_offset(
         universe,
         address,
         "RGBW_Strobe".to_string(),
-        channels,
+        channels.into(),
         Some(max_freq),
     );
     fixture.min_strobe_frequency = Some(min_freq);
@@ -64,7 +64,7 @@ fn test_strobe_boundary_at_duty_cycle_transition() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -454,7 +454,7 @@ fn create_pixelbrick_fixture(name: &str, universe: u16, address: u16) -> Fixture
         universe,
         address,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(25.0),
     );
     fixture.min_strobe_frequency = Some(0.4);
@@ -1175,7 +1175,7 @@ fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
         1,
         10,
         "RGB".to_string(),
-        rgb,
+        rgb.into(),
         None,
     ));
     let strobe = |id: &str, target: &str, hz: f64| {

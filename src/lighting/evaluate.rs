@@ -1515,7 +1515,7 @@ show "T" {
     clear(layer: background)
 }
 "#;
-        let at = |t: f64| -> HashMap<String, HashMap<String, u8>> {
+        let at = |t: f64| -> HashMap<String, crate::lighting::names::NameMap<u8>> {
             eval(source, &wire_rig(), &[t])[0]
                 .fixtures
                 .iter()
@@ -1723,7 +1723,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string(),
-                channels: channels.clone(),
+                channels: channels.clone().into(),
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1735,7 +1735,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string(),
-                channels,
+                channels: channels.into(),
                 cells: Default::default(),
             }],
             ..evaluation
@@ -1746,7 +1746,7 @@ show "T" {
     /// A colour under a closed dimmer emits no light: the rig is dark.
     #[test]
     fn a_colour_under_a_closed_dimmer_is_dark() {
-        let channels: HashMap<String, u8> = [("red", 255u8), ("dimmer", 0)]
+        let channels: crate::lighting::names::NameMap<u8> = [("red", 255u8), ("dimmer", 0)]
             .into_iter()
             .map(|(name, value)| (name.to_string(), value))
             .collect();
@@ -1755,7 +1755,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string(),
-                channels,
+                channels: channels.into(),
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1769,16 +1769,17 @@ show "T" {
     /// fades by.
     #[test]
     fn is_dark_ignores_optics_and_settings() {
-        let channels: HashMap<String, u8> = [("zoom", 128u8), ("gobo", 3), ("dimmer", 0)]
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u8> =
+            [("zoom", 128u8), ("gobo", 3), ("dimmer", 0)]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect();
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string(),
-                channels,
+                channels: channels.into(),
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1791,16 +1792,17 @@ show "T" {
     /// attribute: where it points, all the same, and not a lit channel.
     #[test]
     fn is_dark_ignores_a_gdtf_pan_section() {
-        let channels: HashMap<String, u8> = [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u8> =
+            [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect();
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string(),
-                channels,
+                channels: channels.into(),
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1816,7 +1818,14 @@ show "T" {
             .zip(1u16..)
             .map(|(n, o)| (n.to_string(), o))
             .collect();
-        FixtureInfo::new(name.to_string(), 1, 1, "T".to_string(), channels, None)
+        FixtureInfo::new(
+            name.to_string(),
+            1,
+            1,
+            "T".to_string(),
+            channels.into(),
+            None,
+        )
     }
 
     /// Open white on a dimmer and CMY, then each colour param in turn.

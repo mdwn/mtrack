@@ -60,7 +60,7 @@ fn engine() -> EffectEngine {
         1,
         1,
         "RGBD".to_string(),
-        channels(&["dimmer", "red", "green", "blue"]),
+        channels(&["dimmer", "red", "green", "blue"]).into(),
         None,
     ));
     engine.register_fixture(FixtureInfo::new(
@@ -68,7 +68,7 @@ fn engine() -> EffectEngine {
         1,
         10,
         "RGB".to_string(),
-        channels(&["red", "green", "blue"]),
+        channels(&["red", "green", "blue"]).into(),
         None,
     ));
     engine
@@ -332,7 +332,7 @@ fn a_plain_dimmer_fixture_is_unchanged() {
         1,
         1,
         "Dimmer".to_string(),
-        HashMap::from([("dimmer".to_string(), 1)]),
+        HashMap::from([("dimmer".to_string(), 1)]).into(),
         None,
     ));
     let mut start = |id: &str, layer, blend, v| {
@@ -374,7 +374,8 @@ fn a_pixel_bar_with_a_master_dimmer_keeps_every_cells_light_exact() {
             ("red".to_string(), 2),
             ("green".to_string(), 3),
             ("blue".to_string(), 4),
-        ]),
+        ])
+        .into(),
         None,
     );
     bar.cells = vec![cell("1", 2), cell("2", 5)];

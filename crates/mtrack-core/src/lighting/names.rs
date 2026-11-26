@@ -264,6 +264,34 @@ impl<T: AsName + ?Sized> AsName for &T {
     }
 }
 
+/// Something that has channels, asked whether it has one: a [`NameMap`],
+/// or a map by string as a fixture type is read from its file.
+pub trait ChannelSet {
+    fn has(&self, name: &str) -> bool;
+}
+
+impl<V> ChannelSet for NameMap<V> {
+    fn has(&self, name: &str) -> bool {
+        self.contains_key(name)
+    }
+}
+
+impl<V, S: std::hash::BuildHasher> ChannelSet for std::collections::HashMap<String, V, S> {
+    fn has(&self, name: &str) -> bool {
+        self.contains_key(name)
+    }
+}
+
+/// What [`NameMap::iter`] walks: named, so that it holds its map no longer
+/// than it is used.
+pub type Iter<'a, V> =
+    std::iter::Map<std::slice::Iter<'a, (Name, V)>, fn(&'a (Name, V)) -> (Name, &'a V)>;
+/// What [`NameMap::keys`] walks.
+pub type Keys<'a, V> = std::iter::Map<std::slice::Iter<'a, (Name, V)>, fn(&'a (Name, V)) -> Name>;
+/// What [`NameMap::values`] walks.
+pub type Values<'a, V> =
+    std::iter::Map<std::slice::Iter<'a, (Name, V)>, fn(&'a (Name, V)) -> &'a V>;
+
 /// A few values by name, found by walking them: a fixture's channels. The
 /// calls are a map's, and take a [`Name`] or a string ([`AsName`]). Kept in
 /// the order they were put in.
@@ -351,6 +379,14 @@ impl<V> NameMap<V> {
         &mut self.entries[at].1
     }
 
+    /// The place for `name`, to fill if nothing is there.
+    pub fn entry(&mut self, name: impl AsName) -> Entry<'_, V> {
+        Entry {
+            name: name.to_name(),
+            map: self,
+        }
+    }
+
     pub fn remove(&mut self, name: impl AsName) -> Option<V> {
         let at = self.at(name.find_name()?)?;
         Some(self.entries.remove(at).1)
@@ -360,7 +396,17 @@ impl<V> NameMap<V> {
         self.entries.retain_mut(|(name, value)| keep(*name, value));
     }
 
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Name, &V)> + Clone {
+    /// As a map by string, for a reader outside the engine.
+    pub fn to_map(&self) -> std::collections::HashMap<String, V>
+    where
+        V: Clone,
+    {
+        self.iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect()
+    }
+
+    pub fn iter(&self) -> Iter<'_, V> {
         self.entries.iter().map(|(name, value)| (*name, value))
     }
 
@@ -368,11 +414,11 @@ impl<V> NameMap<V> {
         self.entries.iter_mut().map(|(name, value)| (*name, value))
     }
 
-    pub fn keys(&self) -> impl ExactSizeIterator<Item = Name> + Clone + '_ {
+    pub fn keys(&self) -> Keys<'_, V> {
         self.entries.iter().map(|(name, _)| *name)
     }
 
-    pub fn values(&self) -> impl ExactSizeIterator<Item = &V> + Clone {
+    pub fn values(&self) -> Values<'_, V> {
         self.entries.iter().map(|(_, value)| value)
     }
 
@@ -381,19 +427,36 @@ impl<V> NameMap<V> {
     }
 }
 
-impl<V> std::ops::Index<&str> for NameMap<V> {
+impl<K: AsName, V> std::ops::Index<K> for NameMap<V> {
     type Output = V;
-    fn index(&self, name: &str) -> &V {
-        self.get(name)
-            .unwrap_or_else(|| panic!("nothing is held as {name:?}"))
+    fn index(&self, name: K) -> &V {
+        match self.get(&name) {
+            Some(value) => value,
+            None => panic!("nothing is held as {:?}", name.to_name()),
+        }
     }
 }
 
-impl<V> std::ops::Index<Name> for NameMap<V> {
-    type Output = V;
-    fn index(&self, name: Name) -> &V {
-        self.get(name)
-            .unwrap_or_else(|| panic!("nothing is held as {name:?}"))
+/// A place in a [`NameMap`] to fill if it is empty ([`NameMap::entry`]).
+pub struct Entry<'a, V> {
+    map: &'a mut NameMap<V>,
+    name: Name,
+}
+
+impl<'a, V> Entry<'a, V> {
+    pub fn or_insert(self, value: V) -> &'a mut V {
+        self.map.get_or_insert_with(self.name, || value)
+    }
+
+    pub fn or_insert_with(self, make: impl FnOnce() -> V) -> &'a mut V {
+        self.map.get_or_insert_with(self.name, make)
+    }
+
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.map.get_or_insert_with(self.name, V::default)
     }
 }
 
@@ -425,6 +488,36 @@ impl<K: AsName, V, S> From<std::collections::HashMap<K, V, S>> for NameMap<V> {
     }
 }
 
+/// As a map by name, in the order held.
+impl<V: serde::Serialize> serde::Serialize for NameMap<V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.iter().map(|(name, value)| (name.as_str(), value)))
+    }
+}
+
+impl<'de, V: serde::Deserialize<'de>> serde::Deserialize<'de> for NameMap<V> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries<V>(std::marker::PhantomData<V>);
+        impl<'de, V: serde::Deserialize<'de>> serde::de::Visitor<'de> for Entries<V> {
+            type Value = NameMap<V>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map by name")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<NameMap<V>, A::Error> {
+                let mut out = NameMap::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((name, value)) = map.next_entry::<String, V>()? {
+                    out.insert(name, value);
+                }
+                Ok(out)
+            }
+        }
+        deserializer.deserialize_map(Entries(std::marker::PhantomData))
+    }
+}
+
 impl<V> IntoIterator for NameMap<V> {
     type Item = (Name, V);
     type IntoIter = std::vec::IntoIter<(Name, V)>;
@@ -435,10 +528,9 @@ impl<V> IntoIterator for NameMap<V> {
 
 impl<'a, V> IntoIterator for &'a NameMap<V> {
     type Item = (Name, &'a V);
-    type IntoIter =
-        std::iter::Map<std::slice::Iter<'a, (Name, V)>, fn(&'a (Name, V)) -> (Name, &'a V)>;
+    type IntoIter = Iter<'a, V>;
     fn into_iter(self) -> Self::IntoIter {
-        self.entries.iter().map(|(name, value)| (*name, value))
+        self.iter()
     }
 }
 

@@ -335,7 +335,7 @@ pub fn unrecorded_types_given(
 /// declare it.
 pub fn declared(library_type: &LibraryType) -> super::types::FixtureType {
     let mut fixture_type =
-        super::types::FixtureType::new(library_type.name.clone(), std::collections::HashMap::new());
+        super::types::FixtureType::new(library_type.name.clone(), Default::default());
     fixture_type.set_source(super::types::GdtfSource {
         path: library_type.archive.clone(),
     });

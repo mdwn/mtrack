@@ -3279,7 +3279,7 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), 1);
         channels.insert("red".to_string(), 2);
-        let ft = super::super::types::FixtureType::new("Par".to_string(), channels);
+        let ft = super::super::types::FixtureType::new("Par".to_string(), channels.into());
         system.fixture_types.insert("Par".to_string(), ft);
 
         // Create venue with a fixture

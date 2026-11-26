@@ -839,7 +839,7 @@ mod tests {
                 5,
                 1,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             ));
         Ok((dir, Arc::new(engine)))
@@ -1576,7 +1576,7 @@ mod tests {
                 5,
                 4,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             ));
     }
@@ -1706,7 +1706,7 @@ mod tests {
                 5,
                 7,
                 "Generic".to_string(),
-                std::collections::HashMap::from([("pan".to_string(), 1)]),
+                std::collections::HashMap::from([("pan".to_string(), 1)]).into(),
                 None,
             ));
     }
@@ -2176,7 +2176,7 @@ mod tests {
                 5,
                 1,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             ));
         }
@@ -2339,7 +2339,7 @@ mod tests {
             5,
             1,
             "Generic".to_string(),
-            channels,
+            channels.into(),
             None,
         ));
     }
@@ -2665,10 +2665,11 @@ mod tests {
                     ("dimmer".to_string(), 2),
                     ("green".to_string(), 5),
                     ("blue".to_string(), 6),
-                ]),
+                ])
+                .into(),
                 None,
             )
-            .with_channel_defs(defs),
+            .with_channel_defs(defs.into()),
         );
         start_song(
             &engine,
@@ -2882,7 +2883,7 @@ mod tests {
                 5,
                 4,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             )]);
             engine.ambient_follows_rig(&main);

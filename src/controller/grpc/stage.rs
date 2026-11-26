@@ -50,8 +50,8 @@ fn pose(pose: &PoseSnapshot) -> StagePose {
 }
 
 /// A map's keys, sorted: the order a fixture's or a cell's bytes are in.
-fn sorted_names(channels: &HashMap<String, u8>) -> Vec<String> {
-    let mut names: Vec<String> = channels.keys().cloned().collect();
+fn sorted_names(channels: &crate::lighting::names::NameMap<u8>) -> Vec<String> {
+    let mut names: Vec<String> = channels.keys().map(|name| name.to_string()).collect();
     names.sort_unstable();
     names
 }
@@ -77,7 +77,7 @@ pub(crate) fn stage_layout(
     layers: &[String],
 ) -> StageLayout {
     // By name, the last of a name winning, as the JSON's maps have it.
-    let channels: HashMap<&str, &HashMap<String, u8>> = snapshot
+    let channels: HashMap<&str, &crate::lighting::names::NameMap<u8>> = snapshot
         .fixtures
         .iter()
         .map(|f| (f.name.as_str(), &f.channels))
@@ -164,7 +164,7 @@ fn indexes(layout: &StageLayout) -> HashMap<&str, usize> {
 /// before the frame.
 pub(crate) fn fits(snapshot: &StateSnapshot, layout: &StageLayout) -> bool {
     let indexes = indexes(layout);
-    let carried: HashMap<&str, &HashMap<String, u8>> = snapshot
+    let carried: HashMap<&str, &crate::lighting::names::NameMap<u8>> = snapshot
         .fixtures
         .iter()
         .map(|f| (f.name.as_str(), &f.channels))
@@ -267,7 +267,7 @@ pub(crate) fn stage_frame(snapshot: &StateSnapshot, layout: &StageLayout) -> Sta
 /// have: one group, for every fixture whose cells are alike.
 fn fixture_cells(
     fixture: u32,
-    cells: &BTreeMap<String, HashMap<String, u8>>,
+    cells: &BTreeMap<String, crate::lighting::names::NameMap<u8>>,
 ) -> Vec<StageFixtureCells> {
     let mut groups: BTreeMap<Vec<String>, Vec<StageCellValues>> = BTreeMap::new();
     for (name, values) in cells {
@@ -378,8 +378,8 @@ mod test {
         head.strobe_hz = Some(12.5);
         let mut bar = fixture("bar", &[("red", 10), ("dimmer", 255)]);
         bar.cells = BTreeMap::from([
-            ("1".to_string(), HashMap::from([("red".to_string(), 7)])),
-            ("2".to_string(), HashMap::from([("red".to_string(), 9)])),
+            ("1".to_string(), [("red", 7)].into()),
+            ("2".to_string(), [("red", 9)].into()),
         ]);
         StateSnapshot {
             // Not in name order: the layout sorts.

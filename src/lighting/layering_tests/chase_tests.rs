@@ -36,7 +36,7 @@ fn test_chase_pattern_linear_left_to_right() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -106,7 +106,7 @@ fn test_chase_pattern_linear_right_to_left() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -171,7 +171,7 @@ fn test_chase_pattern_snake() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -254,7 +254,7 @@ fn test_chase_pattern_random() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -324,7 +324,7 @@ fn test_chase_direction_vertical() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -374,7 +374,7 @@ fn test_chase_direction_circular() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -424,7 +424,7 @@ fn test_chase_speed_variations() {
             1,
             (i - 1) * 4 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             Some(20.0),
         );
         engine.register_fixture(fixture);
@@ -482,7 +482,7 @@ fn test_chase_single_fixture() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -527,7 +527,7 @@ fn register_rgb_only_fixtures(engine: &mut EffectEngine) {
             1,
             (i - 1) * 3 + 1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);
@@ -665,7 +665,7 @@ fn test_chase_effect_crossfade() {
             1,
             i,
             "Dimmer".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);
@@ -740,7 +740,7 @@ fn test_random_chase_pattern_visibility() {
             1,
             (i - 1) * 4 + 1,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         );
         engine.register_fixture(fixture);

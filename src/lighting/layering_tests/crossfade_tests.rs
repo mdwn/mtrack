@@ -204,7 +204,7 @@ fn test_static_effect_crossfade_comprehensive() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -275,7 +275,7 @@ fn test_color_cycle_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -351,7 +351,7 @@ fn test_pulse_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -415,7 +415,7 @@ fn test_rainbow_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -491,7 +491,7 @@ fn test_dsl_crossfade_integration() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -551,7 +551,7 @@ fn test_static_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);

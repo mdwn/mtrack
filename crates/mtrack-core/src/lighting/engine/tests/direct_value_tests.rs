@@ -51,7 +51,7 @@ fn test_reverse_map_construction() {
         1,
         10,
         "RGBW_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -396,7 +396,14 @@ fn midi_dmx_store_values_reach_fine_bytes_and_mirrors() {
         .into_iter()
         .map(|(n, o)| (n.to_string(), o))
         .collect();
-    let fixture = FixtureInfo::new("bar".to_string(), 1, 10, "Bar".to_string(), channels, None);
+    let fixture = FixtureInfo::new(
+        "bar".to_string(),
+        1,
+        10,
+        "Bar".to_string(),
+        channels.into(),
+        None,
+    );
     let mut pan = ChannelDef::at(1);
     pan.fine = Some(2);
     let mut red = ChannelDef::at(3);

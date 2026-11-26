@@ -48,7 +48,7 @@ fn fixtures() -> Vec<FixtureInfo> {
                 .zip(1..)
                 .map(|(channel, offset)| (channel.to_string(), offset))
                 .collect();
-            FixtureInfo::new(name, 1, address, "PAR".to_string(), channels, None)
+            FixtureInfo::new(name, 1, address, "PAR".to_string(), channels.into(), None)
         })
         .collect()
 }

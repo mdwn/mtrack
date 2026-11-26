@@ -83,7 +83,7 @@ fn test_freeze_unfreeze_layer() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -203,7 +203,7 @@ fn test_unfreeze_layer_maintains_animation_continuity() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -302,7 +302,7 @@ fn unfreezing_a_cued_effect_resumes_it_while_song_time_ran_on() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(
@@ -643,7 +643,7 @@ fn cued_green_static() -> EffectEngine {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(
@@ -764,7 +764,7 @@ fn a_cued_effect_frozen_for_a_while_resumes_where_it_stopped() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(

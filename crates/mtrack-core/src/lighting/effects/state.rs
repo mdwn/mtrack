@@ -18,7 +18,7 @@ use super::composite::{self, Op};
 use super::fixture::FixtureInfo;
 use super::physical::PhysicalState;
 use super::types::{BlendMode, EffectLayer};
-use crate::lighting::names::{self, AsName, Name, NameMap};
+use crate::lighting::names::{self, AsName, ChannelSet, Name, NameMap};
 
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
@@ -228,7 +228,7 @@ impl FixtureState {
     /// into plain `red/green/blue/white/dimmer` channels for a fixture (or
     /// a cell) with `channels` (design 3.4). Values already in the plain
     /// channels (a MIDI DMX show's) are the bottom of the stack.
-    pub fn resolve<V>(&mut self, channels: &HashMap<String, V>) {
+    pub fn resolve(&mut self, channels: &impl ChannelSet) {
         composite::resolve_plain(self, channels);
     }
 
@@ -276,9 +276,9 @@ impl FixtureState {
     /// fixture's snapshot shows in place of its red, green and blue. A
     /// primary no effect drives yields nothing (its flag is left alone),
     /// and a fixture that does not mix subtractively nothing at all.
-    pub fn cmy_flags<V>(
+    pub fn cmy_flags(
         &self,
-        channels: &HashMap<String, V>,
+        channels: &impl ChannelSet,
     ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
         let subtractive = super::fixture::has_cmy(channels);
         [
@@ -311,7 +311,7 @@ impl FixtureState {
         &self,
         cell: &crate::lighting::types::Cell,
         own: Option<&FixtureState>,
-    ) -> Vec<(String, f64)> {
+    ) -> Vec<(Name, f64)> {
         let mut out = Vec::with_capacity(cell.channels.len());
         for channel_name in cell.channels.keys() {
             let base = self.channels.get(channel_name);
@@ -322,7 +322,7 @@ impl FixtureState {
                 (None, Some(o)) => o.resolved(),
                 (None, None) => continue,
             };
-            out.push((channel_name.clone(), state.value));
+            out.push((channel_name, state.value));
         }
         out
     }
@@ -418,7 +418,7 @@ impl FixtureState {
         }
         for cell in &fixture_info.cells {
             for (channel_name, value) in self.cell_values(cell, cell_state(&cell.name)) {
-                let def = &cell.channels[&channel_name];
+                let def = &cell.channels[channel_name];
                 commands
                     .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
@@ -698,7 +698,7 @@ mod tests {
             1,
             address,
             "generic".to_string(),
-            ch,
+            ch.into(),
             None,
         )
     }
@@ -762,7 +762,7 @@ mod tests {
             },
         );
         defs.insert("dimmer".to_string(), ChannelDef::at(3));
-        fixture = fixture.with_channel_defs(defs);
+        fixture = fixture.with_channel_defs(defs.into());
 
         let mut fs = FixtureState::new();
         // A normalized write to pan, as `static pan: 100%` produces...
@@ -807,7 +807,7 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        fixture = fixture.with_channel_defs(defs);
+        fixture = fixture.with_channel_defs(defs.into());
         let mut fs = FixtureState::new();
         fs.set_channel(
             "pan".to_string(),
@@ -867,16 +867,16 @@ mod tests {
             },
         );
         defs.insert("dimmer".to_string(), ChannelDef::at(3));
-        let mut fixture = fixture.with_channel_defs(defs);
+        let mut fixture = fixture.with_channel_defs(defs.into());
         fixture.cells = vec![
             Cell {
                 name: "a".to_string(),
-                channels: HashMap::from([("red".to_string(), ChannelDef::at(1))]),
+                channels: HashMap::from([("red".to_string(), ChannelDef::at(1))]).into(),
                 offset: [0.0, 0.0, 0.0],
             },
             Cell {
                 name: "b".to_string(),
-                channels: HashMap::from([("red".to_string(), ChannelDef::at(2))]),
+                channels: HashMap::from([("red".to_string(), ChannelDef::at(2))]).into(),
                 offset: [0.0, 0.0, 0.0],
             },
         ];
@@ -984,7 +984,8 @@ mod tests {
             channels: HashMap::from([(
                 "red".to_string(),
                 crate::lighting::types::ChannelDef::at(5),
-            )]),
+            )])
+            .into(),
             offset: [0.0, 0.0, 0.0],
         }
     }
@@ -1002,7 +1003,7 @@ mod tests {
             ChannelState::new(0.5, EffectLayer::MIDGROUND, BlendMode::Multiply),
         );
         let values = fs.cell_values(&red_cell(), Some(&own));
-        assert_eq!(values, vec![("red".to_string(), 0.5)]);
+        assert_eq!(values, vec![(names::RED, 0.5)]);
     }
 
     #[test]
@@ -1014,7 +1015,7 @@ mod tests {
             ChannelState::new(0.75, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let values = fs.cell_values(&red_cell(), Some(&own));
-        assert_eq!(values, vec![("red".to_string(), 0.75)]);
+        assert_eq!(values, vec![(names::RED, 0.75)]);
     }
 
     /// A level on the cell's own state dims the cell's colour, on a cell

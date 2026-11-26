@@ -116,7 +116,7 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
                     let mut channels: Vec<(u16, String)> = fixture_type
                         .channels()
                         .iter()
-                        .map(|(name, offset)| (*offset, name.clone()))
+                        .map(|(name, offset)| (*offset, name.to_string()))
                         .collect();
                     channels.sort();
                     mode.channels = Some(channels);

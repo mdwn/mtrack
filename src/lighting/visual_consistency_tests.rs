@@ -35,7 +35,7 @@ mod tests {
             universe,
             address,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         )
     }
@@ -53,7 +53,7 @@ mod tests {
             universe,
             address,
             "RGB_Dimmer_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         )
     }
@@ -68,7 +68,7 @@ mod tests {
             universe,
             address,
             "Dimmer".to_string(),
-            channels,
+            channels.into(),
             None,
         )
     }

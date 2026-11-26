@@ -36,7 +36,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -140,7 +140,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
         1,
         1,
         "RGB_Par_Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -316,7 +316,7 @@ fn test_dimmer_without_dedicated_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -423,7 +423,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -554,7 +554,7 @@ fn test_dimmer_debug() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -645,7 +645,7 @@ fn test_static_with_dimmer_parameter() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -664,7 +664,7 @@ fn test_static_with_dimmer_parameter() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -749,7 +749,7 @@ fn test_dimmer_replace_vs_multiply() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -876,7 +876,7 @@ fn test_astera_pixelblock_dimmer() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -998,7 +998,7 @@ fn test_chase_effect_without_dimmer_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -1052,7 +1052,7 @@ fn test_chase_effect_with_dimmer_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -1111,7 +1111,7 @@ fn test_software_strobing_dimmer_only_fixture() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None, // No strobe capability
     );
     engine.register_fixture(fixture);
@@ -1174,7 +1174,7 @@ fn test_multiple_dimmer_fade_to_black() {
         1,
         1,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         None,
     );
 
@@ -1183,7 +1183,7 @@ fn test_multiple_dimmer_fade_to_black() {
         1,
         5,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         None,
     );
 
@@ -1289,7 +1289,7 @@ fn test_dimmer_effect_mid_level_start() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -1379,7 +1379,7 @@ fn test_dimmer_curves() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -1425,7 +1425,7 @@ fn test_dimmer_curves() {
             1,
             1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         test_engine.register_fixture(fixture);

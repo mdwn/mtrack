@@ -1419,7 +1419,7 @@ mod tests {
             1,
             1,
             "generic".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         let mut registry = HashMap::new();
@@ -1462,7 +1462,7 @@ mod spatial_order_tests {
                     1,
                     1,
                     "T".to_string(),
-                    HashMap::new(),
+                    Default::default(),
                     None,
                 );
                 info.position = *position;
@@ -1576,7 +1576,7 @@ mod random_chase_tests {
                     1,
                     1 + i as u16,
                     "Dimmer".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 );
                 (name.clone(), info)

@@ -38,7 +38,7 @@ pub fn rgb(name: &str, address: u16) -> FixtureInfo {
         1,
         address,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     )
 }
@@ -57,7 +57,7 @@ pub fn create_test_fixture(name: &str, universe: u16, address: u16) -> FixtureIn
         universe,
         address,
         "RGBW_Strobe".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     )
 }

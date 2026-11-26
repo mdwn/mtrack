@@ -13,7 +13,8 @@
 //
 
 pub use mtrack_core::lighting::{
-    channels, effects, engine, findings, fixture_data, geometry, lint, parser, timeline, types,
+    channels, effects, engine, findings, fixture_data, geometry, lint, names, parser, timeline,
+    types,
 };
 
 pub mod analyze;

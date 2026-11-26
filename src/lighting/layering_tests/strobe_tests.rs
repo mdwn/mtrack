@@ -84,7 +84,7 @@ fn test_strobe_effect_crossfade() {
         1,
         1,
         "Strobe".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);

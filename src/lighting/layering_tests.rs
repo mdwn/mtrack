@@ -54,7 +54,7 @@ mod layering_behavior_tests {
             universe,
             address,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         )
     }
@@ -575,7 +575,7 @@ mod layering_show_regression {
             universe,
             address,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         )
     }

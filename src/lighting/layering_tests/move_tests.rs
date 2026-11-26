@@ -31,7 +31,14 @@ fn mover(name: &str, position: [f64; 3], rotation: [f64; 3]) -> FixtureInfo {
         .into_iter()
         .map(|(n, o)| (n.to_string(), o))
         .collect();
-    let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Mover".to_string(), channels, None);
+    let mut info = FixtureInfo::new(
+        name.to_string(),
+        1,
+        1,
+        "Mover".to_string(),
+        channels.into(),
+        None,
+    );
     let mut defs = HashMap::new();
     defs.insert(
         "pan".to_string(),
@@ -62,7 +69,7 @@ fn mover(name: &str, position: [f64; 3], rotation: [f64; 3]) -> FixtureInfo {
         },
     );
     defs.insert("dimmer".to_string(), ChannelDef::at(5));
-    info = info.with_channel_defs(defs);
+    info = info.with_channel_defs(defs.into());
     info.position = Some(position);
     info.rotation = Some(rotation);
     info
@@ -519,7 +526,7 @@ fn a_settled_mover_keeps_its_pose_through_the_midi_fast_path() {
         1,
         100,
         "Par".to_string(),
-        other,
+        other.into(),
         None,
     ));
     let store = Arc::new(parking_lot::RwLock::new(MidiDmxStore::new()));

@@ -32,7 +32,7 @@ mod tests {
             1,
             base_address,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);
@@ -49,7 +49,7 @@ mod tests {
             1,
             base_address,
             "RGB_Par_Dimmer".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);

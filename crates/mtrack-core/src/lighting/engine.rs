@@ -114,11 +114,11 @@ impl FixtureRegistry {
             let mut names = Vec::with_capacity(fixture.cells.len());
             for cell in &fixture.cells {
                 let name = cell_fixture_name(&fixture.name, &cell.name);
-                let channels: HashMap<String, u16> = cell
+                let channels: crate::lighting::names::NameMap<u16> = cell
                     .channels
                     .iter()
-                    .map(|(n, d)| (n.clone(), d.offset))
-                    .collect();
+                    .map(|(n, d)| (n, d.offset))
+                    .collect::<crate::lighting::names::NameMap<u16>>();
                 let mut sub = FixtureInfo::new(
                     name.clone(),
                     fixture.universe,
@@ -150,7 +150,7 @@ impl FixtureRegistry {
                 if let Some(channel) = fixture.dmx_channel(offset) {
                     self.dmx_to_fixture_map.insert(
                         (fixture.universe, channel),
-                        (fixture.name.clone(), channel_name.clone()),
+                        (fixture.name.clone(), channel_name.clone().to_string()),
                     );
                 }
             }
@@ -605,11 +605,11 @@ impl EffectEngine {
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, &offset) in &fixture.channels {
                 if let Some(address) = at(offset) {
-                    claim(address, CrossPlace::Byte(CrossKind::of(name)));
+                    claim(address, CrossPlace::Byte(CrossKind::of(&name)));
                 }
             }
             for (name, def) in &fixture.channel_defs {
-                let kind = CrossKind::of(name);
+                let kind = CrossKind::of(&name);
                 for (coarse, fine) in
                     std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
                 {
@@ -661,7 +661,7 @@ impl EffectEngine {
         for fixture in self.fixtures.as_map().values() {
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, def) in &fixture.channel_defs {
-                if !keep(name) {
+                if !keep(&name) {
                     continue;
                 }
                 out.extend(at(def.offset));
@@ -874,7 +874,7 @@ impl EffectEngine {
     ) -> HashMap<String, FixtureState> {
         let plain =
             |value: f64| ChannelState::new(value, EffectLayer::BACKGROUND, BlendMode::Replace);
-        let cell_state = |values: Vec<(String, f64)>| {
+        let cell_state = |values: Vec<(crate::lighting::names::Name, f64)>| {
             let mut state = FixtureState::new();
             for (channel, value) in values {
                 state.channels.insert(channel, plain(value));

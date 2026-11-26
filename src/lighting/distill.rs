@@ -29,6 +29,7 @@
 //! and thumbnail copied out of it and one rig model per mode. The web UI
 //! serves the store to the 3D view; nothing at show time reads it.
 
+use crate::lighting::names::NameMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -119,7 +120,7 @@ pub const DISTILLER_VERSION: u32 = 9;
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
     name: String,
-    channel_defs: HashMap<String, ChannelDef>,
+    channel_defs: NameMap<ChannelDef>,
     max_strobe_frequency: Option<f64>,
     min_strobe_frequency: Option<f64>,
     strobe_dmx_offset: Option<u8>,
@@ -576,7 +577,7 @@ mod tests {
         channels.insert("strobe".to_string(), 4);
         crate::lighting::types::FixtureTypeV1 {
             name: "Brick".to_string(),
-            channels,
+            channels: channels.into(),
             max_strobe_frequency: Some(25.0),
             min_strobe_frequency: Some(0.4),
             strobe_dmx_offset: Some(7),
@@ -660,7 +661,7 @@ mod tests {
         defs.insert("strobe".to_string(), ChannelDef::at(3));
         let mut original = FixtureType::from_parts(
             "Esprite".to_string(),
-            defs,
+            defs.into(),
             Some(20.0), // partial: only max is known
             None,
             None,
@@ -699,12 +700,12 @@ mod tests {
         let cells = vec![
             Cell {
                 name: "Pixel 1".to_string(),
-                channels: cell_channels.clone(),
+                channels: cell_channels.clone().into(),
                 offset: [-0.1, 0.0, 0.0],
             },
             Cell {
                 name: "Pixel 2".to_string(),
-                channels: cell_channels,
+                channels: cell_channels.into(),
                 offset: [0.1, 0.0, 0.0],
             },
         ];

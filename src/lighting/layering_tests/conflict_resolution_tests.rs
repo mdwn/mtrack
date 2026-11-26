@@ -34,7 +34,7 @@ fn test_effects_coexist_across_layers() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -128,7 +128,7 @@ fn test_effects_coexist_on_different_fixtures() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 
@@ -137,7 +137,7 @@ fn test_effects_coexist_on_different_fixtures() {
         1,
         2,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 
@@ -198,7 +198,7 @@ fn test_all_effect_types_coexist() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -333,7 +333,7 @@ fn test_disabled_effects_coexist() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -393,7 +393,7 @@ fn test_effects_coexist_in_different_layers() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 
@@ -402,7 +402,7 @@ fn test_effects_coexist_in_different_layers() {
         1,
         2,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 

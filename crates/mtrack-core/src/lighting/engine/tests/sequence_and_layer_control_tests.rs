@@ -376,7 +376,7 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(rgb_fixture);

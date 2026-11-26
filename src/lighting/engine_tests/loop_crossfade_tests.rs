@@ -38,7 +38,7 @@ fn engine() -> EffectEngine {
         1,
         1,
         "Generic".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     engine
@@ -268,7 +268,8 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
             ("red".to_string(), ChannelDef::at(base)),
             ("green".to_string(), ChannelDef::at(base + 1)),
             ("blue".to_string(), ChannelDef::at(base + 2)),
-        ]),
+        ])
+        .into(),
         offset: [0.0, 0.0, 0.0],
     };
     let cells = vec![cell("1", 1), cell("2", 4), cell("3", 7)];
@@ -341,7 +342,7 @@ fn sixteen_bit_engine() -> EffectEngine {
         channels,
         None,
     )
-    .with_channel_defs(defs);
+    .with_channel_defs(defs.into());
     let mut engine = EffectEngine::new();
     engine.register_fixture(info);
     engine
@@ -453,7 +454,7 @@ fn patched(name: &str, address: u16, channels: &[(&str, u16, Option<u16>)]) -> F
         offsets,
         None,
     )
-    .with_channel_defs(defs)
+    .with_channel_defs(defs.into())
 }
 
 /// Where patches overlap, every channel either side drives still goes
@@ -529,7 +530,7 @@ fn an_overlap_inside_one_fixture_crosses_the_same_every_time() {
             1,
             1,
             "Par".to_string(),
-            channels.clone(),
+            channels.clone().into(),
             None,
         ));
         assert_eq!(

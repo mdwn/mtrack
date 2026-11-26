@@ -671,7 +671,7 @@ fn fixture_type_channels(t: &FixtureType) -> proto::FixtureTypeChannels {
         channels: t
             .channels()
             .iter()
-            .map(|(name, offset)| (name.clone(), u32::from(*offset)))
+            .map(|(name, offset)| (name.to_string(), u32::from(*offset)))
             .collect(),
         max_strobe_frequency: t.max_strobe_frequency(),
         min_strobe_frequency: t.min_strobe_frequency(),
