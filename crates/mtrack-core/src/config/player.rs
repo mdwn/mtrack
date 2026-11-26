@@ -694,6 +694,21 @@ impl Player {
         self.playlist.as_ref().map(PathBuf::from)
     }
 
+    /// The directory the player reads playlists from: `playlists_dir`,
+    /// resolved relative to the given config path, or `playlists/` beside
+    /// the config when none is set.
+    pub fn playlists_dir_or_default(&self, config_path: &Path) -> PathBuf {
+        self.playlists_dir(config_path)
+            .unwrap_or_else(|| crate::util::project_dir_of(config_path).join("playlists"))
+    }
+
+    /// The legacy single playlist file, resolved against the config's
+    /// directory.
+    pub fn legacy_playlist(&self, config_path: &Path) -> Option<PathBuf> {
+        self.playlist()
+            .map(|path| crate::util::project_dir_of(config_path).join(path))
+    }
+
     /// Gets the playlists directory, resolved relative to the given config path.
     pub fn playlists_dir(&self, config_path: &Path) -> Option<PathBuf> {
         let dir = self.playlists_dir.as_ref()?;

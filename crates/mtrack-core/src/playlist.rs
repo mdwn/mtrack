@@ -673,6 +673,35 @@ pub struct PlaylistFile {
     pub unread: Option<PathBuf>,
 }
 
+/// The name the legacy single playlist file is loaded under.
+pub const LEGACY_NAME: &str = "playlist";
+
+/// The playlist files a player reads, in the order it reads them: each of
+/// `dir`'s ([`playlist_files`]; none when it is not a directory), then the
+/// legacy file `legacy` as [`LEGACY_NAME`]. The legacy file is listed
+/// whether or not it is there, and is taken only when no playlist of its
+/// name has loaded from `dir` ([`legacy_wanted`]).
+pub fn files_of(dir: Option<&Path>, legacy: Option<&Path>) -> std::io::Result<Vec<PlaylistFile>> {
+    let mut files = match dir {
+        Some(dir) if dir.is_dir() => playlist_files(dir)?,
+        _ => Vec::new(),
+    };
+    if let Some(legacy) = legacy {
+        files.push(PlaylistFile {
+            name: LEGACY_NAME.to_string(),
+            path: legacy.to_path_buf(),
+            unread: None,
+        });
+    }
+    Ok(files)
+}
+
+/// Whether the legacy file of [`files_of`] is read, given whether a
+/// playlist named [`LEGACY_NAME`] has already loaded from the directory.
+pub fn legacy_wanted(loaded_by_that_name: bool) -> bool {
+    !loaded_by_that_name
+}
+
 /// The playlist files in `dir`, one for each name (`util::yaml_files_by_name`:
 /// the file [`playlist_file`] takes), sorted by file name. The reserved name
 /// has none, so an `all_songs.yaml` is not one.

@@ -1596,13 +1596,11 @@ impl SongSources {
         cli_playlist: Option<&Path>,
     ) -> SongSources {
         let project_dir = crate::util::project_dir_of(config_path);
-        let playlists_dir = config
-            .playlists_dir(config_path)
-            .unwrap_or_else(|| project_dir.join("playlists"));
-        let legacy_playlist = cli_playlist
-            .map(Path::to_path_buf)
-            .or_else(|| config.playlist())
-            .map(|path| project_dir.join(path));
+        let playlists_dir = config.playlists_dir_or_default(config_path);
+        let legacy_playlist = match cli_playlist {
+            Some(path) => Some(project_dir.join(path)),
+            None => config.legacy_playlist(config_path),
+        };
         SongSources {
             songs: crate::util::resolved_dir(&config.songs(config_path)),
             playlists_dir: Some(playlists_dir),
@@ -1661,58 +1659,47 @@ pub fn load_playlists(
         playlist::from_songs(songs.clone())?,
     );
 
-    // Load playlists from directory.
-    if let Some(dir) = playlists_dir {
-        if dir.is_dir() {
-            // Each name's file (`playlist::playlist_files`): with both
-            // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
-            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
-                if let Some(unread) = unread {
-                    warn!(
-                        name = %name,
-                        "Playlist has two files: {} is read, {} is not",
-                        path.display(),
-                        unread.display()
-                    );
-                }
-                match config::Playlist::deserialize(&path) {
-                    Ok(playlist_config) => {
-                        match Playlist::new(&name, &playlist_config, songs.clone()) {
-                            Ok(pl) => {
-                                info!(name = %name, "Loaded playlist from directory");
-                                playlists.insert(name, pl);
-                            }
-                            Err(e) => {
-                                warn!(name = %name, error = %e, "Playlist references missing songs, skipping");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(path = ?path, error = %e, "Failed to parse playlist file, skipping");
-                    }
-                }
-            }
+    // The directory's playlists, then the legacy file as "playlist" unless
+    // the directory has one of that name (`playlist::files_of`).
+    for playlist::PlaylistFile { name, path, unread } in
+        playlist::files_of(playlists_dir, legacy_playlist_path)?
+    {
+        let legacy = legacy_playlist_path == Some(path.as_path());
+        if legacy && !playlist::legacy_wanted(playlists.contains_key(playlist::LEGACY_NAME)) {
+            continue;
         }
-    }
-
-    // Load legacy playlist file as name "playlist" (if not already loaded from dir).
-    if let Some(legacy_path) = legacy_playlist_path {
-        if !playlists.contains_key("playlist") {
-            match config::Playlist::deserialize(legacy_path) {
-                Ok(playlist_config) => {
-                    match Playlist::new("playlist", &playlist_config, songs.clone()) {
-                        Ok(pl) => {
-                            info!("Loaded legacy playlist");
-                            playlists.insert("playlist".to_string(), pl);
-                        }
-                        Err(e) => {
-                            info!("Legacy playlist references missing songs ({}); skipping", e);
-                        }
+        if let Some(unread) = unread {
+            // Each name's file: with both `<name>.yaml` and `<name>.yml`,
+            // the `.yaml`, with a warning.
+            warn!(
+                name = %name,
+                "Playlist has two files: {} is read, {} is not",
+                path.display(),
+                unread.display()
+            );
+        }
+        match config::Playlist::deserialize(&path) {
+            Ok(playlist_config) => match Playlist::new(&name, &playlist_config, songs.clone()) {
+                Ok(pl) => {
+                    if legacy {
+                        info!("Loaded legacy playlist");
+                    } else {
+                        info!(name = %name, "Loaded playlist from directory");
                     }
+                    playlists.insert(name, pl);
                 }
-                Err(_) => {
-                    info!("Legacy playlist file not found or invalid; skipping");
+                Err(e) if legacy => {
+                    info!("Legacy playlist references missing songs ({}); skipping", e);
                 }
+                Err(e) => {
+                    warn!(name = %name, error = %e, "Playlist references missing songs, skipping");
+                }
+            },
+            Err(_) if legacy => {
+                info!("Legacy playlist file not found or invalid; skipping");
+            }
+            Err(e) => {
+                warn!(path = ?path, error = %e, "Failed to parse playlist file, skipping");
             }
         }
     }

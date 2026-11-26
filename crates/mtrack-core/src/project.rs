@@ -405,18 +405,32 @@ pub fn check(config_path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
             failure.error().to_string(),
         ));
     }
-    if let Some(dir) = player.playlists_dir(config_path).filter(|dir| dir.is_dir()) {
-        for file in crate::playlist::playlist_files(&dir)? {
-            let loaded = crate::config::Playlist::deserialize(&file.path)
-                .map_err(|e| e.to_string())
-                .and_then(|config| {
-                    crate::playlist::Playlist::new(&file.name, &config, songs.clone())
-                        .map_err(|e| e.to_string())
-                });
-            match loaded {
-                Ok(_) => report.playlists += 1,
-                Err(e) => report.problems.push((file.path, e)),
+    // Where the player reads them from: `playlists/` when no directory is
+    // set, and the legacy file.
+    let dir = player.playlists_dir_or_default(config_path);
+    let legacy = player.legacy_playlist(config_path);
+    let mut loaded_legacy_name = false;
+    for file in crate::playlist::files_of(Some(&dir), legacy.as_deref())? {
+        if legacy.as_deref() == Some(file.path.as_path()) {
+            // Read only when the directory gave no playlist of its name, and
+            // one named and not there is no problem: the player starts
+            // without it.
+            if !crate::playlist::legacy_wanted(loaded_legacy_name) || !file.path.exists() {
+                continue;
             }
+        }
+        let loaded = crate::config::Playlist::deserialize(&file.path)
+            .map_err(|e| e.to_string())
+            .and_then(|config| {
+                crate::playlist::Playlist::new(&file.name, &config, songs.clone())
+                    .map_err(|e| e.to_string())
+            });
+        match loaded {
+            Ok(_) => {
+                report.playlists += 1;
+                loaded_legacy_name |= file.name == crate::playlist::LEGACY_NAME;
+            }
+            Err(e) => report.problems.push((file.path, e)),
         }
     }
     Ok(report)
@@ -605,6 +619,58 @@ mod tests {
         // The example project's songs are all its own.
         let example = check(Path::new("../../examples/mtrack.yaml")).unwrap();
         assert!(example.outside.is_empty(), "{example:?}");
+    }
+
+    #[test]
+    fn playlists_are_found_where_the_player_finds_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let song = "kind: song\nname: One\ntracks: []\n";
+        let playlist = "kind: playlist\nsongs:\n  - One\n";
+        write(dir.path(), "songs/one/song.yaml", song);
+        // No `playlists_dir`: the player reads `playlists/`.
+        write(dir.path(), "mtrack.yaml", "songs: songs\n");
+        write(dir.path(), "playlists/set.yaml", playlist);
+        write(
+            dir.path(),
+            "playlists/broken.yaml",
+            "kind: playlist\nsongs:\n  - Two\n",
+        );
+        let report = check(&dir.path().join("mtrack.yaml")).unwrap();
+        assert_eq!(report.playlists, 1, "{report:?}");
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert!(report.problems[0].0.ends_with("broken.yaml"));
+
+        // The legacy file is read as `playlist`...
+        std::fs::remove_file(dir.path().join("playlists/broken.yaml")).unwrap();
+        write(
+            dir.path(),
+            "mtrack.yaml",
+            "songs: songs\nplaylist: legacy.yaml\n",
+        );
+        write(dir.path(), "legacy.yaml", playlist);
+        assert_eq!(check(&dir.path().join("mtrack.yaml")).unwrap().playlists, 2);
+        // ...unless one of that name loaded from the directory.
+        write(dir.path(), "playlists/playlist.yaml", playlist);
+        write(dir.path(), "legacy.yaml", "not: a playlist\n");
+        let report = check(&dir.path().join("mtrack.yaml")).unwrap();
+        assert_eq!(report.playlists, 2, "{report:?}");
+        assert!(report.problems.is_empty(), "{report:?}");
+        // One that did not load leaves the legacy file to be read, as the
+        // player reads it.
+        write(
+            dir.path(),
+            "playlists/playlist.yaml",
+            "kind: playlist\nsongs:\n  - Two\n",
+        );
+        write(dir.path(), "legacy.yaml", playlist);
+        let report = check(&dir.path().join("mtrack.yaml")).unwrap();
+        assert_eq!(report.playlists, 2, "{report:?}");
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        std::fs::remove_file(dir.path().join("playlists/playlist.yaml")).unwrap();
+        // A legacy file named and not there is no problem.
+        std::fs::remove_file(dir.path().join("legacy.yaml")).unwrap();
+        let report = check(&dir.path().join("mtrack.yaml")).unwrap();
+        assert!(report.problems.is_empty(), "{report:?}");
     }
 
     #[test]
