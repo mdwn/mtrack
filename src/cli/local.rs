@@ -147,6 +147,78 @@ pub fn brightness_changes(project: &str, hostname: Option<String>) -> Result<(),
     Ok(())
 }
 
+/// Renders the light show of the project's song named `song` on this host's
+/// venue to the file `out` (`crate::lighting::render`), and says what it
+/// wrote.
+pub fn render_light_show(
+    project: &str,
+    hostname: Option<String>,
+    song: &str,
+    out: &str,
+    frames_per_second: u32,
+) -> Result<(), Box<dyn Error>> {
+    use crate::lighting::system::LightingSystem;
+
+    let config_path = super::migrate::resolve_config_path(project);
+    let player_config = config::Player::deserialize(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
+    let host = hostname.unwrap_or_else(config::resolve_hostname);
+    let lighting = player_config
+        .profiles(&host)
+        .first()
+        .and_then(|profile| profile.dmx())
+        .and_then(|dmx| dmx.lighting())
+        .ok_or_else(|| format!("no lighting configuration for host \"{host}\""))?;
+    let mut system = LightingSystem::new();
+    system
+        .load(lighting, &crate::util::project_dir_of(&config_path))
+        .map_err(|e| format!("cannot load the lighting configuration: {e}"))?;
+
+    let layers = crate::config::lighting::layer_set(Some(lighting));
+    let songs =
+        songs::get_all_songs_with_defaults(&player_config.songs(&config_path), false, &layers)?;
+    let song = songs.get(song).map_err(|e| e.to_string())?;
+
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let started = std::time::Instant::now();
+    // Written beside `out` and moved onto it once whole, so a show that is
+    // not rendered leaves whatever was at `out` as it was.
+    let partial = format!("{out}.partial");
+    let written = (|| -> Result<crate::lighting::render::Header, Box<dyn Error>> {
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(&partial).map_err(|e| format!("cannot write {partial}: {e}"))?,
+        );
+        let header = crate::lighting::render::render_song(
+            &mut system,
+            &song,
+            frames_per_second,
+            workers,
+            &mut file,
+        )
+        .map_err(|e| format!("{}: {e}", song.name()))?;
+        std::io::Write::flush(&mut file).map_err(|e| format!("cannot write {partial}: {e}"))?;
+        std::fs::rename(&partial, out).map_err(|e| format!("cannot write {out}: {e}"))?;
+        Ok(header)
+    })();
+    let header = match written {
+        Ok(header) => header,
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
+        }
+    };
+    println!(
+        "{}: {} frames of {} universe{} at {} a second, in {:.1} s, to {out}",
+        song.name(),
+        header.frames,
+        header.universes.len(),
+        if header.universes.len() == 1 { "" } else { "s" },
+        header.frames_per_second,
+        started.elapsed().as_secs_f64(),
+    );
+    Ok(())
+}
+
 /// [`brightness_changes`]' output and the number of findings in it.
 fn brightness_changes_report(
     project: &str,
@@ -1225,12 +1297,110 @@ mod tests {
         }
     }
 
+    mod render_light_show_tests {
+        use super::*;
+        use crate::lighting::render::{Header, FORMAT, UNIVERSE_BYTES};
+
+        const BLUE: &str = "show \"s\" {\n  @00:00.000\n  washes: static color: \"blue\", \
+                            dimmer: 100%, duration: 2s\n}\n";
+
+        /// A song is rendered for as long as it plays: its audio, here three
+        /// seconds of it under a two-second show.
+        #[test]
+        fn a_songs_show_is_written_as_frames_of_the_venues_universe() {
+            let tmp = super::brightness_changes_tests::project(BLUE);
+            crate::testutil::write_wav(
+                tmp.path().join("songs/Song/track.wav"),
+                vec![vec![1_i32; 3 * 44100]],
+                44100,
+            )
+            .unwrap();
+            let out = tmp.path().join("song.frames");
+            render_light_show(
+                tmp.path().to_str().unwrap(),
+                Some("host".into()),
+                "Song",
+                out.to_str().unwrap(),
+                10,
+            )
+            .unwrap();
+
+            let file = std::fs::read(&out).unwrap();
+            let text_end = file
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == b'\n')
+                .nth(1)
+                .unwrap()
+                .0
+                + 1;
+            let mut lines = std::str::from_utf8(&file[..text_end]).unwrap().lines();
+            assert_eq!(lines.next(), Some(FORMAT));
+            let header: Header = serde_json::from_str(lines.next().unwrap()).unwrap();
+            assert_eq!(header.universes, [1]);
+            assert_eq!(header.frames_per_second, 10);
+            let frames = &file[text_end..];
+            assert_eq!(frames.len() as u64, header.frames * UNIVERSE_BYTES as u64);
+            // 0 s to 3 s at ten a second, both ends in.
+            assert_eq!(header.frames, 31);
+            // The par at 1:1 is dimmer, red, green, blue: a second in, the
+            // group resolved to it and it is blue at full.
+            let frame = &frames[10 * UNIVERSE_BYTES..11 * UNIVERSE_BYTES];
+            assert_eq!(frame[..4], [255, 0, 0, 255]);
+            // Past the show's end the level and the colour are sent 0.
+            let after = &frames[25 * UNIVERSE_BYTES..26 * UNIVERSE_BYTES];
+            assert_eq!(after[..4], [0, 0, 0, 0]);
+        }
+
+        /// A song with no show is not rendered, and a file already at the
+        /// path is left as it was.
+        #[test]
+        fn a_song_with_no_show_leaves_the_file_that_was_there() {
+            let tmp = super::brightness_changes_tests::project(BLUE);
+            std::fs::write(
+                tmp.path().join("songs/Song/song.yaml"),
+                "kind: song\nname: Song\ntracks:\n  - name: track\n    file: track.wav\n",
+            )
+            .unwrap();
+            let out = tmp.path().join("song.frames");
+            std::fs::write(&out, "kept").unwrap();
+            let refused = render_light_show(
+                tmp.path().to_str().unwrap(),
+                Some("host".into()),
+                "Song",
+                out.to_str().unwrap(),
+                10,
+            );
+            assert!(refused.unwrap_err().to_string().contains("no light show"));
+            assert_eq!(std::fs::read_to_string(&out).unwrap(), "kept");
+            assert!(!tmp.path().join("song.frames.partial").exists());
+        }
+
+        #[test]
+        fn a_song_the_project_does_not_have_is_refused() {
+            let tmp = super::brightness_changes_tests::project(BLUE);
+            let out = tmp.path().join("song.frames");
+            let refused = render_light_show(
+                tmp.path().to_str().unwrap(),
+                Some("host".into()),
+                "Another",
+                out.to_str().unwrap(),
+                10,
+            );
+            assert!(refused.is_err());
+            assert!(
+                !out.exists(),
+                "nothing is written for a song that is not there"
+            );
+        }
+    }
+
     mod brightness_changes_tests {
         use super::*;
 
         /// A project with one song whose show dims on the background layer and
         /// puts colour on the foreground, over a dimmer-channel par.
-        fn project(light: &str) -> tempfile::TempDir {
+        pub(super) fn project(light: &str) -> tempfile::TempDir {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path();
             std::fs::create_dir_all(root.join("lighting/fixture_types")).unwrap();

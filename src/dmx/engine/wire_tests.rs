@@ -95,7 +95,7 @@ fn wire(engine: &Engine, channel: u16) -> u8 {
 /// Each fixture's channels as the live state reports them.
 fn state(engine: &Engine) -> HashMap<String, HashMap<String, u8>> {
     let effects = engine.effect_engine.lock();
-    crate::state::engine_snapshot(&effects, None, &HashMap::new())
+    crate::state::engine_snapshot(&effects, None)
         .fixtures
         .into_iter()
         .map(|f| (f.name, f.channels))
@@ -261,8 +261,7 @@ fn a_mover_cleared_after_a_move_is_drawn_where_its_bytes_point() -> Result<(), B
         !engine.effect_engine.lock().poses().contains_key("spot"),
         "the clear released pose memory"
     );
-    let snapshot =
-        crate::state::engine_snapshot(&engine.effect_engine.lock(), None, &HashMap::new());
+    let snapshot = crate::state::engine_snapshot(&engine.effect_engine.lock(), None);
     let pose = snapshot.poses.iter().find(|p| p.name == "spot").unwrap();
     assert!(
         (pose.pan - 90.0).abs() < 0.1 && (pose.tilt - 45.0).abs() < 0.1,
@@ -273,8 +272,7 @@ fn a_mover_cleared_after_a_move_is_drawn_where_its_bytes_point() -> Result<(), B
     // A mover nothing has sent a byte rests.
     let fresh = rig()?;
     frame(&fresh, 0.0);
-    let snapshot =
-        crate::state::engine_snapshot(&fresh.effect_engine.lock(), None, &HashMap::new());
+    let snapshot = crate::state::engine_snapshot(&fresh.effect_engine.lock(), None);
     let pose = snapshot.poses.iter().find(|p| p.name == "spot").unwrap();
     assert_eq!((pose.pan, pose.tilt), (0.0, 0.0));
     Ok(())

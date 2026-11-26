@@ -209,14 +209,9 @@ fn shown_bytes(
     states: &HashMap<String, crate::lighting::effects::FixtureState>,
 ) -> HashMap<u16, u8> {
     let registry = engine.get_fixture_registry();
-    let has_dimmer: HashMap<String, bool> = registry
-        .iter()
-        .map(|(name, info)| (name.clone(), info.has_dimmer()))
-        .collect();
     let mut bytes = HashMap::new();
     for snapshot in crate::state::fixture_snapshots_with_cells(
         states,
-        &has_dimmer,
         registry,
         // The states alone: what the view would show of them.
         &Default::default(),

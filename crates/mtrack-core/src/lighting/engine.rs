@@ -77,6 +77,11 @@ pub(crate) struct FixtureRegistry {
     /// Each pixel fixture's sub-fixture names (`parent/cell`), in cell
     /// order (design §17.3).
     cells: HashMap<String, Vec<String>>,
+    /// The channels that carry a level or colour
+    /// ([`EffectEngine::level_channels`]), once a frame has asked: they
+    /// change only when a fixture is registered, and every frame sent
+    /// reads them.
+    levels: Option<HashSet<(u16, u16)>>,
     /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
     /// Only built during tests for validation; not needed in production.
     #[cfg(test)]
@@ -88,6 +93,7 @@ impl FixtureRegistry {
         Self {
             fixtures: HashMap::new(),
             cells: HashMap::new(),
+            levels: None,
             #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
         }
@@ -100,6 +106,7 @@ impl FixtureRegistry {
     }
 
     fn register(&mut self, fixture: FixtureInfo) {
+        self.levels = None;
         // A pixel fixture's cells register beside it as sub-fixtures: the
         // parent's patch and rotation, the cell's channels, a position of
         // the parent's plus the rotated cell offset, no pan or tilt.
@@ -698,8 +705,14 @@ impl EffectEngine {
     /// patched levels and colours the last frame wrote and this one does
     /// not going to 0. Answers those, to send after the frame.
     pub fn send(&mut self, frame: &[DmxCommand]) -> Vec<DmxCommand> {
-        let levels = self.level_channels();
-        self.wire.send(frame, &levels)
+        let levels = self
+            .fixtures
+            .levels
+            .take()
+            .unwrap_or_else(|| self.level_channels());
+        let released = self.wire.send(frame, &levels);
+        self.fixtures.levels = Some(levels);
+        released
     }
 
     /// From now on a start from history (see [`Self::start_from`]) sends
@@ -1449,26 +1462,23 @@ impl EffectEngine {
 
         self.update_subphase.store(80, Ordering::Relaxed);
 
-        // Store states for preview/debugging (before converting to DMX)
-        self.last_merged_states = current_fixture_states.clone();
-
         // Convert fixture states to DMX commands. A sub-fixture (a cell)
         // writes nothing of its own: its parent writes every cell, merging
         // the cell's state over its own (design §17.3). A parent no effect
         // touched this frame still writes its cells when one of them was.
         let mut commands = Vec::new();
-        let mut parents_with_cell_states: Vec<String> = Vec::new();
+        let mut parents_with_cell_states: Vec<&String> = Vec::new();
         for name in current_fixture_states.keys() {
-            if let Some(parent) = self.fixtures.get(name).and_then(|f| f.parent.clone()) {
-                if !current_fixture_states.contains_key(&parent)
+            if let Some(parent) = self.fixtures.get(name).and_then(|f| f.parent.as_ref()) {
+                if !current_fixture_states.contains_key(parent)
                     && !parents_with_cell_states.contains(&parent)
                 {
                     parents_with_cell_states.push(parent);
                 }
             }
         }
-        for parent in parents_with_cell_states {
-            current_fixture_states.insert(parent, FixtureState::new());
+        for parent in &parents_with_cell_states {
+            current_fixture_states.insert((*parent).clone(), FixtureState::new());
         }
         for (fixture_name, fixture_state) in &current_fixture_states {
             let Some(fixture_info) = self.fixtures.get(fixture_name) else {
@@ -1480,13 +1490,25 @@ impl EffectEngine {
             if fixture_info.cells.is_empty() {
                 commands.extend(fixture_state.to_dmx_commands(fixture_info));
             } else {
+                // Each cell's sub-fixture name as the registry made it, in
+                // the cells' order.
+                let subs = self.fixtures.cells_of(fixture_name);
                 commands.extend(
                     fixture_state.to_dmx_commands_with_cells(fixture_info, |cell| {
-                        current_fixture_states.get(&cell_fixture_name(fixture_name, cell))
+                        let at = fixture_info.cells.iter().position(|c| c.name == cell)?;
+                        current_fixture_states.get(subs.get(at)?)
                     }),
                 );
             }
         }
+
+        // Store states for preview/debugging: the frame's own, without the
+        // parents added above only so their cells were written. Kept and
+        // not copied: nothing below reads them.
+        for parent in parents_with_cell_states {
+            current_fixture_states.remove(parent);
+        }
+        self.last_merged_states = current_fixture_states;
 
         // Cache commands and store generation for fast-path short-circuit on
         // subsequent frames where nothing changes.
@@ -1501,41 +1523,46 @@ impl EffectEngine {
     /// plain `red/green/blue/white/dimmer` channels, per fixture and per
     /// cell. Nothing but plain channels is left in `states`.
     fn resolve_brightness(&self, states: &mut HashMap<String, FixtureState>) {
-        let mut parents: HashSet<String> = HashSet::new();
+        // Named from the registry, which outlives the frame, so no name is
+        // copied to be remembered.
+        let mut parents: HashSet<&String> = HashSet::new();
         for (name, state) in states.iter_mut() {
             let Some(info) = self.fixtures.get(name) else {
                 state.drop_unresolved();
                 continue;
             };
             if let Some(parent) = &info.parent {
-                parents.insert(parent.clone());
+                parents.insert(parent);
             } else if info.cells.is_empty() {
                 state.resolve(&info.channels);
             } else {
-                parents.insert(name.clone());
+                parents.insert(&info.name);
             }
         }
         for parent in parents {
-            let Some(info) = self.fixtures.get(&parent) else {
+            let Some(info) = self.fixtures.get(parent) else {
                 continue;
             };
-            let mut state = states.remove(&parent);
+            let mut state = states.remove(parent);
             let had_state = state.is_some();
             let mut fixture_state = state.take().unwrap_or_default();
+            // Each cell's sub-fixture name, as the registry made it when the
+            // fixture was registered, and not made again every frame.
+            let subs = self.fixtures.cells_of(parent);
             let mut cells: HashMap<String, FixtureState> = info
                 .cells
                 .iter()
-                .filter_map(|cell| {
-                    let sub = cell_fixture_name(&parent, &cell.name);
-                    states.remove(&sub).map(|s| (cell.name.clone(), s))
-                })
+                .zip(subs)
+                .filter_map(|(cell, sub)| states.remove(sub).map(|s| (cell.name.clone(), s)))
                 .collect();
             crate::lighting::effects::resolve_fixture(&mut fixture_state, &mut cells, info);
-            for (cell, state) in cells {
-                states.insert(cell_fixture_name(&parent, &cell), state);
+            for (cell, sub) in info.cells.iter().zip(subs) {
+                if let Some(state) = cells.remove(&cell.name) {
+                    states.insert(sub.clone(), state);
+                }
             }
             if had_state || !fixture_state.channels.is_empty() {
-                states.insert(parent, fixture_state);
+                states.insert(parent.clone(), fixture_state);
             }
         }
     }
