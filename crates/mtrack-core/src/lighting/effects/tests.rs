@@ -143,7 +143,7 @@ fn test_effect_instance_creation() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string(), "fixture2".to_string()],
@@ -324,7 +324,7 @@ fn test_effects_total_duration() {
     let static_effect = EffectInstance::new(
         "static".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture".to_string()],
@@ -385,7 +385,7 @@ fn test_effects_with_duration_return_correct_total_duration() {
     let static_effect = EffectInstance::new(
         "static".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(3),
         },
         vec!["fixture".to_string()],

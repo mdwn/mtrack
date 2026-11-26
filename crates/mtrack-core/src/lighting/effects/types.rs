@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use super::color::Color;
@@ -24,7 +23,7 @@ use super::tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
 pub enum EffectType {
     /// Static effect with fixed parameter values
     Static {
-        parameters: HashMap<String, f64>,
+        parameters: crate::lighting::names::NameMap<f64>,
         duration: Duration,
     },
 
@@ -203,7 +202,7 @@ impl EffectType {
                 // Keyed by the DSL spelling the author used (`color`, `dimmer`,
                 // `intensity`, individual channels).
                 for (key, value) in parameters {
-                    out.insert(key.clone(), format!("{value}"));
+                    out.insert(key.to_string(), format!("{value}"));
                 }
             }
             EffectType::ColorCycle {
@@ -523,7 +522,7 @@ mod tests {
     #[test]
     fn effect_type_static_duration() {
         let effect = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         };
         assert_eq!(effect.duration(), Duration::from_secs(5));
@@ -652,7 +651,7 @@ mod tests {
     #[test]
     fn total_duration_holds_for_the_effect_duration_unless_a_hold_is_written() {
         let effect = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         };
         let up = Some(Duration::from_secs(1));

@@ -35,9 +35,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::LazyLock;
-
-use parking_lot::RwLock;
+use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 
 /// A name, held once: equal to another exactly when it is the same one.
 #[derive(Clone, Copy)]
@@ -68,18 +66,28 @@ known! {
     YELLOW = "yellow",
     PAN = "pan",
     TILT = "tilt",
+    INTENSITY = "_intensity",
 }
 
 static HELD: LazyLock<RwLock<HashSet<&'static str>>> =
     LazyLock::new(|| RwLock::new(KNOWN.iter().map(|name| name.0).collect()));
 
+/// The names held, to read.
+fn held() -> RwLockReadGuard<'static, HashSet<&'static str>> {
+    HELD.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl Name {
     /// The name `text`, held from now on if it was not already.
     pub fn of(text: &str) -> Name {
-        if let Some(held) = HELD.read().get(text) {
+        if let Some(held) = held().get(text) {
             return Name(held);
         }
-        let mut held = HELD.write();
+        // A panic while the set was held leaves it whole: a name is put in
+        // by one insert.
+        let mut held = HELD
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(held) = held.get(text) {
             return Name(held);
         }
@@ -91,7 +99,7 @@ impl Name {
     /// The name `text` if it is held: `None` says nothing anywhere is
     /// called that, so nothing keyed by a name can hold it. Holds nothing.
     pub fn find(text: &str) -> Option<Name> {
-        HELD.read().get(text).map(|held| Name(held))
+        held().get(text).map(|held| Name(held))
     }
 
     pub fn as_str(self) -> &'static str {
@@ -408,6 +416,12 @@ impl<K: AsName, V> FromIterator<(K, V)> for NameMap<V> {
 impl<K: AsName, V, const N: usize> From<[(K, V); N]> for NameMap<V> {
     fn from(entries: [(K, V); N]) -> Self {
         entries.into_iter().collect()
+    }
+}
+
+impl<K: AsName, V, S> From<std::collections::HashMap<K, V, S>> for NameMap<V> {
+    fn from(map: std::collections::HashMap<K, V, S>) -> Self {
+        map.into_iter().collect()
     }
 }
 

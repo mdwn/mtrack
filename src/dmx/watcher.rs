@@ -575,7 +575,7 @@ show "test" {
         let effect = crate::lighting::EffectInstance::new(
             "test".to_string(),
             crate::lighting::effects::EffectType::Static {
-                parameters: std::collections::HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["group1".to_string()],
@@ -600,7 +600,7 @@ show "test" {
         let effect = crate::lighting::EffectInstance::new(
             "test".to_string(),
             crate::lighting::effects::EffectType::Static {
-                parameters: std::collections::HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["group1".to_string()],

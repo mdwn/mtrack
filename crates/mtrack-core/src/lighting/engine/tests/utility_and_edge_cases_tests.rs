@@ -31,7 +31,7 @@ fn test_get_active_effects_returns_correct_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -47,7 +47,7 @@ fn test_get_active_effects_returns_correct_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -92,7 +92,7 @@ fn test_get_active_effects_returns_reference() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -139,7 +139,7 @@ fn test_get_fixture_states_returns_states_after_update() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: parameters.clone(),
+            parameters: parameters.clone().into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -187,7 +187,7 @@ fn test_get_fixture_states_reflects_latest_update() {
     let effect1 = EffectInstance::new(
         "effect1".to_string(),
         EffectType::Static {
-            parameters: parameters1,
+            parameters: parameters1.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -213,7 +213,7 @@ fn test_get_fixture_states_reflects_latest_update() {
     let effect2 = EffectInstance::new(
         "effect2".to_string(),
         EffectType::Static {
-            parameters: parameters2,
+            parameters: parameters2.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -254,7 +254,7 @@ fn test_get_fixture_states_cleared_on_stop_all() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -291,7 +291,7 @@ fn test_get_fixture_states_multiple_fixtures() {
     let effect1 = EffectInstance::new(
         "effect1".to_string(),
         EffectType::Static {
-            parameters: parameters1,
+            parameters: parameters1.into(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
@@ -307,7 +307,7 @@ fn test_get_fixture_states_multiple_fixtures() {
     let effect2 = EffectInstance::new(
         "effect2".to_string(),
         EffectType::Static {
-            parameters: parameters2,
+            parameters: parameters2.into(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
@@ -349,7 +349,7 @@ fn test_update_with_zero_duration() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -379,7 +379,7 @@ fn test_update_with_very_large_duration() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(1),
         },
@@ -420,7 +420,7 @@ fn test_update_with_none_song_time() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -457,7 +457,7 @@ fn test_multiple_fixture_registration() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -473,7 +473,7 @@ fn test_multiple_fixture_registration() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -489,7 +489,7 @@ fn test_multiple_fixture_registration() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("green".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -523,7 +523,7 @@ fn test_register_same_fixture_name_twice() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -582,7 +582,7 @@ fn test_set_tempo_map_none() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -609,7 +609,7 @@ fn test_effect_with_empty_target_fixtures() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -640,7 +640,7 @@ fn test_update_multiple_times_sequential() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -684,7 +684,7 @@ fn test_active_effects_count_matches_get_active_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -701,7 +701,7 @@ fn test_active_effects_count_matches_get_active_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },

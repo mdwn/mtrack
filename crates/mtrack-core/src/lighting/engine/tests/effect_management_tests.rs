@@ -30,7 +30,7 @@ fn test_effect_priority() {
     let low_effect = EffectInstance::new(
         "low_effect".to_string(),
         EffectType::Static {
-            parameters: low_priority_params,
+            parameters: low_priority_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -47,7 +47,7 @@ fn test_effect_priority() {
     let high_effect = EffectInstance::new(
         "high_effect".to_string(),
         EffectType::Static {
-            parameters: high_priority_params,
+            parameters: high_priority_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -81,7 +81,7 @@ fn test_effect_stop() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -113,7 +113,7 @@ fn test_invalid_fixture_error() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(5),
         },
         vec!["nonexistent_fixture".to_string()],
@@ -144,7 +144,7 @@ fn test_effect_duration_expiry() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_millis(100), // Set duration for expiry test
         },
         vec!["test_fixture".to_string()],
@@ -182,7 +182,7 @@ fn same_time_effects_stack_in_start_order_whatever_their_ids() {
             let mut effect = EffectInstance::new(
                 id.to_string(),
                 EffectType::Static {
-                    parameters: HashMap::from([("dimmer".to_string(), dimmer)]),
+                    parameters: HashMap::from([("dimmer".to_string(), dimmer)]).into(),
                     duration: Duration::from_secs(5),
                 },
                 vec!["test_fixture".to_string()],

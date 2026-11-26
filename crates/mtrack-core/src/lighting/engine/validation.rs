@@ -171,7 +171,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["nonexistent"],
@@ -184,7 +184,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -201,7 +201,7 @@ mod tests {
         params.insert("red".to_string(), 1.5); // > 1.0
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -216,7 +216,7 @@ mod tests {
         params.insert("red".to_string(), -0.1);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -441,7 +441,7 @@ mod tests {
         let registry = registry_with(vec![dimmer_fixture("d1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["d1"],
@@ -580,7 +580,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["not_in_registry"],

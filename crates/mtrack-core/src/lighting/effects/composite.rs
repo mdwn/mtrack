@@ -34,6 +34,7 @@ use super::fixture::{has_cmy, has_dimmer_channel, FixtureInfo};
 use super::state::{blend_value, ChannelState, FixtureState};
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::lerp;
+use crate::lighting::names::{self, Name};
 
 /// The internal channel an effect's level is set under. Never a real
 /// channel, never written out: [`FixtureState::set_channel`] turns it into
@@ -42,6 +43,12 @@ pub const INTENSITY: &str = "_intensity";
 
 /// The colour channels that are composited, in the order of the arrays.
 const COLOUR: [&str; 4] = ["red", "green", "blue", "white"];
+
+/// [`COLOUR`] as names.
+#[inline]
+fn colour() -> [Name; 4] {
+    [names::RED, names::GREEN, names::BLUE, names::WHITE]
+}
 
 /// What an [`Op`] sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,11 +60,11 @@ pub(super) enum OpKind {
 }
 
 /// The op a channel name stands for, `None` for an ordinary channel.
-pub(super) fn op_kind(name: &str) -> Option<OpKind> {
-    if name == INTENSITY {
+pub(super) fn op_kind(name: Name) -> Option<OpKind> {
+    if name == names::INTENSITY {
         return Some(OpKind::Intensity);
     }
-    COLOUR.iter().position(|c| *c == name).map(OpKind::Colour)
+    colour().iter().position(|c| *c == name).map(OpKind::Colour)
 }
 
 /// One effect's ask of a fixture's colour or level.
@@ -85,13 +92,13 @@ struct Seed {
 
 impl Seed {
     fn of(state: &FixtureState, dimmer: bool) -> Self {
-        let value = |name: &str| state.channels.get(name).map(|c| c.value);
+        let value = |name: Name| state.channels.get(name).map(|c| c.value);
         Seed {
-            colour: COLOUR.map(value),
-            dimmer: if dimmer { value("dimmer") } else { None },
-            flags: crate::lighting::channels::CMY_OF_RGB
+            colour: colour().map(value),
+            dimmer: if dimmer { value(names::DIMMER) } else { None },
+            flags: [names::CYAN, names::MAGENTA, names::YELLOW]
                 .iter()
-                .any(|(_, flag)| state.channels.contains_key(*flag)),
+                .any(|flag| state.channels.contains_key(*flag)),
         }
     }
 }
@@ -277,7 +284,7 @@ impl Composite {
     /// The colour channels to write and their values. `takes` is which of
     /// the channels the target has, for the white a colour-less fixture
     /// shows.
-    fn colours(&self, level: &Level, mixing: Mixing) -> Vec<(&'static str, f64)> {
+    fn colours(&self, level: &Level, mixing: Mixing) -> Vec<(Name, f64)> {
         let Mixing {
             channels: takes,
             cmy,
@@ -310,7 +317,7 @@ impl Composite {
                     Level::Shared(by) => relative(i, *by),
                     Level::Plain => self.light[i],
                 };
-                (COLOUR[i], value.clamp(0.0, 1.0))
+                (colour()[i], value.clamp(0.0, 1.0))
             })
             .collect()
     }
@@ -340,11 +347,10 @@ impl Mixing {
     }
 }
 
-fn put(state: &mut FixtureState, layer: EffectLayer, name: &str, value: f64) {
-    state.channels.insert(
-        name.to_string(),
-        ChannelState::new(value, layer, BlendMode::Replace),
-    );
+fn put(state: &mut FixtureState, layer: EffectLayer, name: Name, value: f64) {
+    state
+        .channels
+        .insert(name, ChannelState::new(value, layer, BlendMode::Replace));
 }
 
 /// Composites `state`'s ops into plain channels for a fixture with
@@ -371,7 +377,7 @@ pub(super) fn resolve_mixed(state: &mut FixtureState, mixing: Mixing) {
         put(state, composite.top, name, value);
     }
     if has_dimmer {
-        put(state, composite.top, "dimmer", composite.level());
+        put(state, composite.top, names::DIMMER, composite.level());
     }
 }
 
@@ -437,7 +443,7 @@ pub fn resolve_fixture(
             put(parent, g.top, name, value);
         }
         if let Some(dimmer) = dimmer {
-            put(parent, g.top, "dimmer", dimmer);
+            put(parent, g.top, names::DIMMER, dimmer);
         }
     }
     let mut top = ganged.as_ref().map(|g| g.top);
@@ -448,7 +454,7 @@ pub fn resolve_fixture(
             put(state, c.top, name, value);
         }
         if let Some(dimmer) = dimmer {
-            put(state, c.top, "dimmer", dimmer);
+            put(state, c.top, names::DIMMER, dimmer);
         }
         top = top.max(Some(c.top));
     }
@@ -456,7 +462,7 @@ pub fn resolve_fixture(
         put(
             parent,
             top.unwrap_or(EffectLayer::BACKGROUND),
-            "dimmer",
+            names::DIMMER,
             shared,
         );
     }

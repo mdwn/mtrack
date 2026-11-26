@@ -33,7 +33,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -52,7 +52,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -72,7 +72,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("green".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -92,7 +92,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("blue".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -135,7 +135,7 @@ fn test_stop_sequence_with_no_matching_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -178,7 +178,7 @@ fn test_clear_all_layers_stops_all_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.3);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -195,7 +195,7 @@ fn test_clear_all_layers_stops_all_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -212,7 +212,7 @@ fn test_clear_all_layers_stops_all_effects() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("green".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -252,7 +252,7 @@ fn test_clear_all_layers_clears_frozen_layers() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -292,7 +292,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
                 p.insert("blue".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5), // Permanent effect
         },
@@ -328,7 +328,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("green".to_string(), 1.0); // Different color to verify it works
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -486,7 +486,7 @@ fn test_freeze_unfreeze_different_layers_independently() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -503,7 +503,7 @@ fn test_freeze_unfreeze_different_layers_independently() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("red".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -543,7 +543,7 @@ fn static_dimmer_effect(id: &str, layer: EffectLayer, level: f64) -> EffectInsta
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), level);
-                p
+                p.into()
             },
             duration: Duration::from_secs(30),
         },

@@ -26,7 +26,7 @@ use super::super::tempo::TempoMap;
 fn build_fixture_states(
     fixture_registry: &HashMap<String, FixtureInfo>,
     effect: &EffectInstance,
-    mut apply_fn: impl FnMut(&FixtureProfile) -> HashMap<String, ChannelState>,
+    mut apply_fn: impl FnMut(&FixtureProfile) -> crate::lighting::names::NameMap<ChannelState>,
 ) -> HashMap<String, FixtureState> {
     let mut fixture_states = HashMap::new();
     for fixture_name in &effect.target_fixtures {
@@ -264,7 +264,7 @@ pub(crate) fn process_effect(
 fn apply_static_effect(
     fixture_registry: &HashMap<String, FixtureInfo>,
     effect: &EffectInstance,
-    parameters: &HashMap<String, f64>,
+    parameters: &crate::lighting::names::NameMap<f64>,
     elapsed: Duration,
 ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
@@ -445,7 +445,7 @@ fn apply_strobe(
                 if fixture.has_capability(FixtureCapabilities::STROBING) {
                     // Hardware strobe: just disable the strobe channel
                     fixture_state.set_channel(
-                        "strobe".to_string(),
+                        crate::lighting::names::STROBE,
                         ChannelState::new(0.0, effect.layer, effect.blend_mode),
                     );
                 }
@@ -1369,7 +1369,7 @@ mod tests {
         let mut effect = EffectInstance::new(
             "test".to_string(),
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec![],
@@ -1398,7 +1398,7 @@ mod tests {
         let effect = EffectInstance::new(
             "test".to_string(),
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["unknown_fixture".to_string()],
@@ -1406,7 +1406,7 @@ mod tests {
             None,
             None,
         );
-        let states = build_fixture_states(&registry, &effect, |_profile| HashMap::new());
+        let states = build_fixture_states(&registry, &effect, |_profile| Default::default());
         assert!(states.is_empty());
     }
 
@@ -1428,7 +1428,7 @@ mod tests {
         let effect = EffectInstance::new(
             "test".to_string(),
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["test_fix".to_string()],
@@ -1442,7 +1442,7 @@ mod tests {
                 "dimmer".to_string(),
                 ChannelState::new(1.0, EffectLayer::FOREGROUND, BlendMode::Replace),
             );
-            cmds
+            cmds.into()
         });
         assert_eq!(states.len(), 1);
         assert!(states.contains_key("test_fix"));

@@ -301,7 +301,7 @@ mod tests {
         let mut inst = EffectInstance::new(
             id.to_string(),
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["f1".to_string()],

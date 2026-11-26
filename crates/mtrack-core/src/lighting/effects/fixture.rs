@@ -15,37 +15,35 @@
 use std::collections::HashMap;
 
 use super::color::Color;
+#[cfg(test)]
 use super::composite::INTENSITY;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::{base_channel, is_position_channel, CMY_OF_RGB};
+use crate::lighting::names::{self, NameMap};
 use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// The one internal contribution a level makes, whatever the fixture's
 /// hardware: its layer, blend mode and value, composited with the colour
 /// at the end of the frame (design 3.4).
-fn intensity(
-    value: f64,
-    layer: EffectLayer,
-    blend_mode: BlendMode,
-) -> HashMap<String, ChannelState> {
-    HashMap::from([(
-        INTENSITY.to_string(),
+fn intensity(value: f64, layer: EffectLayer, blend_mode: BlendMode) -> NameMap<ChannelState> {
+    NameMap::from([(
+        names::INTENSITY,
         ChannelState::new(value, layer, blend_mode),
     )])
 }
 
 /// Insert RGB channel states into a result map
 fn insert_rgb(
-    result: &mut HashMap<String, ChannelState>,
+    result: &mut NameMap<ChannelState>,
     value: f64,
     layer: EffectLayer,
     blend_mode: BlendMode,
 ) {
     let state = ChannelState::new(value, layer, blend_mode);
-    result.insert("red".to_string(), state);
-    result.insert("green".to_string(), state);
-    result.insert("blue".to_string(), state);
+    result.insert(names::RED, state);
+    result.insert(names::GREEN, state);
+    result.insert(names::BLUE, state);
 }
 
 /// Bitwise flags for fixture capabilities
@@ -282,7 +280,7 @@ impl FixtureProfile {
         level: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         intensity(level, layer, blend_mode)
     }
 
@@ -292,8 +290,8 @@ impl FixtureProfile {
         color: Color,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
+    ) -> NameMap<ChannelState> {
+        let mut result = NameMap::new();
 
         match self.color_strategy {
             ColorStrategy::Rgb => {
@@ -301,22 +299,22 @@ impl FixtureProfile {
                 let normalize = |v: u8| v as f64 / 255.0;
 
                 result.insert(
-                    "red".to_string(),
+                    names::RED,
                     ChannelState::new(normalize(color.r), layer, blend_mode),
                 );
                 result.insert(
-                    "green".to_string(),
+                    names::GREEN,
                     ChannelState::new(normalize(color.g), layer, blend_mode),
                 );
                 result.insert(
-                    "blue".to_string(),
+                    names::BLUE,
                     ChannelState::new(normalize(color.b), layer, blend_mode),
                 );
 
                 // Add white channel if present in color
                 if let Some(w) = color.w {
                     result.insert(
-                        "white".to_string(),
+                        names::WHITE,
                         ChannelState::new(normalize(w), layer, blend_mode),
                     );
                 }
@@ -335,8 +333,8 @@ impl FixtureProfile {
         blend_mode: BlendMode,
         crossfade_multiplier: f64,
         strobe_value: Option<f64>, // For software strobing
-    ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
+    ) -> NameMap<ChannelState> {
+        let mut result = NameMap::new();
 
         // Only apply strobe if crossfade multiplier is > 0 (effect is active)
         if crossfade_multiplier <= 0.0 {
@@ -348,7 +346,7 @@ impl FixtureProfile {
                 // Hardware strobe: send normalized speed value to dedicated strobe channel
                 // Note: frequency normalization should be done by the caller
                 result.insert(
-                    "strobe".to_string(),
+                    names::STROBE,
                     ChannelState::new(frequency, layer, blend_mode),
                 );
             }
@@ -378,7 +376,7 @@ impl FixtureProfile {
         pulse_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         intensity(pulse_value, layer, blend_mode)
     }
 
@@ -403,7 +401,7 @@ impl FixtureProfile {
         chase_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         match (self.chase_strategy, blend_mode) {
             (
                 ChaseStrategy::RgbChannels,
@@ -413,7 +411,7 @@ impl FixtureProfile {
                     BlendMode::Overlay => BlendMode::Screen,
                     other => other,
                 };
-                let mut result = HashMap::new();
+                let mut result = NameMap::new();
                 insert_rgb(&mut result, chase_value, layer, lifting_mode);
                 result
             }

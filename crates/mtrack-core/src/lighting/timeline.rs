@@ -677,7 +677,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -956,7 +956,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["front_wash".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1005,7 +1005,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1076,7 +1076,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1128,7 +1128,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["fixture1".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1148,7 +1148,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["fixture2".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1311,7 +1311,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1363,7 +1363,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1430,7 +1430,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1503,7 +1503,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             layer: None,
@@ -1622,7 +1622,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(60),
             },
             layer: Some(EffectLayer::BACKGROUND),
@@ -1642,7 +1642,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(60),
             },
             layer: Some(EffectLayer::FOREGROUND),
@@ -1732,7 +1732,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(60),
             },
             layer: None,
@@ -1806,7 +1806,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(60),
             },
             layer: None,
@@ -1889,7 +1889,7 @@ mod tests {
             spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(60),
             },
             layer: None,

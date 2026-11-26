@@ -36,6 +36,8 @@ pub mod geometry;
 pub mod import_report;
 #[path = "../../../src/lighting/mvr_types.rs"]
 pub mod mvr_types;
+#[path = "../../mtrack-core/src/lighting/names.rs"]
+pub mod names;
 pub mod parser;
 #[path = "../../../src/lighting/stage_model.rs"]
 pub mod stage_model;

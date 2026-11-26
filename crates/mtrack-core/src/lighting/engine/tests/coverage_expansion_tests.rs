@@ -33,7 +33,7 @@ fn test_format_active_effects_all_effect_types() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },

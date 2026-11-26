@@ -46,7 +46,7 @@ fn test_effects_coexist_across_layers() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -79,7 +79,7 @@ fn test_effects_coexist_across_layers() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -151,7 +151,7 @@ fn test_effects_coexist_on_different_fixtures() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -166,7 +166,7 @@ fn test_effects_coexist_on_different_fixtures() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -209,7 +209,7 @@ fn test_all_effect_types_coexist() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -345,7 +345,7 @@ fn test_disabled_effects_coexist() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -361,7 +361,7 @@ fn test_disabled_effects_coexist() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -415,7 +415,7 @@ fn test_effects_coexist_in_different_layers() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -430,7 +430,7 @@ fn test_effects_coexist_in_different_layers() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -454,7 +454,7 @@ fn test_effects_coexist_in_different_layers() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("green".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },

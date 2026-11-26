@@ -151,7 +151,7 @@ fn test_validate_effect_nonexistent_fixture() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["nonexistent_fixture".to_string()],
@@ -183,7 +183,7 @@ fn test_validate_effect_static_parameter_out_of_range() {
     let effect_high = EffectInstance::new(
         "test_effect_high".to_string(),
         EffectType::Static {
-            parameters: params_high,
+            parameters: params_high.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -207,7 +207,7 @@ fn test_validate_effect_static_parameter_out_of_range() {
     let effect_low = EffectInstance::new(
         "test_effect_low".to_string(),
         EffectType::Static {
-            parameters: params_low,
+            parameters: params_low.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -239,7 +239,7 @@ fn test_validate_effect_static_parameter_valid_range() {
     let effect_min = EffectInstance::new(
         "test_effect_min".to_string(),
         EffectType::Static {
-            parameters: params_min,
+            parameters: params_min.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -255,7 +255,7 @@ fn test_validate_effect_static_parameter_valid_range() {
     let effect_max = EffectInstance::new(
         "test_effect_max".to_string(),
         EffectType::Static {
-            parameters: params_max,
+            parameters: params_max.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -523,7 +523,7 @@ fn test_validate_effect_timing_negative_duration() {
     let effect = EffectInstance::new(
         "test".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(1),
         },
         vec!["test_fixture".to_string()],
@@ -573,7 +573,7 @@ fn a_colour_cue_on_a_mixed_group_plays_on_every_fixture() {
     let effect = EffectInstance::new(
         "wash".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(5),
         },
         vec!["par".to_string(), "dim".to_string()],

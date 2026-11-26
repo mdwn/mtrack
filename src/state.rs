@@ -658,8 +658,8 @@ pub(crate) fn compute_fixture_snapshots(
 
             for (channel_name, channel_state) in &state.channels {
                 channels.insert(
-                    channel_name.clone(),
-                    wire_byte(info, channel_name, channel_state.value),
+                    channel_name.to_string(),
+                    wire_byte(info, &channel_name, channel_state.value),
                 );
             }
 
@@ -1337,7 +1337,7 @@ mod tests {
             let effect = EffectInstance::new(
                 "e".to_string(),
                 EffectType::Static {
-                    parameters,
+                    parameters: parameters.into(),
                     duration: std::time::Duration::from_secs(5),
                 },
                 vec!["f".to_string()],
@@ -1475,7 +1475,7 @@ mod tests {
             .start_effect(EffectInstance::new(
                 "cell".to_string(),
                 EffectType::Static {
-                    parameters: HashMap::from([("red".to_string(), 0.3)]),
+                    parameters: HashMap::from([("red".to_string(), 0.3)]).into(),
                     duration: std::time::Duration::from_secs(5),
                 },
                 vec!["Bar/2".to_string()],

@@ -70,7 +70,7 @@ mod tests {
         let mut eff = EffectInstance::new(
             format!("static_{}", name),
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec![name.to_string()],

@@ -31,7 +31,7 @@ fn test_clear_layer() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -47,7 +47,7 @@ fn test_clear_layer() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -367,7 +367,7 @@ fn test_layer_intensity_master() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -582,7 +582,7 @@ fn test_multiple_layers_independent() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -599,7 +599,7 @@ fn test_multiple_layers_independent() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.8);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -649,7 +649,7 @@ fn cued_green_static() -> EffectEngine {
     let mut effect = EffectInstance::new(
         "green".to_string(),
         EffectType::Static {
-            parameters: HashMap::from([("green".to_string(), 1.0)]),
+            parameters: HashMap::from([("green".to_string(), 1.0)]).into(),
             duration: Duration::from_secs(4),
         },
         vec!["brick".to_string()],

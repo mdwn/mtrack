@@ -34,7 +34,7 @@ fn test_effect_layering_with_strobe() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],

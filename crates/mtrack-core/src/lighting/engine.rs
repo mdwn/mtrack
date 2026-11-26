@@ -821,15 +821,15 @@ impl EffectEngine {
             let old = old_states.get(name).unwrap_or(&empty);
             let new = new_states.get(name).unwrap_or(&empty);
             let mut state = FixtureState::new();
-            let channels: HashSet<&String> =
+            let channels: HashSet<crate::lighting::names::Name> =
                 old.channels.keys().chain(new.channels.keys()).collect();
             for channel in channels {
                 let (o, n) = (old.channels.get(channel), new.channels.get(channel));
                 let blended =
-                    CrossKind::of(channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
+                    CrossKind::of(&channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
                 let like = n.or(o).expect("a channel one side has");
                 state.channels.insert(
-                    channel.clone(),
+                    channel,
                     ChannelState::new(blended, like.layer, like.blend_mode),
                 );
             }
@@ -1575,7 +1575,7 @@ impl EffectEngine {
     fn release_undriven_strobes(&mut self, states: &mut HashMap<String, FixtureState>) {
         let driven: HashSet<String> = states
             .iter()
-            .filter(|(_, state)| state.channels.contains_key("strobe"))
+            .filter(|(_, state)| state.channels.contains_key(crate::lighting::names::STROBE))
             .map(|(name, _)| name.clone())
             .collect();
         for name in self.strobe_driven.difference(&driven) {
@@ -1583,7 +1583,7 @@ impl EffectEngine {
                 continue;
             }
             states.entry(name.clone()).or_default().channels.insert(
-                "strobe".to_string(),
+                crate::lighting::names::STROBE,
                 ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
             );
         }
@@ -2444,7 +2444,7 @@ impl<'a> Replay<'a> {
 fn leaves_settings(effect: &EffectInstance) -> bool {
     match &effect.effect_type {
         EffectType::Static { parameters, .. } => {
-            parameters.keys().any(|channel| !fades_to_dark(channel))
+            parameters.keys().any(|channel| !fades_to_dark(&channel))
         }
         EffectType::Move { .. } | EffectType::Strobe { .. } => true,
         EffectType::ColorCycle { .. }

@@ -33,7 +33,7 @@ fn test_format_active_effects() {
     let effect = EffectInstance::new(
         "test_effect_1".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],

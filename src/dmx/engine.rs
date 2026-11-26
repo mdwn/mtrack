@@ -1134,7 +1134,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters: parameters.clone(),
+                parameters: parameters.clone().into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1254,7 +1254,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1340,7 +1340,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters: std::collections::HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1431,7 +1431,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_group".to_string()],
@@ -1464,7 +1464,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["unknown_group".to_string()],
@@ -1553,7 +1553,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["fixture1".to_string()],
@@ -1694,7 +1694,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -4891,7 +4891,7 @@ mod test {
                     parameters: {
                         let mut p = std::collections::HashMap::new();
                         p.insert("dimmer".to_string(), 1.0);
-                        p
+                        p.into()
                     },
                     duration: Duration::ZERO,
                 },
@@ -4992,7 +4992,7 @@ mod test {
                         parameters: {
                             let mut p = std::collections::HashMap::new();
                             p.insert("dimmer".to_string(), 0.5);
-                            p
+                            p.into()
                         },
                         duration: Duration::ZERO,
                     },
@@ -5088,7 +5088,7 @@ mod test {
                         parameters: {
                             let mut p = std::collections::HashMap::new();
                             p.insert("dimmer".to_string(), 0.5);
-                            p
+                            p.into()
                         },
                         duration: Duration::from_secs(30),
                     },
@@ -5688,7 +5688,7 @@ mod test {
             let effect = EffectInstance::new(
                 "test".to_string(),
                 EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
@@ -5714,7 +5714,7 @@ mod test {
             let effect = EffectInstance::new(
                 "test".to_string(),
                 EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
@@ -6091,7 +6091,7 @@ mod test {
                     parameters: {
                         let mut p = std::collections::HashMap::new();
                         p.insert("dimmer".to_string(), 1.0);
-                        p
+                        p.into()
                     },
                     duration: Duration::ZERO,
                 },
@@ -6335,7 +6335,7 @@ mod test {
             let effect = crate::lighting::EffectInstance::new(
                 "test".to_string(),
                 crate::lighting::effects::EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],

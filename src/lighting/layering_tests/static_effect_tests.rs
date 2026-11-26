@@ -72,7 +72,7 @@ fn test_static_replace_blend_mode() {
     let static_effect = create_effect_with_layering(
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -139,7 +139,7 @@ fn test_static_effect_timing() {
                 params.insert("red".to_string(), 1.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite
         },
@@ -185,7 +185,7 @@ fn test_static_effect_timing() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 1.0);
                 params.insert("blue".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(3), // 3 seconds
         },
@@ -301,7 +301,7 @@ fn test_static_effect_with_up_time() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite
         },
@@ -464,7 +464,7 @@ fn test_static_effect_with_down_time() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // 5 second total duration
         },
@@ -747,7 +747,7 @@ fn test_static_effect_fade_out() {
                 params.insert("green".to_string(), 0.5);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.8);
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // Timed static effect
         },
@@ -832,7 +832,7 @@ fn static_with_level(level: f64, green: f64) -> EffectInstance {
     create_effect_with_layering(
         "back_wash".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(8),
         },
         vec!["back_wash".to_string()],
@@ -912,7 +912,7 @@ fn test_static_without_a_level_still_renders_full() {
         .start_effect(create_effect_with_layering(
             "back_wash".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::from_secs(8),
             },
             vec!["back_wash".to_string()],

@@ -50,7 +50,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
                 p.insert("red".to_string(), 0.0);
                 p.insert("green".to_string(), 0.0);
                 p.insert("blue".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -155,7 +155,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
                 p.insert("green".to_string(), 0.0);
                 p.insert("blue".to_string(), 1.0);
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -237,7 +237,7 @@ fn test_effect_layering_static_blue_and_dimmer() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -332,7 +332,7 @@ fn test_dimmer_without_dedicated_channel() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -439,7 +439,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
     let blue_effect = create_effect_with_layering(
         "blue_static".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -568,7 +568,7 @@ fn test_dimmer_debug() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -679,7 +679,7 @@ fn test_static_with_dimmer_parameter() {
     let static_effect = create_effect_with_layering(
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -763,7 +763,7 @@ fn test_dimmer_replace_vs_multiply() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -890,7 +890,7 @@ fn test_astera_pixelblock_dimmer() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["astera_pixelblock".to_string()],
@@ -1320,7 +1320,7 @@ fn test_dimmer_effect_mid_level_start() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1393,7 +1393,7 @@ fn test_dimmer_curves() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1439,7 +1439,7 @@ fn test_dimmer_curves() {
                     params.insert("red".to_string(), 0.0);
                     params.insert("green".to_string(), 0.0);
                     params.insert("blue".to_string(), 1.0);
-                    params
+                    params.into()
                 },
                 duration: Duration::from_secs(5),
             },

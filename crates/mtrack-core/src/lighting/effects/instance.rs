@@ -187,7 +187,6 @@ impl EffectInstance {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use super::*;
     use crate::lighting::effects::color::Color;
@@ -198,7 +197,7 @@ mod tests {
 
     fn static_effect(duration: Duration) -> EffectType {
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration,
         }
     }

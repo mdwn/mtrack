@@ -67,7 +67,8 @@ fn static_red(targets: Vec<String>, per_cell: bool) -> EffectInstance {
                 ("green".to_string(), 0.0),
                 ("blue".to_string(), 0.0),
                 ("dimmer".to_string(), 1.0),
-            ]),
+            ])
+            .into(),
             duration: Duration::from_secs(10),
         },
         targets,

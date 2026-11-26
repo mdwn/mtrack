@@ -251,7 +251,7 @@ fn resolve_controls(info: &FixtureInfo, controls: &TestControls) -> HashMap<u16,
         start(
             "test-look",
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: hold,
             },
             EffectLayer::BACKGROUND,

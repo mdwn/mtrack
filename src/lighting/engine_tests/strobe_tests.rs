@@ -347,7 +347,7 @@ fn a_new_song_sends_a_latched_strobe_off() {
                 p.insert("red".to_string(), 0.09);
                 p.insert("green".to_string(), 0.48);
                 p.insert("blue".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -807,7 +807,7 @@ fn test_esaweg_timeline_strobe_sequence() {
                 p.insert("red".to_string(), 0.0);
                 p.insert("green".to_string(), 0.0);
                 p.insert("blue".to_string(), 0.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -860,7 +860,7 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
                 p.insert("red".to_string(), 1.0);
                 p.insert("green".to_string(), 0.4);
                 p.insert("blue".to_string(), 0.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },

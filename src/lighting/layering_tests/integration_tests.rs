@@ -36,7 +36,7 @@ fn test_layering_demo() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
@@ -156,7 +156,7 @@ fn test_multiple_effects_simultaneous() {
     let static_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec![
@@ -355,7 +355,7 @@ fn test_astera_pixelblock_real_behavior() {
     let static_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -482,7 +482,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite static effect
         },
@@ -509,7 +509,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -594,7 +594,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -621,7 +621,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // Make it timed
         },
@@ -998,7 +998,7 @@ fn test_custom_rgb_dimming() {
     let rgb_effect = create_effect_with_layering(
         "rgb_static".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
@@ -1235,7 +1235,7 @@ fn test_software_strobing_with_layering() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1366,7 +1366,7 @@ fn test_software_strobing_frequency_zero() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1448,7 +1448,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1574,7 +1574,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.5); // Start at 50%
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // 2 second fade out
         },
@@ -1592,7 +1592,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.3); // Start at 30%
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // 2 second fade out
         },
@@ -1679,7 +1679,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1745,7 +1745,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1784,7 +1784,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("green".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },

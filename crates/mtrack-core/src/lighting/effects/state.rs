@@ -18,6 +18,7 @@ use super::composite::{self, Op};
 use super::fixture::FixtureInfo;
 use super::physical::PhysicalState;
 use super::types::{BlendMode, EffectLayer};
+use crate::lighting::names::{self, AsName, Name, NameMap};
 
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
@@ -111,7 +112,7 @@ pub(super) fn blend_value(base: f64, over: f64, mode: BlendMode, mix: f64) -> f6
 /// Represents the current state of a fixture
 #[derive(Debug, Clone)]
 pub struct FixtureState {
-    pub channels: HashMap<String, ChannelState>,
+    pub channels: NameMap<ChannelState>,
     /// What the show asked for in physical units (degrees), resolved into
     /// bytes only when DMX is produced. Never scaled by a layer master.
     pub physical: PhysicalState,
@@ -141,7 +142,7 @@ impl Default for FixtureState {
 impl FixtureState {
     pub fn new() -> Self {
         Self {
-            channels: HashMap::new(),
+            channels: NameMap::new(),
             physical: PhysicalState::default(),
             strobe_hz: None,
             ops: Vec::new(),
@@ -153,7 +154,7 @@ impl FixtureState {
     /// or level an effect asked for that has not been resolved yet.
     #[cfg(any(test, feature = "test-util"))]
     pub fn get_channel(&self, name: &str) -> Option<&ChannelState> {
-        match composite::op_kind(name) {
+        match Name::find(name).and_then(composite::op_kind) {
             Some(kind) => self
                 .ops
                 .iter()
@@ -165,7 +166,7 @@ impl FixtureState {
     }
 
     /// Create a FixtureState from an iterator of channel name/state pairs.
-    pub fn from_channels(channels: impl IntoIterator<Item = (String, ChannelState)>) -> Self {
+    pub fn from_channels<K: AsName>(channels: impl IntoIterator<Item = (K, ChannelState)>) -> Self {
         let mut out = Self::new();
         for (name, state) in channels {
             out.set_channel(name, state);
@@ -177,8 +178,9 @@ impl FixtureState {
     /// ([`composite::INTENSITY`]) is recorded as an op to composite, not
     /// blended into a channel; setting one again within the same effect's
     /// state replaces it.
-    pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
-        match composite::op_kind(&channel_name) {
+    pub fn set_channel(&mut self, channel_name: impl AsName, state: ChannelState) {
+        let channel_name = channel_name.to_name();
+        match composite::op_kind(channel_name) {
             Some(kind) => {
                 if self.groups == 0 {
                     self.groups = 1;
@@ -279,17 +281,24 @@ impl FixtureState {
         channels: &HashMap<String, V>,
     ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
         let subtractive = super::fixture::has_cmy(channels);
-        crate::lighting::channels::CMY_OF_RGB
-            .map(|(rgb, cmy)| {
-                let state = self.channels.get(rgb).filter(|_| subtractive)?;
-                // The complement of the byte an RGB fixture is sent, so the
-                // two agree to the byte (each rounding its own half would
-                // not: 50% is 128 there and would be 128 here).
-                let byte = crate::lighting::channels::dmx_byte(state.value * 255.0);
-                Some((cmy, f64::from(255 - byte) / 255.0))
-            })
-            .into_iter()
-            .flatten()
+        [
+            (names::RED, "cyan"),
+            (names::GREEN, "magenta"),
+            (names::BLUE, "yellow"),
+        ]
+        .map(|(rgb, cmy)| {
+            if !subtractive {
+                return None;
+            }
+            let state = self.channels.get(rgb)?;
+            // The complement of the byte an RGB fixture is sent, so the
+            // two agree to the byte (each rounding its own half would
+            // not: 50% is 128 there and would be 128 here).
+            let byte = crate::lighting::channels::dmx_byte(state.value * 255.0);
+            Some((cmy, f64::from(255 - byte) / 255.0))
+        })
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -384,10 +393,12 @@ impl FixtureState {
         };
 
         for (channel_name, state) in &self.channels {
-            if physical.iter().any(|(name, _)| name == channel_name) || cell_owned(channel_name) {
+            if physical.iter().any(|(name, _)| channel_name == *name)
+                || cell_owned(channel_name.as_str())
+            {
                 continue;
             }
-            if let Some(def) = fixture_info.channel_defs.get(channel_name) {
+            if let Some(def) = fixture_info.channel_defs.get(channel_name.as_str()) {
                 let value = state.value;
                 commands
                     .extend(super::physical::resolve_normalized(def, value).filter_map(command));

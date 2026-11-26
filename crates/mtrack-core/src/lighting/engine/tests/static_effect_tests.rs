@@ -30,7 +30,7 @@ fn test_static_effect() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: parameters.clone(),
+            parameters: parameters.clone().into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -79,7 +79,7 @@ fn color_static(
     let mut effect = EffectInstance::new(
         id.to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(10),
         },
         vec!["brick".to_string()],

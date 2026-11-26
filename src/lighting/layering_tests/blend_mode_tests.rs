@@ -142,7 +142,7 @@ fn test_blend_mode_loss_debug() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -330,7 +330,7 @@ fn test_blend_mode_compatibility_matrix() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -345,7 +345,7 @@ fn test_blend_mode_compatibility_matrix() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },

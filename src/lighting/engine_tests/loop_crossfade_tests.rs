@@ -115,7 +115,7 @@ fn a_sibling_drives_the_same_rig_from_a_clean_slate() {
         .start_effect(crate::lighting::EffectInstance::new(
             "lit".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: std::time::Duration::from_secs(10),
             },
             vec!["mover".to_string()],

@@ -604,7 +604,7 @@ fn test_chase_rgb_only_fixtures_modulate_the_layer_beneath() {
     let bed = create_effect_with_layering(
         "red_bed".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(10),
         },
         vec![
@@ -782,7 +782,7 @@ fn test_random_chase_pattern_visibility() {
     let bed = create_effect_with_layering(
         "white_bed".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(10),
         },
         (1..=8).map(|i| format!("Brick{}", i)).collect(),

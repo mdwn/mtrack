@@ -127,7 +127,7 @@ fn test_tempo_aware_frequency_adapts_to_tempo_changes() {
     let bg_effect = EffectInstance::new(
         "bg".to_string(),
         EffectType::Static {
-            parameters: bg_params,
+            parameters: bg_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
