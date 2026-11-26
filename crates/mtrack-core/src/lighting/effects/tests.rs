@@ -49,7 +49,7 @@ fn test_fixture_capabilities() {
         1,
         1,
         "RGB_Par".to_string(),
-        rgb_channels,
+        rgb_channels.into(),
         None, // RGB_Par doesn't have strobe
     );
 
@@ -67,7 +67,7 @@ fn test_fixture_capabilities() {
         1,
         5,
         "Strobe".to_string(),
-        strobe_channels,
+        strobe_channels.into(),
         Some(20.0), // Test strobe fixture max frequency
     );
 
@@ -110,7 +110,7 @@ fn test_capabilities_performance() {
         1,
         1,
         "Moving_Head".to_string(),
-        channels,
+        channels.into(),
         Some(15.0), // Moving head max strobe frequency
     );
 
@@ -143,7 +143,7 @@ fn test_effect_instance_creation() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string(), "fixture2".to_string()],
@@ -324,7 +324,7 @@ fn test_effects_total_duration() {
     let static_effect = EffectInstance::new(
         "static".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["fixture".to_string()],
@@ -385,7 +385,7 @@ fn test_effects_with_duration_return_correct_total_duration() {
     let static_effect = EffectInstance::new(
         "static".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(3),
         },
         vec!["fixture".to_string()],

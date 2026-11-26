@@ -894,7 +894,7 @@ impl Engine {
                             fixture_info.universe,
                             channel,
                             &fixture_info.name,
-                            channel_name,
+                            &channel_name,
                         );
                     }
                 }
@@ -1117,7 +1117,7 @@ mod test {
                 1,
                 1,
                 "RGBW_Par".to_string(),
-                channels,
+                channels.into(),
                 None,
             )
         };
@@ -1134,7 +1134,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters: parameters.clone(),
+                parameters: parameters.clone().into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1236,7 +1236,7 @@ mod test {
                 1,
                 1,
                 "RGBW_Par".to_string(),
-                channels,
+                channels.into(),
                 None,
             )
         };
@@ -1254,7 +1254,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1326,7 +1326,7 @@ mod test {
             1,
             1,
             "RGB".to_string(),
-            channels,
+            channels.into(),
             None,
         );
 
@@ -1340,7 +1340,7 @@ mod test {
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters: std::collections::HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1431,7 +1431,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_group".to_string()],
@@ -1464,7 +1464,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["unknown_group".to_string()],
@@ -1553,7 +1553,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["fixture1".to_string()],
@@ -1675,7 +1675,7 @@ mod test {
             1,
             10,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
 
@@ -1694,7 +1694,7 @@ mod test {
         let effect = EffectInstance::new(
             "test_effect".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
@@ -1943,7 +1943,7 @@ mod test {
             5, // matches universe ID in create_engine
             1, // address
             "RGBW_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
 
@@ -2017,7 +2017,7 @@ mod test {
             5,
             1,
             "RGBW_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
 
@@ -3258,7 +3258,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4022,7 +4022,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4082,7 +4082,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4142,7 +4142,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4231,7 +4231,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4293,7 +4293,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4357,7 +4357,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4423,7 +4423,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4504,7 +4504,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4548,7 +4548,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4632,7 +4632,7 @@ mod test {
                     5,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -4868,7 +4868,7 @@ mod test {
                 1,
                 1,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             );
             {
@@ -4891,7 +4891,7 @@ mod test {
                     parameters: {
                         let mut p = std::collections::HashMap::new();
                         p.insert("dimmer".to_string(), 1.0);
-                        p
+                        p.into()
                     },
                     duration: Duration::ZERO,
                 },
@@ -4967,7 +4967,7 @@ mod test {
                 1,
                 1,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             );
             {
@@ -4992,7 +4992,7 @@ mod test {
                         parameters: {
                             let mut p = std::collections::HashMap::new();
                             p.insert("dimmer".to_string(), 0.5);
-                            p
+                            p.into()
                         },
                         duration: Duration::ZERO,
                     },
@@ -5067,7 +5067,7 @@ mod test {
                     1,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ));
             }
@@ -5088,7 +5088,7 @@ mod test {
                         parameters: {
                             let mut p = std::collections::HashMap::new();
                             p.insert("dimmer".to_string(), 0.5);
-                            p
+                            p.into()
                         },
                         duration: Duration::from_secs(30),
                     },
@@ -5214,7 +5214,7 @@ mod test {
                     1,
                     1,
                     "Generic".to_string(),
-                    channels,
+                    channels.into(),
                     None,
                 ),
             );
@@ -5688,7 +5688,7 @@ mod test {
             let effect = EffectInstance::new(
                 "test".to_string(),
                 EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
@@ -5714,7 +5714,7 @@ mod test {
             let effect = EffectInstance::new(
                 "test".to_string(),
                 EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
@@ -6077,7 +6077,7 @@ mod test {
                 1,
                 1,
                 "Generic".to_string(),
-                channels,
+                channels.into(),
                 None,
             );
             {
@@ -6091,7 +6091,7 @@ mod test {
                     parameters: {
                         let mut p = std::collections::HashMap::new();
                         p.insert("dimmer".to_string(), 1.0);
-                        p
+                        p.into()
                     },
                     duration: Duration::ZERO,
                 },
@@ -6335,7 +6335,7 @@ mod test {
             let effect = crate::lighting::EffectInstance::new(
                 "test".to_string(),
                 crate::lighting::effects::EffectType::Static {
-                    parameters: std::collections::HashMap::new(),
+                    parameters: Default::default(),
                     duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
@@ -6683,7 +6683,7 @@ mod test {
                 5,
                 1,
                 "Generic".to_string(),
-                std::collections::HashMap::from([("red".to_string(), 1)]),
+                std::collections::HashMap::from([("red".to_string(), 1)]).into(),
                 None,
             ));
         }
@@ -6810,7 +6810,8 @@ mod test {
                     std::collections::HashMap::from([
                         ("red".to_string(), 1),
                         ("green".to_string(), 2),
-                    ]),
+                    ])
+                    .into(),
                     None,
                 ),
             );

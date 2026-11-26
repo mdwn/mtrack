@@ -31,7 +31,7 @@ fn test_clear_layer() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.5);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -47,7 +47,7 @@ fn test_clear_layer() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -83,7 +83,7 @@ fn test_freeze_unfreeze_layer() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -203,7 +203,7 @@ fn test_unfreeze_layer_maintains_animation_continuity() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -302,7 +302,7 @@ fn unfreezing_a_cued_effect_resumes_it_while_song_time_ran_on() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(
@@ -367,7 +367,7 @@ fn test_layer_intensity_master() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -582,7 +582,7 @@ fn test_multiple_layers_independent() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -599,7 +599,7 @@ fn test_multiple_layers_independent() {
             parameters: {
                 let mut p = HashMap::new();
                 p.insert("dimmer".to_string(), 0.8);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -643,13 +643,13 @@ fn cued_green_static() -> EffectEngine {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(
         "green".to_string(),
         EffectType::Static {
-            parameters: HashMap::from([("green".to_string(), 1.0)]),
+            parameters: HashMap::from([("green".to_string(), 1.0)]).into(),
             duration: Duration::from_secs(4),
         },
         vec!["brick".to_string()],
@@ -764,7 +764,7 @@ fn a_cued_effect_frozen_for_a_while_resumes_where_it_stopped() {
         1,
         1,
         "RGB".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     let mut effect = EffectInstance::new(

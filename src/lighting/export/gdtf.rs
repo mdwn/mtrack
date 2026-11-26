@@ -21,7 +21,8 @@
 //! groups its encoders sensibly; and mtrack's own distiller reads it back
 //! as the same type.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::lighting::names::{Name, NameMap};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::io::Write;
 
@@ -414,9 +415,9 @@ fn emit_channel(out: &mut Emitted, geometry: &str, name: &str, def: &ChannelDef)
 }
 
 /// Sorted by offset, then name, so the file reads in DMX order.
-fn in_dmx_order(defs: &HashMap<String, ChannelDef>) -> Vec<(&String, &ChannelDef)> {
-    let mut channels: Vec<(&String, &ChannelDef)> = defs.iter().collect();
-    channels.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+fn in_dmx_order(defs: &NameMap<ChannelDef>) -> Vec<(Name, &ChannelDef)> {
+    let mut channels: Vec<(Name, &ChannelDef)> = defs.iter().collect();
+    channels.sort_by_key(|(name, def)| (def.offset, *name));
     channels
 }
 
@@ -432,7 +433,13 @@ fn cell_shape(cell: &Cell) -> Vec<(String, u16, Option<u16>)> {
     let mut shape: Vec<(String, u16, Option<u16>)> = cell
         .channels
         .iter()
-        .map(|(name, def)| (name.clone(), def.offset - base, def.fine.map(|f| f - base)))
+        .map(|(name, def)| {
+            (
+                name.to_string(),
+                def.offset - base,
+                def.fine.map(|f| f - base),
+            )
+        })
         .collect();
     shape.sort();
     shape
@@ -459,17 +466,17 @@ pub fn description(fixture_type: &FixtureType) -> Result<String, String> {
             }
         }
     }
-    let cell_owned: BTreeSet<&String> = cells
+    let cell_owned: BTreeSet<Name> = cells
         .first()
         .map(|c| c.channels.keys().collect())
         .unwrap_or_default();
 
     let mut emitted = Emitted::default();
     for (name, def) in in_dmx_order(fixture_type.channel_defs()) {
-        if cell_owned.contains(name) {
+        if cell_owned.contains(&name) {
             continue;
         }
-        emit_channel(&mut emitted, "Body", name, def);
+        emit_channel(&mut emitted, "Body", &name, def);
     }
     // A pixel fixture's cells: one template geometry carrying the cell
     // channels at the first cell's bytes, and one reference per cell
@@ -478,7 +485,7 @@ pub fn description(fixture_type: &FixtureType) -> Result<String, String> {
     let mut geometry_xml = String::new();
     if let Some(first) = cells.first() {
         for (name, def) in in_dmx_order(&first.channels) {
-            emit_channel(&mut emitted, "Cell", name, def);
+            emit_channel(&mut emitted, "Cell", &name, def);
         }
         let base = first_byte(first);
         let mut references = String::new();

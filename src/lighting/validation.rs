@@ -243,12 +243,10 @@ show "Test Show 2" {
         assert_eq!(result.groups.len(), 3);
         assert_eq!(result.invalid_groups.len(), 2);
         assert!(!result.is_valid());
-        assert!(result.invalid_groups.contains(&"invalid_group".to_string()));
-        assert!(result
-            .invalid_groups
-            .contains(&"another_invalid".to_string()));
+        assert!(result.invalid_groups.iter().any(|i| i == "invalid_group"));
+        assert!(result.invalid_groups.iter().any(|i| i == "another_invalid"));
         // front_wash should be valid
-        assert!(!result.invalid_groups.contains(&"front_wash".to_string()));
+        assert!(!result.invalid_groups.iter().any(|i| i == "front_wash"));
     }
 
     #[test]
@@ -403,8 +401,8 @@ show "Show 2" {
 
         assert_eq!(result.groups.len(), 3);
         assert_eq!(result.invalid_groups.len(), 1);
-        assert!(result.invalid_groups.contains(&"invalid_group".to_string()));
-        assert!(!result.invalid_groups.contains(&"front_wash".to_string()));
-        assert!(!result.invalid_groups.contains(&"valid_group".to_string()));
+        assert!(result.invalid_groups.iter().any(|i| i == "invalid_group"));
+        assert!(!result.invalid_groups.iter().any(|i| i == "front_wash"));
+        assert!(!result.invalid_groups.iter().any(|i| i == "valid_group"));
     }
 }

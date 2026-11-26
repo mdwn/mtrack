@@ -12,40 +12,39 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::color::Color;
+#[cfg(test)]
 use super::composite::INTENSITY;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::{base_channel, is_position_channel, CMY_OF_RGB};
+use crate::lighting::names::{self, ChannelSet, NameMap};
 use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// The one internal contribution a level makes, whatever the fixture's
 /// hardware: its layer, blend mode and value, composited with the colour
 /// at the end of the frame (design 3.4).
-fn intensity(
-    value: f64,
-    layer: EffectLayer,
-    blend_mode: BlendMode,
-) -> HashMap<String, ChannelState> {
-    HashMap::from([(
-        INTENSITY.to_string(),
+fn intensity(value: f64, layer: EffectLayer, blend_mode: BlendMode) -> NameMap<ChannelState> {
+    NameMap::from([(
+        names::INTENSITY,
         ChannelState::new(value, layer, blend_mode),
     )])
 }
 
 /// Insert RGB channel states into a result map
 fn insert_rgb(
-    result: &mut HashMap<String, ChannelState>,
+    result: &mut NameMap<ChannelState>,
     value: f64,
     layer: EffectLayer,
     blend_mode: BlendMode,
 ) {
     let state = ChannelState::new(value, layer, blend_mode);
-    result.insert("red".to_string(), state);
-    result.insert("green".to_string(), state);
-    result.insert("blue".to_string(), state);
+    result.insert(names::RED, state);
+    result.insert(names::GREEN, state);
+    result.insert(names::BLUE, state);
 }
 
 /// Bitwise flags for fixture capabilities
@@ -282,7 +281,7 @@ impl FixtureProfile {
         level: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         intensity(level, layer, blend_mode)
     }
 
@@ -292,8 +291,8 @@ impl FixtureProfile {
         color: Color,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
+    ) -> NameMap<ChannelState> {
+        let mut result = NameMap::new();
 
         match self.color_strategy {
             ColorStrategy::Rgb => {
@@ -301,22 +300,22 @@ impl FixtureProfile {
                 let normalize = |v: u8| v as f64 / 255.0;
 
                 result.insert(
-                    "red".to_string(),
+                    names::RED,
                     ChannelState::new(normalize(color.r), layer, blend_mode),
                 );
                 result.insert(
-                    "green".to_string(),
+                    names::GREEN,
                     ChannelState::new(normalize(color.g), layer, blend_mode),
                 );
                 result.insert(
-                    "blue".to_string(),
+                    names::BLUE,
                     ChannelState::new(normalize(color.b), layer, blend_mode),
                 );
 
                 // Add white channel if present in color
                 if let Some(w) = color.w {
                     result.insert(
-                        "white".to_string(),
+                        names::WHITE,
                         ChannelState::new(normalize(w), layer, blend_mode),
                     );
                 }
@@ -335,8 +334,8 @@ impl FixtureProfile {
         blend_mode: BlendMode,
         crossfade_multiplier: f64,
         strobe_value: Option<f64>, // For software strobing
-    ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
+    ) -> NameMap<ChannelState> {
+        let mut result = NameMap::new();
 
         // Only apply strobe if crossfade multiplier is > 0 (effect is active)
         if crossfade_multiplier <= 0.0 {
@@ -348,7 +347,7 @@ impl FixtureProfile {
                 // Hardware strobe: send normalized speed value to dedicated strobe channel
                 // Note: frequency normalization should be done by the caller
                 result.insert(
-                    "strobe".to_string(),
+                    names::STROBE,
                     ChannelState::new(frequency, layer, blend_mode),
                 );
             }
@@ -378,7 +377,7 @@ impl FixtureProfile {
         pulse_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         intensity(pulse_value, layer, blend_mode)
     }
 
@@ -403,7 +402,7 @@ impl FixtureProfile {
         chase_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
-    ) -> HashMap<String, ChannelState> {
+    ) -> NameMap<ChannelState> {
         match (self.chase_strategy, blend_mode) {
             (
                 ChaseStrategy::RgbChannels,
@@ -413,7 +412,7 @@ impl FixtureProfile {
                     BlendMode::Overlay => BlendMode::Screen,
                     other => other,
                 };
-                let mut result = HashMap::new();
+                let mut result = NameMap::new();
                 insert_rgb(&mut result, chase_value, layer, lifting_mode);
                 result
             }
@@ -424,14 +423,19 @@ impl FixtureProfile {
 
 /// Whether a fixture mixes colour subtractively
 /// ([`crate::lighting::channels::mixes_subtractively`]).
-pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
-    crate::lighting::channels::mixes_subtractively(|c| channels.contains_key(c))
+pub fn has_cmy(channels: &impl ChannelSet) -> bool {
+    [names::CYAN, names::MAGENTA, names::YELLOW]
+        .iter()
+        .all(|cmy| channels.has_name(*cmy))
+        && ![names::RED, names::GREEN, names::BLUE]
+            .iter()
+            .any(|rgb| channels.has_name(*rgb))
 }
 
 /// Whether a channel map has a dimmer of its own: a fixture's, or a
 /// cell's. Without one, the level is carried on the colour channels.
-pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
-    channels.contains_key("dimmer")
+pub fn has_dimmer_channel(channels: &impl ChannelSet) -> bool {
+    channels.has_name(names::DIMMER)
 }
 
 /// The name a pixel fixture's cell registers under beside it: the
@@ -452,7 +456,7 @@ pub struct FixtureInfo {
     pub universe: u16,
     pub address: u16,
     pub fixture_type: String,
-    pub channels: HashMap<String, u16>,
+    pub channels: NameMap<u16>,
     pub max_strobe_frequency: Option<f64>,
     pub min_strobe_frequency: Option<f64>,
     pub strobe_dmx_offset: Option<u8>,
@@ -469,7 +473,7 @@ pub struct FixtureInfo {
     /// The structured channel definitions — fine bytes, physical ranges,
     /// function tables — that physical values resolve through. Mirrors
     /// `channels` for a fixture type that declares nothing more.
-    pub channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+    pub channel_defs: NameMap<crate::lighting::types::ChannelDef>,
     /// Movement limits, when the fixture type declares them.
     pub movement: crate::lighting::types::MovementLimits,
     /// How a strobe rate maps onto the strobe channel's DMX range, resolved
@@ -486,14 +490,26 @@ pub struct FixtureInfo {
     /// For a cell registered as a sub-fixture (`parent/cell`): the fixture
     /// it belongs to. The state stream and the plot treat sub-fixtures as
     /// part of their parent.
-    pub parent: Option<String>,
+    pub parent: Option<crate::lighting::names::Name>,
+    /// For a pixel fixture an engine has registered: the names its cells
+    /// are registered under beside it, in the cells' order. Empty before.
+    pub sub_fixtures: Vec<crate::lighting::names::Name>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
     cached_profile: FixtureProfile,
     /// What compositing asks of `channels` (computed once at construction)
     cached_mixing: super::composite::Mixing,
+    /// Each named byte the fixture holds on the wire ([`Self::wire_names`]),
+    /// once something has asked.
+    cached_wire_names: std::sync::OnceLock<Vec<WireName>>,
 }
+
+/// One byte of a fixture on the wire, as a snapshot names it: the name, the
+/// offset from the fixture's address, and whether every reading names it
+/// (a channel's own byte, a mirror's, a position's fine byte) or only one
+/// that names everything (any other fine byte).
+pub type WireName = (crate::lighting::names::Name, u16, bool);
 
 impl FixtureInfo {
     /// Create a new FixtureInfo, computing and caching capabilities and profile.
@@ -502,7 +518,7 @@ impl FixtureInfo {
         universe: u16,
         address: u16,
         fixture_type: String,
-        channels: HashMap<String, u16>,
+        channels: NameMap<u16>,
         max_strobe_frequency: Option<f64>,
     ) -> Self {
         let capabilities = Self::derive_capabilities(&channels);
@@ -510,7 +526,7 @@ impl FixtureInfo {
         let profile = FixtureProfile::from_capabilities(&capabilities);
         let channel_defs = channels
             .iter()
-            .map(|(name, &offset)| (name.clone(), crate::lighting::types::ChannelDef::at(offset)))
+            .map(|(name, &offset)| (name, crate::lighting::types::ChannelDef::at(offset)))
             .collect();
         Self {
             name,
@@ -531,9 +547,11 @@ impl FixtureInfo {
             aim: None,
             cells: Vec::new(),
             parent: None,
+            sub_fixtures: Vec::new(),
             cached_capabilities: capabilities,
             cached_profile: profile,
             cached_mixing: mixing,
+            cached_wire_names: std::sync::OnceLock::new(),
         }
     }
 
@@ -547,14 +565,14 @@ impl FixtureInfo {
     /// structured ones (fine bytes, ranges, functions).
     pub fn with_channel_defs(
         mut self,
-        channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+        channel_defs: NameMap<crate::lighting::types::ChannelDef>,
     ) -> Self {
         self.channel_defs = channel_defs;
         self
     }
 
     /// Derive fixture capabilities from available channels
-    fn derive_capabilities(channels: &HashMap<String, u16>) -> FixtureCapabilities {
+    fn derive_capabilities(channels: &NameMap<u16>) -> FixtureCapabilities {
         let mut capabilities = FixtureCapabilities::NONE;
 
         // Colour: an RGB triple, or a CMY one (subtractive mixing, written
@@ -580,7 +598,7 @@ impl FixtureInfo {
         // A head moves on any channel that carries where it points: `pan`,
         // a GDTF profile's `pan:1`, a fine byte.
         for channel in channels.keys().filter(|c| is_position_channel(c)) {
-            capabilities = capabilities.with(match base_channel(channel) {
+            capabilities = capabilities.with(match base_channel(&channel) {
                 "pan" => FixtureCapabilities::PANNING,
                 _ => FixtureCapabilities::TILTING,
             });
@@ -657,6 +675,20 @@ impl FixtureInfo {
             self.name
         );
         self.cached_mixing
+    }
+
+    /// Each named byte the fixture holds on the wire, worked out by `make`
+    /// the first time it is asked for and kept: the channel definitions fix
+    /// it, and every frame's snapshot reads it.
+    pub fn wire_names(&self, make: impl Fn(&FixtureInfo) -> Vec<WireName>) -> &[WireName] {
+        let kept = self.cached_wire_names.get_or_init(|| make(self));
+        debug_assert_eq!(
+            *kept,
+            make(self),
+            "{}'s channel definitions changed after its bytes were named",
+            self.name
+        );
+        kept
     }
 
     /// Get the cached fixture profile
@@ -888,7 +920,7 @@ mod tests {
             1,
             1,
             "generic_par".to_string(),
-            make_channels(&["red", "green", "blue"]),
+            make_channels(&["red", "green", "blue"]).into(),
             None,
         )
     }
@@ -899,7 +931,7 @@ mod tests {
             1,
             1,
             "par_with_dimmer".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer"]),
+            make_channels(&["red", "green", "blue", "dimmer"]).into(),
             None,
         )
     }
@@ -912,7 +944,8 @@ mod tests {
             "moving_head".to_string(),
             make_channels(&[
                 "red", "green", "blue", "white", "dimmer", "strobe", "pan", "tilt",
-            ]),
+            ])
+            .into(),
             None,
         )
     }
@@ -936,7 +969,7 @@ mod tests {
             1,
             1,
             "cmy_spot".to_string(),
-            make_channels(&["dimmer", "cyan", "magenta", "yellow"]),
+            make_channels(&["dimmer", "cyan", "magenta", "yellow"]).into(),
             None,
         );
         assert!(cmy.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -948,7 +981,7 @@ mod tests {
             1,
             1,
             "partial".to_string(),
-            make_channels(&["dimmer", "cyan", "magenta"]),
+            make_channels(&["dimmer", "cyan", "magenta"]).into(),
             None,
         );
         assert!(!partial.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -1026,7 +1059,7 @@ mod tests {
             1,
             1,
             "type".to_string(),
-            make_channels(&["red", "green"]),
+            make_channels(&["red", "green"]).into(),
             None,
         );
         assert!(!f.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -1039,7 +1072,7 @@ mod tests {
             1,
             1,
             "type".to_string(),
-            make_channels(&["ct"]),
+            make_channels(&["ct"]).into(),
             None,
         );
         assert!(f.has_capability(FixtureCapabilities::COLOR_TEMPERATURE));
@@ -1053,7 +1086,7 @@ mod tests {
                 1,
                 1,
                 "type".to_string(),
-                make_channels(&[channel]),
+                make_channels(&[channel]).into(),
                 None,
             );
             assert!(
@@ -1267,7 +1300,7 @@ mod tests {
             2,
             10,
             "generic_spot".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer"]),
+            make_channels(&["red", "green", "blue", "dimmer"]).into(),
             Some(25.0),
         );
         assert_eq!(f.name, "spot1");
@@ -1288,7 +1321,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "pan:1", "tilt_fine"]),
+            make_channels(&["dimmer", "pan:1", "tilt_fine"]).into(),
             None,
         );
         assert!(sectioned.has_capability(FixtureCapabilities::PANNING));
@@ -1298,7 +1331,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "pan_speed"]),
+            make_channels(&["dimmer", "pan_speed"]).into(),
             None,
         );
         assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
@@ -1323,7 +1356,7 @@ mod tests {
                 1,
                 1,
                 "t".to_string(),
-                channels.clone(),
+                channels.clone().into(),
                 None,
             );
             assert_eq!(fixture.mixing(), Mixing::of(&channels), "{channels:?}");
@@ -1340,7 +1373,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["dimmer", "red"]),
+            make_channels(&["dimmer", "red"]).into(),
             None,
         );
         let without = FixtureInfo::new(
@@ -1348,7 +1381,7 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            make_channels(&["red", "green", "blue", "dimmer_fine"]),
+            make_channels(&["red", "green", "blue", "dimmer_fine"]).into(),
             None,
         );
         assert!(with.has_dimmer());

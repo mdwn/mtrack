@@ -34,7 +34,7 @@ pub use error::EffectError;
 pub use fixture::declared_dmx;
 pub use fixture::{
     cell_fixture_name, cell_name, has_cmy, has_dimmer_channel, FixtureCapabilities, FixtureInfo,
-    FixtureProfile, StrobeMap, StrobeStrategy,
+    FixtureProfile, StrobeMap, StrobeStrategy, WireName,
 };
 pub use instance::fade_progress;
 pub use instance::EffectInstance;

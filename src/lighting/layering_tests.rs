@@ -54,7 +54,7 @@ mod layering_behavior_tests {
             universe,
             address,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         )
     }
@@ -71,7 +71,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -166,7 +166,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -258,7 +258,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -310,7 +310,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -329,7 +329,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("red".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -364,7 +364,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -383,7 +383,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("red".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -404,7 +404,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("green".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -439,7 +439,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -458,7 +458,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("red".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -493,7 +493,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -512,7 +512,7 @@ mod layering_behavior_tests {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("red".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },
@@ -575,7 +575,7 @@ mod layering_show_regression {
             universe,
             address,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         )
     }
@@ -600,7 +600,7 @@ mod layering_show_regression {
                 parameters: {
                     let mut p = HashMap::new();
                     p.insert("blue".to_string(), 1.0);
-                    p
+                    p.into()
                 },
                 duration: Duration::from_secs(5),
             },

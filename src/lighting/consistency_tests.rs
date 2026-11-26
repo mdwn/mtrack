@@ -32,7 +32,7 @@ mod tests {
             1,
             base_address,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);
@@ -49,7 +49,7 @@ mod tests {
             1,
             base_address,
             "RGB_Par_Dimmer".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         engine.register_fixture(fixture);
@@ -70,7 +70,7 @@ mod tests {
         let mut eff = EffectInstance::new(
             format!("static_{}", name),
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec![name.to_string()],

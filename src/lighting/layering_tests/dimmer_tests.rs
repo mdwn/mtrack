@@ -36,7 +36,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -50,7 +50,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
                 p.insert("red".to_string(), 0.0);
                 p.insert("green".to_string(), 0.0);
                 p.insert("blue".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -140,7 +140,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
         1,
         1,
         "RGB_Par_Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -155,7 +155,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
                 p.insert("green".to_string(), 0.0);
                 p.insert("blue".to_string(), 1.0);
                 p.insert("dimmer".to_string(), 1.0);
-                p
+                p.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -237,7 +237,7 @@ fn test_effect_layering_static_blue_and_dimmer() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -316,7 +316,7 @@ fn test_dimmer_without_dedicated_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -332,7 +332,7 @@ fn test_dimmer_without_dedicated_channel() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -423,7 +423,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -439,7 +439,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
     let blue_effect = create_effect_with_layering(
         "blue_static".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -554,7 +554,7 @@ fn test_dimmer_debug() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -568,7 +568,7 @@ fn test_dimmer_debug() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -645,7 +645,7 @@ fn test_static_with_dimmer_parameter() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -664,7 +664,7 @@ fn test_static_with_dimmer_parameter() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -679,7 +679,7 @@ fn test_static_with_dimmer_parameter() {
     let static_effect = create_effect_with_layering(
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -749,7 +749,7 @@ fn test_dimmer_replace_vs_multiply() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -763,7 +763,7 @@ fn test_dimmer_replace_vs_multiply() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -876,7 +876,7 @@ fn test_astera_pixelblock_dimmer() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(fixture.clone());
@@ -890,7 +890,7 @@ fn test_astera_pixelblock_dimmer() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["astera_pixelblock".to_string()],
@@ -998,7 +998,7 @@ fn test_chase_effect_without_dimmer_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -1052,7 +1052,7 @@ fn test_chase_effect_with_dimmer_channel() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -1111,7 +1111,7 @@ fn test_software_strobing_dimmer_only_fixture() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None, // No strobe capability
     );
     engine.register_fixture(fixture);
@@ -1174,7 +1174,7 @@ fn test_multiple_dimmer_fade_to_black() {
         1,
         1,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         None,
     );
 
@@ -1183,7 +1183,7 @@ fn test_multiple_dimmer_fade_to_black() {
         1,
         5,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         None,
     );
 
@@ -1289,7 +1289,7 @@ fn test_dimmer_effect_mid_level_start() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -1320,7 +1320,7 @@ fn test_dimmer_effect_mid_level_start() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1379,7 +1379,7 @@ fn test_dimmer_curves() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -1393,7 +1393,7 @@ fn test_dimmer_curves() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1425,7 +1425,7 @@ fn test_dimmer_curves() {
             1,
             1,
             "RGB_Par".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         test_engine.register_fixture(fixture);
@@ -1439,7 +1439,7 @@ fn test_dimmer_curves() {
                     params.insert("red".to_string(), 0.0);
                     params.insert("green".to_string(), 0.0);
                     params.insert("blue".to_string(), 1.0);
-                    params
+                    params.into()
                 },
                 duration: Duration::from_secs(5),
             },

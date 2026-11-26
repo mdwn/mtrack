@@ -1003,7 +1003,7 @@ fn an_install_beside_what_runs_keeps_it_as_it_was() {
     let mut live = EffectInstance::new(
         "live".to_string(),
         crate::lighting::effects::EffectType::Static {
-            parameters: HashMap::from([("red".to_string(), 1.0)]),
+            parameters: HashMap::from([("red".to_string(), 1.0)]).into(),
             duration: Duration::from_secs(30),
         },
         vec!["w".to_string()],

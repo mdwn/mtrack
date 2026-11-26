@@ -429,7 +429,7 @@ pub(crate) fn parse_effect_definition(
 fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect, Box<dyn Error>> {
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
-        parameters: HashMap::new(),
+        parameters: Default::default(),
         duration: Duration::ZERO,
     };
     let mut parameters = HashMap::new();
@@ -591,7 +591,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext<'_>) -> Result<Effect,
 pub(super) fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
     Some(match EffectKind::from_keyword(keyword)? {
         EffectKind::Static => EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         },
         EffectKind::Cycle => EffectType::ColorCycle {
@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     fn apply_static_dimmer() {
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn apply_static_intensity_is_a_synonym_for_dimmer() {
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn apply_static_color() {
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn apply_static_rgb_channels() {
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
@@ -1144,7 +1144,7 @@ mod tests {
     #[test]
     fn apply_static_duration() {
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
@@ -1639,7 +1639,7 @@ mod tests {
     fn apply_static_unknown_key_numeric() {
         // Unknown key with numeric value should still be stored
         let et = EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::ZERO,
         };
         let mut params = HashMap::new();

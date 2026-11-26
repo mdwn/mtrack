@@ -1119,7 +1119,7 @@ show "s" {
                 universe,
                 1,
                 "T".to_string(),
-                HashMap::new(),
+                Default::default(),
                 None,
             )
         };
@@ -1164,7 +1164,7 @@ show "s" {
                 universe,
                 1,
                 "Par".to_string(),
-                channels,
+                channels.into(),
                 None,
             )
         };

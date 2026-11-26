@@ -1270,8 +1270,8 @@ show "Test" {
     );
     // Each later pass stops the one before it, cutting the 5 s effect at
     // the pass boundary.
-    assert!(show.cues[1].stop_sequences.contains(&"hold".to_string()));
-    assert!(show.cues[2].stop_sequences.contains(&"hold".to_string()));
+    assert!(show.cues[1].stop_sequences.iter().any(|i| i == "hold"));
+    assert!(show.cues[2].stop_sequences.iter().any(|i| i == "hold"));
 }
 
 #[test]

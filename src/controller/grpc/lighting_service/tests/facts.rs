@@ -749,7 +749,7 @@ async fn evaluate_matches_evaluate_show_and_lists_untouched_fixtures() {
             std::time::Duration::from_secs_f64(3.0),
         ],
         |mut effect| {
-            effect.target_fixtures = vec!["M".to_string()];
+            effect.target_fixtures = vec!["M".to_string().into()];
             effect
         },
     );

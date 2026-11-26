@@ -27,7 +27,7 @@ fn test_crossfade_multiplier_calculation() {
     let mut effect = EffectInstance::new(
         "test".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -141,7 +141,7 @@ fn test_crossfade_multiplier_no_up_time_no_hold_time() {
     let mut effect = EffectInstance::new(
         "test".to_string(),
         EffectType::Static {
-            parameters: HashMap::new(),
+            parameters: Default::default(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -204,7 +204,7 @@ fn test_static_effect_crossfade_comprehensive() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -218,7 +218,7 @@ fn test_static_effect_crossfade_comprehensive() {
     let mut static_effect = create_effect_with_timing(
         "static_test".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(10), // Total duration
         },
         vec!["test_fixture".to_string()],
@@ -275,7 +275,7 @@ fn test_color_cycle_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -351,7 +351,7 @@ fn test_pulse_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -415,7 +415,7 @@ fn test_rainbow_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -491,7 +491,7 @@ fn test_dsl_crossfade_integration() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -551,7 +551,7 @@ fn test_static_effect_crossfade() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -565,7 +565,7 @@ fn test_static_effect_crossfade() {
     let mut static_effect = create_effect_with_timing(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(3),
         },
         vec!["test_fixture".to_string()],

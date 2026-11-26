@@ -441,7 +441,6 @@ pub struct LayerCommand {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use super::*;
     use crate::lighting::effects::{
@@ -453,7 +452,7 @@ mod tests {
         Effect {
             groups: vec![],
             effect_type: EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration,
             },
             layer: None,
@@ -508,7 +507,7 @@ mod tests {
     fn effect_static_with_duration_and_up_down() {
         let e = timed_effect(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             Some(Duration::from_secs(1)),

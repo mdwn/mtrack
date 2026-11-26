@@ -43,7 +43,15 @@ fn live_running_at(src: &str, t: Duration) -> Vec<String> {
                 e.sequences.clone(),
                 e.cue_time.unwrap(),
                 e.total_duration(),
-                format!("{}@{:?}", e.target_fixtures.join(","), e.cue_time.unwrap()),
+                format!(
+                    "{}@{:?}",
+                    e.target_fixtures
+                        .iter()
+                        .map(|n| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    e.cue_time.unwrap()
+                ),
             ));
         }
         at += Duration::from_millis(10);
@@ -62,7 +70,17 @@ fn seek_running_at(src: &str, t: Duration) -> Vec<String> {
     engine
         .get_active_effects()
         .values()
-        .map(|e| format!("{}@{:?}", e.target_fixtures.join(","), e.cue_time.unwrap()))
+        .map(|e| {
+            format!(
+                "{}@{:?}",
+                e.target_fixtures
+                    .iter()
+                    .map(|n| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                e.cue_time.unwrap()
+            )
+        })
         .collect()
 }
 

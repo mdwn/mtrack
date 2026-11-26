@@ -223,7 +223,7 @@ fn test_complete_integration_flow() {
     let songs_list = songs.list();
     let song_names: Vec<String> = songs_list.iter().map(|s| s.name().to_string()).collect();
 
-    if song_names.contains(&"DSL Light Show Song".to_string()) {
+    if song_names.iter().any(|i| i == "DSL Light Show Song") {
         let dsl_song = songs
             .get("DSL Light Show Song")
             .expect("DSL light show song not found");
@@ -287,14 +287,14 @@ fn test_all_example_songs_load() {
 
     for expected_song in expected_songs {
         assert!(
-            song_names.contains(&expected_song.to_string()),
+            song_names.iter().any(|i| i == expected_song),
             "Missing song: {}",
             expected_song
         );
     }
 
     // Verify DSL light show song has lighting (if it exists)
-    if song_names.contains(&"DSL Light Show Song".to_string()) {
+    if song_names.iter().any(|i| i == "DSL Light Show Song") {
         let dsl_song = songs.get("DSL Light Show Song").unwrap();
         assert!(!dsl_song.dsl_lighting_shows().is_empty());
     }
@@ -321,8 +321,8 @@ fn test_parse_playlist() {
 
     // Verify it contains some expected songs
     let songs = playlist.songs();
-    assert!(songs.contains(&"A really cool song".to_string()));
-    assert!(songs.contains(&"Sound check".to_string()));
+    assert!(songs.iter().any(|i| i == "A really cool song"));
+    assert!(songs.iter().any(|i| i == "Sound check"));
 }
 
 /// Test that songs with lighting shows can be loaded and processed

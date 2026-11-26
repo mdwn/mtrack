@@ -127,7 +127,7 @@ fn test_blend_mode_loss_debug() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
 
@@ -142,7 +142,7 @@ fn test_blend_mode_loss_debug() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -248,7 +248,7 @@ fn test_timeline_blend_mode_loss() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
 
@@ -318,7 +318,7 @@ fn test_blend_mode_compatibility_matrix() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     );
     engine.register_fixture(fixture);
@@ -330,7 +330,7 @@ fn test_blend_mode_compatibility_matrix() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },
@@ -345,7 +345,7 @@ fn test_blend_mode_compatibility_matrix() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(10),
         },

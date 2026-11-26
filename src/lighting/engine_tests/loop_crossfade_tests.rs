@@ -38,7 +38,7 @@ fn engine() -> EffectEngine {
         1,
         1,
         "Generic".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
     engine
@@ -115,7 +115,7 @@ fn a_sibling_drives_the_same_rig_from_a_clean_slate() {
         .start_effect(crate::lighting::EffectInstance::new(
             "lit".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: std::time::Duration::from_secs(10),
             },
             vec!["mover".to_string()],
@@ -179,9 +179,9 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
     let mut incoming = outgoing.sibling();
     lit(&mut incoming, &[("dimmer", 0.4), ("gobo", 0.6)]);
 
-    let level = |states: &HashMap<String, crate::lighting::effects::FixtureState>, name: &str| {
-        states["mover"].channels.get(name).map(|c| c.value)
-    };
+    let level =
+        |states: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureState>,
+         name: &str| { states["mover"].channels.get(name).map(|c| c.value) };
     let (quarter, _) = incoming.crossfade_states(&outgoing, 0.25);
     assert!(
         (level(&quarter, "dimmer").unwrap() - 0.7).abs() < 1e-9,
@@ -206,7 +206,7 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
 /// them -- by DMX channel, for a fixture at universe 1 address 1.
 fn shown_bytes(
     engine: &EffectEngine,
-    states: &HashMap<String, crate::lighting::effects::FixtureState>,
+    states: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureState>,
 ) -> HashMap<u16, u8> {
     let registry = engine.get_fixture_registry();
     let mut bytes = HashMap::new();
@@ -224,7 +224,7 @@ fn shown_bytes(
             }
         }
         for (cell, values) in &snapshot.cells {
-            let def = info.cells.iter().find(|c| &c.name == cell).unwrap();
+            let def = info.cells.iter().find(|c| c.name == cell).unwrap();
             for (channel, &value) in values {
                 bytes.insert(
                     info.dmx_channel(def.channels[channel].offset).unwrap(),
@@ -263,17 +263,18 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
     // A three-cell RGB bar with no dimmer, so colour carries the layer
     // multipliers, at address 1.
     let cell = |n: &str, base: u16| Cell {
-        name: n.to_string(),
+        name: n.to_string().into(),
         channels: HashMap::from([
             ("red".to_string(), ChannelDef::at(base)),
             ("green".to_string(), ChannelDef::at(base + 1)),
             ("blue".to_string(), ChannelDef::at(base + 2)),
-        ]),
+        ])
+        .into(),
         offset: [0.0, 0.0, 0.0],
     };
     let cells = vec![cell("1", 1), cell("2", 4), cell("3", 7)];
     let defs = crate::lighting::types::ganged_from_cells(&cells).unwrap();
-    let channels = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    let channels = defs.iter().map(|(n, d)| (n, d.offset)).collect();
     let mut info = FixtureInfo::new("bar".to_string(), 1, 1, "Bar".to_string(), channels, None);
     info.channel_defs = defs;
     info.cells = cells;
@@ -341,7 +342,7 @@ fn sixteen_bit_engine() -> EffectEngine {
         channels,
         None,
     )
-    .with_channel_defs(defs);
+    .with_channel_defs(defs.into());
     let mut engine = EffectEngine::new();
     engine.register_fixture(info);
     engine
@@ -453,7 +454,7 @@ fn patched(name: &str, address: u16, channels: &[(&str, u16, Option<u16>)]) -> F
         offsets,
         None,
     )
-    .with_channel_defs(defs)
+    .with_channel_defs(defs.into())
 }
 
 /// Where patches overlap, every channel either side drives still goes
@@ -529,7 +530,7 @@ fn an_overlap_inside_one_fixture_crosses_the_same_every_time() {
             1,
             1,
             "Par".to_string(),
-            channels.clone(),
+            channels.clone().into(),
             None,
         ));
         assert_eq!(

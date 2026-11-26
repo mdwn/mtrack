@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::names::NameMap;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
@@ -148,7 +149,7 @@ pub fn parse_venues_listed(content: &str) -> Listed<Venue> {
 
 fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dyn Error>> {
     let mut name = String::new();
-    let mut channels = HashMap::new();
+    let mut channels = NameMap::new();
     let mut special_cases = Vec::new();
     let mut max_strobe_frequency = None;
     let mut min_strobe_frequency = None;
@@ -156,7 +157,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut source = None;
     let mut movement = MovementLimits::default();
     let mut strobe_curve: Option<StrobeCurve> = None;
-    let mut rich_defs: HashMap<String, ChannelDef> = HashMap::new();
+    let mut rich_defs: NameMap<ChannelDef> = NameMap::new();
     let mut cells: Vec<Cell> = Vec::new();
 
     for pair in pair.into_inner() {
@@ -200,7 +201,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
             .flat_map(|(n, d)| {
                 std::iter::once(d.offset)
                     .chain(d.fine)
-                    .map(move |o| (o, n.clone()))
+                    .map(move |o| (o, n.to_string()))
             })
             .collect();
         for cell in &cells {
@@ -219,7 +220,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
             }
         }
         for (channel, def) in ganged {
-            if rich_defs.contains_key(&channel) {
+            if rich_defs.contains_key(channel) {
                 return Err(format!(
                     "fixture type \"{name}\": channel \"{channel}\" is both a fixture-level line \
                      and a cell channel; a cell channel's fixture-level form is derived"
@@ -559,13 +560,13 @@ fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error
 /// A `cell "name" at (x, y, z) { channel ... }` block.
 fn parse_cell_def(pair: Pair<Rule>) -> Result<Cell, Box<dyn Error>> {
     let mut cell = Cell {
-        name: String::new(),
-        channels: HashMap::new(),
+        name: String::new().into(),
+        channels: Default::default(),
         offset: [0.0; 3],
     };
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::string => cell.name = extract_string(inner),
+            Rule::string => cell.name = extract_string(inner).into(),
             Rule::cell_offset => {
                 cell.offset = parse_vec3(single_vec3(inner)?)?;
             }
@@ -595,8 +596,8 @@ fn parse_cell_def(pair: Pair<Rule>) -> Result<Cell, Box<dyn Error>> {
 #[allow(clippy::too_many_arguments)]
 fn parse_fixture_content(
     pair: Pair<Rule>,
-    channels: &mut HashMap<String, u16>,
-    rich_defs: &mut HashMap<String, ChannelDef>,
+    channels: &mut NameMap<u16>,
+    rich_defs: &mut NameMap<ChannelDef>,
     cells: &mut Vec<Cell>,
     movement: &mut MovementLimits,
     strobe_curve: &mut Option<StrobeCurve>,
@@ -610,7 +611,7 @@ fn parse_fixture_content(
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
                 if let Some(name) = channels.keys().find(|k| k.contains('#')) {
-                    return Err(reserved_channel_name(name).into());
+                    return Err(reserved_channel_name(&name).into());
                 }
             }
             Rule::channel_def => {
@@ -702,7 +703,7 @@ fn parse_fixture_content(
     Ok(())
 }
 
-fn parse_channel_mappings(pair: Pair<Rule>) -> HashMap<String, u16> {
+fn parse_channel_mappings(pair: Pair<Rule>) -> NameMap<u16> {
     pair.into_inner()
         .filter(|p| p.as_rule() == Rule::channel_mapping_list)
         .flat_map(|list| list.into_inner())

@@ -36,7 +36,7 @@ fn test_layering_demo() {
     let blue_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: blue_params,
+            parameters: blue_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
@@ -140,7 +140,7 @@ fn test_multiple_effects_simultaneous() {
             1,
             (i - 1) * 4 + 1, // Each fixture takes 4 channels
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0), // Astera-PixelBrick max strobe frequency
         );
 
@@ -156,7 +156,7 @@ fn test_multiple_effects_simultaneous() {
     let static_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec![
@@ -328,7 +328,7 @@ fn test_astera_pixelblock_real_behavior() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -355,7 +355,7 @@ fn test_astera_pixelblock_real_behavior() {
     let static_effect = create_effect_with_layering(
         "static_blue".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -466,7 +466,7 @@ fn test_permanent_vs_temporary_effects() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -482,7 +482,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite static effect
         },
@@ -509,7 +509,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -578,7 +578,7 @@ fn test_grandma_style_fade_out() {
         1,
         1,
         "Dimmer".to_string(),
-        front_wash_channels,
+        front_wash_channels.into(),
         None,
     );
 
@@ -594,7 +594,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -621,7 +621,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // Make it timed
         },
@@ -751,7 +751,7 @@ fn test_real_layering_show_file() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -770,7 +770,7 @@ fn test_real_layering_show_file() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -876,7 +876,7 @@ fn test_layering_show_effect_execution() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -895,7 +895,7 @@ fn test_layering_show_effect_execution() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -981,7 +981,7 @@ fn test_custom_rgb_dimming() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -998,7 +998,7 @@ fn test_custom_rgb_dimming() {
     let rgb_effect = create_effect_with_layering(
         "rgb_static".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
@@ -1150,7 +1150,7 @@ fn test_software_strobing_rgb_only_fixture() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None, // No strobe capability
     );
     engine.register_fixture(fixture);
@@ -1221,7 +1221,7 @@ fn test_software_strobing_with_layering() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None, // No strobe capability
     );
     engine.register_fixture(fixture);
@@ -1235,7 +1235,7 @@ fn test_software_strobing_with_layering() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1296,7 +1296,7 @@ fn test_software_strobing_simple() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None, // No strobe capability
     );
     engine.register_fixture(fixture);
@@ -1352,7 +1352,7 @@ fn test_software_strobing_frequency_zero() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
     engine.register_fixture(fixture);
@@ -1366,7 +1366,7 @@ fn test_software_strobing_frequency_zero() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1419,7 +1419,7 @@ fn test_full_layering_show_sequence_with_replace() {
         1,
         1,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(10.0),
     );
 
@@ -1428,7 +1428,7 @@ fn test_full_layering_show_sequence_with_replace() {
         1,
         5,
         "Dimmer".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(10.0),
     );
 
@@ -1448,7 +1448,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1574,7 +1574,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.5); // Start at 50%
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // 2 second fade out
         },
@@ -1592,7 +1592,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.3); // Start at 30%
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // 2 second fade out
         },
@@ -1656,7 +1656,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 
@@ -1665,7 +1665,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
         1,
         2,
         "RGB_Par".to_string(),
-        channels.clone(),
+        channels.clone().into(),
         Some(20.0),
     );
 
@@ -1679,7 +1679,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("red".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1745,7 +1745,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("blue".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1784,7 +1784,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             parameters: {
                 let mut params = HashMap::new();
                 params.insert("green".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5),
         },
@@ -1881,7 +1881,7 @@ fn test_bed_plus_chase_on_dimmerless_fixtures() {
             1,
             (i - 1) * 4 + 1,
             "Astera-PixelBrick".to_string(),
-            channels,
+            channels.into(),
             Some(25.0),
         ));
     }
@@ -1890,7 +1890,8 @@ fn test_bed_plus_chase_on_dimmerless_fixtures() {
     for cue in &show.cues {
         for effect in &cue.effects {
             let mut instance = LightingTimeline::create_effect_instance(effect, cue.time);
-            instance.target_fixtures = vec!["Brick1".to_string(), "Brick2".to_string()];
+            instance.target_fixtures =
+                vec!["Brick1".to_string().into(), "Brick2".to_string().into()];
             engine.start_effect(instance).unwrap();
         }
     }

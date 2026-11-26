@@ -186,7 +186,7 @@ fn analyze_between(
             let mut groups: HashSet<&str> = HashSet::new();
             let mut layers: HashSet<EffectLayer> = HashSet::new();
             for effect in active {
-                groups.extend(effect.target_fixtures.iter().map(String::as_str));
+                groups.extend(effect.target_fixtures.iter().map(|name| name.as_str()));
                 layers.insert(effect.layer);
             }
             for group in groups {

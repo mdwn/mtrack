@@ -22,6 +22,7 @@ pub mod findings;
 pub mod fixture_data;
 pub mod geometry;
 pub mod lint;
+pub mod names;
 pub mod parser;
 // Tempo lives at the crate root (shared with the metronome and song config);
 // re-exported here so existing `lighting::tempo::…` paths keep working.

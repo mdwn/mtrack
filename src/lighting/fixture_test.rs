@@ -167,10 +167,12 @@ pub fn channel_names(info: &FixtureInfo) -> BTreeMap<u16, String> {
         }
     }
     for (name, def) in &info.channel_defs {
-        put(name, def);
+        put(&name, def);
     }
     for (name, &offset) in &info.channels {
-        names.entry(offset).or_insert_with(|| name.clone());
+        names
+            .entry(offset)
+            .or_insert_with(|| name.clone().to_string());
     }
     names
 }
@@ -251,7 +253,7 @@ fn resolve_controls(info: &FixtureInfo, controls: &TestControls) -> HashMap<u16,
         start(
             "test-look",
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: hold,
             },
             EffectLayer::BACKGROUND,
@@ -406,7 +408,7 @@ mod tests {
         let mut info = fixture(&[("pan", 1), ("pan_fine", 2), ("tilt", 3)]);
         let mut defs = info.channel_defs.clone();
         defs.insert(
-            "pan".into(),
+            "pan",
             ChannelDef {
                 offset: 1,
                 fine: Some(2),

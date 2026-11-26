@@ -24,8 +24,9 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::channels::{fine_name, mirror_name, CMY_OF_RGB};
+use crate::lighting::channels::{fine_name, mirror_name};
 use crate::lighting::effects::FixtureState;
+use crate::lighting::names::{self, Name};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all channels at 0-255.
@@ -35,12 +36,12 @@ use crate::lighting::EffectEngine;
 /// twenty times a second.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureSnapshot {
-    pub name: String,
-    pub channels: HashMap<String, u8>,
+    pub name: Name,
+    pub channels: crate::lighting::names::NameMap<u8>,
     /// Per-cell values (design §17.4), by cell name, only while a
     /// per-cell effect drives at least one cell of this fixture; empty
     /// otherwise, when every cell shows the fixture's own channels.
-    pub cells: std::collections::BTreeMap<String, HashMap<String, u8>>,
+    pub cells: crate::lighting::names::NameMap<crate::lighting::names::NameMap<u8>>,
     /// The rate the fixture is strobing at, in hertz, when it is: its
     /// strobe byte read back through its own strobe rule
     /// ([`FixtureInfo::strobe_hz`](crate::lighting::effects::FixtureInfo::strobe_hz)),
@@ -108,9 +109,9 @@ pub type TestOverlayHandle = Arc<parking_lot::RwLock<Option<TestOverlay>>>;
 /// fixtures it touched, sorted.
 pub(crate) fn apply_test_overlay(
     fixtures: &mut Vec<FixtureSnapshot>,
-    poses: &mut HashMap<String, crate::lighting::effects::Pose>,
+    poses: &mut crate::lighting::names::NameTable<crate::lighting::effects::Pose>,
     overlay: &TestOverlay,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) -> Vec<String> {
     let bytes: HashMap<u16, u8> = overlay.channels.iter().copied().collect();
     let read = |universe: u16, channel: u16| {
@@ -121,7 +122,7 @@ pub(crate) fn apply_test_overlay(
     let touched = lay_bytes(fixtures, registry, read, Fill::Covered);
     // A covered pan or tilt turns the head.
     poses_from_bytes(poses, &touched, registry, read);
-    touched
+    touched.iter().map(Name::to_string).collect()
 }
 
 /// Turns each of `names` to the pan and tilt its bytes (`read`: universe,
@@ -132,9 +133,9 @@ pub(crate) fn apply_test_overlay(
 /// pose it has (or has none); one with only one of them read keeps the
 /// other axis, at rest where it had no pose.
 fn poses_from_bytes<'a>(
-    poses: &mut HashMap<String, crate::lighting::effects::Pose>,
-    names: impl IntoIterator<Item = &'a String>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    poses: &mut crate::lighting::names::NameTable<crate::lighting::effects::Pose>,
+    names: impl IntoIterator<Item = &'a Name>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
     read: impl Fn(u16, u16) -> Option<u8>,
 ) {
     use crate::lighting::effects::{degrees_from_bytes, PhysicalParameter, Pose};
@@ -149,7 +150,7 @@ fn poses_from_bytes<'a>(
         });
         let mut moved = false;
         for parameter in [PhysicalParameter::Pan, PhysicalParameter::Tilt] {
-            let Some(def) = info.channel_defs.get(parameter.channel()) else {
+            let Some(def) = info.channel_defs.get(parameter.name()) else {
                 continue;
             };
             let Some(coarse) = at(def.offset) else {
@@ -163,7 +164,7 @@ fn poses_from_bytes<'a>(
             moved = true;
         }
         if moved {
-            poses.insert(name.clone(), pose);
+            poses.insert(*name, pose);
         }
     }
 }
@@ -177,17 +178,17 @@ fn poses_from_bytes<'a>(
 /// does one on a universe the rig has no output for.
 pub(crate) fn shown_poses_on_wire(
     engine: &EffectEngine,
-) -> HashMap<String, crate::lighting::effects::Pose> {
+) -> crate::lighting::names::NameTable<crate::lighting::effects::Pose> {
     let mut poses = engine.shown_poses().clone();
     let registry = engine.get_fixture_registry();
     let wire = engine.wire();
     // A head on a universe with no output was never sent where pose
     // memory has it: its channels read 0, and it is drawn at rest.
     poses.retain(|name, _| registry.get(name).is_none_or(|info| reaches(wire, info)));
-    let unposed: Vec<String> = registry
+    let unposed: Vec<Name> = registry
         .iter()
         .filter(|(name, info)| info.parent.is_none() && !poses.contains_key(*name))
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| name)
         .collect();
     poses_from_bytes(&mut poses, &unposed, registry, |universe, channel| {
         wire.byte(universe, channel)
@@ -209,6 +210,33 @@ enum Fill {
     Fixture,
 }
 
+/// Each named byte of a fixture on the wire ([`FixtureInfo::wire_names`]):
+/// every channel's own byte, its fine byte, and each mirror's and its fine
+/// byte, under the names a snapshot gives them. A fine byte is named by
+/// every reading only for a position.
+///
+/// [`FixtureInfo::wire_names`]: crate::lighting::effects::FixtureInfo::wire_names
+fn wire_names(
+    info: &crate::lighting::effects::FixtureInfo,
+) -> Vec<crate::lighting::effects::WireName> {
+    use crate::lighting::channels::is_position_channel;
+    let mut names = Vec::new();
+    for (channel, def) in &info.channel_defs {
+        let position = is_position_channel(&channel);
+        names.push((channel, def.offset, true));
+        if let Some(fine) = def.fine {
+            names.push((Name::of(&fine_name(&channel)), fine, position));
+        }
+        for ((mirror, coarse), fine) in mirror_sections(&channel, def) {
+            names.push((Name::of(&mirror), coarse, true));
+            if let Some((mirror_fine, fine)) = fine {
+                names.push((Name::of(&mirror_fine), fine, position));
+            }
+        }
+    }
+    names
+}
+
 /// Lays bytes read off DMX channels (`read`: universe, 1-based channel)
 /// over the snapshots of the fixtures `registry` patches there, a fixture
 /// with no snapshot yet getting one: the one reading of a fixture's
@@ -219,51 +247,29 @@ enum Fill {
 /// Answers the fixtures it touched, sorted.
 fn lay_bytes<'a>(
     fixtures: &mut Vec<FixtureSnapshot>,
-    registry: impl IntoIterator<Item = (&'a String, &'a crate::lighting::effects::FixtureInfo)>,
+    registry: impl IntoIterator<Item = (Name, &'a crate::lighting::effects::FixtureInfo)>,
     read: impl Fn(u16, u16) -> Option<u8>,
     fill: Fill,
-) -> Vec<String> {
-    use crate::lighting::channels::is_position_channel;
-    use std::borrow::Cow;
+) -> Vec<Name> {
     let mut touched = Vec::new();
     for (name, info) in registry {
         if info.parent.is_some() {
             continue;
         }
         let at = |offset: u16| read(info.universe, info.dmx_channel(offset)?);
-        let fine_named = |channel: &str| fill == Fill::Covered || is_position_channel(channel);
-        // Each name with the byte it reads, `None` where none is read. Read
-        // twice: once to find whether the bytes cover the fixture at all,
-        // once to lay them, so a frame builds no list of names in between.
-        let each_name = |f: &mut dyn FnMut(Cow<'_, str>, Option<u8>)| {
-            for (channel, def) in &info.channel_defs {
-                f(Cow::Borrowed(channel.as_str()), at(def.offset));
-                if let Some(fine) = def.fine.filter(|_| fine_named(channel)) {
-                    f(Cow::Owned(fine_name(channel)), at(fine));
-                }
-                for ((mirror, coarse), fine) in mirror_sections(channel, def) {
-                    f(Cow::Owned(mirror), at(coarse));
-                    if let Some((mirror_fine, fine)) = fine.filter(|_| fine_named(channel)) {
-                        f(Cow::Owned(mirror_fine), at(fine));
-                    }
-                }
-            }
-        };
-        // Whether any byte `each_name` or a cell would read is there, found
-        // without naming one: a fixture the bytes cover is, by its first
-        // channel as a rule.
+        // Each named byte this reading names: all of them, or all but the
+        // fine bytes that are not a position's.
+        let names = info
+            .wire_names(wire_names)
+            .iter()
+            .filter(|(_, _, always)| *always || fill == Fill::Covered);
+        // Whether any byte a name or a cell would read is there: a fixture
+        // the bytes cover is, by its first channel as a rule.
         let covered = info
             .cells
             .iter()
             .any(|cell| cell.channels.values().any(|def| at(def.offset).is_some()))
-            || info.channel_defs.iter().any(|(channel, def)| {
-                let fine = fine_named(channel);
-                at(def.offset).is_some()
-                    || (fine && def.fine.and_then(at).is_some())
-                    || def.mirrors.iter().any(|&(coarse, mirror_fine)| {
-                        at(coarse).is_some() || (fine && mirror_fine.and_then(at).is_some())
-                    })
-            });
+            || names.clone().any(|(_, offset, _)| at(*offset).is_some());
         if !covered {
             continue;
         }
@@ -276,7 +282,7 @@ fn lay_bytes<'a>(
         let found = fixtures
             .binary_search_by(|f| f.name.as_str().cmp(name.as_str()))
             .ok()
-            .or_else(|| fixtures.iter().position(|f| &f.name == name));
+            .or_else(|| fixtures.iter().position(|f| f.name == name));
         let snapshot = match found {
             Some(i) => &mut fixtures[i],
             None => {
@@ -285,8 +291,10 @@ fn lay_bytes<'a>(
                     at,
                     FixtureSnapshot {
                         strobe_hz: None,
-                        name: name.clone(),
-                        channels: HashMap::with_capacity(info.channel_defs.len()),
+                        name,
+                        channels: crate::lighting::names::NameMap::with_capacity(
+                            info.channel_defs.len(),
+                        ),
                         cells: Default::default(),
                     },
                 );
@@ -294,16 +302,12 @@ fn lay_bytes<'a>(
             }
         };
         if !info.cells.is_empty() {
-            let cell_bytes: Vec<(&str, &str, u8)> = info
+            let cell_bytes: Vec<(&str, Name, u8)> = info
                 .cells
                 .iter()
                 .flat_map(|cell| {
                     cell.channels.iter().filter_map(|(channel, def)| {
-                        Some((
-                            cell.name.as_str(),
-                            channel.as_str(),
-                            at(def.offset).or(unread)?,
-                        ))
+                        Some((cell.name.as_str(), channel, at(def.offset).or(unread)?))
                     })
                 })
                 .collect();
@@ -318,36 +322,25 @@ fn lay_bytes<'a>(
                     let values = cell
                         .channels
                         .keys()
-                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c.clone(), *v)))
+                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c, *v)))
                         .collect();
-                    snapshot.cells.insert(cell.name.clone(), values);
+                    snapshot.cells.insert(cell.name, values);
                 }
             }
             if !snapshot.cells.is_empty() {
                 for (cell, channel, b) in cell_bytes {
                     if let Some(values) = snapshot.cells.get_mut(cell) {
-                        match values.get_mut(channel) {
-                            Some(held) => *held = b,
-                            None => {
-                                values.insert(channel.to_string(), b);
-                            }
-                        }
+                        values.insert(channel, b);
                     }
                 }
             }
         }
-        each_name(&mut |channel, b| {
-            let Some(b) = b.or(unread) else {
-                return;
-            };
-            match snapshot.channels.get_mut(channel.as_ref()) {
-                Some(held) => *held = b,
-                None => {
-                    snapshot.channels.insert(channel.into_owned(), b);
-                }
+        for &(channel, offset, _) in names {
+            if let Some(b) = at(offset).or(unread) {
+                snapshot.channels.insert(channel, b);
             }
-        });
-        touched.push(name.clone());
+        }
+        touched.push(name);
     }
     touched.sort();
     touched
@@ -363,7 +356,7 @@ fn lay_bytes<'a>(
 /// [`Wire`]: crate::lighting::engine::Wire
 fn attach_wire(
     fixtures: &mut Vec<FixtureSnapshot>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
     wire: &crate::lighting::engine::Wire,
 ) {
     lay_bytes(
@@ -373,17 +366,18 @@ fn attach_wire(
         Fill::Fixture,
     );
     // A fixture nothing reaches is dark on every channel, and strobes not.
-    let unreached: HashMap<String, crate::lighting::effects::FixtureInfo> = registry
-        .iter()
-        .filter(|(_, info)| !reaches(wire, info))
-        .map(|(name, info)| (name.clone(), info.clone()))
-        .collect();
+    let unreached: crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo> =
+        registry
+            .iter()
+            .filter(|(_, info)| !reaches(wire, info))
+            .map(|(name, info)| (name, info.clone()))
+            .collect();
     if unreached.is_empty() {
         return;
     }
     lay_bytes(fixtures, &unreached, |_, _| Some(0), Fill::Fixture);
     for snapshot in fixtures.iter_mut() {
-        if unreached.contains_key(&snapshot.name) {
+        if unreached.contains_key(snapshot.name) {
             snapshot.strobe_hz = None;
         }
     }
@@ -409,14 +403,14 @@ fn reaches(
 /// own.
 pub(crate) fn fill_dark_fixtures(
     fixtures: &mut Vec<FixtureSnapshot>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     // Only the fixtures with no snapshot are read: on a frame where every
     // fixture has one, none is.
-    let held: std::collections::HashSet<&str> = fixtures.iter().map(|f| f.name.as_str()).collect();
-    let missing: Vec<(&String, &crate::lighting::effects::FixtureInfo)> = registry
+    let held: std::collections::HashSet<Name> = fixtures.iter().map(|f| f.name).collect();
+    let missing: Vec<(Name, &crate::lighting::effects::FixtureInfo)> = registry
         .iter()
-        .filter(|(name, info)| info.parent.is_none() && !held.contains(name.as_str()))
+        .filter(|(name, info)| info.parent.is_none() && !held.contains(name))
         .collect();
     if missing.is_empty() {
         fixtures.sort_by(|a, b| a.name.cmp(&b.name));
@@ -431,11 +425,11 @@ pub(crate) fn fill_dark_fixtures(
     );
     // A fixture with no channels at all is still there, dark.
     for (name, _) in missing {
-        if !dark.iter().any(|d: &FixtureSnapshot| &d.name == name) {
+        if !dark.iter().any(|d: &FixtureSnapshot| d.name == name) {
             dark.push(FixtureSnapshot {
                 strobe_hz: None,
-                name: name.clone(),
-                channels: HashMap::new(),
+                name,
+                channels: Default::default(),
                 cells: Default::default(),
             });
         }
@@ -454,8 +448,8 @@ const MAX_THROW_M: f64 = 40.0;
 /// down its mounting's −Z, which for a static fixture is simply where it
 /// points.
 pub(crate) fn compute_pose_snapshots(
-    poses: &HashMap<String, crate::lighting::effects::Pose>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    poses: &crate::lighting::names::NameTable<crate::lighting::effects::Pose>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) -> Vec<PoseSnapshot> {
     let rest = crate::lighting::effects::Pose {
         pan: 0.0,
@@ -485,7 +479,7 @@ pub(crate) fn compute_pose_snapshots(
                 Some([p[0] + aim[0] * t, p[1] + aim[1] * t])
             });
             Some(PoseSnapshot {
-                name: name.clone(),
+                name,
                 pan: pose.pan,
                 tilt: pose.tilt,
                 aim,
@@ -647,8 +641,8 @@ async fn sampler_loop_cancellable(
 /// Each channel shows the byte it goes out as ([`wire_byte`]) where
 /// `registry` knows the fixture's channel.
 pub(crate) fn compute_fixture_snapshots(
-    states: &HashMap<String, FixtureState>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    states: &crate::lighting::names::NameTable<FixtureState>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) -> Vec<FixtureSnapshot> {
     let mut snapshots: Vec<FixtureSnapshot> = states
         .iter()
@@ -658,7 +652,7 @@ pub(crate) fn compute_fixture_snapshots(
 
             for (channel_name, channel_state) in &state.channels {
                 channels.insert(
-                    channel_name.clone(),
+                    channel_name,
                     wire_byte(info, channel_name, channel_state.value),
                 );
             }
@@ -667,8 +661,8 @@ pub(crate) fn compute_fixture_snapshots(
                 // A software strobe's rate; a strobe channel's is read
                 // from its byte once the registry is at hand.
                 strobe_hz: state.strobe_hz,
-                name: name.clone(),
-                channels,
+                name,
+                channels: channels.into(),
                 cells: Default::default(),
             }
         })
@@ -683,13 +677,13 @@ pub(crate) fn compute_fixture_snapshots(
 /// are not fixtures of their own here, their state reaches the parent's
 /// `cells`. The one builder both the sampler and the evaluators use.
 pub(crate) fn fixture_snapshots_with_cells(
-    states: &HashMap<String, FixtureState>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    states: &crate::lighting::names::NameTable<FixtureState>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
     wire: &crate::lighting::engine::Wire,
     rates: StrobeRates,
 ) -> Vec<FixtureSnapshot> {
     let mut fixtures = compute_fixture_snapshots(states, registry);
-    fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    fixtures.retain(|s| registry.get(s.name).is_none_or(|f| f.parent.is_none()));
     drop_unsent_primaries(&mut fixtures, registry);
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
@@ -705,7 +699,7 @@ pub(crate) fn fixture_snapshots_with_cells(
 /// or an 8-bit channel's byte for a name the fixture has no channel by.
 fn wire_byte(
     info: Option<&crate::lighting::effects::FixtureInfo>,
-    channel: &str,
+    channel: Name,
     value: f64,
 ) -> u8 {
     crate::lighting::effects::coarse_byte(
@@ -723,14 +717,14 @@ fn wire_byte(
 /// stage view draws -- judges the fixture by what it emits.
 fn drop_unsent_primaries(
     snapshots: &mut [FixtureSnapshot],
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         if crate::lighting::effects::has_cmy(&info.channel_defs) {
-            for (rgb, _) in CMY_OF_RGB {
+            for rgb in [names::RED, names::GREEN, names::BLUE] {
                 snapshot.channels.remove(rgb);
             }
         }
@@ -744,11 +738,11 @@ fn drop_unsent_primaries(
 /// again after a test overlay changes the bytes.
 pub(crate) fn attach_strobe_rates(
     fixtures: &mut [FixtureSnapshot],
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
     rates: StrobeRates,
 ) {
     for snapshot in fixtures {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         match snapshot.channels.get("strobe") {
@@ -786,10 +780,10 @@ fn mirror_sections<'a>(
 /// are their own entries already and are not repeated here.
 fn attach_mirrors(
     snapshots: &mut [FixtureSnapshot],
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         let cell_owned = |channel: &str| {
@@ -799,14 +793,14 @@ fn attach_mirrors(
         };
         let mut extra = Vec::new();
         for (name, def) in &info.channel_defs {
-            if def.mirrors.is_empty() || cell_owned(name) {
+            if def.mirrors.is_empty() || cell_owned(&name) {
                 continue;
             }
             let Some(&coarse) = snapshot.channels.get(name) else {
                 continue;
             };
-            let fine = snapshot.channels.get(&fine_name(name)).copied();
-            for ((mirror, _), mirror_fine) in mirror_sections(name, def) {
+            let fine = snapshot.channels.get(fine_name(&name)).copied();
+            for ((mirror, _), mirror_fine) in mirror_sections(&name, def) {
                 extra.push((mirror, coarse));
                 if let (Some(fine), Some((mirror_fine, _))) = (fine, mirror_fine) {
                     extra.push((mirror_fine, fine));
@@ -832,23 +826,28 @@ fn attach_mirrors(
 /// in a snapshot.
 fn attach_pointing(
     snapshots: &mut [FixtureSnapshot],
-    states: &HashMap<String, FixtureState>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    states: &crate::lighting::names::NameTable<FixtureState>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let (Some(state), Some(info)) = (states.get(&snapshot.name), registry.get(&snapshot.name))
+        let (Some(state), Some(info)) = (states.get(snapshot.name), registry.get(snapshot.name))
         else {
             continue;
         };
         for (channel, resolved) in
             crate::lighting::effects::resolve_physical(&state.physical, &info.channel_defs)
         {
-            let def = &info.channel_defs[channel];
+            let (name, fine) = match channel {
+                "pan" => (names::PAN, names::PAN_FINE),
+                "tilt" => (names::TILT, names::TILT_FINE),
+                other => (Name::of(other), Name::of(&fine_name(other))),
+            };
+            let def = &info.channel_defs[name];
             for (offset, byte) in resolved.bytes {
                 if offset == def.offset {
-                    snapshot.channels.insert(channel.to_string(), byte);
+                    snapshot.channels.insert(name, byte);
                 } else if Some(offset) == def.fine {
-                    snapshot.channels.insert(fine_name(channel), byte);
+                    snapshot.channels.insert(fine, byte);
                 }
             }
         }
@@ -864,13 +863,13 @@ pub use crate::lighting::channels::is_level_channel;
 /// has no snapshot yet but a lit cell gets one, its own channels dark.
 pub(crate) fn attach_cell_snapshots(
     snapshots: &mut Vec<FixtureSnapshot>,
-    states: &HashMap<String, FixtureState>,
-    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    states: &crate::lighting::names::NameTable<FixtureState>,
+    registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     let empty = FixtureState::new();
-    let mut parents: Vec<&str> = states
+    let mut parents: Vec<Name> = states
         .keys()
-        .filter_map(|name| registry.get(name).and_then(|f| f.parent.as_deref()))
+        .filter_map(|name| registry.get(name).and_then(|f| f.parent))
         .collect();
     parents.sort();
     parents.dedup();
@@ -879,14 +878,19 @@ pub(crate) fn attach_cell_snapshots(
             continue;
         };
         let parent_state = states.get(parent).unwrap_or(&empty);
-        let mut cells = std::collections::BTreeMap::new();
-        for cell in &info.cells {
-            let own = states.get(&crate::lighting::effects::cell_fixture_name(
-                parent, &cell.name,
-            ));
+        let mut cells = crate::lighting::names::NameMap::new();
+        for (at, cell) in info.cells.iter().enumerate() {
+            // The cell's sub-fixture by the name the engine registered it
+            // under; a fixture read before any engine has it, by making it.
+            let own = match info.sub_fixtures.get(at) {
+                Some(sub) => states.get(sub),
+                None => states.get(crate::lighting::effects::cell_fixture_name(
+                    &parent, &cell.name,
+                )),
+            };
             // Each cell channel at the coarse byte it goes out as on the
             // cell's own channel, as the DMX output resolves it.
-            let values: HashMap<String, u8> = parent_state
+            let values: crate::lighting::names::NameMap<u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
                 .map(|(name, value)| {
@@ -895,22 +899,18 @@ pub(crate) fn attach_cell_snapshots(
                     (name, byte)
                 })
                 .collect();
-            cells.insert(cell.name.clone(), values);
+            cells.insert(cell.name, values);
         }
         match snapshots.iter_mut().find(|s| s.name == parent) {
             Some(snapshot) => snapshot.cells = cells,
             None => {
-                let at = snapshots.partition_point(|s| s.name.as_str() < parent);
+                let at = snapshots.partition_point(|s| s.name < parent);
                 snapshots.insert(
                     at,
                     FixtureSnapshot {
                         strobe_hz: None,
-                        name: parent.to_string(),
-                        channels: info
-                            .channels
-                            .keys()
-                            .map(|name| (name.clone(), 0u8))
-                            .collect(),
+                        name: parent,
+                        channels: info.channels.keys().map(|name| (name, 0u8)).collect(),
                         cells,
                     },
                 );
@@ -931,8 +931,14 @@ mod tests {
     fn pose_snapshots_carry_the_beam_and_its_footprint() {
         use crate::lighting::effects::{FixtureInfo, Pose};
         let mut registry = HashMap::new();
-        let mut mover =
-            FixtureInfo::new("m".to_string(), 1, 1, "T".to_string(), HashMap::new(), None);
+        let mut mover = FixtureInfo::new(
+            "m".to_string(),
+            1,
+            1,
+            "T".to_string(),
+            Default::default(),
+            None,
+        );
         mover.position = Some([0.0, 3.5, 4.0]);
         mover.rotation = Some([0.0, 0.0, 180.0]);
         registry.insert("m".to_string(), mover);
@@ -947,7 +953,7 @@ mod tests {
                 tilt: 45.0,
             },
         );
-        let snapshots = compute_pose_snapshots(&poses, &registry);
+        let snapshots = compute_pose_snapshots(&poses.clone().into(), &registry.clone().into());
         assert_eq!(snapshots.len(), 1);
         let floor = snapshots[0].floor.expect("footprint");
         assert!(
@@ -956,7 +962,11 @@ mod tests {
         );
         // Past level: no footprint.
         poses.get_mut("m").unwrap().tilt = 100.0;
-        assert!(compute_pose_snapshots(&poses, &registry)[0].floor.is_none());
+        assert!(
+            compute_pose_snapshots(&poses.clone().into(), &registry.clone().into())[0]
+                .floor
+                .is_none()
+        );
     }
 
     #[test]
@@ -976,7 +986,7 @@ mod tests {
             ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("test_fixture".to_string(), fixture_state);
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].name, "test_fixture");
@@ -999,7 +1009,7 @@ mod tests {
             ChannelState::new(0.5, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("fixture_with_dimmer".to_string(), fixture_state);
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 255);
@@ -1013,7 +1023,7 @@ mod tests {
         states.insert("alpha".to_string(), FixtureState::new());
         states.insert("middle".to_string(), FixtureState::new());
 
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
 
         assert_eq!(snapshots[0].name, "alpha");
         assert_eq!(snapshots[1].name, "middle");
@@ -1022,8 +1032,7 @@ mod tests {
 
     #[test]
     fn test_compute_fixture_snapshots_empty() {
-        let states = HashMap::new();
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&Default::default(), &Default::default());
         assert!(snapshots.is_empty());
     }
 
@@ -1036,7 +1045,7 @@ mod tests {
             ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         states.insert("dark_fixture".to_string(), fixture_state);
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 0);
     }
@@ -1051,7 +1060,7 @@ mod tests {
         );
         states.insert("unknown_fixture".to_string(), fixture_state);
 
-        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
         assert_eq!(snapshots.len(), 1);
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 128);
     }
@@ -1071,8 +1080,8 @@ mod tests {
         let snapshot = FixtureSnapshot {
             strobe_hz: None,
             cells: Default::default(),
-            name: "test".to_string(),
-            channels,
+            name: "test".to_string().into(),
+            channels: channels.into(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.name, "test");
@@ -1085,8 +1094,8 @@ mod tests {
         let snapshot = StateSnapshot {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "f1".to_string(),
-                channels: HashMap::new(),
+                name: "f1".to_string().into(),
+                channels: Default::default(),
                 cells: Default::default(),
             }],
             active_effects: vec!["effect1".to_string()],
@@ -1282,7 +1291,7 @@ mod tests {
                 1,
                 1,
                 "rgb".to_string(),
-                channels,
+                channels.into(),
                 None,
             );
             engine.lock().register_fixture(fixture);
@@ -1315,7 +1324,7 @@ mod tests {
                 1,
                 1,
                 "T".to_string(),
-                channels,
+                channels.into(),
                 None,
             ));
         }
@@ -1337,7 +1346,7 @@ mod tests {
             let effect = EffectInstance::new(
                 "e".to_string(),
                 EffectType::Static {
-                    parameters,
+                    parameters: parameters.into(),
                     duration: std::time::Duration::from_secs(5),
                 },
                 vec!["f".to_string()],
@@ -1378,18 +1387,19 @@ mod tests {
     /// `crates/mtrack-core/src/lighting/engine/tests/cell_tests.rs`'s `bar()`.
     fn bar(name: &str) -> FixtureInfo {
         let cell = |n: &str, base: u16, x: f64| Cell {
-            name: n.to_string(),
+            name: n.to_string().into(),
             channels: HashMap::from([
                 ("red".to_string(), ChannelDef::at(base)),
                 ("green".to_string(), ChannelDef::at(base + 1)),
                 ("blue".to_string(), ChannelDef::at(base + 2)),
-            ]),
+            ])
+            .into(),
             offset: [x, 0.0, 0.0],
         };
         let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
         let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
-        let mut channels: HashMap<String, u16> =
-            ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+        let mut channels: crate::lighting::names::NameMap<u16> =
+            ganged.iter().map(|(n, d)| (n, d.offset)).collect();
         channels.insert("dimmer".to_string(), 1);
         let mut defs = ganged;
         defs.insert("dimmer".to_string(), ChannelDef::at(1));
@@ -1404,14 +1414,11 @@ mod tests {
     /// `parent` set so `attach_cell_snapshots` folds its state back in.
     fn sub_fixture(parent: &str, cell: &Cell) -> FixtureInfo {
         let name = crate::lighting::effects::cell_fixture_name(parent, &cell.name);
-        let channels: HashMap<String, u16> = cell
-            .channels
-            .iter()
-            .map(|(n, d)| (n.clone(), d.offset))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u16> =
+            cell.channels.iter().map(|(n, d)| (n, d.offset)).collect();
         let mut sub = FixtureInfo::new(name, 1, 1, "Bar".to_string(), channels, None);
         sub.channel_defs = cell.channels.clone();
-        sub.parent = Some(parent.to_string());
+        sub.parent = Some(parent.to_string().into());
         sub
     }
 
@@ -1442,11 +1449,16 @@ mod tests {
         // Seed the snapshot as `sample_tick` would: only the fixture-level
         // state feeds `compute_fixture_snapshots` (sub-fixture states are
         // filtered out before this point).
-        let bar_only: HashMap<String, FixtureState> = HashMap::from([("Bar".to_string(), bed)]);
-        let mut snapshots = compute_fixture_snapshots(&bar_only, &HashMap::new());
+        let bar_only: crate::lighting::names::NameTable<FixtureState> =
+            HashMap::from([("Bar".to_string(), bed)]).into();
+        let mut snapshots = compute_fixture_snapshots(&bar_only, &Default::default());
         let channels_before = snapshots[0].channels.clone();
 
-        attach_cell_snapshots(&mut snapshots, &states, &registry);
+        attach_cell_snapshots(
+            &mut snapshots,
+            &states.clone().into(),
+            &registry.clone().into(),
+        );
 
         assert_eq!(snapshots.len(), 1);
         let bar_snapshot = &snapshots[0];
@@ -1475,7 +1487,7 @@ mod tests {
             .start_effect(EffectInstance::new(
                 "cell".to_string(),
                 EffectType::Static {
-                    parameters: HashMap::from([("red".to_string(), 0.3)]),
+                    parameters: HashMap::from([("red".to_string(), 0.3)]).into(),
                     duration: std::time::Duration::from_secs(5),
                 },
                 vec!["Bar/2".to_string()],
@@ -1511,10 +1523,14 @@ mod tests {
             ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
         let states = HashMap::from([("Bar".to_string(), bed.clone())]);
-        let mut snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        let mut snapshots = compute_fixture_snapshots(&states.clone().into(), &Default::default());
         let before = snapshots.clone();
 
-        attach_cell_snapshots(&mut snapshots, &states, &registry);
+        attach_cell_snapshots(
+            &mut snapshots,
+            &states.clone().into(),
+            &registry.clone().into(),
+        );
 
         assert_eq!(snapshots, before, "no fixture gets `cells`");
         assert!(snapshots[0].cells.is_empty());
@@ -1542,19 +1558,23 @@ mod tests {
         let mut snapshots = vec![
             FixtureSnapshot {
                 strobe_hz: None,
-                name: "Aaa".to_string(),
-                channels: HashMap::new(),
+                name: "Aaa".to_string().into(),
+                channels: Default::default(),
                 cells: Default::default(),
             },
             FixtureSnapshot {
                 strobe_hz: None,
-                name: "Zzz".to_string(),
-                channels: HashMap::new(),
+                name: "Zzz".to_string().into(),
+                channels: Default::default(),
                 cells: Default::default(),
             },
         ];
 
-        attach_cell_snapshots(&mut snapshots, &states, &registry);
+        attach_cell_snapshots(
+            &mut snapshots,
+            &states.clone().into(),
+            &registry.clone().into(),
+        );
 
         assert_eq!(
             snapshots
@@ -1592,7 +1612,7 @@ mod tests {
             1,
             1,
             "Mover".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         let mut defs = HashMap::new();
@@ -1613,7 +1633,7 @@ mod tests {
             );
         }
         defs.insert("dimmer".to_string(), ChannelDef::at(5));
-        info = info.with_channel_defs(defs);
+        info = info.with_channel_defs(defs.into());
         let registry: HashMap<String, _> = [("m".to_string(), info)].into_iter().collect();
 
         let mut state = FixtureState::new();
@@ -1631,12 +1651,12 @@ mod tests {
                 layer: EffectLayer::BACKGROUND,
             },
         );
-        let states: HashMap<String, FixtureState> =
+        let states: crate::lighting::names::NameTable<FixtureState> =
             [("m".to_string(), state)].into_iter().collect();
 
         let snapshots = fixture_snapshots_with_cells(
             &states,
-            &registry,
+            &registry.clone().into(),
             &Default::default(),
             StrobeRates::Live,
         );
@@ -1665,7 +1685,7 @@ mod tests {
             1,
             1,
             "Bar".to_string(),
-            channels,
+            channels.into(),
             None,
         );
         let mut defs = HashMap::new();
@@ -1680,7 +1700,7 @@ mod tests {
             },
         );
         defs.insert("dimmer".to_string(), ChannelDef::at(4));
-        info = info.with_channel_defs(defs);
+        info = info.with_channel_defs(defs.into());
         let registry: HashMap<String, _> = [("bar".to_string(), info)].into_iter().collect();
 
         let mut state = FixtureState::new();
@@ -1688,11 +1708,11 @@ mod tests {
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::BACKGROUND, BlendMode::Replace),
         );
-        let states: HashMap<String, FixtureState> =
+        let states: crate::lighting::names::NameTable<FixtureState> =
             [("bar".to_string(), state)].into_iter().collect();
         let snapshots = fixture_snapshots_with_cells(
             &states,
-            &registry,
+            &registry.clone().into(),
             &Default::default(),
             StrobeRates::Live,
         );
@@ -1718,7 +1738,14 @@ mod tests {
                 .into_iter()
                 .map(|(n, o)| (n.to_string(), o))
                 .collect();
-        let mut info = FixtureInfo::new("f".to_string(), 1, 1, "T".to_string(), channels, None);
+        let mut info = FixtureInfo::new(
+            "f".to_string(),
+            1,
+            1,
+            "T".to_string(),
+            channels.into(),
+            None,
+        );
         // A 16-bit dimmer, its fine byte at 5: the snapshot shows the
         // coarse byte on the wire, the high byte of the 16-bit value.
         info.channel_defs.get_mut("dimmer").unwrap().fine = Some(5);

@@ -27,18 +27,19 @@ use crate::lighting::types::{Cell, ChannelDef};
 /// the fixture-level colour ganged across them.
 fn bar(name: &str, position: Option<[f64; 3]>) -> FixtureInfo {
     let cell = |n: &str, base: u16, x: f64| Cell {
-        name: n.to_string(),
+        name: n.to_string().into(),
         channels: HashMap::from([
             ("red".to_string(), ChannelDef::at(base)),
             ("green".to_string(), ChannelDef::at(base + 1)),
             ("blue".to_string(), ChannelDef::at(base + 2)),
-        ]),
+        ])
+        .into(),
         offset: [x, 0.0, 0.0],
     };
     let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
     let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
-    let mut channels: HashMap<String, u16> =
-        ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    let mut channels: crate::lighting::names::NameMap<u16> =
+        ganged.iter().map(|(n, d)| (n, d.offset)).collect();
     channels.insert("dimmer".to_string(), 1);
     let mut defs = ganged;
     defs.insert("dimmer".to_string(), ChannelDef::at(1));
@@ -67,7 +68,8 @@ fn static_red(targets: Vec<String>, per_cell: bool) -> EffectInstance {
                 ("green".to_string(), 0.0),
                 ("blue".to_string(), 0.0),
                 ("dimmer".to_string(), 1.0),
-            ]),
+            ])
+            .into(),
             duration: Duration::from_secs(10),
         },
         targets,

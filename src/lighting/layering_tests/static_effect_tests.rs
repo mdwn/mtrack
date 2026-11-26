@@ -38,7 +38,7 @@ fn test_static_replace_blend_mode() {
         1,
         1,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0), // Test fixture with strobe
     );
 
@@ -57,7 +57,7 @@ fn test_static_replace_blend_mode() {
         1,
         5, // Different address
         "Astera-PixelBrick".to_string(),
-        back_channels,
+        back_channels.into(),
         Some(20.0), // Test fixture with strobe
     );
     engine.register_fixture(back_fixture);
@@ -72,7 +72,7 @@ fn test_static_replace_blend_mode() {
     let static_effect = create_effect_with_layering(
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
-            parameters: static_params,
+            parameters: static_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
@@ -124,7 +124,7 @@ fn test_static_effect_timing() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -139,7 +139,7 @@ fn test_static_effect_timing() {
                 params.insert("red".to_string(), 1.0);
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite
         },
@@ -185,7 +185,7 @@ fn test_static_effect_timing() {
                 params.insert("red".to_string(), 0.0);
                 params.insert("green".to_string(), 1.0);
                 params.insert("blue".to_string(), 0.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(3), // 3 seconds
         },
@@ -285,7 +285,7 @@ fn test_static_effect_with_up_time() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -301,7 +301,7 @@ fn test_static_effect_with_up_time() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // Indefinite
         },
@@ -448,7 +448,7 @@ fn test_static_effect_with_down_time() {
         1,
         1,
         "RGB_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -464,7 +464,7 @@ fn test_static_effect_with_down_time() {
                 params.insert("green".to_string(), 0.0);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 1.0);
-                params
+                params.into()
             },
             duration: Duration::from_secs(5), // 5 second total duration
         },
@@ -731,7 +731,7 @@ fn test_static_effect_fade_out() {
         1,
         1,
         "Dimmer".to_string(),
-        channels,
+        channels.into(),
         None,
     );
 
@@ -747,7 +747,7 @@ fn test_static_effect_fade_out() {
                 params.insert("green".to_string(), 0.5);
                 params.insert("blue".to_string(), 0.0);
                 params.insert("dimmer".to_string(), 0.8);
-                params
+                params.into()
             },
             duration: Duration::from_secs(2), // Timed static effect
         },
@@ -817,7 +817,7 @@ fn dimmerless_rgb_fixture(name: &str, address: u16) -> FixtureInfo {
         1,
         address,
         "Astera-PixelBrick".to_string(),
-        channels,
+        channels.into(),
         Some(20.0),
     )
 }
@@ -832,7 +832,7 @@ fn static_with_level(level: f64, green: f64) -> EffectInstance {
     create_effect_with_layering(
         "back_wash".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(8),
         },
         vec!["back_wash".to_string()],
@@ -880,7 +880,7 @@ fn test_static_level_uses_the_dimmer_channel_when_present() {
         1,
         1,
         "RGB_Dimmer_Par".to_string(),
-        channels,
+        channels.into(),
         None,
     ));
 
@@ -912,7 +912,7 @@ fn test_static_without_a_level_still_renders_full() {
         .start_effect(create_effect_with_layering(
             "back_wash".to_string(),
             EffectType::Static {
-                parameters,
+                parameters: parameters.into(),
                 duration: Duration::from_secs(8),
             },
             vec!["back_wash".to_string()],

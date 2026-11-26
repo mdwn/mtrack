@@ -28,36 +28,42 @@
 //! restores), and one scalar peak: the highest level among the layers that
 //! contribute colour, which is what a dimmer channel is sent.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::fixture::{has_cmy, has_dimmer_channel, FixtureInfo};
 use super::state::{blend_value, ChannelState, FixtureState};
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::channels::lerp;
+use crate::lighting::names::{self, ChannelSet, Name};
 
-/// The internal channel an effect's level is set under. Never a real
-/// channel, never written out: [`FixtureState::set_channel`] turns it into
-/// an op.
+/// The internal channel an effect's level is set under
+/// ([`names::INTENSITY`]). Never a real channel, never written out:
+/// [`FixtureState::set_channel`] turns it into an op.
+#[cfg(test)]
 pub const INTENSITY: &str = "_intensity";
 
 /// The colour channels that are composited, in the order of the arrays.
-const COLOUR: [&str; 4] = ["red", "green", "blue", "white"];
+#[inline]
+fn colour() -> [Name; 4] {
+    [names::RED, names::GREEN, names::BLUE, names::WHITE]
+}
 
 /// What an [`Op`] sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpKind {
-    /// One of [`COLOUR`], by index.
+    /// One of [`colour`], by index.
     Colour(usize),
     /// The level.
     Intensity,
 }
 
 /// The op a channel name stands for, `None` for an ordinary channel.
-pub(super) fn op_kind(name: &str) -> Option<OpKind> {
-    if name == INTENSITY {
+pub(super) fn op_kind(name: Name) -> Option<OpKind> {
+    if name == names::INTENSITY {
         return Some(OpKind::Intensity);
     }
-    COLOUR.iter().position(|c| *c == name).map(OpKind::Colour)
+    colour().iter().position(|c| *c == name).map(OpKind::Colour)
 }
 
 /// One effect's ask of a fixture's colour or level.
@@ -85,13 +91,13 @@ struct Seed {
 
 impl Seed {
     fn of(state: &FixtureState, dimmer: bool) -> Self {
-        let value = |name: &str| state.channels.get(name).map(|c| c.value);
+        let value = |name: Name| state.channels.get(name).map(|c| c.value);
         Seed {
-            colour: COLOUR.map(value),
-            dimmer: if dimmer { value("dimmer") } else { None },
-            flags: crate::lighting::channels::CMY_OF_RGB
+            colour: colour().map(value),
+            dimmer: if dimmer { value(names::DIMMER) } else { None },
+            flags: [names::CYAN, names::MAGENTA, names::YELLOW]
                 .iter()
-                .any(|(_, flag)| state.channels.contains_key(*flag)),
+                .any(|flag| state.channels.contains_key(*flag)),
         }
     }
 }
@@ -277,7 +283,7 @@ impl Composite {
     /// The colour channels to write and their values. `takes` is which of
     /// the channels the target has, for the white a colour-less fixture
     /// shows.
-    fn colours(&self, level: &Level, mixing: Mixing) -> Vec<(&'static str, f64)> {
+    fn colours(&self, level: &Level, mixing: Mixing) -> Vec<(Name, f64)> {
         let Mixing {
             channels: takes,
             cmy,
@@ -310,7 +316,7 @@ impl Composite {
                     Level::Shared(by) => relative(i, *by),
                     Level::Plain => self.light[i],
                 };
-                (COLOUR[i], value.clamp(0.0, 1.0))
+                (colour()[i], value.clamp(0.0, 1.0))
             })
             .collect()
     }
@@ -330,26 +336,25 @@ pub struct Mixing {
 }
 
 impl Mixing {
-    pub fn of<V>(channels: &HashMap<String, V>) -> Self {
+    pub fn of(channels: &impl ChannelSet) -> Self {
         let cmy = has_cmy(channels);
         Mixing {
-            channels: COLOUR.map(|c| channels.contains_key(c) || (c != "white" && cmy)),
+            channels: colour().map(|c| channels.has_name(c) || (c != names::WHITE && cmy)),
             cmy,
             dimmer: has_dimmer_channel(channels),
         }
     }
 }
 
-fn put(state: &mut FixtureState, layer: EffectLayer, name: &str, value: f64) {
-    state.channels.insert(
-        name.to_string(),
-        ChannelState::new(value, layer, BlendMode::Replace),
-    );
+fn put(state: &mut FixtureState, layer: EffectLayer, name: Name, value: f64) {
+    state
+        .channels
+        .insert(name, ChannelState::new(value, layer, BlendMode::Replace));
 }
 
 /// Composites `state`'s ops into plain channels for a fixture with
 /// `channels`, and drops the ops.
-pub(super) fn resolve_plain<V>(state: &mut FixtureState, channels: &HashMap<String, V>) {
+pub(super) fn resolve_plain(state: &mut FixtureState, channels: &impl ChannelSet) {
     if state.ops.is_empty() {
         return;
     }
@@ -371,7 +376,7 @@ pub(super) fn resolve_mixed(state: &mut FixtureState, mixing: Mixing) {
         put(state, composite.top, name, value);
     }
     if has_dimmer {
-        put(state, composite.top, "dimmer", composite.level());
+        put(state, composite.top, names::DIMMER, composite.level());
     }
 }
 
@@ -382,7 +387,7 @@ pub(super) fn resolve_mixed(state: &mut FixtureState, mixing: Mixing) {
 /// each cell's colour is scaled against it, so every cell's light is exact.
 pub fn resolve_fixture(
     parent: &mut FixtureState,
-    cells: &mut HashMap<String, FixtureState>,
+    cells: &mut crate::lighting::names::NameTable<FixtureState>,
     info: &FixtureInfo,
 ) {
     if info.cells.is_empty() {
@@ -394,7 +399,7 @@ pub fn resolve_fixture(
     let own: Vec<bool> = info
         .cells
         .iter()
-        .map(|c| cells.get(&c.name).is_some_and(|s| !s.ops.is_empty()))
+        .map(|c| cells.get(c.name).is_some_and(|s| !s.ops.is_empty()))
         .collect();
     if parent_ops.is_empty() && !own.iter().any(|o| *o) {
         return;
@@ -408,7 +413,7 @@ pub fn resolve_fixture(
         .then(|| Composite::new(&parent_ops, &seed));
     let mut per_cell = Vec::new();
     for (cell, _) in info.cells.iter().zip(&own).filter(|(_, o)| **o) {
-        let Some(state) = cells.get_mut(&cell.name) else {
+        let Some(state) = cells.get_mut(cell.name) else {
             continue;
         };
         let mut ops = parent_ops.clone();
@@ -437,18 +442,18 @@ pub fn resolve_fixture(
             put(parent, g.top, name, value);
         }
         if let Some(dimmer) = dimmer {
-            put(parent, g.top, "dimmer", dimmer);
+            put(parent, g.top, names::DIMMER, dimmer);
         }
     }
     let mut top = ganged.as_ref().map(|g| g.top);
     for (cell, c) in &per_cell {
-        let state = cells.get_mut(&cell.name).expect("a cell with ops");
+        let state = cells.get_mut(cell.name).expect("a cell with ops");
         let (level, dimmer) = level(c);
         for (name, value) in c.colours(&level, Mixing::of(&cell.channels)) {
             put(state, c.top, name, value);
         }
         if let Some(dimmer) = dimmer {
-            put(state, c.top, "dimmer", dimmer);
+            put(state, c.top, names::DIMMER, dimmer);
         }
         top = top.max(Some(c.top));
     }
@@ -456,7 +461,7 @@ pub fn resolve_fixture(
         put(
             parent,
             top.unwrap_or(EffectLayer::BACKGROUND),
-            "dimmer",
+            names::DIMMER,
             shared,
         );
     }
@@ -798,13 +803,13 @@ mod tests {
             1,
             1,
             "t".to_string(),
-            channels(parent),
+            channels(parent).into(),
             None,
         );
         info.cells = ["1", "2"]
             .iter()
             .map(|name| crate::lighting::types::Cell {
-                name: name.to_string(),
+                name: name.to_string().into(),
                 channels: cell
                     .iter()
                     .enumerate()
@@ -831,7 +836,7 @@ mod tests {
             BlendMode::Replace,
         )));
         let cell_2 = FixtureState::from_channels(level(1.0, B, BlendMode::Replace));
-        let mut cells = HashMap::from([("2".to_string(), cell_2)]);
+        let mut cells = crate::lighting::names::NameTable::from([("2", cell_2)]);
         resolve_fixture(&mut parent, &mut cells, &info);
         // Cell 2 is red at full; cell 1 is red at half.
         assert_eq!(value(&parent, "dimmer"), 1.0);
@@ -844,8 +849,8 @@ mod tests {
     fn cells_with_a_dimmer_of_their_own_use_their_own_peak() {
         let info = bar(&[], &["dimmer", "red", "green", "blue"]);
         let mut parent = FixtureState::from_channels(red(A, BlendMode::Replace));
-        let mut cells = HashMap::from([(
-            "1".to_string(),
+        let mut cells = crate::lighting::names::NameTable::from([(
+            "1",
             FixtureState::from_channels(level(0.25, B, BlendMode::Replace)),
         )]);
         resolve_fixture(&mut parent, &mut cells, &info);
@@ -858,8 +863,8 @@ mod tests {
     fn cells_without_a_dimmer_carry_the_level_in_their_colour() {
         let info = bar(&[], &["red", "green", "blue"]);
         let mut parent = FixtureState::from_channels(red(A, BlendMode::Replace));
-        let mut cells = HashMap::from([(
-            "1".to_string(),
+        let mut cells = crate::lighting::names::NameTable::from([(
+            "1",
             FixtureState::from_channels(level(0.25, B, BlendMode::Replace)),
         )]);
         resolve_fixture(&mut parent, &mut cells, &info);

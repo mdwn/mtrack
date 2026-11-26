@@ -118,7 +118,7 @@ pub struct MidiDmxStore {
     /// (universe_id, dmx_channel) → slot index.
     channel_to_slot: HashMap<(u16, u16), usize>,
     /// slot index → (fixture_name, channel_name) for EffectEngine injection.
-    slot_to_fixture: Vec<(String, String)>,
+    slot_to_fixture: Vec<(crate::lighting::names::Name, crate::lighting::names::Name)>,
     /// Per-universe dim rate (number of ticks for a full 0→255 transition).
     /// Stored as AtomicU64 holding f64 bits.
     dim_rates: HashMap<u16, AtomicU64>,
@@ -156,15 +156,20 @@ impl MidiDmxStore {
         channel_name: &str,
     ) -> usize {
         if let Some(&slot_index) = self.channel_to_slot.get(&(universe, dmx_channel)) {
-            self.slot_to_fixture[slot_index] = (fixture_name.to_string(), channel_name.to_string());
+            self.slot_to_fixture[slot_index] = (
+                crate::lighting::names::Name::of(fixture_name),
+                crate::lighting::names::Name::of(channel_name),
+            );
             return slot_index;
         }
         let slot_index = self.slots.len();
         self.slots.push(Slot::new());
         self.channel_to_slot
             .insert((universe, dmx_channel), slot_index);
-        self.slot_to_fixture
-            .push((fixture_name.to_string(), channel_name.to_string()));
+        self.slot_to_fixture.push((
+            crate::lighting::names::Name::of(fixture_name),
+            crate::lighting::names::Name::of(channel_name),
+        ));
         slot_index
     }
 
@@ -340,7 +345,10 @@ impl MidiDmxStore {
     }
 
     /// Returns the (fixture_name, channel_name) for a slot index.
-    pub fn fixture_info(&self, slot_index: usize) -> &(String, String) {
+    pub fn fixture_info(
+        &self,
+        slot_index: usize,
+    ) -> &(crate::lighting::names::Name, crate::lighting::names::Name) {
         &self.slot_to_fixture[slot_index]
     }
 
@@ -576,7 +584,10 @@ mod tests {
         store.register_slot(1, 1, "B", "dimmer");
         assert_eq!(
             store.fixture_info(first),
-            &("B".to_string(), "dimmer".to_string())
+            &(
+                crate::lighting::names::Name::of("B"),
+                crate::lighting::names::Name::of("dimmer")
+            )
         );
     }
 
@@ -592,7 +603,13 @@ mod tests {
         assert_eq!(store.slot_count(), 2);
         assert_eq!(store.lookup(1, 2), None);
         let b = store.lookup(1, 5).expect("B's channel kept");
-        assert_eq!(store.fixture_info(b), &("B".to_string(), "red".to_string()));
+        assert_eq!(
+            store.fixture_info(b),
+            &(
+                crate::lighting::names::Name::of("B"),
+                crate::lighting::names::Name::of("red")
+            )
+        );
         assert!(
             store
                 .iter_active()

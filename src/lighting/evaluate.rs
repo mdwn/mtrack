@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
+use crate::lighting::names::Name;
 use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
@@ -432,12 +433,12 @@ fn resolve_targets(
     effect.target_fixtures = effect
         .target_fixtures
         .iter()
-        .flat_map(|target| match groups.get(target) {
-            Some(resolved) => resolved.clone(),
+        .flat_map(|target| match groups.get(target.as_str()) {
+            Some(resolved) => resolved.iter().map(Name::from).collect(),
             // Not a known group — already a fixture name, or a name
             // that resolves to nothing. Either way, leave it for the
             // engine to accept or reject.
-            None => vec![target.clone()],
+            None => vec![*target],
         })
         .collect();
     effect
@@ -488,7 +489,10 @@ pub fn evaluate_with_system(
         fallback_tempo_map,
         times,
         |effect| {
-            effect_groups.insert(effect.id.clone(), effect.target_fixtures.clone());
+            effect_groups.insert(
+                effect.id.clone(),
+                effect.target_fixtures.iter().map(Name::to_string).collect(),
+            );
             resolve_targets(&group_map, effect)
         },
     );
@@ -515,7 +519,8 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         .get_active_effects()
         .values()
         .map(|effect| {
-            let mut fixtures = effect.target_fixtures.clone();
+            let mut fixtures: Vec<String> =
+                effect.target_fixtures.iter().map(Name::to_string).collect();
             fixtures.sort();
             let evaluated = EvaluatedEffect {
                 id: effect.id.clone(),
@@ -1068,7 +1073,8 @@ show "T" {
             &times,
             |mut e| {
                 if e.target_fixtures == ["all_wash"] {
-                    e.target_fixtures = vec!["brick1".to_string(), "brick2".to_string()];
+                    e.target_fixtures =
+                        vec!["brick1".to_string().into(), "brick2".to_string().into()];
                 }
                 e
             },
@@ -1515,11 +1521,11 @@ show "T" {
     clear(layer: background)
 }
 "#;
-        let at = |t: f64| -> HashMap<String, HashMap<String, u8>> {
+        let at = |t: f64| -> HashMap<String, crate::lighting::names::NameMap<u8>> {
             eval(source, &wire_rig(), &[t])[0]
                 .fixtures
                 .iter()
-                .map(|f| (f.name.clone(), f.channels.clone()))
+                .map(|f| (f.name.to_string(), f.channels.clone()))
                 .collect()
         };
         let first = at(1.0);
@@ -1625,7 +1631,7 @@ show "T" {
                 let fixtures_of = |e: &Evaluation| -> Vec<_> {
                     e.fixtures
                         .iter()
-                        .map(|f| (f.name.clone(), f.channels.clone()))
+                        .map(|f| (f.name, f.channels.clone()))
                         .collect()
                 };
                 assert_eq!(
@@ -1635,10 +1641,7 @@ show "T" {
                     times[i]
                 );
                 let poses = |e: &Evaluation| -> Vec<_> {
-                    e.poses
-                        .iter()
-                        .map(|p| (p.name.clone(), p.pan, p.tilt))
-                        .collect()
+                    e.poses.iter().map(|p| (p.name, p.pan, p.tilt)).collect()
                 };
                 assert_eq!(poses(alone), poses(&evaluated[i]));
             }
@@ -1722,8 +1725,8 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
-                channels: channels.clone(),
+                name: "m".to_string().into(),
+                channels: channels.clone().into(),
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1734,8 +1737,8 @@ show "T" {
         let lit = Evaluation {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
-                channels,
+                name: "m".to_string().into(),
+                channels: channels.into(),
                 cells: Default::default(),
             }],
             ..evaluation
@@ -1746,7 +1749,7 @@ show "T" {
     /// A colour under a closed dimmer emits no light: the rig is dark.
     #[test]
     fn a_colour_under_a_closed_dimmer_is_dark() {
-        let channels: HashMap<String, u8> = [("red", 255u8), ("dimmer", 0)]
+        let channels: crate::lighting::names::NameMap<u8> = [("red", 255u8), ("dimmer", 0)]
             .into_iter()
             .map(|(name, value)| (name.to_string(), value))
             .collect();
@@ -1754,7 +1757,7 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels,
                 cells: Default::default(),
             }],
@@ -1769,15 +1772,16 @@ show "T" {
     /// fades by.
     #[test]
     fn is_dark_ignores_optics_and_settings() {
-        let channels: HashMap<String, u8> = [("zoom", 128u8), ("gobo", 3), ("dimmer", 0)]
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u8> =
+            [("zoom", 128u8), ("gobo", 3), ("dimmer", 0)]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect();
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels,
                 cells: Default::default(),
             }],
@@ -1791,15 +1795,16 @@ show "T" {
     /// attribute: where it points, all the same, and not a lit channel.
     #[test]
     fn is_dark_ignores_a_gdtf_pan_section() {
-        let channels: HashMap<String, u8> = [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value))
-            .collect();
+        let channels: crate::lighting::names::NameMap<u8> =
+            [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect();
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels,
                 cells: Default::default(),
             }],
@@ -1816,7 +1821,14 @@ show "T" {
             .zip(1u16..)
             .map(|(n, o)| (n.to_string(), o))
             .collect();
-        FixtureInfo::new(name.to_string(), 1, 1, "T".to_string(), channels, None)
+        FixtureInfo::new(
+            name.to_string(),
+            1,
+            1,
+            "T".to_string(),
+            channels.into(),
+            None,
+        )
     }
 
     /// Open white on a dimmer and CMY, then each colour param in turn.

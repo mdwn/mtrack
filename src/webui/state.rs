@@ -380,21 +380,30 @@ pub fn stage_frame(
     wire::StageValues {
         fixtures: fixtures
             .iter()
-            .map(|f| (f.name.clone(), f.channels.clone()))
+            .map(|f| (f.name.to_string(), f.channels.to_map()))
             .collect(),
-        poses: poses.iter().map(|p| (p.name.clone(), p.clone())).collect(),
+        poses: poses
+            .iter()
+            .map(|p| (p.name.to_string(), p.clone()))
+            .collect(),
         // Per-cell values, by fixture then cell, only for fixtures a
         // per-cell effect is driving this frame (design §17.4).
         cells: fixtures
             .iter()
             .filter(|f| !f.cells.is_empty())
-            .map(|f| (f.name.clone(), f.cells.clone()))
+            .map(|f| {
+                let cells = f
+                    .cells
+                    .iter()
+                    .map(|(cell, values)| (cell.to_string(), values.to_map()));
+                (f.name.to_string(), cells.collect())
+            })
             .collect(),
         // The rate a strobing fixture flashes at: the stage views flash at
         // it rather than guess from the byte.
         strobe_rates: fixtures
             .iter()
-            .filter_map(|f| f.strobe_hz.map(|hz| (f.name.clone(), hz)))
+            .filter_map(|f| f.strobe_hz.map(|hz| (f.name.to_string(), hz)))
             .collect(),
     }
 }
@@ -883,7 +892,7 @@ pub fn stage_metadata(
                         .cells
                         .iter()
                         .map(|c| wire::CellPlacement {
-                            name: c.name.clone(),
+                            name: c.name.clone().to_string(),
                             offset: c.offset,
                         })
                         .collect(),
@@ -1302,14 +1311,14 @@ metronome: {}
         let fixtures = vec![
             crate::state::FixtureSnapshot {
                 strobe_hz: Some(12.5),
-                name: "brick".to_string(),
-                channels: std::collections::HashMap::from([("strobe".to_string(), 200)]),
+                name: "brick".to_string().into(),
+                channels: std::collections::HashMap::from([("strobe".to_string(), 200)]).into(),
                 cells: Default::default(),
             },
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
-                name: "par".to_string(),
-                channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                name: "par".to_string().into(),
+                channels: std::collections::HashMap::from([("red".to_string(), 255)]).into(),
                 cells: Default::default(),
             },
         ];
@@ -1320,22 +1329,19 @@ metronome: {}
 
     #[test]
     fn a_frame_carries_cells_only_for_fixtures_that_have_them() {
-        let mut cells = std::collections::BTreeMap::new();
-        cells.insert(
-            "1".to_string(),
-            std::collections::HashMap::from([("red".to_string(), 255u8)]),
-        );
+        let mut cells = crate::lighting::names::NameMap::new();
+        cells.insert("1", crate::lighting::names::NameMap::from([("red", 255u8)]));
         let fixtures = vec![
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
-                name: "bar".to_string(),
-                channels: std::collections::HashMap::new(),
+                name: "bar".to_string().into(),
+                channels: Default::default(),
                 cells,
             },
             crate::state::FixtureSnapshot {
                 strobe_hz: None,
-                name: "wash1".to_string(),
-                channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                name: "wash1".to_string().into(),
+                channels: std::collections::HashMap::from([("red".to_string(), 255)]).into(),
                 cells: Default::default(),
             },
         ];
@@ -1920,8 +1926,8 @@ metronome: {}
         let tags = get_venue_fixture_tags(&system);
         assert_eq!(tags.len(), 1);
         let spot_tags = tags.get("spot_1").unwrap();
-        assert!(spot_tags.contains(&"overhead".to_string()));
-        assert!(spot_tags.contains(&"spot".to_string()));
+        assert!(spot_tags.iter().any(|i| i == "overhead"));
+        assert!(spot_tags.iter().any(|i| i == "spot"));
     }
 
     #[test]

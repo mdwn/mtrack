@@ -30,7 +30,7 @@ fn test_start_effect_part_way_static_effect() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -279,7 +279,7 @@ fn test_start_effect_part_way_timed_effect_completion() {
     let effect = EffectInstance::new(
         "timed".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(1),
         },
         vec!["test_fixture".to_string()],
@@ -312,7 +312,7 @@ fn test_start_effect_part_way_zero_elapsed() {
     let effect1 = EffectInstance::new(
         "effect1".to_string(),
         EffectType::Static {
-            parameters: params.clone(),
+            parameters: params.clone().into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -333,7 +333,7 @@ fn test_start_effect_part_way_zero_elapsed() {
     let effect2 = EffectInstance::new(
         "effect2".to_string(),
         EffectType::Static {
-            parameters: params,
+            parameters: params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -371,7 +371,7 @@ fn test_start_effect_part_way_conflict_resolution() {
     let bg_effect = EffectInstance::new(
         "bg".to_string(),
         EffectType::Static {
-            parameters: bg_params,
+            parameters: bg_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
@@ -389,7 +389,7 @@ fn test_start_effect_part_way_conflict_resolution() {
     let mut fg_effect = EffectInstance::new(
         "fg".to_string(),
         EffectType::Static {
-            parameters: fg_params,
+            parameters: fg_params.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],

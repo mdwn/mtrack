@@ -93,12 +93,12 @@ fn wire(engine: &Engine, channel: u16) -> u8 {
 }
 
 /// Each fixture's channels as the live state reports them.
-fn state(engine: &Engine) -> HashMap<String, HashMap<String, u8>> {
+fn state(engine: &Engine) -> HashMap<String, crate::lighting::names::NameMap<u8>> {
     let effects = engine.effect_engine.lock();
     crate::state::engine_snapshot(&effects, None)
         .fixtures
         .into_iter()
-        .map(|f| (f.name, f.channels))
+        .map(|f| (f.name.to_string(), f.channels))
         .collect()
 }
 
@@ -111,7 +111,10 @@ fn assert_state_is_wire(engine: &Engine, when: &str) {
     for (name, info) in &registry {
         for (channel, def) in &info.channel_defs {
             let on_wire = wire(engine, info.dmx_channel(def.offset).unwrap());
-            let reported = state.get(name).and_then(|c| c.get(channel)).copied();
+            let reported = state
+                .get(name.as_str())
+                .and_then(|c| c.get(channel))
+                .copied();
             assert_eq!(
                 reported.unwrap_or(0),
                 on_wire,

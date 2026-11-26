@@ -27,6 +27,8 @@
 //! parameter, and within a layer the later writer. There is no meaningful
 //! sum of two pan angles, and no layer master scales one.
 
+use crate::lighting::names::NameMap;
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::types::EffectLayer;
@@ -92,6 +94,14 @@ pub enum PhysicalParameter {
 
 impl PhysicalParameter {
     /// The canonical channel name (the distiller's, and the v1 map's).
+    /// [`Self::channel`] as a name.
+    pub fn name(self) -> crate::lighting::names::Name {
+        match self {
+            PhysicalParameter::Pan => crate::lighting::names::PAN,
+            PhysicalParameter::Tilt => crate::lighting::names::TILT,
+        }
+    }
+
     pub fn channel(self) -> &'static str {
         match self {
             PhysicalParameter::Pan => "pan",
@@ -249,7 +259,7 @@ pub fn degrees_from_bytes(
 /// `(channel name, resolved)` for each parameter both sides know about.
 pub fn resolve_physical(
     physical: &PhysicalState,
-    channel_defs: &HashMap<String, ChannelDef>,
+    channel_defs: &NameMap<ChannelDef>,
 ) -> Vec<(&'static str, Resolved)> {
     let mut out = Vec::new();
     for (parameter, intent) in [
@@ -485,7 +495,7 @@ mod tests {
                 layer: EffectLayer::BACKGROUND,
             }),
         };
-        let resolved = resolve_physical(&physical, &defs);
+        let resolved = resolve_physical(&physical, &defs.into());
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].0, "pan");
         assert_eq!(resolved[0].1.bytes, vec![(1, 128)]);

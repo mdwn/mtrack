@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::super::effects::{
@@ -22,7 +23,7 @@ use super::super::parser::effect_keyword;
 
 /// Validate an effect before starting it
 pub(crate) fn validate_effect(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
 ) -> Result<(), EffectError> {
     // Validate fixtures
@@ -93,7 +94,14 @@ pub(crate) fn validate_effect(
 #[cfg(test)]
 fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> FixtureInfo {
     let ch: HashMap<String, u16> = channels.iter().map(|(n, o)| (n.to_string(), *o)).collect();
-    FixtureInfo::new(name.to_string(), 1, 1, fixture_type.to_string(), ch, None)
+    FixtureInfo::new(
+        name.to_string(),
+        1,
+        1,
+        fixture_type.to_string(),
+        ch.into(),
+        None,
+    )
 }
 
 /// The targets an effect keeps: those that can do what it asks, by the rule
@@ -102,11 +110,11 @@ fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> F
 /// when no fixture in the group can). The effect is refused only when none
 /// of its targets can.
 pub(crate) fn validate_effect_compatibility(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
-) -> Result<Vec<String>, EffectError> {
+) -> Result<Vec<crate::lighting::names::Name>, EffectError> {
     // A fixture not in the registry is `validate_effect`'s to report.
-    let capable: Vec<String> = effect
+    let capable: Vec<crate::lighting::names::Name> = effect
         .target_fixtures
         .iter()
         .filter(|name| {
@@ -160,7 +168,7 @@ mod tests {
         )
     }
 
-    fn registry_with(fixtures: Vec<FixtureInfo>) -> HashMap<String, FixtureInfo> {
+    fn registry_with(fixtures: Vec<FixtureInfo>) -> crate::lighting::names::NameTable<FixtureInfo> {
         fixtures.into_iter().map(|f| (f.name.clone(), f)).collect()
     }
 
@@ -171,7 +179,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["nonexistent"],
@@ -184,7 +192,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -201,7 +209,7 @@ mod tests {
         params.insert("red".to_string(), 1.5); // > 1.0
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -216,7 +224,7 @@ mod tests {
         params.insert("red".to_string(), -0.1);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: params,
+                parameters: params.into(),
                 duration: Duration::from_secs(5),
             },
             vec!["par1"],
@@ -372,7 +380,7 @@ mod tests {
             "the dimmer takes the level; the strobe takes nothing and sits out"
         );
         let mut on_strobe = red.clone();
-        on_strobe.target_fixtures = vec!["s1".to_string()];
+        on_strobe.target_fixtures = vec!["s1".to_string().into()];
         let error = validate_effect_compatibility(&registry, &on_strobe)
             .unwrap_err()
             .to_string();
@@ -441,7 +449,7 @@ mod tests {
         let registry = registry_with(vec![dimmer_fixture("d1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["d1"],
@@ -580,7 +588,7 @@ mod tests {
         let registry = registry_with(vec![rgb_fixture("par1")]);
         let effect = make_effect_instance(
             EffectType::Static {
-                parameters: HashMap::new(),
+                parameters: Default::default(),
                 duration: Duration::from_secs(5),
             },
             vec!["not_in_registry"],

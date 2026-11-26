@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::lighting::names::NameMap;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -24,7 +25,7 @@ pub use super::geometry::Vec3;
 /// The variable-strobe function of a fixture's channels: the first
 /// "strobe" function on the "strobe" channel, which the engine drives and
 /// the strobe fields describe.
-pub fn strobe_function(channel_defs: &HashMap<String, ChannelDef>) -> Option<&ChannelFunction> {
+pub fn strobe_function(channel_defs: &NameMap<ChannelDef>) -> Option<&ChannelFunction> {
     let def = channel_defs.get(STROBE_CHANNEL)?;
     def.functions.get(strobe_function_index(def)?)
 }
@@ -111,7 +112,7 @@ pub struct FixtureTypeV1 {
     /// The name of the fixture type.
     pub name: String,
     /// Channel name → 1-based offset.
-    pub channels: HashMap<String, u16>,
+    pub channels: NameMap<u16>,
     /// Maximum strobe frequency in Hz (if known).
     pub max_strobe_frequency: Option<f64>,
     /// Minimum strobe frequency in Hz (if known).
@@ -141,7 +142,7 @@ impl FixtureType {
     /// Creates a new fixture type from plain channel offsets. For the full
     /// v1 surface (strobe fields included), convert a [`FixtureTypeV1`]
     /// with `.into()`.
-    pub fn new(name: String, channels: HashMap<String, u16>) -> FixtureType {
+    pub fn new(name: String, channels: NameMap<u16>) -> FixtureType {
         FixtureTypeV1 {
             name,
             channels,
@@ -153,10 +154,7 @@ impl FixtureType {
     /// Creates a new fixture type from structured channel definitions. The
     /// v1 strobe fields are derived from the strobe channel's variable
     /// strobe function so consumers of either view see the same values.
-    pub fn from_channel_defs(
-        name: String,
-        channel_defs: HashMap<String, ChannelDef>,
-    ) -> FixtureType {
+    pub fn from_channel_defs(name: String, channel_defs: NameMap<ChannelDef>) -> FixtureType {
         FixtureType::from_parts(name, channel_defs, None, None, None)
     }
 
@@ -168,14 +166,14 @@ impl FixtureType {
     /// v1 view always agree.
     pub fn from_parts(
         name: String,
-        channel_defs: HashMap<String, ChannelDef>,
+        channel_defs: NameMap<ChannelDef>,
         max_strobe_frequency: Option<f64>,
         min_strobe_frequency: Option<f64>,
         strobe_dmx_offset: Option<u8>,
     ) -> FixtureType {
         let channels = channel_defs
             .iter()
-            .map(|(name, def)| (name.clone(), def.offset))
+            .map(|(name, def)| (name, def.offset))
             .collect();
         let mut fixture_type = FixtureType {
             name,
@@ -280,12 +278,12 @@ impl FixtureType {
     }
 
     /// Gets the coarse channel offsets — the v1 view.
-    pub fn channels(&self) -> &HashMap<String, u16> {
+    pub fn channels(&self) -> &NameMap<u16> {
         &self.channels
     }
 
     /// Gets the structured channel definitions.
-    pub fn channel_defs(&self) -> &HashMap<String, ChannelDef> {
+    pub fn channel_defs(&self) -> &NameMap<ChannelDef> {
         &self.channel_defs
     }
 
@@ -452,9 +450,9 @@ impl fmt::Display for FixtureType {
                 .iter()
                 .filter(|(name, def)| !derived(name, def))
                 .collect();
-            defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+            defs.sort_by_key(|(name, def)| (def.offset, (*name)));
             for (name, def) in defs {
-                fmt_channel_line(f, "  ", name, def)?;
+                fmt_channel_line(f, "  ", &name, def)?;
             }
             for cell in &self.cells {
                 writeln!(
@@ -466,9 +464,9 @@ impl fmt::Display for FixtureType {
                     fmt_coord(cell.offset[2])
                 )?;
                 let mut defs: Vec<_> = cell.channels.iter().collect();
-                defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+                defs.sort_by_key(|(name, def)| (def.offset, (*name)));
                 for (name, def) in defs {
-                    fmt_channel_line(f, "    ", name, def)?;
+                    fmt_channel_line(f, "    ", &name, def)?;
                 }
                 writeln!(f, "  }}")?;
             }
@@ -559,14 +557,14 @@ fn fmt_channel_line(
 /// channels, each mirroring the same-named channel of every other cell, so
 /// the whole fixture still shows one colour to a show that never says
 /// `per: cell`. Cells must all carry the same channel names.
-pub fn ganged_from_cells(cells: &[Cell]) -> Result<HashMap<String, ChannelDef>, String> {
+pub fn ganged_from_cells(cells: &[Cell]) -> Result<NameMap<ChannelDef>, String> {
     let Some(first) = cells.first() else {
-        return Ok(HashMap::new());
+        return Ok(NameMap::new());
     };
-    let mut names: Vec<&String> = first.channels.keys().collect();
+    let mut names: Vec<crate::lighting::names::Name> = first.channels.keys().collect();
     names.sort();
     for cell in &cells[1..] {
-        let mut theirs: Vec<&String> = cell.channels.keys().collect();
+        let mut theirs: Vec<crate::lighting::names::Name> = cell.channels.keys().collect();
         theirs.sort();
         if theirs != names {
             return Err(format!(
@@ -586,9 +584,9 @@ pub fn ganged_from_cells(cells: &[Cell]) -> Result<HashMap<String, ChannelDef>, 
                 (d.offset, d.fine)
             })
             .collect();
-        out.insert(name.clone(), ganged);
+        out.insert(name, ganged);
     }
-    Ok(out)
+    Ok(out.into())
 }
 
 impl Fixture {
@@ -841,7 +839,7 @@ mod tests {
         channels.insert("red".to_string(), 1);
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
-        let ft = FixtureType::new("RGB Par".to_string(), channels);
+        let ft = FixtureType::new("RGB Par".to_string(), channels.into());
         assert_eq!(ft.name(), "RGB Par");
         assert_eq!(ft.channels().len(), 3);
         assert_eq!(ft.max_strobe_frequency(), None);
@@ -876,7 +874,7 @@ mod tests {
         channels.insert("strobe".to_string(), 4);
         let ft: FixtureType = FixtureTypeV1 {
             name: "Brick".to_string(),
-            channels,
+            channels: channels.into(),
             max_strobe_frequency: Some(25.0),
             min_strobe_frequency: Some(0.4),
             strobe_dmx_offset: Some(7),
@@ -903,7 +901,7 @@ mod tests {
         channels.insert("strobe".to_string(), 2);
         let ft: FixtureType = FixtureTypeV1 {
             name: "Strobe".to_string(),
-            channels,
+            channels: channels.into(),
             max_strobe_frequency: Some(20.0),
             ..FixtureTypeV1::default()
         }
@@ -950,7 +948,7 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        let ft = FixtureType::from_channel_defs("PixelBrick".to_string(), defs);
+        let ft = FixtureType::from_channel_defs("PixelBrick".to_string(), defs.into());
         // The v1 view is derived, so consumers of either view agree.
         assert_eq!(ft.strobe_dmx_offset(), Some(7));
         assert_eq!(ft.min_strobe_frequency(), Some(0.4));
@@ -975,7 +973,7 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        let ft = FixtureType::from_channel_defs("Mover".to_string(), defs);
+        let ft = FixtureType::from_channel_defs("Mover".to_string(), defs.into());
         assert_eq!(ft.footprint(), 2);
         // The v1 view exposes only the coarse byte.
         assert_eq!(ft.channels().get("pan"), Some(&1));
@@ -986,14 +984,15 @@ mod tests {
         // The highest byte is the last cell's fine byte, which only the
         // cells (and the ganged mirrors) know about.
         let cell = |name: &str, offset: u16| Cell {
-            name: name.to_string(),
+            name: name.to_string().into(),
             channels: HashMap::from([(
                 "red".to_string(),
                 ChannelDef {
                     fine: Some(offset + 1),
                     ..ChannelDef::at(offset)
                 },
-            )]),
+            )])
+            .into(),
             offset: [0.0; 3],
         };
         let cells = vec![cell("1", 2), cell("2", 4)];
@@ -1003,11 +1002,11 @@ mod tests {
         ft.set_cells(cells.clone());
         assert_eq!(ft.footprint(), 5);
         // Cells alone, with nothing ganged, still count.
-        let mut bare = FixtureType::from_channel_defs("Bare".to_string(), HashMap::new());
+        let mut bare = FixtureType::from_channel_defs("Bare".to_string(), Default::default());
         bare.set_cells(cells);
         assert_eq!(bare.footprint(), 5);
         assert_eq!(
-            FixtureType::from_channel_defs("Empty".to_string(), HashMap::new()).footprint(),
+            FixtureType::from_channel_defs("Empty".to_string(), Default::default()).footprint(),
             0
         );
     }
@@ -1039,7 +1038,7 @@ mod tests {
         channels.insert("strobe".to_string(), 4);
         let ft: FixtureType = FixtureTypeV1 {
             name: "Brick".to_string(),
-            channels,
+            channels: channels.into(),
             max_strobe_frequency: Some(25.0),
             min_strobe_frequency: Some(0.4),
             strobe_dmx_offset: Some(7),
@@ -1060,7 +1059,7 @@ mod tests {
         // the features consuming it ship.
         let mut channels = HashMap::new();
         channels.insert("red".to_string(), 1);
-        let mut ft = FixtureType::new("Par".to_string(), channels);
+        let mut ft = FixtureType::new("Par".to_string(), channels.into());
         ft.set_source(GdtfSource {
             path: "library/par.gdtf".to_string(),
         });
@@ -1111,8 +1110,13 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        let ft =
-            FixtureType::from_parts("Brick".to_string(), defs, Some(99.0), Some(50.0), Some(210));
+        let ft = FixtureType::from_parts(
+            "Brick".to_string(),
+            defs.into(),
+            Some(99.0),
+            Some(50.0),
+            Some(210),
+        );
 
         // The getters carry the explicit values...
         assert_eq!(ft.max_strobe_frequency(), Some(99.0));
@@ -1157,7 +1161,7 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        let ft = FixtureType::from_parts("Twin".to_string(), defs, None, None, None);
+        let ft = FixtureType::from_parts("Twin".to_string(), defs.into(), None, None, None);
         assert_eq!(
             (ft.strobe_dmx_offset(), ft.max_strobe_frequency()),
             (None, None)
@@ -1192,7 +1196,13 @@ mod tests {
                 mirrors: Vec::new(),
             },
         );
-        let ft = FixtureType::from_parts("Brick".to_string(), defs, Some(25.0), Some(0.4), Some(7));
+        let ft = FixtureType::from_parts(
+            "Brick".to_string(),
+            defs.into(),
+            Some(25.0),
+            Some(0.4),
+            Some(7),
+        );
         let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
         assert_eq!(func.dmx_to, 200);
         let physical = func.physical.unwrap();

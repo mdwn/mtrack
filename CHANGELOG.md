@@ -266,12 +266,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The lighting engine does less work for every frame**: a frame no longer copies every fixture's
-  state, works out again which channels go dark, names a pixel fixture's cells again or looks each
-  DMX channel up by hashing it, and the stage view's reading of a frame builds only what it shows.
-  On a test rig of sixteen moving heads, eight eight-cell pixel bars and twenty-four pars, rendering
-  a frame takes about a fifth less time and reading it for the stage view about a third less. What
-  the rig is sent and what the stage view shows are unchanged.
+- **The lighting engine does far less work for every frame**: a fixture's channels, a frame's
+  fixtures and an effect's targets are found by a name held once for the life of the player and
+  compared as a pointer, where each was found by hashing its name's text, thousands of times a
+  frame. A frame also no longer copies every fixture's state, works out again which channels go
+  dark or names a pixel fixture's cells again, and the stage view's reading of a frame follows a
+  layout worked out once for each fixture. On a test rig of sixteen moving heads, eight eight-cell
+  pixel bars and twenty-four pars, rendering a frame and reading it for the stage view each take
+  about a third of the time they did. What the rig is sent and what the stage view shows are
+  unchanged. The names a player has loaded (channels, fixtures, cells) are kept until it exits.
 - **The player's hardware-free code is a crate of its own, `mtrack-core`** (`crates/mtrack-core`):
   the configuration files' types and loaders, tempo maps, positions, the light show language (its
   parser, effects and fixture types) and the file helpers they share moved there from `src/`. What

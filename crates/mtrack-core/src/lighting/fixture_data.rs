@@ -16,6 +16,7 @@
 //! the web UI is sent. Light, so the UI's WebAssembly module compiles it as
 //! it is; the rules that read and write it are `types`' and the engine's.
 
+use crate::lighting::names::NameMap;
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
@@ -94,9 +95,11 @@ pub struct FunctionStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// The cell's name — the GDTF geometry name, or the `cell` block's.
-    pub name: String,
+    #[cfg_attr(feature = "tsify", tsify(type = "string"))]
+    pub name: crate::lighting::names::Name,
     /// The cell's channels by canonical name, offsets without mirrors.
-    pub channels: HashMap<String, ChannelDef>,
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, ChannelDef>"))]
+    pub channels: crate::lighting::names::NameMap<ChannelDef>,
     /// The cell's position in the fixture's frame, meters.
     pub offset: Vec3,
 }
@@ -184,11 +187,12 @@ pub struct FixtureType {
 
     /// Structured channel definitions, keyed by canonical channel name.
     #[serde(skip)]
-    pub(super) channel_defs: HashMap<String, ChannelDef>,
+    pub(super) channel_defs: NameMap<ChannelDef>,
 
     /// Coarse channel offsets, derived from `channel_defs`. Kept as a
     /// separate map so `channels()` can hand out the v1 view by reference.
-    pub(super) channels: HashMap<String, u16>,
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number>"))]
+    pub(super) channels: NameMap<u16>,
 
     /// The GDTF archive + mode this type is distilled from, if referential.
     #[serde(skip)]

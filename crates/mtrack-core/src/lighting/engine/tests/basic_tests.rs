@@ -35,7 +35,7 @@ fn test_fixture_registration() {
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters,
+            parameters: parameters.into(),
             duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],

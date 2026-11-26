@@ -73,10 +73,10 @@ pub(crate) fn unscale_by_speed(elapsed: Duration, speed: f64) -> Duration {
 /// Registry of known fixtures and their DMX mappings.
 #[derive(Clone)]
 pub(crate) struct FixtureRegistry {
-    fixtures: HashMap<String, FixtureInfo>,
+    fixtures: crate::lighting::names::NameTable<FixtureInfo>,
     /// Each pixel fixture's sub-fixture names (`parent/cell`), in cell
     /// order (design §17.3).
-    cells: HashMap<String, Vec<String>>,
+    cells: crate::lighting::names::NameTable<Vec<crate::lighting::names::Name>>,
     /// The channels that carry a level or colour
     /// ([`EffectEngine::level_channels`]), once a frame has asked: they
     /// change only when a fixture is registered, and every frame sent
@@ -91,8 +91,8 @@ pub(crate) struct FixtureRegistry {
 impl FixtureRegistry {
     fn new() -> Self {
         Self {
-            fixtures: HashMap::new(),
-            cells: HashMap::new(),
+            fixtures: Default::default(),
+            cells: Default::default(),
             levels: None,
             #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
@@ -101,11 +101,14 @@ impl FixtureRegistry {
 
     /// The sub-fixture names of a pixel fixture, in cell order; empty for
     /// a fixture without cells.
-    fn cells_of(&self, name: &str) -> &[String] {
+    fn cells_of(
+        &self,
+        name: impl crate::lighting::names::AsName,
+    ) -> &[crate::lighting::names::Name] {
         self.cells.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    fn register(&mut self, fixture: FixtureInfo) {
+    fn register(&mut self, mut fixture: FixtureInfo) {
         self.levels = None;
         // A pixel fixture's cells register beside it as sub-fixtures: the
         // parent's patch and rotation, the cell's channels, a position of
@@ -114,11 +117,11 @@ impl FixtureRegistry {
             let mut names = Vec::with_capacity(fixture.cells.len());
             for cell in &fixture.cells {
                 let name = cell_fixture_name(&fixture.name, &cell.name);
-                let channels: HashMap<String, u16> = cell
+                let channels: crate::lighting::names::NameMap<u16> = cell
                     .channels
                     .iter()
-                    .map(|(n, d)| (n.clone(), d.offset))
-                    .collect();
+                    .map(|(n, d)| (n, d.offset))
+                    .collect::<crate::lighting::names::NameMap<u16>>();
                 let mut sub = FixtureInfo::new(
                     name.clone(),
                     fixture.universe,
@@ -138,10 +141,11 @@ impl FixtureRegistry {
                     );
                     [p[0] + o[0], p[1] + o[1], p[2] + o[2]]
                 });
-                sub.parent = Some(fixture.name.clone());
+                sub.parent = Some(crate::lighting::names::Name::of(&fixture.name));
                 self.fixtures.insert(name.clone(), sub);
-                names.push(name);
+                names.push(crate::lighting::names::Name::of(&name));
             }
+            fixture.sub_fixtures = names.clone();
             self.cells.insert(fixture.name.clone(), names);
         }
         #[cfg(test)]
@@ -150,7 +154,7 @@ impl FixtureRegistry {
                 if let Some(channel) = fixture.dmx_channel(offset) {
                     self.dmx_to_fixture_map.insert(
                         (fixture.universe, channel),
-                        (fixture.name.clone(), channel_name.clone()),
+                        (fixture.name.clone(), channel_name.clone().to_string()),
                     );
                 }
             }
@@ -158,15 +162,15 @@ impl FixtureRegistry {
         self.fixtures.insert(fixture.name.clone(), fixture);
     }
 
-    fn get(&self, name: &str) -> Option<&FixtureInfo> {
+    fn get(&self, name: impl crate::lighting::names::AsName) -> Option<&FixtureInfo> {
         self.fixtures.get(name)
     }
 
-    fn contains(&self, name: &str) -> bool {
+    fn contains(&self, name: impl crate::lighting::names::AsName) -> bool {
         self.fixtures.contains_key(name)
     }
 
-    fn as_map(&self) -> &HashMap<String, FixtureInfo> {
+    fn as_map(&self) -> &crate::lighting::names::NameTable<FixtureInfo> {
         &self.fixtures
     }
 
@@ -222,12 +226,15 @@ pub struct EffectEngine {
     /// The layers' names, bottom to top: the player's configured set.
     layers: LayerSet,
     /// Last computed merged fixture states (for preview/debugging)
-    last_merged_states: HashMap<String, FixtureState>,
+    last_merged_states: crate::lighting::names::NameTable<FixtureState>,
     /// While another engine's frame is crossed into this one's (a loop
     /// crossfade or a loop break's fade, #555): the blend of the two, which
     /// is what the rig shows -- fixture states and poses -- rather than this
     /// engine's own.
-    shown: Option<(HashMap<String, FixtureState>, HashMap<String, Pose>)>,
+    shown: Option<(
+        crate::lighting::names::NameTable<FixtureState>,
+        crate::lighting::names::NameTable<Pose>,
+    )>,
     /// Last known song time (score-time) for tempo-aware speed lookups.
     last_song_time: Option<Duration>,
     /// Reference to the MIDI DMX store for reading interpolated values each frame.
@@ -239,11 +246,11 @@ pub struct EffectEngine {
     focus_points: HashMap<String, [f64; 3]>,
     /// Pose memory: where each mover actually is — the last pose emitted
     /// after the slew clamp. A `move` without `from` starts here.
-    poses: HashMap<String, Pose>,
+    poses: crate::lighting::names::NameTable<Pose>,
     /// Where each mover was last asked to be. A mover nobody is driving
     /// keeps travelling toward this, no faster than its limit, and holds
     /// it on arrival until the next move or a clear (design §15.4).
-    goals: HashMap<String, Pose>,
+    goals: crate::lighting::names::NameTable<Pose>,
     /// The last tick's length, for the slew clamp.
     last_dt: Duration,
     /// Fixtures whose strobe channel was driven on the last full frame.
@@ -252,7 +259,7 @@ pub struct EffectEngine {
     /// any more is sent off rather than left at its last byte. Survives
     /// clears and song changes on purpose — those are exactly when the
     /// strobe stops being driven.
-    strobe_driven: HashSet<String>,
+    strobe_driven: HashSet<crate::lighting::names::Name>,
     /// A reckoner (see [`Self::reckoner`]): there is no rig, so effects
     /// start as they are, unvalidated.
     rigless: bool,
@@ -304,15 +311,15 @@ impl EffectEngine {
             tempo_map: None,
             layer_state: LayerState::default(),
             layers: LayerSet::default(),
-            last_merged_states: HashMap::new(),
+            last_merged_states: Default::default(),
             shown: None,
             last_song_time: None,
             midi_dmx_store: None,
             cache: EffectCache::new(),
             update_subphase: Arc::new(AtomicU64::new(0)),
             focus_points: HashMap::new(),
-            poses: HashMap::new(),
-            goals: HashMap::new(),
+            poses: Default::default(),
+            goals: Default::default(),
             last_dt: Duration::ZERO,
             strobe_driven: HashSet::new(),
             rigless: false,
@@ -605,11 +612,11 @@ impl EffectEngine {
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, &offset) in &fixture.channels {
                 if let Some(address) = at(offset) {
-                    claim(address, CrossPlace::Byte(CrossKind::of(name)));
+                    claim(address, CrossPlace::Byte(CrossKind::of(&name)));
                 }
             }
             for (name, def) in &fixture.channel_defs {
-                let kind = CrossKind::of(name);
+                let kind = CrossKind::of(&name);
                 for (coarse, fine) in
                     std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
                 {
@@ -661,7 +668,7 @@ impl EffectEngine {
         for fixture in self.fixtures.as_map().values() {
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, def) in &fixture.channel_defs {
-                if !keep(name) {
+                if !keep(&name) {
                     continue;
                 }
                 out.extend(at(def.offset));
@@ -777,7 +784,7 @@ impl EffectEngine {
     }
 
     /// The pose memory: where each mover was last driven to.
-    pub fn poses(&self) -> &HashMap<String, Pose> {
+    pub fn poses(&self) -> &crate::lighting::names::NameTable<Pose> {
         &self.poses
     }
 
@@ -790,7 +797,10 @@ impl EffectEngine {
         &self,
         outgoing: &EffectEngine,
         t: f64,
-    ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+    ) -> (
+        crate::lighting::names::NameTable<FixtureState>,
+        crate::lighting::names::NameTable<Pose>,
+    ) {
         self.crossfade_states_onto(outgoing, (&self.last_merged_states, &self.poses), t)
     }
 
@@ -799,9 +809,15 @@ impl EffectEngine {
     pub fn crossfade_states_onto(
         &self,
         outgoing: &EffectEngine,
-        onto: (&HashMap<String, FixtureState>, &HashMap<String, Pose>),
+        onto: (
+            &crate::lighting::names::NameTable<FixtureState>,
+            &crate::lighting::names::NameTable<Pose>,
+        ),
         t: f64,
-    ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+    ) -> (
+        crate::lighting::names::NameTable<FixtureState>,
+        crate::lighting::names::NameTable<Pose>,
+    ) {
         let (onto_states, onto_poses) = onto;
         let t = t.clamp(0.0, 1.0);
         let lerp = |a: f64, b: f64| crate::lighting::channels::lerp(a, b, t);
@@ -814,22 +830,23 @@ impl EffectEngine {
             self.resolved_states(onto_states),
         );
         let (old_states, new_states) = (&old_resolved, &new_resolved);
-        let names: HashSet<&String> = old_states.keys().chain(new_states.keys()).collect();
-        let mut states = HashMap::new();
+        let names: HashSet<crate::lighting::names::Name> =
+            old_states.keys().chain(new_states.keys()).collect();
+        let mut states = crate::lighting::names::NameTable::new();
         for name in names {
             let empty = FixtureState::new();
             let old = old_states.get(name).unwrap_or(&empty);
             let new = new_states.get(name).unwrap_or(&empty);
             let mut state = FixtureState::new();
-            let channels: HashSet<&String> =
+            let channels: HashSet<crate::lighting::names::Name> =
                 old.channels.keys().chain(new.channels.keys()).collect();
             for channel in channels {
                 let (o, n) = (old.channels.get(channel), new.channels.get(channel));
                 let blended =
-                    CrossKind::of(channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
+                    CrossKind::of(&channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
                 let like = n.or(o).expect("a channel one side has");
                 state.channels.insert(
-                    channel.clone(),
+                    channel,
                     ChannelState::new(blended, like.layer, like.blend_mode),
                 );
             }
@@ -848,7 +865,7 @@ impl EffectEngine {
             } else {
                 new.strobe_hz
             };
-            states.insert(name.clone(), state);
+            states.insert(name, state);
         }
         let mut poses = outgoing.shown_poses().clone();
         for (name, pose) in onto_poses {
@@ -859,7 +876,7 @@ impl EffectEngine {
                 },
                 None => *pose,
             };
-            poses.insert(name.clone(), blended);
+            poses.insert(name, blended);
         }
         (states, poses)
     }
@@ -870,18 +887,18 @@ impl EffectEngine {
     /// built from it resolves it to itself.
     fn resolved_states(
         &self,
-        states: &HashMap<String, FixtureState>,
-    ) -> HashMap<String, FixtureState> {
+        states: &crate::lighting::names::NameTable<FixtureState>,
+    ) -> crate::lighting::names::NameTable<FixtureState> {
         let plain =
             |value: f64| ChannelState::new(value, EffectLayer::BACKGROUND, BlendMode::Replace);
-        let cell_state = |values: Vec<(String, f64)>| {
+        let cell_state = |values: Vec<(crate::lighting::names::Name, f64)>| {
             let mut state = FixtureState::new();
             for (channel, value) in values {
                 state.channels.insert(channel, plain(value));
             }
             state
         };
-        let mut out = HashMap::new();
+        let mut out = crate::lighting::names::NameTable::new();
         for (name, state) in states {
             let info = self.fixtures.get(name);
             if let Some(parent) = info.and_then(|i| i.parent.as_ref()) {
@@ -893,10 +910,10 @@ impl EffectEngine {
                 let cell = self
                     .fixtures
                     .get(parent)
-                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(name)));
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(&name)));
                 if let Some(cell) = cell {
                     out.insert(
-                        name.clone(),
+                        name,
                         cell_state(FixtureState::new().cell_values(cell, Some(state))),
                     );
                 }
@@ -908,11 +925,11 @@ impl EffectEngine {
             for (channel, channel_state) in &state.channels {
                 resolved
                     .channels
-                    .insert(channel.clone(), plain(channel_state.value));
+                    .insert(channel, plain(channel_state.value));
             }
-            out.insert(name.clone(), resolved);
+            out.insert(name, resolved);
             for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
-                let sub = cell_fixture_name(name, &cell.name);
+                let sub = cell_fixture_name(&name, &cell.name);
                 let own = states.get(&sub);
                 out.insert(sub, cell_state(state.cell_values(cell, own)));
             }
@@ -925,21 +942,24 @@ impl EffectEngine {
     /// [`Self::update`].
     pub fn set_shown(
         &mut self,
-        shown: Option<(HashMap<String, FixtureState>, HashMap<String, Pose>)>,
+        shown: Option<(
+            crate::lighting::names::NameTable<FixtureState>,
+            crate::lighting::names::NameTable<Pose>,
+        )>,
     ) {
         self.shown = shown;
     }
 
     /// The fixture states the rig shows: this engine's, or mid-crossfade the
     /// blend going out (#555).
-    pub fn shown_fixture_states(&self) -> &HashMap<String, FixtureState> {
+    pub fn shown_fixture_states(&self) -> &crate::lighting::names::NameTable<FixtureState> {
         self.shown
             .as_ref()
             .map_or(&self.last_merged_states, |(states, _)| states)
     }
 
     /// The poses the rig shows, likewise.
-    pub fn shown_poses(&self) -> &HashMap<String, Pose> {
+    pub fn shown_poses(&self) -> &crate::lighting::names::NameTable<Pose> {
         self.shown.as_ref().map_or(&self.poses, |(_, poses)| poses)
     }
 
@@ -955,14 +975,14 @@ impl EffectEngine {
         if let Some(reads) = self.pose_reads.as_mut().filter(|r| !r.released) {
             for name in &effect.target_fixtures {
                 if !reads.written.contains(name) {
-                    reads.read.insert(name.clone());
+                    reads.read.insert(*name);
                 }
             }
         }
         effect.start_poses = effect
             .target_fixtures
             .iter()
-            .filter_map(|name| self.poses.get(name).map(|pose| (name.clone(), *pose)))
+            .filter_map(|name| self.poses.get(name).map(|pose| (*name, *pose)))
             .collect();
     }
 
@@ -981,9 +1001,9 @@ impl EffectEngine {
         for name in &effect.target_fixtures {
             let cells = self.fixtures.cells_of(name);
             if cells.is_empty() {
-                targets.push(name.clone());
+                targets.push(*name);
             } else {
-                targets.extend(cells.iter().cloned());
+                targets.extend(cells.iter().copied());
             }
         }
         effect.target_fixtures = targets;
@@ -1088,7 +1108,7 @@ impl EffectEngine {
     }
 
     /// Applies pose memory and the slew clamp to this frame's states.
-    fn settle_poses(&mut self, states: &mut HashMap<String, FixtureState>) {
+    fn settle_poses(&mut self, states: &mut crate::lighting::names::NameTable<FixtureState>) {
         use crate::lighting::effects::{Intent, PhysicalParameter};
         let dt = self.last_dt.as_secs_f64();
         let mut next_poses = self.poses.clone();
@@ -1098,7 +1118,7 @@ impl EffectEngine {
             if !self.fixtures.contains(name) {
                 continue;
             }
-            let state = states.entry(name.clone()).or_default();
+            let state = states.entry(name).or_default();
             if state.physical.pan.is_none() {
                 state.physical.set(
                     PhysicalParameter::Pan,
@@ -1156,7 +1176,7 @@ impl EffectEngine {
                 intent.degrees = tilt;
             }
             next_poses.insert(
-                name.clone(),
+                name,
                 Pose {
                     pan: pan.or(previous.map(|p| p.pan)).unwrap_or(0.0),
                     tilt: tilt.or(previous.map(|p| p.tilt)).unwrap_or(0.0),
@@ -1164,7 +1184,7 @@ impl EffectEngine {
             );
             let goal = self.goals.get(name).copied();
             self.goals.insert(
-                name.clone(),
+                name,
                 Pose {
                     pan: asked_pan.or(goal.map(|g| g.pan)).unwrap_or(0.0),
                     tilt: asked_tilt.or(goal.map(|g| g.tilt)).unwrap_or(0.0),
@@ -1228,11 +1248,11 @@ impl EffectEngine {
                             }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
-                                .entry(fixture_name.clone())
+                                .entry(*fixture_name)
                                 .or_default()
                                 .channels
                                 .insert(
-                                    channel_name.clone(),
+                                    *channel_name,
                                     ChannelState::new(
                                         normalized_value,
                                         EffectLayer::BACKGROUND,
@@ -1248,7 +1268,7 @@ impl EffectEngine {
             // views read must say so even on this path, or a head that has
             // arrived drops out of `get_fixture_state` the moment an
             // unrelated MIDI fader moves.
-            let mut held = HashMap::new();
+            let mut held = crate::lighting::names::NameTable::new();
             self.settle_poses(&mut held);
             for (name, state) in held {
                 self.last_merged_states.entry(name).or_default().physical = state.physical;
@@ -1266,7 +1286,7 @@ impl EffectEngine {
         let absolute_time = song_time.unwrap_or(self.engine_elapsed);
 
         // Start with empty fixture states — no persistent state carried between frames
-        let mut current_fixture_states = HashMap::new();
+        let mut current_fixture_states = crate::lighting::names::NameTable::new();
 
         self.update_subphase.store(30, Ordering::Relaxed);
 
@@ -1277,13 +1297,13 @@ impl EffectEngine {
                 let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                 if self.fixtures.contains(fixture_name) {
                     let state = current_fixture_states
-                        .entry(fixture_name.clone())
+                        .entry(*fixture_name)
                         .or_insert_with(FixtureState::new);
                     if !state.channels.contains_key(channel_name) {
                         // A plain channel, not an op: the bottom of the
                         // stack the composite starts from.
                         state.channels.insert(
-                            channel_name.clone(),
+                            *channel_name,
                             ChannelState::new(
                                 normalized_value,
                                 EffectLayer::BACKGROUND,
@@ -1403,9 +1423,9 @@ impl EffectEngine {
 
                     // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
-                        if self.fixtures.contains(&fixture_name) {
+                        if self.fixtures.contains(fixture_name) {
                             current_fixture_states
-                                .entry(fixture_name.clone())
+                                .entry(fixture_name)
                                 .or_insert_with(FixtureState::new)
                                 .blend_with(&effect_state);
                         }
@@ -1467,9 +1487,9 @@ impl EffectEngine {
         // the cell's state over its own (design §17.3). A parent no effect
         // touched this frame still writes its cells when one of them was.
         let mut commands = Vec::new();
-        let mut parents_with_cell_states: Vec<&String> = Vec::new();
+        let mut parents_with_cell_states: Vec<crate::lighting::names::Name> = Vec::new();
         for name in current_fixture_states.keys() {
-            if let Some(parent) = self.fixtures.get(name).and_then(|f| f.parent.as_ref()) {
+            if let Some(parent) = self.fixtures.get(name).and_then(|f| f.parent) {
                 if !current_fixture_states.contains_key(parent)
                     && !parents_with_cell_states.contains(&parent)
                 {
@@ -1478,7 +1498,7 @@ impl EffectEngine {
             }
         }
         for parent in &parents_with_cell_states {
-            current_fixture_states.insert((*parent).clone(), FixtureState::new());
+            current_fixture_states.insert(*parent, FixtureState::new());
         }
         for (fixture_name, fixture_state) in &current_fixture_states {
             let Some(fixture_info) = self.fixtures.get(fixture_name) else {
@@ -1522,21 +1542,21 @@ impl EffectEngine {
     /// Composites the colour and level the frame's effects asked for into
     /// plain `red/green/blue/white/dimmer` channels, per fixture and per
     /// cell. Nothing but plain channels is left in `states`.
-    fn resolve_brightness(&self, states: &mut HashMap<String, FixtureState>) {
+    fn resolve_brightness(&self, states: &mut crate::lighting::names::NameTable<FixtureState>) {
         // Named from the registry, which outlives the frame, so no name is
         // copied to be remembered.
-        let mut parents: HashSet<&String> = HashSet::new();
+        let mut parents: HashSet<crate::lighting::names::Name> = HashSet::new();
         for (name, state) in states.iter_mut() {
             let Some(info) = self.fixtures.get(name) else {
                 state.drop_unresolved();
                 continue;
             };
-            if let Some(parent) = &info.parent {
+            if let Some(parent) = info.parent {
                 parents.insert(parent);
             } else if info.cells.is_empty() {
                 state.resolve_for(info);
             } else {
-                parents.insert(&info.name);
+                parents.insert(name);
             }
         }
         for parent in parents {
@@ -1549,20 +1569,20 @@ impl EffectEngine {
             // Each cell's sub-fixture name, as the registry made it when the
             // fixture was registered, and not made again every frame.
             let subs = self.fixtures.cells_of(parent);
-            let mut cells: HashMap<String, FixtureState> = info
+            let mut cells: crate::lighting::names::NameTable<FixtureState> = info
                 .cells
                 .iter()
                 .zip(subs)
-                .filter_map(|(cell, sub)| states.remove(sub).map(|s| (cell.name.clone(), s)))
+                .filter_map(|(cell, sub)| states.remove(sub).map(|s| (cell.name, s)))
                 .collect();
             crate::lighting::effects::resolve_fixture(&mut fixture_state, &mut cells, info);
             for (cell, sub) in info.cells.iter().zip(subs) {
-                if let Some(state) = cells.remove(&cell.name) {
-                    states.insert(sub.clone(), state);
+                if let Some(state) = cells.remove(cell.name) {
+                    states.insert(*sub, state);
                 }
             }
             if had_state || !fixture_state.channels.is_empty() {
-                states.insert(parent.clone(), fixture_state);
+                states.insert(parent, fixture_state);
             }
         }
     }
@@ -1572,18 +1592,21 @@ impl EffectEngine {
     /// clear, a stopped sequence, a new song. Without it the DMX universe
     /// holds the last strobe byte and the fixture strobes on in hardware
     /// under whatever comes next.
-    fn release_undriven_strobes(&mut self, states: &mut HashMap<String, FixtureState>) {
-        let driven: HashSet<String> = states
+    fn release_undriven_strobes(
+        &mut self,
+        states: &mut crate::lighting::names::NameTable<FixtureState>,
+    ) {
+        let driven: HashSet<crate::lighting::names::Name> = states
             .iter()
-            .filter(|(_, state)| state.channels.contains_key("strobe"))
-            .map(|(name, _)| name.clone())
+            .filter(|(_, state)| state.channels.contains_key(crate::lighting::names::STROBE))
+            .map(|(name, _)| name)
             .collect();
         for name in self.strobe_driven.difference(&driven) {
             if !self.fixtures.contains(name) {
                 continue;
             }
-            states.entry(name.clone()).or_default().channels.insert(
-                "strobe".to_string(),
+            states.entry(*name).or_default().channels.insert(
+                crate::lighting::names::STROBE,
                 ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
             );
         }
@@ -1952,10 +1975,10 @@ impl EffectEngine {
                 } else {
                     for name in &reads.written {
                         if let Some(pose) = poses.get(name) {
-                            self.poses.insert(name.clone(), *pose);
+                            self.poses.insert(*name, *pose);
                         }
                         if let Some(goal) = goals.get(name) {
-                            self.goals.insert(name.clone(), *goal);
+                            self.goals.insert(*name, *goal);
                         }
                     }
                 }
@@ -2041,11 +2064,11 @@ impl EffectEngine {
     }
 
     /// Holds `name` at `pose` in pose memory, as a replay's frame leaves it.
-    fn hold_pose(&mut self, name: String, pose: Pose) {
+    fn hold_pose(&mut self, name: crate::lighting::names::Name, pose: Pose) {
         if let Some(reads) = self.pose_reads.as_mut() {
-            reads.written.insert(name.clone());
+            reads.written.insert(name);
         }
-        self.goals.insert(name.clone(), pose);
+        self.goals.insert(name, pose);
         self.poses.insert(name, pose);
     }
 
@@ -2150,13 +2173,13 @@ impl EffectEngine {
     /// Get current fixture states (for debugging/simulation/preview)
     /// Returns the merged fixture states from the last update() call.
     /// This provides a snapshot of all fixture states without generating DMX commands.
-    pub fn get_fixture_states(&self) -> HashMap<String, FixtureState> {
+    pub fn get_fixture_states(&self) -> crate::lighting::names::NameTable<FixtureState> {
         self.last_merged_states.clone()
     }
 
     /// Get the fixture registry (for simulator to determine fixture capabilities).
     #[allow(dead_code)]
-    pub fn get_fixture_registry(&self) -> &HashMap<String, FixtureInfo> {
+    pub fn get_fixture_registry(&self) -> &crate::lighting::names::NameTable<FixtureInfo> {
         self.fixtures.as_map()
     }
 
@@ -2239,8 +2262,8 @@ pub struct Prepared {
     instant: Instant,
     effects: HashMap<String, EffectInstance>,
     layer_state: LayerState,
-    poses: HashMap<String, Pose>,
-    goals: HashMap<String, Pose>,
+    poses: crate::lighting::names::NameTable<Pose>,
+    goals: crate::lighting::names::NameTable<Pose>,
     pose_reads: Option<PoseReads>,
     /// The history, to replay again at the install (see `PoseReads`).
     again: Option<crate::lighting::timeline::SeekHistory>,
@@ -2281,9 +2304,9 @@ impl CrossPlace {
 /// when it replays again from the memory as it is.
 #[derive(Default)]
 struct PoseReads {
-    initial: HashMap<String, Pose>,
-    read: HashSet<String>,
-    written: HashSet<String>,
+    initial: crate::lighting::names::NameTable<Pose>,
+    read: HashSet<crate::lighting::names::Name>,
+    written: HashSet<crate::lighting::names::Name>,
     released: bool,
 }
 
@@ -2444,7 +2467,7 @@ impl<'a> Replay<'a> {
 fn leaves_settings(effect: &EffectInstance) -> bool {
     match &effect.effect_type {
         EffectType::Static { parameters, .. } => {
-            parameters.keys().any(|channel| !fades_to_dark(channel))
+            parameters.keys().any(|channel| !fades_to_dark(&channel))
         }
         EffectType::Move { .. } | EffectType::Strobe { .. } => true,
         EffectType::ColorCycle { .. }

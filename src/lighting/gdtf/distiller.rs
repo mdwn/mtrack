@@ -23,6 +23,7 @@
 //! [`crate::lighting::distill::DISTILLER_VERSION`], which keys the
 //! expansion cache.
 
+use crate::lighting::names::NameMap;
 use std::collections::HashMap;
 
 use super::description::{Channel, Description};
@@ -313,19 +314,19 @@ pub fn distill(
     for (_, attributes) in &mut sections {
         attributes.sort();
     }
-    let mut channel_defs: HashMap<String, ChannelDef> = HashMap::new();
+    let mut channel_defs: NameMap<ChannelDef> = NameMap::new();
     let mut owner_geometry: HashMap<String, String> = HashMap::new();
     let mut ganged: Vec<String> = Vec::new();
     let mut suffixed: Vec<String> = Vec::new();
     // Every channel by the geometry it sits on, in document order, so the
     // ganged sections can be handed back as cells (design §17.2), and
     // which owner geometry each ganged section mirrors.
-    let mut by_geometry: Vec<(String, HashMap<String, ChannelDef>)> = Vec::new();
+    let mut by_geometry: Vec<(String, NameMap<ChannelDef>)> = Vec::new();
     for n in &named {
         let entry = match by_geometry.iter_mut().find(|(g, _)| *g == n.geometry) {
             Some(entry) => entry,
             None => {
-                by_geometry.push((n.geometry.clone(), HashMap::new()));
+                by_geometry.push((n.geometry.clone(), Default::default()));
                 by_geometry.last_mut().expect("just pushed")
             }
         };
@@ -371,15 +372,13 @@ pub fn distill(
             }
             continue;
         }
-        if let std::collections::hash_map::Entry::Vacant(vacant) =
-            channel_defs.entry(n.name.clone())
-        {
+        if !channel_defs.contains_key(&n.name) {
             owner_geometry.insert(n.name.clone(), n.geometry.clone());
             variants
                 .entry(n.name.clone())
                 .or_default()
                 .push(n.name.clone());
-            vacant.insert(n.def);
+            channel_defs.insert(&n.name, n.def);
             continue;
         }
         {
@@ -426,7 +425,7 @@ pub fn distill(
             for geometry in group {
                 if let Some((_, channels)) = by_geometry.iter().find(|(g, _)| g == geometry) {
                     cells.push(Cell {
-                        name: geometry.clone(),
+                        name: geometry.clone().into(),
                         channels: channels.clone(),
                         offset: geometry_offset(description, geometry),
                     });
@@ -1470,7 +1469,7 @@ mod tests {
             .channel_defs()
             .iter()
             .find(|(n, _)| n.starts_with("red:"))
-            .map(|(n, d)| (n.clone(), d.clone()))
+            .map(|(n, d)| (n, d.clone()))
             .expect("suffixed lens red");
         assert_eq!(lens_red.1.offset, 10, "P1 at the template offset");
         assert_eq!(
@@ -1577,7 +1576,7 @@ mod tests {
         let offsets: Vec<(String, [f64; 3])> = ft
             .cells()
             .iter()
-            .map(|c| (c.name.clone(), c.offset))
+            .map(|c| (c.name.to_string(), c.offset))
             .collect();
         let p1 = ft.cells()[0].offset;
         assert!(

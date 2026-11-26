@@ -50,8 +50,8 @@ fn pose(pose: &PoseSnapshot) -> StagePose {
 }
 
 /// A map's keys, sorted: the order a fixture's or a cell's bytes are in.
-fn sorted_names(channels: &HashMap<String, u8>) -> Vec<String> {
-    let mut names: Vec<String> = channels.keys().cloned().collect();
+fn sorted_names(channels: &crate::lighting::names::NameMap<u8>) -> Vec<String> {
+    let mut names: Vec<String> = channels.keys().map(|name| name.to_string()).collect();
     names.sort_unstable();
     names
 }
@@ -77,7 +77,7 @@ pub(crate) fn stage_layout(
     layers: &[String],
 ) -> StageLayout {
     // By name, the last of a name winning, as the JSON's maps have it.
-    let channels: HashMap<&str, &HashMap<String, u8>> = snapshot
+    let channels: HashMap<&str, &crate::lighting::names::NameMap<u8>> = snapshot
         .fixtures
         .iter()
         .map(|f| (f.name.as_str(), &f.channels))
@@ -164,7 +164,7 @@ fn indexes(layout: &StageLayout) -> HashMap<&str, usize> {
 /// before the frame.
 pub(crate) fn fits(snapshot: &StateSnapshot, layout: &StageLayout) -> bool {
     let indexes = indexes(layout);
-    let carried: HashMap<&str, &HashMap<String, u8>> = snapshot
+    let carried: HashMap<&str, &crate::lighting::names::NameMap<u8>> = snapshot
         .fixtures
         .iter()
         .map(|f| (f.name.as_str(), &f.channels))
@@ -267,14 +267,17 @@ pub(crate) fn stage_frame(snapshot: &StateSnapshot, layout: &StageLayout) -> Sta
 /// have: one group, for every fixture whose cells are alike.
 fn fixture_cells(
     fixture: u32,
-    cells: &BTreeMap<String, HashMap<String, u8>>,
+    cells: &crate::lighting::names::NameMap<crate::lighting::names::NameMap<u8>>,
 ) -> Vec<StageFixtureCells> {
     let mut groups: BTreeMap<Vec<String>, Vec<StageCellValues>> = BTreeMap::new();
-    for (name, values) in cells {
+    // By cell name, as a reader finds them.
+    let mut by_name: Vec<_> = cells.iter().collect();
+    by_name.sort_by_key(|(name, _)| *name);
+    for (name, values) in by_name {
         let channels = sorted_names(values);
         let bytes = channels.iter().map(|channel| values[channel]).collect();
         groups.entry(channels).or_default().push(StageCellValues {
-            name: name.clone(),
+            name: name.to_string(),
             values: bytes,
         });
     }
@@ -298,7 +301,7 @@ mod test {
 
     fn fixture(name: &str, channels: &[(&str, u8)]) -> FixtureSnapshot {
         FixtureSnapshot {
-            name: name.to_string(),
+            name: name.to_string().into(),
             channels: channels.iter().map(|(c, v)| (c.to_string(), *v)).collect(),
             cells: Default::default(),
             strobe_hz: None,
@@ -307,7 +310,7 @@ mod test {
 
     fn pointing(name: &str, pan: f64, floor: Option<[f64; 2]>) -> PoseSnapshot {
         PoseSnapshot {
-            name: name.to_string(),
+            name: name.to_string().into(),
             pan,
             tilt: 45.5,
             aim: [0.1, -0.7, 0.7],
@@ -377,9 +380,9 @@ mod test {
         let mut head = fixture("head", &[("tilt", 3), ("pan", 2), ("dimmer", 1)]);
         head.strobe_hz = Some(12.5);
         let mut bar = fixture("bar", &[("red", 10), ("dimmer", 255)]);
-        bar.cells = BTreeMap::from([
-            ("1".to_string(), HashMap::from([("red".to_string(), 7)])),
-            ("2".to_string(), HashMap::from([("red".to_string(), 9)])),
+        bar.cells = crate::lighting::names::NameMap::from([
+            ("1", crate::lighting::names::NameMap::from([("red", 7)])),
+            ("2", crate::lighting::names::NameMap::from([("red", 9)])),
         ]);
         StateSnapshot {
             // Not in name order: the layout sorts.
@@ -961,7 +964,7 @@ mod test {
         let snapshot = StateSnapshot {
             fixtures: (0..fixtures)
                 .map(|f| FixtureSnapshot {
-                    name: format!("fixture_{f:02}"),
+                    name: format!("fixture_{f:02}").into(),
                     channels: (0..channels)
                         .map(|c| (format!("channel_{c}"), (f * 16 + c + 1) as u8))
                         .collect(),

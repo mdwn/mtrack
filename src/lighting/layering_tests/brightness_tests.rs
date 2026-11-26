@@ -60,7 +60,7 @@ fn engine() -> EffectEngine {
         1,
         1,
         "RGBD".to_string(),
-        channels(&["dimmer", "red", "green", "blue"]),
+        channels(&["dimmer", "red", "green", "blue"]).into(),
         None,
     ));
     engine.register_fixture(FixtureInfo::new(
@@ -68,7 +68,7 @@ fn engine() -> EffectEngine {
         1,
         10,
         "RGB".to_string(),
-        channels(&["red", "green", "blue"]),
+        channels(&["red", "green", "blue"]).into(),
         None,
     ));
     engine
@@ -332,12 +332,12 @@ fn a_plain_dimmer_fixture_is_unchanged() {
         1,
         1,
         "Dimmer".to_string(),
-        HashMap::from([("dimmer".to_string(), 1)]),
+        HashMap::from([("dimmer".to_string(), 1)]).into(),
         None,
     ));
     let mut start = |id: &str, layer, blend, v| {
         let mut effect = level(id, layer, blend, v);
-        effect.target_fixtures = vec!["lamp".to_string()];
+        effect.target_fixtures = vec!["lamp".to_string().into()];
         engine.start_effect(effect).unwrap();
     };
     start("a", A, Replace, 0.4);
@@ -355,7 +355,7 @@ fn a_plain_dimmer_fixture_is_unchanged() {
 fn a_pixel_bar_with_a_master_dimmer_keeps_every_cells_light_exact() {
     use crate::lighting::types::{Cell, ChannelDef};
     let cell = |name: &str, base: u16| Cell {
-        name: name.to_string(),
+        name: name.to_string().into(),
         channels: ["red", "green", "blue"]
             .iter()
             .enumerate()
@@ -374,7 +374,8 @@ fn a_pixel_bar_with_a_master_dimmer_keeps_every_cells_light_exact() {
             ("red".to_string(), 2),
             ("green".to_string(), 3),
             ("blue".to_string(), 4),
-        ]),
+        ])
+        .into(),
         None,
     );
     bar.cells = vec![cell("1", 2), cell("2", 5)];
@@ -383,12 +384,12 @@ fn a_pixel_bar_with_a_master_dimmer_keeps_every_cells_light_exact() {
 
     let mut start = |effect: EffectInstance| engine.start_effect(effect).unwrap();
     let mut look = static_look("red", A, Replace, &RED);
-    look.target_fixtures = vec!["bar".to_string()];
+    look.target_fixtures = vec!["bar".to_string().into()];
     start(look);
     // Cell 1 is dimmed to a quarter, cell 2 to half.
     for (cell, v) in [("1", 0.25), ("2", 0.5)] {
         let mut dim = level(&format!("dim{cell}"), B, Replace, v);
-        dim.target_fixtures = vec![format!("bar/{cell}")];
+        dim.target_fixtures = vec![format!("bar/{cell}").into()];
         start(dim);
     }
     let commands = engine.update(Duration::from_millis(16), None).unwrap();

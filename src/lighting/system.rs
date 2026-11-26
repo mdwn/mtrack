@@ -1468,7 +1468,10 @@ impl LightingSystem {
             let fixtures = self.resolve_logical_group_graceful(group_name);
             resolved_fixtures.extend(fixtures);
         }
-        effect.target_fixtures = resolved_fixtures;
+        effect.target_fixtures = resolved_fixtures
+            .iter()
+            .map(crate::lighting::names::Name::from)
+            .collect();
         effect
     }
 }
@@ -2610,12 +2613,12 @@ mod tests {
         // Test resolution
         let front_wash_fixtures = system.resolve_logical_group("front_wash").unwrap();
         assert_eq!(front_wash_fixtures.len(), 2);
-        assert!(front_wash_fixtures.contains(&"Wash1".to_string()));
-        assert!(front_wash_fixtures.contains(&"Wash2".to_string()));
+        assert!(front_wash_fixtures.iter().any(|i| i == "Wash1"));
+        assert!(front_wash_fixtures.iter().any(|i| i == "Wash2"));
 
         let movers_fixtures = system.resolve_logical_group("movers").unwrap();
         assert_eq!(movers_fixtures.len(), 1);
-        assert!(movers_fixtures.contains(&"Mover1".to_string()));
+        assert!(movers_fixtures.iter().any(|i| i == "Mover1"));
     }
 
     #[test]
@@ -2730,10 +2733,10 @@ mod tests {
         let fixtures = system.resolve_logical_group("premium_wash").unwrap();
         assert_eq!(fixtures.len(), 2);
         // Should include the two premium fixtures (Wash2 and Wash3) first due to preference
-        assert!(fixtures.contains(&"Wash2".to_string()));
-        assert!(fixtures.contains(&"Wash3".to_string()));
+        assert!(fixtures.iter().any(|i| i == "Wash2"));
+        assert!(fixtures.iter().any(|i| i == "Wash3"));
         // Should not include the non-premium fixture (Wash1) since we only take 2
-        assert!(!fixtures.contains(&"Wash1".to_string()));
+        assert!(!fixtures.iter().any(|i| i == "Wash1"));
     }
 
     #[test]
@@ -2836,9 +2839,9 @@ mod tests {
         // Test resolution - should include fixtures with any of the specified tags
         let fixtures = system.resolve_logical_group("any_light").unwrap();
         assert_eq!(fixtures.len(), 3);
-        assert!(fixtures.contains(&"Wash1".to_string()));
-        assert!(fixtures.contains(&"Spot1".to_string()));
-        assert!(fixtures.contains(&"Beam1".to_string()));
+        assert!(fixtures.iter().any(|i| i == "Wash1"));
+        assert!(fixtures.iter().any(|i| i == "Spot1"));
+        assert!(fixtures.iter().any(|i| i == "Beam1"));
     }
 
     #[test]
@@ -2921,10 +2924,10 @@ mod tests {
         let fixtures = system.resolve_logical_group("complex_group").unwrap();
         assert_eq!(fixtures.len(), 3);
         // Should include the premium fixtures first
-        assert!(fixtures.contains(&"Wash2".to_string()));
-        assert!(fixtures.contains(&"Wash3".to_string()));
+        assert!(fixtures.iter().any(|i| i == "Wash2"));
+        assert!(fixtures.iter().any(|i| i == "Wash3"));
         // Should include one non-premium fixture
-        assert!(fixtures.contains(&"Wash1".to_string()) || fixtures.contains(&"Wash4".to_string()));
+        assert!(fixtures.iter().any(|i| i == "Wash1") || fixtures.iter().any(|i| i == "Wash4"));
     }
 
     #[test]
@@ -3029,12 +3032,12 @@ mod tests {
         // First resolution
         let fixtures1 = system.resolve_logical_group("cached_group").unwrap();
         assert_eq!(fixtures1.len(), 1);
-        assert!(fixtures1.contains(&"Wash1".to_string()));
+        assert!(fixtures1.iter().any(|i| i == "Wash1"));
 
         // Second resolution should use cache
         let fixtures2 = system.resolve_logical_group("cached_group").unwrap();
         assert_eq!(fixtures2.len(), 1);
-        assert!(fixtures2.contains(&"Wash1".to_string()));
+        assert!(fixtures2.iter().any(|i| i == "Wash1"));
 
         // Verify cache was populated
         assert!(system.group_cache.contains_key("Test Venue"));
@@ -3197,7 +3200,7 @@ mod tests {
 
         // front_wash should have fixtures
         assert_eq!(results.len(), 1);
-        assert!(results.contains(&"Wash1".to_string()));
+        assert!(results.iter().any(|i| i == "Wash1"));
     }
 
     // ── FallbackTo constraint ────────────────────────────────────────
@@ -3256,7 +3259,7 @@ mod tests {
             "FallbackTo should resolve to fallback group"
         );
         assert!(
-            results.contains(&"Wash1".to_string()),
+            results.iter().any(|i| i == "Wash1"),
             "FallbackTo should contain Wash1"
         );
     }
@@ -3279,7 +3282,7 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), 1);
         channels.insert("red".to_string(), 2);
-        let ft = super::super::types::FixtureType::new("Par".to_string(), channels);
+        let ft = super::super::types::FixtureType::new("Par".to_string(), channels.into());
         system.fixture_types.insert("Par".to_string(), ft);
 
         // Create venue with a fixture
