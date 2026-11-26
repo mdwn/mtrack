@@ -164,7 +164,7 @@ fn fixture_colors_from_snapshot(fixtures: &[FixtureSnapshot]) -> Vec<FixtureColo
             )
             .map(|c| crate::lighting::channels::dmx_byte(c * 255.0));
             FixtureColor {
-                name: f.name.clone(),
+                name: f.name.to_string(),
                 r,
                 g,
                 b,
@@ -185,7 +185,7 @@ mod tests {
         }
         FixtureSnapshot {
             strobe_hz: None,
-            name: name.to_string(),
+            name: name.to_string().into(),
             channels: map.into(),
             cells: Default::default(),
         }

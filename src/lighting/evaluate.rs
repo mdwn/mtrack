@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
+use crate::lighting::names::Name;
 use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
@@ -432,12 +433,12 @@ fn resolve_targets(
     effect.target_fixtures = effect
         .target_fixtures
         .iter()
-        .flat_map(|target| match groups.get(target) {
-            Some(resolved) => resolved.clone(),
+        .flat_map(|target| match groups.get(target.as_str()) {
+            Some(resolved) => resolved.iter().map(Name::from).collect(),
             // Not a known group — already a fixture name, or a name
             // that resolves to nothing. Either way, leave it for the
             // engine to accept or reject.
-            None => vec![target.clone()],
+            None => vec![*target],
         })
         .collect();
     effect
@@ -488,7 +489,10 @@ pub fn evaluate_with_system(
         fallback_tempo_map,
         times,
         |effect| {
-            effect_groups.insert(effect.id.clone(), effect.target_fixtures.clone());
+            effect_groups.insert(
+                effect.id.clone(),
+                effect.target_fixtures.iter().map(Name::to_string).collect(),
+            );
             resolve_targets(&group_map, effect)
         },
     );
@@ -515,7 +519,8 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         .get_active_effects()
         .values()
         .map(|effect| {
-            let mut fixtures = effect.target_fixtures.clone();
+            let mut fixtures: Vec<String> =
+                effect.target_fixtures.iter().map(Name::to_string).collect();
             fixtures.sort();
             let evaluated = EvaluatedEffect {
                 id: effect.id.clone(),
@@ -1068,7 +1073,8 @@ show "T" {
             &times,
             |mut e| {
                 if e.target_fixtures == ["all_wash"] {
-                    e.target_fixtures = vec!["brick1".to_string(), "brick2".to_string()];
+                    e.target_fixtures =
+                        vec!["brick1".to_string().into(), "brick2".to_string().into()];
                 }
                 e
             },
@@ -1519,7 +1525,7 @@ show "T" {
             eval(source, &wire_rig(), &[t])[0]
                 .fixtures
                 .iter()
-                .map(|f| (f.name.clone(), f.channels.clone()))
+                .map(|f| (f.name.to_string(), f.channels.clone()))
                 .collect()
         };
         let first = at(1.0);
@@ -1722,7 +1728,7 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels: channels.clone().into(),
                 cells: Default::default(),
             }],
@@ -1734,7 +1740,7 @@ show "T" {
         let lit = Evaluation {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels: channels.into(),
                 cells: Default::default(),
             }],
@@ -1754,7 +1760,7 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels: channels.into(),
                 cells: Default::default(),
             }],
@@ -1778,7 +1784,7 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels: channels.into(),
                 cells: Default::default(),
             }],
@@ -1801,7 +1807,7 @@ show "T" {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
-                name: "m".to_string(),
+                name: "m".to_string().into(),
                 channels: channels.into(),
                 cells: Default::default(),
             }],

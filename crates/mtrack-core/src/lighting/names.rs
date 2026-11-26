@@ -125,6 +125,20 @@ impl Hash for Name {
     }
 }
 
+/// As its text.
+impl serde::Serialize for Name {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Name {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Ok(Name::of(&text))
+    }
+}
+
 /// By the text, so a list of names sorts as the strings would.
 impl Ord for Name {
     fn cmp(&self, other: &Name) -> std::cmp::Ordering {
@@ -569,6 +583,228 @@ impl<V: fmt::Debug> fmt::Debug for NameMap<V> {
     }
 }
 
+/// Hashes a [`Name`] by where it is held: one multiply, nothing read.
+#[derive(Default, Clone, Copy)]
+pub struct NameHasher(u64);
+
+impl Hasher for NameHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_usize(&mut self, at: usize) {
+        // The low bits of an address are its alignment; the multiply
+        // spreads the rest up to where a table reads its buckets.
+        self.0 = (at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+type ByName<V> = std::collections::HashMap<Name, V, std::hash::BuildHasherDefault<NameHasher>>;
+
+/// Many values by name, found by hashing where the name is held: a frame's
+/// fixtures. The calls are a map's, and take a [`Name`] or a string
+/// ([`AsName`]). In no order.
+#[derive(Clone)]
+pub struct NameTable<V> {
+    entries: ByName<V>,
+}
+
+impl<V> Default for NameTable<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V> NameTable<V> {
+    pub fn new() -> Self {
+        Self {
+            entries: ByName::default(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: ByName::with_capacity_and_hasher(capacity, Default::default()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    #[inline]
+    pub fn get(&self, name: impl AsName) -> Option<&V> {
+        self.entries.get(&name.find_name()?)
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, name: impl AsName) -> Option<&mut V> {
+        self.entries.get_mut(&name.find_name()?)
+    }
+
+    /// The name as held and its value.
+    pub fn get_key_value(&self, name: impl AsName) -> Option<(Name, &V)> {
+        let name = name.find_name()?;
+        self.entries.get(&name).map(|value| (name, value))
+    }
+
+    #[inline]
+    pub fn contains_key(&self, name: impl AsName) -> bool {
+        name.find_name()
+            .is_some_and(|name| self.entries.contains_key(&name))
+    }
+
+    #[inline]
+    pub fn insert(&mut self, name: impl AsName, value: V) -> Option<V> {
+        self.entries.insert(name.to_name(), value)
+    }
+
+    pub fn remove(&mut self, name: impl AsName) -> Option<V> {
+        self.entries.remove(&name.find_name()?)
+    }
+
+    /// The place for `name`, as a map's.
+    pub fn entry(&mut self, name: impl AsName) -> std::collections::hash_map::Entry<'_, Name, V> {
+        self.entries.entry(name.to_name())
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(Name, &mut V) -> bool) {
+        self.entries.retain(|name, value| keep(*name, value));
+    }
+
+    pub fn iter(&self) -> TableIter<'_, V> {
+        self.entries.iter().map(|(name, value)| (*name, value))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Name, &mut V)> {
+        self.entries.iter_mut().map(|(name, value)| (*name, value))
+    }
+
+    pub fn keys(&self) -> std::iter::Copied<std::collections::hash_map::Keys<'_, Name, V>> {
+        self.entries.keys().copied()
+    }
+
+    pub fn values(&self) -> std::collections::hash_map::Values<'_, Name, V> {
+        self.entries.values()
+    }
+
+    pub fn values_mut(&mut self) -> std::collections::hash_map::ValuesMut<'_, Name, V> {
+        self.entries.values_mut()
+    }
+
+    pub fn into_values(self) -> std::collections::hash_map::IntoValues<Name, V> {
+        self.entries.into_values()
+    }
+
+    pub fn drain(&mut self) -> std::collections::hash_map::Drain<'_, Name, V> {
+        self.entries.drain()
+    }
+}
+
+/// What [`NameTable::iter`] walks.
+pub type TableIter<'a, V> = std::iter::Map<
+    std::collections::hash_map::Iter<'a, Name, V>,
+    fn((&'a Name, &'a V)) -> (Name, &'a V),
+>;
+
+impl<K: AsName, V> std::ops::Index<K> for NameTable<V> {
+    type Output = V;
+    fn index(&self, name: K) -> &V {
+        match self.get(&name) {
+            Some(value) => value,
+            None => panic!("nothing is held as {:?}", name.to_name()),
+        }
+    }
+}
+
+impl<K: AsName, V> Extend<(K, V)> for NameTable<V> {
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
+        for (name, value) in entries {
+            self.insert(name, value);
+        }
+    }
+}
+
+impl<K: AsName, V> FromIterator<(K, V)> for NameTable<V> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(entries: I) -> Self {
+        let mut table = NameTable::new();
+        table.extend(entries);
+        table
+    }
+}
+
+impl<K: AsName, V, const N: usize> From<[(K, V); N]> for NameTable<V> {
+    fn from(entries: [(K, V); N]) -> Self {
+        entries.into_iter().collect()
+    }
+}
+
+impl<K: AsName, V, S> From<std::collections::HashMap<K, V, S>> for NameTable<V> {
+    fn from(map: std::collections::HashMap<K, V, S>) -> Self {
+        map.into_iter().collect()
+    }
+}
+
+impl<V> IntoIterator for NameTable<V> {
+    type Item = (Name, V);
+    type IntoIter = std::collections::hash_map::IntoIter<Name, V>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'a, V> IntoIterator for &'a NameTable<V> {
+    type Item = (Name, &'a V);
+    type IntoIter = TableIter<'a, V>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, V> IntoIterator for &'a mut NameTable<V> {
+    type Item = (Name, &'a mut V);
+    type IntoIter = std::iter::Map<
+        std::collections::hash_map::IterMut<'a, Name, V>,
+        fn((&'a Name, &'a mut V)) -> (Name, &'a mut V),
+    >;
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter_mut().map(|(name, value)| (*name, value))
+    }
+}
+
+impl<V: PartialEq> PartialEq for NameTable<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl<V: Eq> Eq for NameTable<V> {}
+
+/// As a map, by name.
+impl<V: fmt::Debug> fmt::Debug for NameTable<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut sorted: Vec<(Name, &V)> = self.iter().collect();
+        sorted.sort_by_key(|(name, _)| *name);
+        f.debug_map().entries(sorted).finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +859,28 @@ mod tests {
         assert_eq!(map.remove("green"), Some(2));
         assert_eq!(map.keys().collect::<Vec<_>>(), [RED, BLUE]);
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn a_table_is_asked_by_name_or_by_text() {
+        let mut table: NameTable<u8> = NameTable::new();
+        table.insert("names-test-wash", 1);
+        table.insert(Name::of("names-test-spot"), 2);
+        assert_eq!(table.get("names-test-wash"), Some(&1));
+        assert_eq!(table[Name::of("names-test-spot")], 2);
+        *table.entry("names-test-wash").or_default() += 4;
+        *table.entry("names-test-new").or_insert(7) += 1;
+        assert_eq!(table.get(&String::from("names-test-wash")), Some(&5));
+        assert_eq!(table.remove("names-test-new"), Some(8));
+        assert_eq!(table.get("names-test-nothing"), None);
+        let mut names: Vec<Name> = table.keys().collect();
+        names.sort();
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], "names-test-spot");
+        assert_eq!(
+            table,
+            NameTable::from([("names-test-spot", 2), ("names-test-wash", 5)])
+        );
     }
 
     #[test]

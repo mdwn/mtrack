@@ -984,7 +984,7 @@ mod tests {
         // The highest byte is the last cell's fine byte, which only the
         // cells (and the ganged mirrors) know about.
         let cell = |name: &str, offset: u16| Cell {
-            name: name.to_string(),
+            name: name.to_string().into(),
             channels: HashMap::from([(
                 "red".to_string(),
                 ChannelDef {

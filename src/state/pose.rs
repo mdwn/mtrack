@@ -25,7 +25,7 @@ use crate::lighting::geometry::Vec3;
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PoseSnapshot {
     #[serde(skip)]
-    pub name: String,
+    pub name: crate::lighting::names::Name,
     pub pan: f64,
     pub tilt: f64,
     /// The beam direction in stage space, unit length.

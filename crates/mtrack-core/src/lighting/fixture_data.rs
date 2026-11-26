@@ -95,7 +95,8 @@ pub struct FunctionStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// The cell's name — the GDTF geometry name, or the `cell` block's.
-    pub name: String,
+    #[cfg_attr(feature = "tsify", tsify(type = "string"))]
+    pub name: crate::lighting::names::Name,
     /// The cell's channels by canonical name, offsets without mirrors.
     #[cfg_attr(feature = "tsify", tsify(type = "Record<string, ChannelDef>"))]
     pub channels: crate::lighting::names::NameMap<ChannelDef>,

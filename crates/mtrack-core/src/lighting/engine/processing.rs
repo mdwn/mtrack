@@ -24,11 +24,11 @@ use super::super::tempo::TempoMap;
 /// fixture in the registry, getting its profile, and collecting channel commands
 /// into fixture states.
 fn build_fixture_states(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     mut apply_fn: impl FnMut(&FixtureProfile) -> crate::lighting::names::NameMap<ChannelState>,
-) -> HashMap<String, FixtureState> {
-    let mut fixture_states = HashMap::new();
+) -> crate::lighting::names::NameTable<FixtureState> {
+    let mut fixture_states = crate::lighting::names::NameTable::new();
     for fixture_name in &effect.target_fixtures {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let profile = FixtureProfile::for_fixture(fixture);
@@ -44,11 +44,11 @@ fn build_fixture_states(
 
 /// Like `build_fixture_states`, but gives the callback access to the FixtureInfo too.
 fn build_fixture_states_with_info(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     mut apply_fn: impl FnMut(&FixtureInfo, &FixtureProfile) -> FixtureState,
-) -> HashMap<String, FixtureState> {
-    let mut fixture_states = HashMap::new();
+) -> crate::lighting::names::NameTable<FixtureState> {
+    let mut fixture_states = crate::lighting::names::NameTable::new();
     for fixture_name in &effect.target_fixtures {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let profile = FixtureProfile::for_fixture(fixture);
@@ -133,13 +133,13 @@ fn calculate_color_indices(
 
 /// Process a single effect and return fixture states
 pub(crate) fn process_effect(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
     elapsed: Duration,
     engine_elapsed: Duration,
     tempo_map: Option<&TempoMap>,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     if !effect.enabled {
         return Ok(None);
     }
@@ -262,11 +262,11 @@ pub(crate) fn process_effect(
 
 /// Apply a static effect and return fixture states
 fn apply_static_effect(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     parameters: &crate::lighting::names::NameMap<f64>,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
@@ -317,14 +317,14 @@ fn apply_static_effect(
 
 /// Apply a color cycle effect and return fixture states
 fn apply_color_cycle(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     colors: &[Color],
     speed: f64,
     direction: &CycleDirection,
     transition: CycleTransition,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     if colors.is_empty() {
         return Ok(None);
     }
@@ -402,17 +402,17 @@ fn apply_color_cycle(
 /// its share (0 for the first, `(n−1)/n` for the last) of the spread
 /// (design §17.3). The colour and level come from `color_at(share)`.
 fn build_spread_states(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     color_at: impl Fn(f64) -> (Color, f64),
-) -> HashMap<String, FixtureState> {
+) -> crate::lighting::names::NameTable<FixtureState> {
     let ordered = spatial_order(
         fixture_registry,
         &effect.target_fixtures,
         &ChaseDirection::LeftToRight,
     );
     let n = ordered.len().max(1) as f64;
-    let mut fixture_states = HashMap::new();
+    let mut fixture_states = crate::lighting::names::NameTable::new();
     for (i, fixture_name) in ordered.iter().enumerate() {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let (color, level) = color_at(i as f64 / n);
@@ -429,11 +429,11 @@ fn build_spread_states(
 
 /// Apply a strobe effect and return fixture states
 fn apply_strobe(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     frequency: f64,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
@@ -490,14 +490,14 @@ fn apply_strobe(
 
 /// Apply a dimmer effect and return fixture states
 fn apply_dimmer(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     start_level: f64,
     end_level: f64,
     curve: &DimmerCurve,
     elapsed: Duration,
     duration: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate dimmer value based on elapsed time and duration with curve applied
     let dimmer_value = if duration.is_zero() {
         end_level // Instant transition
@@ -629,12 +629,12 @@ fn target_pose(
 /// commits to memory, so a move whose last frame fell short of its
 /// duration (or that had no duration at all) still arrives.
 pub(crate) fn move_final_poses(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
-) -> HashMap<String, Pose> {
+) -> crate::lighting::names::NameTable<Pose> {
     let EffectType::Move { to, .. } = &effect.effect_type else {
-        return HashMap::new();
+        return Default::default();
     };
     effect
         .target_fixtures
@@ -651,11 +651,11 @@ pub(crate) fn move_final_poses(
 /// a seek commits for a move cut short part way, as the head was shown at
 /// the cut.
 pub(crate) fn move_poses_at(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
     elapsed: Duration,
-) -> HashMap<String, Pose> {
+) -> crate::lighting::names::NameTable<Pose> {
     let EffectType::Move {
         to,
         from,
@@ -663,7 +663,7 @@ pub(crate) fn move_poses_at(
         duration,
     } = &effect.effect_type
     else {
-        return HashMap::new();
+        return Default::default();
     };
     move_poses(
         fixture_registry,
@@ -681,7 +681,7 @@ pub(crate) fn move_poses_at(
 /// target pose over the duration, eased, in degrees.
 #[allow(clippy::too_many_arguments)]
 fn move_poses(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
     to: &MoveTarget,
@@ -689,10 +689,10 @@ fn move_poses(
     easing: Easing,
     duration: Duration,
     elapsed: Duration,
-) -> HashMap<String, Pose> {
+) -> crate::lighting::names::NameTable<Pose> {
     let travel = easing.apply(fade_progress(elapsed, duration));
 
-    let mut poses = HashMap::new();
+    let mut poses = crate::lighting::names::NameTable::new();
     for name in &effect.target_fixtures {
         let Some(fixture) = fixture_registry.get(name) else {
             continue;
@@ -721,7 +721,7 @@ fn move_poses(
 /// physical intent per fixture; the engine slews and remembers it.
 #[allow(clippy::too_many_arguments)]
 fn apply_move(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
     to: &MoveTarget,
@@ -729,7 +729,7 @@ fn apply_move(
     easing: Easing,
     duration: Duration,
     elapsed: Duration,
-) -> HashMap<String, FixtureState> {
+) -> crate::lighting::names::NameTable<FixtureState> {
     move_poses(
         fixture_registry,
         focus_points,
@@ -764,20 +764,20 @@ fn apply_move(
 
 /// Apply a chase effect and return fixture states
 fn apply_chase(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     pattern: &ChasePattern,
     speed: f64,
     direction: &ChaseDirection,
     transition: CycleTransition,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
     // Guard against zero/negative speed - treat as "stopped" with first fixture active
     if speed <= 0.0 {
-        let mut fixture_states = HashMap::new();
+        let mut fixture_states = crate::lighting::names::NameTable::new();
         for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
             if let Some(fixture) = fixture_registry.get(fixture_name) {
                 let chase_value = if i == 0 { crossfade_multiplier } else { 0.0 };
@@ -799,7 +799,7 @@ fn apply_chase(
         f64::INFINITY
     };
 
-    let mut fixture_states = HashMap::new();
+    let mut fixture_states = crate::lighting::names::NameTable::new();
     let fixture_count = effect.target_fixtures.len();
 
     // Guard against empty fixture list - nothing to chase
@@ -942,11 +942,12 @@ fn apply_chase(
 /// stands, and a mixed group (some placed, some not) keeps list order too
 /// rather than guessing where the unplaced ones are.
 fn spatial_order(
-    fixture_registry: &HashMap<String, FixtureInfo>,
-    targets: &[String],
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
+    targets: &[crate::lighting::names::Name],
     direction: &ChaseDirection,
-) -> Vec<String> {
-    let mut placed: Vec<(String, [f64; 3])> = Vec::with_capacity(targets.len());
+) -> Vec<crate::lighting::names::Name> {
+    let mut placed: Vec<(crate::lighting::names::Name, [f64; 3])> =
+        Vec::with_capacity(targets.len());
     for name in targets {
         match fixture_registry.get(name) {
             Some(fixture) => match fixture.position {
@@ -967,7 +968,7 @@ fn spatial_order(
     if placed.len() < 2 {
         return targets.to_vec();
     }
-    type Placed = (String, [f64; 3]);
+    type Placed = (crate::lighting::names::Name, [f64; 3]);
     let key: Box<dyn Fn(&Placed) -> f64> = match direction {
         ChaseDirection::LeftToRight | ChaseDirection::RightToLeft => Box::new(|(_, p)| p[0]),
         ChaseDirection::TopToBottom | ChaseDirection::BottomToTop => Box::new(|(_, p)| -p[1]),
@@ -1091,13 +1092,13 @@ fn calculate_fixture_order(
 
 /// Apply a rainbow effect and return fixture states
 fn apply_rainbow(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     speed: f64,
     saturation: f64,
     brightness: f64,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
@@ -1129,13 +1130,13 @@ fn apply_rainbow(
 
 /// Apply a pulse effect and return fixture states
 fn apply_pulse(
-    fixture_registry: &HashMap<String, FixtureInfo>,
+    fixture_registry: &crate::lighting::names::NameTable<FixtureInfo>,
     effect: &EffectInstance,
     base_level: f64,
     pulse_amplitude: f64,
     frequency: f64,
     elapsed: Duration,
-) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+) -> Result<Option<crate::lighting::names::NameTable<FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
@@ -1365,7 +1366,7 @@ mod tests {
 
     #[test]
     fn process_effect_disabled() {
-        let registry = HashMap::new();
+        let registry = crate::lighting::names::NameTable::new();
         let mut effect = EffectInstance::new(
             "test".to_string(),
             EffectType::Static {
@@ -1379,7 +1380,7 @@ mod tests {
         );
         effect.enabled = false;
         let result = process_effect(
-            &registry,
+            &registry.clone().into(),
             &HashMap::new(),
             &effect,
             Duration::ZERO,
@@ -1394,7 +1395,7 @@ mod tests {
 
     #[test]
     fn build_fixture_states_skips_unknown() {
-        let registry = HashMap::new(); // No fixtures registered
+        let registry = crate::lighting::names::NameTable::new(); // No fixtures registered
         let effect = EffectInstance::new(
             "test".to_string(),
             EffectType::Static {
@@ -1406,7 +1407,9 @@ mod tests {
             None,
             None,
         );
-        let states = build_fixture_states(&registry, &effect, |_profile| Default::default());
+        let states = build_fixture_states(&registry.clone().into(), &effect, |_profile| {
+            Default::default()
+        });
         assert!(states.is_empty());
     }
 
@@ -1436,7 +1439,7 @@ mod tests {
             None,
             None,
         );
-        let states = build_fixture_states(&registry, &effect, |_profile| {
+        let states = build_fixture_states(&registry.clone().into(), &effect, |_profile| {
             let mut cmds = HashMap::new();
             cmds.insert(
                 "dimmer".to_string(),
@@ -1453,7 +1456,9 @@ mod tests {
 mod spatial_order_tests {
     use super::*;
 
-    fn registry(placed: &[(&str, Option<[f64; 3]>)]) -> HashMap<String, FixtureInfo> {
+    fn registry(
+        placed: &[(&str, Option<[f64; 3]>)],
+    ) -> crate::lighting::names::NameTable<FixtureInfo> {
         placed
             .iter()
             .map(|(name, position)| {
@@ -1471,8 +1476,10 @@ mod spatial_order_tests {
             .collect()
     }
 
-    fn names(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+    fn names(v: &[&str]) -> Vec<crate::lighting::names::Name> {
+        v.iter()
+            .map(|n| crate::lighting::names::Name::of(n))
+            .collect()
     }
 
     #[test]
@@ -1563,7 +1570,10 @@ mod random_chase_tests {
 
     const FIXTURES: usize = 8;
 
-    fn rig() -> (HashMap<String, FixtureInfo>, EffectInstance) {
+    fn rig() -> (
+        crate::lighting::names::NameTable<FixtureInfo>,
+        EffectInstance,
+    ) {
         let names: Vec<String> = (0..FIXTURES).map(|i| format!("brick{i}")).collect();
         let registry = names
             .iter()
@@ -1602,7 +1612,7 @@ mod random_chase_tests {
 
     /// The fixture lit at `secs` into the chase (one lap a second).
     fn lit_at(
-        registry: &HashMap<String, FixtureInfo>,
+        registry: &crate::lighting::names::NameTable<FixtureInfo>,
         effect: &EffectInstance,
         secs: f64,
     ) -> usize {
@@ -1630,7 +1640,7 @@ mod random_chase_tests {
 
     /// Each lap's order, sampled in the middle of every step.
     fn laps(
-        registry: &HashMap<String, FixtureInfo>,
+        registry: &crate::lighting::names::NameTable<FixtureInfo>,
         effect: &EffectInstance,
         count: usize,
     ) -> Vec<Vec<usize>> {

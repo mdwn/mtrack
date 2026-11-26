@@ -987,7 +987,7 @@ fn stage_of(fixtures: &[(&str, &[(&str, u8)])]) -> Arc<crate::state::StateSnapsh
         fixtures: fixtures
             .iter()
             .map(|(name, channels)| crate::state::FixtureSnapshot {
-                name: name.to_string(),
+                name: name.to_string().into(),
                 channels: channels.iter().map(|(c, v)| (c.to_string(), *v)).collect(),
                 cells: Default::default(),
                 strobe_hz: None,

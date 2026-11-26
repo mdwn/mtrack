@@ -1890,7 +1890,8 @@ fn test_bed_plus_chase_on_dimmerless_fixtures() {
     for cue in &show.cues {
         for effect in &cue.effects {
             let mut instance = LightingTimeline::create_effect_instance(effect, cue.time);
-            instance.target_fixtures = vec!["Brick1".to_string(), "Brick2".to_string()];
+            instance.target_fixtures =
+                vec!["Brick1".to_string().into(), "Brick2".to_string().into()];
             engine.start_effect(instance).unwrap();
         }
     }

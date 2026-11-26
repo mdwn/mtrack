@@ -28,6 +28,7 @@
 //! restores), and one scalar peak: the highest level among the layers that
 //! contribute colour, which is what a dimmer channel is sent.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::fixture::{has_cmy, has_dimmer_channel, FixtureInfo};
@@ -386,7 +387,7 @@ pub(super) fn resolve_mixed(state: &mut FixtureState, mixing: Mixing) {
 /// each cell's colour is scaled against it, so every cell's light is exact.
 pub fn resolve_fixture(
     parent: &mut FixtureState,
-    cells: &mut HashMap<String, FixtureState>,
+    cells: &mut crate::lighting::names::NameTable<FixtureState>,
     info: &FixtureInfo,
 ) {
     if info.cells.is_empty() {
@@ -808,7 +809,7 @@ mod tests {
         info.cells = ["1", "2"]
             .iter()
             .map(|name| crate::lighting::types::Cell {
-                name: name.to_string(),
+                name: name.to_string().into(),
                 channels: cell
                     .iter()
                     .enumerate()
@@ -835,7 +836,7 @@ mod tests {
             BlendMode::Replace,
         )));
         let cell_2 = FixtureState::from_channels(level(1.0, B, BlendMode::Replace));
-        let mut cells = HashMap::from([("2".to_string(), cell_2)]);
+        let mut cells = crate::lighting::names::NameTable::from([("2", cell_2)]);
         resolve_fixture(&mut parent, &mut cells, &info);
         // Cell 2 is red at full; cell 1 is red at half.
         assert_eq!(value(&parent, "dimmer"), 1.0);
@@ -848,8 +849,8 @@ mod tests {
     fn cells_with_a_dimmer_of_their_own_use_their_own_peak() {
         let info = bar(&[], &["dimmer", "red", "green", "blue"]);
         let mut parent = FixtureState::from_channels(red(A, BlendMode::Replace));
-        let mut cells = HashMap::from([(
-            "1".to_string(),
+        let mut cells = crate::lighting::names::NameTable::from([(
+            "1",
             FixtureState::from_channels(level(0.25, B, BlendMode::Replace)),
         )]);
         resolve_fixture(&mut parent, &mut cells, &info);
@@ -862,8 +863,8 @@ mod tests {
     fn cells_without_a_dimmer_carry_the_level_in_their_colour() {
         let info = bar(&[], &["red", "green", "blue"]);
         let mut parent = FixtureState::from_channels(red(A, BlendMode::Replace));
-        let mut cells = HashMap::from([(
-            "1".to_string(),
+        let mut cells = crate::lighting::names::NameTable::from([(
+            "1",
             FixtureState::from_channels(level(0.25, B, BlendMode::Replace)),
         )]);
         resolve_fixture(&mut parent, &mut cells, &info);

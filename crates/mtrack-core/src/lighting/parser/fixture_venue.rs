@@ -560,13 +560,13 @@ fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error
 /// A `cell "name" at (x, y, z) { channel ... }` block.
 fn parse_cell_def(pair: Pair<Rule>) -> Result<Cell, Box<dyn Error>> {
     let mut cell = Cell {
-        name: String::new(),
+        name: String::new().into(),
         channels: Default::default(),
         offset: [0.0; 3],
     };
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::string => cell.name = extract_string(inner),
+            Rule::string => cell.name = extract_string(inner).into(),
             Rule::cell_offset => {
                 cell.offset = parse_vec3(single_vec3(inner)?)?;
             }

@@ -332,6 +332,7 @@ fn live_frames(project: &mut Project) -> Vec<[u8; 513]> {
             .target_fixtures
             .iter()
             .flat_map(|g| project.system.resolve_logical_group_graceful(g))
+            .map(crate::lighting::names::Name::from)
             .collect();
         effect
     };
@@ -367,6 +368,7 @@ fn offline(project: &mut Project) -> Vec<Evaluation> {
             .target_fixtures
             .iter()
             .flat_map(|g| project.system.resolve_logical_group_graceful(g))
+            .map(crate::lighting::names::Name::from)
             .collect();
         effect
     })
@@ -613,6 +615,7 @@ fn frames_for(fixture_type: &str, show: &str, at: &[Duration]) -> Vec<[u8; 513]>
             .target_fixtures
             .iter()
             .flat_map(|g| system.resolve_logical_group_graceful(g))
+            .map(crate::lighting::names::Name::from)
             .collect();
         effect
     };

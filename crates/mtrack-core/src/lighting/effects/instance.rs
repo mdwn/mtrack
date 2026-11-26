@@ -31,11 +31,11 @@ pub fn fade_progress(elapsed: Duration, duration: Duration) -> f64 {
 pub struct EffectInstance {
     pub id: String,
     pub effect_type: EffectType,
-    pub target_fixtures: Vec<String>, // Fixture names or group names
-    pub priority: u8,                 // Higher priority overrides lower
-    pub layer: EffectLayer,           // Layer for layering system
-    pub blend_mode: BlendMode,        // How to blend with other effects
-    pub start_time: Option<Instant>,  // Real-time instant when effect started
+    pub target_fixtures: Vec<crate::lighting::names::Name>, // Fixture names or group names
+    pub priority: u8,                                       // Higher priority overrides lower
+    pub layer: EffectLayer,                                 // Layer for layering system
+    pub blend_mode: BlendMode,                              // How to blend with other effects
+    pub start_time: Option<Instant>,                        // Real-time instant when effect started
     pub cue_time: Option<Duration>, // Song time when effect was supposed to start (for deterministic randomness)
     pub up_time: Option<Duration>,  // Fade in duration (0% to 100%)
     pub hold_time: Option<Duration>, // Time at full intensity (100%)
@@ -49,7 +49,7 @@ pub struct EffectInstance {
     pub spread: f64,
     /// For a `move` without `from`: each target's pose when the effect
     /// started, captured from the engine's pose memory. Empty otherwise.
-    pub start_poses: std::collections::HashMap<String, super::pointing::Pose>,
+    pub start_poses: crate::lighting::names::NameTable<super::pointing::Pose>,
     /// The show `offset` at this effect's cue, in seconds: the tempo map its
     /// tempo-aware speed or frequency is read against is shifted by it, as
     /// the cue times were (#525).
@@ -94,7 +94,10 @@ impl EffectInstance {
         Self {
             id,
             effect_type,
-            target_fixtures,
+            target_fixtures: target_fixtures
+                .iter()
+                .map(crate::lighting::names::Name::from)
+                .collect(),
             priority: 0,
             layer: DEFAULT_LAYER,
             blend_mode: DEFAULT_BLEND,
@@ -106,7 +109,7 @@ impl EffectInstance {
             enabled: true,
             per_cell: false,
             spread: 0.0,
-            start_poses: std::collections::HashMap::new(),
+            start_poses: Default::default(),
             tempo_offset_secs: 0.0,
             score_frozen: Duration::ZERO,
             speed_from: Duration::ZERO,

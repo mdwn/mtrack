@@ -699,12 +699,12 @@ mod tests {
         cell_channels.insert("green".to_string(), ChannelDef::at(3));
         let cells = vec![
             Cell {
-                name: "Pixel 1".to_string(),
+                name: "Pixel 1".to_string().into(),
                 channels: cell_channels.clone().into(),
                 offset: [-0.1, 0.0, 0.0],
             },
             Cell {
-                name: "Pixel 2".to_string(),
+                name: "Pixel 2".to_string().into(),
                 channels: cell_channels.into(),
                 offset: [0.1, 0.0, 0.0],
             },

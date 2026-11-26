@@ -490,7 +490,10 @@ pub struct FixtureInfo {
     /// For a cell registered as a sub-fixture (`parent/cell`): the fixture
     /// it belongs to. The state stream and the plot treat sub-fixtures as
     /// part of their parent.
-    pub parent: Option<String>,
+    pub parent: Option<crate::lighting::names::Name>,
+    /// For a pixel fixture an engine has registered: the names its cells
+    /// are registered under beside it, in the cells' order. Empty before.
+    pub sub_fixtures: Vec<crate::lighting::names::Name>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -544,6 +547,7 @@ impl FixtureInfo {
             aim: None,
             cells: Vec::new(),
             parent: None,
+            sub_fixtures: Vec::new(),
             cached_capabilities: capabilities,
             cached_profile: profile,
             cached_mixing: mixing,

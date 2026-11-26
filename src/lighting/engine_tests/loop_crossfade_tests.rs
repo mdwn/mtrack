@@ -179,9 +179,9 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
     let mut incoming = outgoing.sibling();
     lit(&mut incoming, &[("dimmer", 0.4), ("gobo", 0.6)]);
 
-    let level = |states: &HashMap<String, crate::lighting::effects::FixtureState>, name: &str| {
-        states["mover"].channels.get(name).map(|c| c.value)
-    };
+    let level =
+        |states: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureState>,
+         name: &str| { states["mover"].channels.get(name).map(|c| c.value) };
     let (quarter, _) = incoming.crossfade_states(&outgoing, 0.25);
     assert!(
         (level(&quarter, "dimmer").unwrap() - 0.7).abs() < 1e-9,
@@ -206,7 +206,7 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
 /// them -- by DMX channel, for a fixture at universe 1 address 1.
 fn shown_bytes(
     engine: &EffectEngine,
-    states: &HashMap<String, crate::lighting::effects::FixtureState>,
+    states: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureState>,
 ) -> HashMap<u16, u8> {
     let registry = engine.get_fixture_registry();
     let mut bytes = HashMap::new();
@@ -224,7 +224,7 @@ fn shown_bytes(
             }
         }
         for (cell, values) in &snapshot.cells {
-            let def = info.cells.iter().find(|c| &c.name == cell).unwrap();
+            let def = info.cells.iter().find(|c| c.name == cell).unwrap();
             for (channel, &value) in values {
                 bytes.insert(
                     info.dmx_channel(def.channels[channel].offset).unwrap(),
@@ -263,7 +263,7 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
     // A three-cell RGB bar with no dimmer, so colour carries the layer
     // multipliers, at address 1.
     let cell = |n: &str, base: u16| Cell {
-        name: n.to_string(),
+        name: n.to_string().into(),
         channels: HashMap::from([
             ("red".to_string(), ChannelDef::at(base)),
             ("green".to_string(), ChannelDef::at(base + 1)),

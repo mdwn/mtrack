@@ -425,7 +425,7 @@ pub fn distill(
             for geometry in group {
                 if let Some((_, channels)) = by_geometry.iter().find(|(g, _)| g == geometry) {
                     cells.push(Cell {
-                        name: geometry.clone(),
+                        name: geometry.clone().into(),
                         channels: channels.clone(),
                         offset: geometry_offset(description, geometry),
                     });
@@ -1576,7 +1576,7 @@ mod tests {
         let offsets: Vec<(String, [f64; 3])> = ft
             .cells()
             .iter()
-            .map(|c| (c.name.clone(), c.offset))
+            .map(|c| (c.name.to_string(), c.offset))
             .collect();
         let p1 = ft.cells()[0].offset;
         assert!(

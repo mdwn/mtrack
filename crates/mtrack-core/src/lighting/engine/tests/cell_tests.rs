@@ -27,7 +27,7 @@ use crate::lighting::types::{Cell, ChannelDef};
 /// the fixture-level colour ganged across them.
 fn bar(name: &str, position: Option<[f64; 3]>) -> FixtureInfo {
     let cell = |n: &str, base: u16, x: f64| Cell {
-        name: n.to_string(),
+        name: n.to_string().into(),
         channels: HashMap::from([
             ("red".to_string(), ChannelDef::at(base)),
             ("green".to_string(), ChannelDef::at(base + 1)),

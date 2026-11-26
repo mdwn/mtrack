@@ -344,7 +344,7 @@ fn a_venue_reload_forgets_movers_that_left() {
         None,
         1.0,
     );
-    on_other.target_fixtures = vec!["other".to_string()];
+    on_other.target_fixtures = vec!["other".to_string().into()];
     engine.start_effect(on_other).unwrap();
     engine.update(Duration::from_millis(100), None).unwrap();
     assert!(!engine.get_fixture_states().contains_key("m"));
@@ -435,7 +435,7 @@ fn the_same_move_aims_correctly_in_two_venues() {
             Duration::ZERO,
         );
         // The DMX engine resolves the group to fixtures at cue time.
-        instance.target_fixtures = vec!["Spot1".to_string()];
+        instance.target_fixtures = vec!["Spot1".to_string().into()];
         engine.start_effect(instance).unwrap();
         engine.update(Duration::from_millis(10), None).unwrap();
         engine.update(Duration::from_millis(200), None).unwrap();

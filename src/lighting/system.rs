@@ -1468,7 +1468,10 @@ impl LightingSystem {
             let fixtures = self.resolve_logical_group_graceful(group_name);
             resolved_fixtures.extend(fixtures);
         }
-        effect.target_fixtures = resolved_fixtures;
+        effect.target_fixtures = resolved_fixtures
+            .iter()
+            .map(crate::lighting::names::Name::from)
+            .collect();
         effect
     }
 }

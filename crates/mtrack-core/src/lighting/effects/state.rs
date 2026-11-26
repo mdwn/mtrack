@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use super::composite::{self, Op};
@@ -357,7 +358,7 @@ impl FixtureState {
                 .any(|c| cell_state(&c.name).is_some_and(|s| !s.ops.is_empty()));
         if pending {
             let mut parent = self.clone();
-            let mut cells: HashMap<String, FixtureState> = fixture_info
+            let mut cells: crate::lighting::names::NameTable<FixtureState> = fixture_info
                 .cells
                 .iter()
                 .filter_map(|c| cell_state(&c.name).map(|s| (c.name.clone(), s.clone())))
@@ -868,12 +869,12 @@ mod tests {
         let mut fixture = fixture.with_channel_defs(defs.into());
         fixture.cells = vec![
             Cell {
-                name: "a".to_string(),
+                name: "a".to_string().into(),
                 channels: HashMap::from([("red".to_string(), ChannelDef::at(1))]).into(),
                 offset: [0.0, 0.0, 0.0],
             },
             Cell {
-                name: "b".to_string(),
+                name: "b".to_string().into(),
                 channels: HashMap::from([("red".to_string(), ChannelDef::at(2))]).into(),
                 offset: [0.0, 0.0, 0.0],
             },
@@ -978,7 +979,7 @@ mod tests {
 
     fn red_cell() -> crate::lighting::types::Cell {
         crate::lighting::types::Cell {
-            name: "2".to_string(),
+            name: "2".to_string().into(),
             channels: HashMap::from([(
                 "red".to_string(),
                 crate::lighting::types::ChannelDef::at(5),
