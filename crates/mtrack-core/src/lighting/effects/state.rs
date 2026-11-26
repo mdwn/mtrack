@@ -259,11 +259,10 @@ impl FixtureState {
                 // Blend existing channel
                 let blended_state = self_state.blend_with(*other_state);
 
-                self.channels.insert(channel_name.clone(), blended_state);
+                self.channels.insert(channel_name, blended_state);
             } else {
                 // Add new channel
-                self.channels
-                    .insert(channel_name.clone(), other_state.resolved());
+                self.channels.insert(channel_name, other_state.resolved());
             }
         }
     }
@@ -361,7 +360,7 @@ impl FixtureState {
             let mut cells: crate::lighting::names::NameTable<FixtureState> = fixture_info
                 .cells
                 .iter()
-                .filter_map(|c| cell_state(&c.name).map(|s| (c.name.clone(), s.clone())))
+                .filter_map(|c| cell_state(&c.name).map(|s| (c.name, s.clone())))
                 .collect();
             composite::resolve_fixture(&mut parent, &mut cells, fixture_info);
             return parent.emit_commands(fixture_info, |name| cells.get(name));

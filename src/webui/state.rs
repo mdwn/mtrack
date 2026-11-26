@@ -1926,8 +1926,8 @@ metronome: {}
         let tags = get_venue_fixture_tags(&system);
         assert_eq!(tags.len(), 1);
         let spot_tags = tags.get("spot_1").unwrap();
-        assert!(spot_tags.contains(&"overhead".to_string()));
-        assert!(spot_tags.contains(&"spot".to_string()));
+        assert!(spot_tags.iter().any(|i| i == "overhead"));
+        assert!(spot_tags.iter().any(|i| i == "spot"));
     }
 
     #[test]

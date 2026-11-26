@@ -33,10 +33,7 @@ fn build_fixture_states(
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let profile = FixtureProfile::for_fixture(fixture);
             let channel_commands = apply_fn(profile);
-            fixture_states.insert(
-                fixture_name.clone(),
-                FixtureState::from_channels(channel_commands),
-            );
+            fixture_states.insert(*fixture_name, FixtureState::from_channels(channel_commands));
         }
     }
     fixture_states
@@ -53,7 +50,7 @@ fn build_fixture_states_with_info(
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let profile = FixtureProfile::for_fixture(fixture);
             let fixture_state = apply_fn(fixture, profile);
-            fixture_states.insert(fixture_name.clone(), fixture_state);
+            fixture_states.insert(*fixture_name, fixture_state);
         }
     }
     fixture_states
@@ -295,7 +292,7 @@ fn apply_static_effect(
                             effect.blend_mode,
                         )
                     };
-                    (param_name.clone(), state)
+                    (param_name, state)
                 });
             let mut state = FixtureState::from_channels(channels);
 
@@ -421,7 +418,7 @@ fn build_spread_states(
             for state in commands.values_mut() {
                 state.value *= level;
             }
-            fixture_states.insert(fixture_name.clone(), FixtureState::from_channels(commands));
+            fixture_states.insert(*fixture_name, FixtureState::from_channels(commands));
         }
     }
     fixture_states
@@ -642,7 +639,7 @@ pub(crate) fn move_final_poses(
         .filter_map(|name| {
             let fixture = fixture_registry.get(name)?;
             let remembered = effect.start_poses.get(name).copied();
-            target_pose(fixture, focus_points, to, remembered).map(|pose| (name.clone(), pose))
+            target_pose(fixture, focus_points, to, remembered).map(|pose| (*name, pose))
         })
         .collect()
 }
@@ -711,7 +708,7 @@ fn move_poses(
             .and_then(|from| target_pose(fixture, focus_points, from, remembered))
             .or(remembered)
             .unwrap_or(target);
-        poses.insert(name.clone(), lerp(start, target, travel));
+        poses.insert(*name, lerp(start, target, travel));
     }
     poses
 }
@@ -784,10 +781,7 @@ fn apply_chase(
                 let profile = FixtureProfile::for_fixture(fixture);
                 let channel_commands =
                     profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
-                fixture_states.insert(
-                    fixture_name.clone(),
-                    FixtureState::from_channels(channel_commands),
-                );
+                fixture_states.insert(*fixture_name, FixtureState::from_channels(channel_commands));
             }
         }
         return Ok(Some(fixture_states));
@@ -920,10 +914,7 @@ fn apply_chase(
             let profile = FixtureProfile::for_fixture(fixture);
             let channel_commands =
                 profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
-            fixture_states.insert(
-                fixture_name.clone(),
-                FixtureState::from_channels(channel_commands),
-            );
+            fixture_states.insert(*fixture_name, FixtureState::from_channels(channel_commands));
         }
     }
 
@@ -951,7 +942,7 @@ fn spatial_order(
     for name in targets {
         match fixture_registry.get(name) {
             Some(fixture) => match fixture.position {
-                Some(position) => placed.push((name.clone(), position)),
+                Some(position) => placed.push((*name, position)),
                 None => return targets.to_vec(),
             },
             None => {
@@ -1380,7 +1371,7 @@ mod tests {
         );
         effect.enabled = false;
         let result = process_effect(
-            &registry.clone().into(),
+            &registry.clone(),
             &HashMap::new(),
             &effect,
             Duration::ZERO,
@@ -1407,9 +1398,8 @@ mod tests {
             None,
             None,
         );
-        let states = build_fixture_states(&registry.clone().into(), &effect, |_profile| {
-            Default::default()
-        });
+        let states =
+            build_fixture_states(&registry.clone(), &effect, |_profile| Default::default());
         assert!(states.is_empty());
     }
 

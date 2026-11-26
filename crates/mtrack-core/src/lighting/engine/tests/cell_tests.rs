@@ -39,18 +39,11 @@ fn bar(name: &str, position: Option<[f64; 3]>) -> FixtureInfo {
     let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
     let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
     let mut channels: crate::lighting::names::NameMap<u16> =
-        ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+        ganged.iter().map(|(n, d)| (n, d.offset)).collect();
     channels.insert("dimmer".to_string(), 1);
     let mut defs = ganged;
     defs.insert("dimmer".to_string(), ChannelDef::at(1));
-    let mut info = FixtureInfo::new(
-        name.to_string(),
-        1,
-        1,
-        "Bar".to_string(),
-        channels.into(),
-        None,
-    );
+    let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Bar".to_string(), channels, None);
     info.channel_defs = defs;
     info.cells = cells;
     info.position = position;

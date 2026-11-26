@@ -1631,7 +1631,7 @@ show "T" {
                 let fixtures_of = |e: &Evaluation| -> Vec<_> {
                     e.fixtures
                         .iter()
-                        .map(|f| (f.name.clone(), f.channels.clone()))
+                        .map(|f| (f.name, f.channels.clone()))
                         .collect()
                 };
                 assert_eq!(
@@ -1641,10 +1641,7 @@ show "T" {
                     times[i]
                 );
                 let poses = |e: &Evaluation| -> Vec<_> {
-                    e.poses
-                        .iter()
-                        .map(|p| (p.name.clone(), p.pan, p.tilt))
-                        .collect()
+                    e.poses.iter().map(|p| (p.name, p.pan, p.tilt)).collect()
                 };
                 assert_eq!(poses(alone), poses(&evaluated[i]));
             }
@@ -1761,7 +1758,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string().into(),
-                channels: channels.into(),
+                channels,
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1785,7 +1782,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string().into(),
-                channels: channels.into(),
+                channels,
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
@@ -1808,7 +1805,7 @@ show "T" {
             fixtures: vec![FixtureSnapshot {
                 strobe_hz: None,
                 name: "m".to_string().into(),
-                channels: channels.into(),
+                channels,
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),

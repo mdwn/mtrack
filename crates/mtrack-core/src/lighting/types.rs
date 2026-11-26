@@ -173,7 +173,7 @@ impl FixtureType {
     ) -> FixtureType {
         let channels = channel_defs
             .iter()
-            .map(|(name, def)| (name.clone(), def.offset))
+            .map(|(name, def)| (name, def.offset))
             .collect();
         let mut fixture_type = FixtureType {
             name,
@@ -450,7 +450,7 @@ impl fmt::Display for FixtureType {
                 .iter()
                 .filter(|(name, def)| !derived(name, def))
                 .collect();
-            defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+            defs.sort_by_key(|(name, def)| (def.offset, (*name)));
             for (name, def) in defs {
                 fmt_channel_line(f, "  ", &name, def)?;
             }
@@ -464,7 +464,7 @@ impl fmt::Display for FixtureType {
                     fmt_coord(cell.offset[2])
                 )?;
                 let mut defs: Vec<_> = cell.channels.iter().collect();
-                defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+                defs.sort_by_key(|(name, def)| (def.offset, (*name)));
                 for (name, def) in defs {
                     fmt_channel_line(f, "    ", &name, def)?;
                 }
@@ -584,7 +584,7 @@ pub fn ganged_from_cells(cells: &[Cell]) -> Result<NameMap<ChannelDef>, String> 
                 (d.offset, d.fine)
             })
             .collect();
-        out.insert(name.clone(), ganged);
+        out.insert(name, ganged);
     }
     Ok(out.into())
 }

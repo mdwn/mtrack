@@ -1469,7 +1469,7 @@ mod tests {
             .channel_defs()
             .iter()
             .find(|(n, _)| n.starts_with("red:"))
-            .map(|(n, d)| (n.clone(), d.clone()))
+            .map(|(n, d)| (n, d.clone()))
             .expect("suffixed lens red");
         assert_eq!(lens_red.1.offset, 10, "P1 at the template offset");
         assert_eq!(

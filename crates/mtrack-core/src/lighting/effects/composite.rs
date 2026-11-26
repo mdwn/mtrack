@@ -399,7 +399,7 @@ pub fn resolve_fixture(
     let own: Vec<bool> = info
         .cells
         .iter()
-        .map(|c| cells.get(&c.name).is_some_and(|s| !s.ops.is_empty()))
+        .map(|c| cells.get(c.name).is_some_and(|s| !s.ops.is_empty()))
         .collect();
     if parent_ops.is_empty() && !own.iter().any(|o| *o) {
         return;
@@ -413,7 +413,7 @@ pub fn resolve_fixture(
         .then(|| Composite::new(&parent_ops, &seed));
     let mut per_cell = Vec::new();
     for (cell, _) in info.cells.iter().zip(&own).filter(|(_, o)| **o) {
-        let Some(state) = cells.get_mut(&cell.name) else {
+        let Some(state) = cells.get_mut(cell.name) else {
             continue;
         };
         let mut ops = parent_ops.clone();
@@ -447,7 +447,7 @@ pub fn resolve_fixture(
     }
     let mut top = ganged.as_ref().map(|g| g.top);
     for (cell, c) in &per_cell {
-        let state = cells.get_mut(&cell.name).expect("a cell with ops");
+        let state = cells.get_mut(cell.name).expect("a cell with ops");
         let (level, dimmer) = level(c);
         for (name, value) in c.colours(&level, Mixing::of(&cell.channels)) {
             put(state, c.top, name, value);

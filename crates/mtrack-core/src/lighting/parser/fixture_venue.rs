@@ -220,7 +220,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
             }
         }
         for (channel, def) in ganged {
-            if rich_defs.contains_key(&channel) {
+            if rich_defs.contains_key(channel) {
                 return Err(format!(
                     "fixture type \"{name}\": channel \"{channel}\" is both a fixture-level line \
                      and a cell channel; a cell channel's fixture-level form is derived"

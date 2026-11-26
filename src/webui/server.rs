@@ -627,7 +627,7 @@ mod test {
             .await[..],
         )
         .unwrap();
-        assert!(playlists.names.contains(&"all_songs".to_string()));
+        assert!(playlists.names.iter().any(|i: &String| i == "all_songs"));
         assert_eq!(playlists.playlists.len(), playlists.names.len());
         for locked in [true, false] {
             let answer = SetLockResponse::decode(

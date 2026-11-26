@@ -463,8 +463,8 @@ impl EffectEngine {
         }
         // Pose memory follows the registry: a mover the venue renamed or
         // unhung must not haunt the preview as a held pose.
-        self.poses.retain(|name, _| self.fixtures.contains(&name));
-        self.goals.retain(|name, _| self.fixtures.contains(&name));
+        self.poses.retain(|name, _| self.fixtures.contains(name));
+        self.goals.retain(|name, _| self.fixtures.contains(name));
         self.cache.invalidate();
     }
 
@@ -510,8 +510,8 @@ impl EffectEngine {
         self.fixtures = other.fixtures.clone();
         self.midi_dmx_store = other.midi_dmx_store.clone();
         self.focus_points = other.focus_points.clone();
-        self.poses.retain(|name, _| other.fixtures.contains(&name));
-        self.goals.retain(|name, _| other.fixtures.contains(&name));
+        self.poses.retain(|name, _| other.fixtures.contains(name));
+        self.goals.retain(|name, _| other.fixtures.contains(name));
         self.cache.invalidate();
     }
 
@@ -865,7 +865,7 @@ impl EffectEngine {
             } else {
                 new.strobe_hz
             };
-            states.insert(name.clone(), state);
+            states.insert(name, state);
         }
         let mut poses = outgoing.shown_poses().clone();
         for (name, pose) in onto_poses {
@@ -876,7 +876,7 @@ impl EffectEngine {
                 },
                 None => *pose,
             };
-            poses.insert(name.clone(), blended);
+            poses.insert(name, blended);
         }
         (states, poses)
     }
@@ -900,7 +900,7 @@ impl EffectEngine {
         };
         let mut out = crate::lighting::names::NameTable::new();
         for (name, state) in states {
-            let info = self.fixtures.get(&name);
+            let info = self.fixtures.get(name);
             if let Some(parent) = info.and_then(|i| i.parent.as_ref()) {
                 // A cell comes with its fixture, below; on its own only when
                 // its fixture has no state of its own.
@@ -913,7 +913,7 @@ impl EffectEngine {
                     .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(&name)));
                 if let Some(cell) = cell {
                     out.insert(
-                        name.clone(),
+                        name,
                         cell_state(FixtureState::new().cell_values(cell, Some(state))),
                     );
                 }
@@ -925,9 +925,9 @@ impl EffectEngine {
             for (channel, channel_state) in &state.channels {
                 resolved
                     .channels
-                    .insert(channel.clone(), plain(channel_state.value));
+                    .insert(channel, plain(channel_state.value));
             }
-            out.insert(name.clone(), resolved);
+            out.insert(name, resolved);
             for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
                 let sub = cell_fixture_name(&name, &cell.name);
                 let own = states.get(&sub);
@@ -982,7 +982,7 @@ impl EffectEngine {
         effect.start_poses = effect
             .target_fixtures
             .iter()
-            .filter_map(|name| self.poses.get(name).map(|pose| (name.clone(), *pose)))
+            .filter_map(|name| self.poses.get(name).map(|pose| (*name, *pose)))
             .collect();
     }
 
@@ -1115,10 +1115,10 @@ impl EffectEngine {
         // Held poses: every remembered mover nobody drove this frame keeps
         // heading for (or sitting at) its last goal.
         for (name, pose) in &self.goals {
-            if !self.fixtures.contains(&name) {
+            if !self.fixtures.contains(name) {
                 continue;
             }
-            let state = states.entry(name.clone()).or_default();
+            let state = states.entry(name).or_default();
             if state.physical.pan.is_none() {
                 state.physical.set(
                     PhysicalParameter::Pan,
@@ -1145,7 +1145,7 @@ impl EffectEngine {
             let previous = self.poses.get(name).copied();
             let asked_pan = state.physical.pan.map(|i| i.degrees);
             let asked_tilt = state.physical.tilt.map(|i| i.degrees);
-            let limits = self.fixtures.get(&name).map(|f| f.movement);
+            let limits = self.fixtures.get(name).map(|f| f.movement);
             let clamp = |asked: f64, was: Option<f64>, max_speed: Option<f64>| -> f64 {
                 match (was, max_speed) {
                     (Some(was), Some(max_speed)) if max_speed > 0.0 && dt > 0.0 => {
@@ -1176,7 +1176,7 @@ impl EffectEngine {
                 intent.degrees = tilt;
             }
             next_poses.insert(
-                name.clone(),
+                name,
                 Pose {
                     pan: pan.or(previous.map(|p| p.pan)).unwrap_or(0.0),
                     tilt: tilt.or(previous.map(|p| p.tilt)).unwrap_or(0.0),
@@ -1184,7 +1184,7 @@ impl EffectEngine {
             );
             let goal = self.goals.get(name).copied();
             self.goals.insert(
-                name.clone(),
+                name,
                 Pose {
                     pan: asked_pan.or(goal.map(|g| g.pan)).unwrap_or(0.0),
                     tilt: asked_tilt.or(goal.map(|g| g.tilt)).unwrap_or(0.0),
@@ -1248,11 +1248,11 @@ impl EffectEngine {
                             }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
-                                .entry(fixture_name.clone())
+                                .entry(*fixture_name)
                                 .or_default()
                                 .channels
                                 .insert(
-                                    channel_name.clone(),
+                                    *channel_name,
                                     ChannelState::new(
                                         normalized_value,
                                         EffectLayer::BACKGROUND,
@@ -1297,13 +1297,13 @@ impl EffectEngine {
                 let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                 if self.fixtures.contains(fixture_name) {
                     let state = current_fixture_states
-                        .entry(fixture_name.clone())
+                        .entry(*fixture_name)
                         .or_insert_with(FixtureState::new);
                     if !state.channels.contains_key(channel_name) {
                         // A plain channel, not an op: the bottom of the
                         // stack the composite starts from.
                         state.channels.insert(
-                            channel_name.clone(),
+                            *channel_name,
                             ChannelState::new(
                                 normalized_value,
                                 EffectLayer::BACKGROUND,
@@ -1423,7 +1423,7 @@ impl EffectEngine {
 
                     // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
-                        if self.fixtures.contains(&fixture_name) {
+                        if self.fixtures.contains(fixture_name) {
                             current_fixture_states
                                 .entry(fixture_name)
                                 .or_insert_with(FixtureState::new)
@@ -1573,11 +1573,11 @@ impl EffectEngine {
                 .cells
                 .iter()
                 .zip(subs)
-                .filter_map(|(cell, sub)| states.remove(sub).map(|s| (cell.name.clone(), s)))
+                .filter_map(|(cell, sub)| states.remove(sub).map(|s| (cell.name, s)))
                 .collect();
             crate::lighting::effects::resolve_fixture(&mut fixture_state, &mut cells, info);
             for (cell, sub) in info.cells.iter().zip(subs) {
-                if let Some(state) = cells.remove(&cell.name) {
+                if let Some(state) = cells.remove(cell.name) {
                     states.insert(*sub, state);
                 }
             }
@@ -1605,7 +1605,7 @@ impl EffectEngine {
             if !self.fixtures.contains(name) {
                 continue;
             }
-            states.entry(name.clone()).or_default().channels.insert(
+            states.entry(*name).or_default().channels.insert(
                 crate::lighting::names::STROBE,
                 ChannelState::new(0.0, EffectLayer::BACKGROUND, BlendMode::Replace),
             );
@@ -1975,10 +1975,10 @@ impl EffectEngine {
                 } else {
                     for name in &reads.written {
                         if let Some(pose) = poses.get(name) {
-                            self.poses.insert(name.clone(), *pose);
+                            self.poses.insert(*name, *pose);
                         }
                         if let Some(goal) = goals.get(name) {
-                            self.goals.insert(name.clone(), *goal);
+                            self.goals.insert(*name, *goal);
                         }
                     }
                 }
@@ -2068,7 +2068,7 @@ impl EffectEngine {
         if let Some(reads) = self.pose_reads.as_mut() {
             reads.written.insert(name);
         }
-        self.goals.insert(name.clone(), pose);
+        self.goals.insert(name, pose);
         self.poses.insert(name, pose);
     }
 

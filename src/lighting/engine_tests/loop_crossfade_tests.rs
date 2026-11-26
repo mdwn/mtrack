@@ -274,7 +274,7 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
     };
     let cells = vec![cell("1", 1), cell("2", 4), cell("3", 7)];
     let defs = crate::lighting::types::ganged_from_cells(&cells).unwrap();
-    let channels = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    let channels = defs.iter().map(|(n, d)| (n, d.offset)).collect();
     let mut info = FixtureInfo::new("bar".to_string(), 1, 1, "Bar".to_string(), channels, None);
     info.channel_defs = defs;
     info.cells = cells;

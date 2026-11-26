@@ -1753,7 +1753,8 @@ mod tests {
         assert!(plan.fixture_types[0].existing, "the .fixture is reused");
         assert!(report
             .written
-            .contains(&"lighting/library/kellys.mvr".to_string()));
+            .iter()
+            .any(|i| i == "lighting/library/kellys.mvr"));
         assert!(!report.written.iter().any(|w| w.ends_with(".fixture")));
 
         let brick1 = plan.fixtures.iter().find(|f| f.name == "Brick 1").unwrap();
@@ -2678,7 +2679,8 @@ mod tests {
 
         assert!(report
             .written
-            .contains(&"lighting/venues/tour/2024.venue".to_string()));
+            .iter()
+            .any(|i| i == "lighting/venues/tour/2024.venue"));
         assert_eq!(venue_files(dir.path()), ["tour/2024.venue"]);
         let text = std::fs::read_to_string(venues.join("tour/2024.venue")).unwrap();
         assert!(text.contains("@ 1:2"), "{text}");

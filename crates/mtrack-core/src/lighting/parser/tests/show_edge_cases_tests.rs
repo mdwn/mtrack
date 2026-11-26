@@ -180,7 +180,7 @@ show "Test" {
     // Find the cue at 5.0s with stop_sequences
     let stop_cue = show.cues.iter().find(|c| {
         (c.time.as_secs_f64() - 5.0).abs() < 0.01
-            && c.stop_sequences.contains(&"looper".to_string())
+            && c.stop_sequences.iter().any(|i: &String| i == "looper")
     });
     assert!(
         stop_cue.is_some(),
@@ -433,7 +433,7 @@ show "Test" {
 
     // The stop_sequences should include "bg"
     assert!(
-        cue.stop_sequences.contains(&"bg".to_string()),
+        cue.stop_sequences.iter().any(|i: &String| i == "bg"),
         "Cue at 5.0s should stop 'bg', got: {:?}",
         cue.stop_sequences
     );
@@ -729,7 +729,8 @@ show "Test" {
 
     // Find the standalone stop cue at 5.0s
     let stop_cue = show.cues.iter().find(|c| {
-        (c.time.as_secs_f64() - 5.0).abs() < 0.01 && c.stop_sequences.contains(&"bg".to_string())
+        (c.time.as_secs_f64() - 5.0).abs() < 0.01
+            && c.stop_sequences.iter().any(|i: &String| i == "bg")
     });
     assert!(stop_cue.is_some(), "Should have stop cue at 5.0s");
 }
@@ -779,7 +780,7 @@ show "Test" {
         .iter()
         .filter(|c| {
             (c.time.as_secs_f64() - 5.0).abs() < 0.01
-                && c.stop_sequences.contains(&"inner".to_string())
+                && c.stop_sequences.iter().any(|i: &String| i == "inner")
         })
         .collect();
     assert!(
@@ -959,7 +960,7 @@ show "Test" {
 
     // First iteration, first cue: should have start_sequences, no stop
     assert!(
-        show.cues[0].start_sequences.contains(&"looped".to_string()),
+        show.cues[0].start_sequences.iter().any(|i| i == "looped"),
         "First cue should mark sequence start"
     );
     assert!(
@@ -969,13 +970,13 @@ show "Test" {
 
     // Second iteration, first cue: should have stop_sequences
     assert!(
-        show.cues[2].stop_sequences.contains(&"looped".to_string()),
+        show.cues[2].stop_sequences.iter().any(|i| i == "looped"),
         "Second iteration's first cue should stop previous iteration"
     );
 
     // Third iteration, first cue: should have stop_sequences
     assert!(
-        show.cues[4].stop_sequences.contains(&"looped".to_string()),
+        show.cues[4].stop_sequences.iter().any(|i| i == "looped"),
         "Third iteration's first cue should stop previous iteration"
     );
 }
@@ -1124,7 +1125,7 @@ show "Test" {
 
     // Should stop the old sequence
     assert!(
-        cue.stop_sequences.contains(&"old".to_string()),
+        cue.stop_sequences.iter().any(|i: &String| i == "old"),
         "Should stop 'old' sequence at 5.0s"
     );
 

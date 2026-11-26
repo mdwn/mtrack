@@ -526,7 +526,7 @@ impl FixtureInfo {
         let profile = FixtureProfile::from_capabilities(&capabilities);
         let channel_defs = channels
             .iter()
-            .map(|(name, &offset)| (name.clone(), crate::lighting::types::ChannelDef::at(offset)))
+            .map(|(name, &offset)| (name, crate::lighting::types::ChannelDef::at(offset)))
             .collect();
         Self {
             name,

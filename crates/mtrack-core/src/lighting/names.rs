@@ -834,6 +834,11 @@ mod tests {
         });
         assert_ne!(RED, GREEN);
         assert_eq!(RED, "red");
+        // Every one of them: a name held from the start that its own text
+        // did not find would never equal the one a show's text becomes.
+        for known in KNOWN {
+            assert_eq!(Name::of(known.as_str()), **known, "{known}");
+        }
     }
 
     #[test]
@@ -851,7 +856,7 @@ mod tests {
         assert_eq!(map.insert(String::from("red"), 3), Some(1));
         assert_eq!((map.get(RED), map.get("green")), (Some(&3), Some(&2)));
         assert_eq!(map["red"], 3);
-        assert!(map.contains_key(&String::from("green")));
+        assert!(map.contains_key(String::from("green")));
         // Asking for a name nothing holds finds nothing, and holds nothing.
         assert_eq!(map.get("names-test-asked-only"), None);
         assert_eq!(Name::find("names-test-asked-only"), None);
@@ -870,7 +875,7 @@ mod tests {
         assert_eq!(table[Name::of("names-test-spot")], 2);
         *table.entry("names-test-wash").or_default() += 4;
         *table.entry("names-test-new").or_insert(7) += 1;
-        assert_eq!(table.get(&String::from("names-test-wash")), Some(&5));
+        assert_eq!(table.get(String::from("names-test-wash")), Some(&5));
         assert_eq!(table.remove("names-test-new"), Some(8));
         assert_eq!(table.get("names-test-nothing"), None);
         let mut names: Vec<Name> = table.keys().collect();

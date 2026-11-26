@@ -4677,8 +4677,8 @@ mod test {
         let player = make_test_player().await?;
         let names = player.list_playlists();
         // Should contain at least "all_songs" and "playlist", sorted.
-        assert!(names.contains(&"all_songs".to_string()));
-        assert!(names.contains(&"playlist".to_string()));
+        assert!(names.iter().any(|i: &String| i == "all_songs"));
+        assert!(names.iter().any(|i: &String| i == "playlist"));
         assert_eq!(
             names,
             {

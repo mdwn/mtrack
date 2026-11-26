@@ -164,7 +164,7 @@ fn poses_from_bytes<'a>(
             moved = true;
         }
         if moved {
-            poses.insert(name.clone(), pose);
+            poses.insert(*name, pose);
         }
     }
 }
@@ -188,7 +188,7 @@ pub(crate) fn shown_poses_on_wire(
     let unposed: Vec<Name> = registry
         .iter()
         .filter(|(name, info)| info.parent.is_none() && !poses.contains_key(*name))
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| name)
         .collect();
     poses_from_bytes(&mut poses, &unposed, registry, |universe, channel| {
         wire.byte(universe, channel)
@@ -322,7 +322,7 @@ fn lay_bytes<'a>(
                     let values = cell
                         .channels
                         .keys()
-                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c.clone(), *v)))
+                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c, *v)))
                         .collect();
                     snapshot.cells.insert(cell.name, values);
                 }
@@ -340,7 +340,7 @@ fn lay_bytes<'a>(
                 snapshot.channels.insert(channel, b);
             }
         }
-        touched.push(name.clone());
+        touched.push(name);
     }
     touched.sort();
     touched
@@ -370,14 +370,14 @@ fn attach_wire(
         registry
             .iter()
             .filter(|(_, info)| !reaches(wire, info))
-            .map(|(name, info)| (name.clone(), info.clone()))
+            .map(|(name, info)| (name, info.clone()))
             .collect();
     if unreached.is_empty() {
         return;
     }
     lay_bytes(fixtures, &unreached, |_, _| Some(0), Fill::Fixture);
     for snapshot in fixtures.iter_mut() {
-        if unreached.contains_key(&snapshot.name) {
+        if unreached.contains_key(snapshot.name) {
             snapshot.strobe_hz = None;
         }
     }
@@ -479,7 +479,7 @@ pub(crate) fn compute_pose_snapshots(
                 Some([p[0] + aim[0] * t, p[1] + aim[1] * t])
             });
             Some(PoseSnapshot {
-                name: name.clone(),
+                name,
                 pan: pose.pan,
                 tilt: pose.tilt,
                 aim,
@@ -661,7 +661,7 @@ pub(crate) fn compute_fixture_snapshots(
                 // A software strobe's rate; a strobe channel's is read
                 // from its byte once the registry is at hand.
                 strobe_hz: state.strobe_hz,
-                name: name.clone(),
+                name,
                 channels: channels.into(),
                 cells: Default::default(),
             }
@@ -683,7 +683,7 @@ pub(crate) fn fixture_snapshots_with_cells(
     rates: StrobeRates,
 ) -> Vec<FixtureSnapshot> {
     let mut fixtures = compute_fixture_snapshots(states, registry);
-    fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    fixtures.retain(|s| registry.get(s.name).is_none_or(|f| f.parent.is_none()));
     drop_unsent_primaries(&mut fixtures, registry);
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
@@ -720,7 +720,7 @@ fn drop_unsent_primaries(
     registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         if crate::lighting::effects::has_cmy(&info.channel_defs) {
@@ -742,7 +742,7 @@ pub(crate) fn attach_strobe_rates(
     rates: StrobeRates,
 ) {
     for snapshot in fixtures {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         match snapshot.channels.get("strobe") {
@@ -783,7 +783,7 @@ fn attach_mirrors(
     registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let Some(info) = registry.get(&snapshot.name) else {
+        let Some(info) = registry.get(snapshot.name) else {
             continue;
         };
         let cell_owned = |channel: &str| {
@@ -799,7 +799,7 @@ fn attach_mirrors(
             let Some(&coarse) = snapshot.channels.get(name) else {
                 continue;
             };
-            let fine = snapshot.channels.get(&fine_name(&name)).copied();
+            let fine = snapshot.channels.get(fine_name(&name)).copied();
             for ((mirror, _), mirror_fine) in mirror_sections(&name, def) {
                 extra.push((mirror, coarse));
                 if let (Some(fine), Some((mirror_fine, _))) = (fine, mirror_fine) {
@@ -830,7 +830,7 @@ fn attach_pointing(
     registry: &crate::lighting::names::NameTable<crate::lighting::effects::FixtureInfo>,
 ) {
     for snapshot in snapshots.iter_mut() {
-        let (Some(state), Some(info)) = (states.get(&snapshot.name), registry.get(&snapshot.name))
+        let (Some(state), Some(info)) = (states.get(snapshot.name), registry.get(snapshot.name))
         else {
             continue;
         };
@@ -884,7 +884,7 @@ pub(crate) fn attach_cell_snapshots(
             // under; a fixture read before any engine has it, by making it.
             let own = match info.sub_fixtures.get(at) {
                 Some(sub) => states.get(sub),
-                None => states.get(&crate::lighting::effects::cell_fixture_name(
+                None => states.get(crate::lighting::effects::cell_fixture_name(
                     &parent, &cell.name,
                 )),
             };
@@ -899,7 +899,7 @@ pub(crate) fn attach_cell_snapshots(
                     (name, byte)
                 })
                 .collect();
-            cells.insert(cell.name.clone(), values);
+            cells.insert(cell.name, values);
         }
         match snapshots.iter_mut().find(|s| s.name == parent) {
             Some(snapshot) => snapshot.cells = cells,
@@ -1399,18 +1399,11 @@ mod tests {
         let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
         let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
         let mut channels: crate::lighting::names::NameMap<u16> =
-            ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+            ganged.iter().map(|(n, d)| (n, d.offset)).collect();
         channels.insert("dimmer".to_string(), 1);
         let mut defs = ganged;
         defs.insert("dimmer".to_string(), ChannelDef::at(1));
-        let mut info = FixtureInfo::new(
-            name.to_string(),
-            1,
-            1,
-            "Bar".to_string(),
-            channels.into(),
-            None,
-        );
+        let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Bar".to_string(), channels, None);
         info.channel_defs = defs;
         info.cells = cells;
         info
