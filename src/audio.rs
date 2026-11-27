@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 pub use mtrack_core::audio::{
     beat_grid, click_analysis, context, crossfade, duration_to_samples, format, metronome,
-    monoclip, pilot, sample_source, track_gains,
+    monoclip, peaks, pilot, sample_source, track_gains,
 };
 
 pub mod confirmation;

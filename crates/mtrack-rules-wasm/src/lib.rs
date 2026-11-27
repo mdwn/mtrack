@@ -668,31 +668,9 @@ pub fn tempo_query(source: Option<TempoSourceJs>, query: TempoQueryJs) -> Option
     give(&query.answer(source.as_ref())?)
 }
 
-/// The distance between two times on a tempo map, as the position walk
-/// counts it: in milliseconds, in quarter-note beats
-/// (`TempoMap::beats_between`) and in bars of the metres between
-/// (`TempoMap::measures_between`, fractional within a bar). What the
-/// timeline names a dragged length by.
-#[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-pub struct TempoDistance {
-    pub ms: f64,
-    pub beats: f64,
-    pub measures: f64,
-}
-
-impl TempoDistance {
-    /// The distance from `from_ms` to `to_ms` on `source`'s map; `None`
-    /// when the source makes no map or a time is not one.
-    pub fn between(source: &TempoSource, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
-        let (from, to) = (bounds::at_ms(from_ms)?, bounds::at_ms(to_ms)?);
-        let map = source.to_tempo_map().ok()?;
-        Some(TempoDistance {
-            ms: to_ms - from_ms,
-            beats: map.beats_between(from, to),
-            measures: map.measures_between(from, to),
-        })
-    }
-}
+/// The distance between two times on a tempo map: `mtrack-core`'s
+/// (`lighting/lengths.rs`, compiled here as it is).
+pub use lighting::lengths::TempoDistance;
 
 /// Why a tempo config cannot be saved (`TempoConfig::validate`, the verdict
 /// a save gets; a value beyond [`bounds`] or not a tempo config at all is
@@ -987,14 +965,11 @@ pub fn reference_loop(reference: SequenceRefJs, count: f64) -> Option<Ts<Sequenc
     give(&reference.with_loop_count(count)?)
 }
 
-/// The duration an effect dragged to `ms` long from `at_ms` is written as
-/// (`writer::duration_text`): whole measures or beats of the tempo map
-/// there when it is some, else time.
+/// The duration an effect dragged to `ms` long from `at_ms` is written as:
+/// `mtrack-core`'s [`lighting::lengths::length_name`] on `source`'s map.
 pub fn length_name(source: Option<&TempoSource>, at_ms: f64, ms: f64) -> String {
-    let span = source
-        .and_then(|s| TempoDistance::between(s, at_ms, at_ms + ms))
-        .map(|d| (d.measures, d.beats));
-    lighting::parser::writer::duration_text(span, ms)
+    let map = source.and_then(|s| s.to_tempo_map().ok());
+    lighting::lengths::length_name(map.as_ref(), at_ms, ms)
 }
 
 /// [`length_name`], for the web UI.
@@ -1004,31 +979,17 @@ pub fn duration_text(source: Option<TempoSourceJs>, at_ms: f64, ms: f64) -> Stri
     length_name(source.as_ref(), at_ms, ms)
 }
 
-/// A length dragged from `at_ms`, snapped to whole measures (`step`
-/// `None`) or to whole steps of a beat, in milliseconds as the parser
-/// reads that length there. `None` when the source makes no tempo map or
-/// a time is not one.
+/// A length dragged from `at_ms`, snapped to whole measures or beats:
+/// `mtrack-core`'s [`lighting::lengths::snapped_length`] on `source`'s map.
+/// `None` when the source makes no tempo map or a time is not one.
 pub fn snapped_length(
     source: &TempoSource,
     at_ms: f64,
     duration_ms: f64,
     step: Option<f64>,
 ) -> Option<f64> {
-    if step.is_some_and(|step| !(step.is_finite() && step > 0.0)) {
-        return None;
-    }
-    let span = TempoDistance::between(source, at_ms, at_ms + duration_ms)?;
     let map = source.to_tempo_map().ok()?;
-    let round = lighting::parser::writer::round;
-    let from = bounds::at_ms(at_ms)?;
-    // The player's own length of that many bars or beats from there.
-    let length = match step {
-        None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),
-        Some(step) => map.beats_to_duration((round(span.beats / step) * step).max(step), from, 0.0),
-    };
-    // A length past any song (a step so fine its count overflows) is none.
-    let end = from.checked_add(length)?.as_secs_f64();
-    bounds::secs(end).then_some(end * 1000.0 - at_ms)
+    lighting::lengths::snapped_length(&map, at_ms, duration_ms, step)
 }
 
 /// [`snapped_length`], for the web UI.

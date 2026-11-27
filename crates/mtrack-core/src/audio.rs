@@ -22,6 +22,7 @@ pub mod crossfade;
 pub mod format;
 pub mod metronome;
 pub mod monoclip;
+pub mod peaks;
 pub mod pilot;
 pub mod sample_source;
 pub mod track_gains;
