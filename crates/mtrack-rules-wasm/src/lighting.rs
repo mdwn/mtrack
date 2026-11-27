@@ -34,6 +34,8 @@ mod fixture_test_types;
 pub mod geometry;
 #[path = "../../../src/lighting/import/report.rs"]
 pub mod import_report;
+#[path = "../../mtrack-core/src/lighting/lengths.rs"]
+pub mod lengths;
 #[path = "../../../src/lighting/mvr_types.rs"]
 pub mod mvr_types;
 #[path = "../../mtrack-core/src/lighting/names.rs"]

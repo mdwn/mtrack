@@ -21,6 +21,7 @@ pub mod engine;
 pub mod findings;
 pub mod fixture_data;
 pub mod geometry;
+pub mod lengths;
 pub mod lint;
 pub mod names;
 pub mod parser;

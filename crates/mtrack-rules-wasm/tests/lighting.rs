@@ -161,7 +161,7 @@ fn a_ramp_over_n_measures_ends_on_the_barline_n_bars_on() {
             bar5 - bar3,
             &format!("{sig:?} 2 measures"),
         );
-        let distance = TempoDistance::between(&t, bar3, bar5).unwrap();
+        let distance = TempoDistance::between(&t.to_tempo_map().unwrap(), bar3, bar5).unwrap();
         close(distance.measures, 2.0, "two whole bars");
         close(distance.beats, 2.0 * quarters, "their beats");
     }
