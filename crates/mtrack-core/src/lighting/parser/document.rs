@@ -1759,6 +1759,27 @@ fn cues(
 }
 
 impl Cue {
+    /// A cue at `timestamp` with nothing under it, as an editor adds one.
+    pub fn at(timestamp: Timestamp) -> Cue {
+        Cue {
+            timestamp,
+            effects: Vec::new(),
+            commands: Vec::new(),
+            sequences: Vec::new(),
+            comment: None,
+            offset_measures: None,
+            offsets: None,
+            reset_measures: None,
+            loops: None,
+            line: None,
+            comments_before: None,
+            reset_comments_before: None,
+            reset_comment: None,
+            lines: None,
+            last: CueLine::Timestamp,
+        }
+    }
+
     /// The slot a comment on the cue's last line goes in.
     fn last_line(&mut self) -> &mut Option<String> {
         match self.last {

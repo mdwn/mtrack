@@ -20,6 +20,7 @@
 pub mod audio;
 pub mod config;
 pub mod dmx;
+pub mod edit;
 pub mod lighting;
 pub mod midi;
 pub mod playlist;
