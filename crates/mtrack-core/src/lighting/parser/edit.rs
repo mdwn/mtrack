@@ -598,6 +598,10 @@ mod tests {
                 }
             }
         }
+        // Only what the parser reads of an effect has a field.
+        assert_eq!(field(EffectKind::Static, "nonsense"), None);
+        assert!(!EffectKind::Static.params().contains(&"speed"));
+        assert_eq!(field(EffectKind::Static, "speed"), None);
     }
 
     #[test]
