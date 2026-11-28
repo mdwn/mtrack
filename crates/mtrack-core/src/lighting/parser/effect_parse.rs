@@ -287,7 +287,7 @@ impl MoveParam {
     }
 
     /// The parameter `name` (or an alias of it) is.
-    fn named(name: &str) -> Option<MoveParam> {
+    pub(crate) fn named(name: &str) -> Option<MoveParam> {
         MOVE_PARAMS
             .iter()
             .find(|(_, n, ..)| *n == name)
@@ -320,6 +320,11 @@ impl MoveParam {
             .iter()
             .filter(|(.., slot)| *slot == MoveSlot::Point)
             .map(|(param, ..)| *param)
+    }
+
+    /// Whether it sets where the move goes (else where it starts).
+    pub(crate) fn is_target(self) -> bool {
+        self.row().2 == MoveEnd::To
     }
 
     /// Whether its value is a quoted focus point (else an angle).

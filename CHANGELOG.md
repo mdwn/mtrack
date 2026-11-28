@@ -266,6 +266,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An effect made a `move` in the timeline editor is aimed straight ahead**: changing an
+  effect's type to `move` gives it `pan: 0deg, tilt: 0deg` when it keeps no target, so the show
+  still plays, where it was a move with nowhere to go until a target was typed.
+
 - **The lighting engine does far less work for every frame**: a fixture's channels, a frame's
   fixtures and an effect's targets are found by a name held once for the life of the player and
   compared as a pointer, where each was found by hashing its name's text, thousands of times a
