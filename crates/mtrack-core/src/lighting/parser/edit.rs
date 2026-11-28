@@ -30,8 +30,8 @@ use super::document::{
     CueEffect, EffectKind, EffectParams, LayerCommandType, Param, Remarks, SequenceRef,
 };
 use super::effect_parse::{
-    CHASE_DIRECTIONS, CHASE_PATTERNS, COMMON_PARAMS, CYCLE_DIRECTIONS, DIMMER_CURVES, EASINGS,
-    MOVE_ALIASES,
+    CHASE_DIRECTIONS, CHASE_PATTERNS, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_DIRECTIONS,
+    CYCLE_TRANSITIONS, DIMMER_CURVES, EASINGS, MOVE_ALIASES, PER_KEYWORDS,
 };
 use super::grammar::{LightingParser, Rule};
 use super::show::parse_sequence_loop_param;
@@ -65,7 +65,9 @@ pub enum EffectEdit {
         value: Option<String>,
     },
     /// The effect turned into `kind`, keeping only the parameters `kind`
-    /// reads and those every effect takes.
+    /// reads and those every effect takes; a move given an aim straight
+    /// ahead (`pan: 0deg, tilt: 0deg`) when it keeps none, as a move must
+    /// go somewhere.
     Kind { kind: EffectKind },
 }
 
@@ -76,6 +78,9 @@ pub enum EffectEdit {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Vocabulary {
     pub effects: Vec<EffectWords>,
+    /// The parameters every effect reads ([`COMMON_PARAMS`]), each with
+    /// what its value is.
+    pub common: Vec<ParamField>,
     pub layers: Vec<String>,
     pub blend_modes: Vec<&'static str>,
     pub curves: Vec<&'static str>,
@@ -93,6 +98,103 @@ pub struct Vocabulary {
 pub struct EffectWords {
     pub kind: EffectKind,
     pub params: Vec<&'static str>,
+    /// Each of `params`, with what its value is.
+    pub fields: Vec<ParamField>,
+}
+
+/// A parameter, and what its value is, for a form to offer.
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ParamField {
+    pub name: &'static str,
+    pub field: Field,
+}
+
+/// What a parameter's value is, as the parser reads it.
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Field {
+    /// One of these words, the parser's own table of them.
+    Words { words: Vec<&'static str> },
+    /// One of the player's layers ([`Vocabulary::layers`]).
+    Layer,
+    /// A level: `0.5`, or `50%`.
+    Level,
+    /// A length: `2s`, `500ms`, `2beats`, `1measure`.
+    Length,
+    /// A speed: so many a second, or a length for each (`1beat`).
+    Speed,
+    /// A frequency: so many a second, or a length for each.
+    Frequency,
+    /// An angle in degrees.
+    Degrees,
+    /// A colour: a name, `#rrggbb`, `rgb(…)`, or a palette slot, edited by
+    /// [`EffectEdit::Colors`]. `many` when the effect takes several, in
+    /// order.
+    Color { many: bool },
+    /// One end of a move, edited by [`EffectEdit::Move`] (setting a point
+    /// clears that end's angles, and an angle its point): a focus point of
+    /// the venue's by name, or an angle in degrees.
+    Aim { point: bool },
+}
+
+/// What the value of `kind`'s parameter `name` is (one of `kind`'s
+/// [`EffectKind::params`] or of [`COMMON_PARAMS`]), as the parser reads it;
+/// `None` for a parameter it does not read.
+pub fn field(kind: EffectKind, name: &str) -> Option<Field> {
+    fn words<T>(table: &[(T, &'static str)]) -> Field {
+        Field::Words {
+            words: table.iter().map(|(_, word)| *word).collect(),
+        }
+    }
+    if !kind.params().contains(&name) && !COMMON_PARAMS.contains(&name) {
+        return None;
+    }
+    Some(match (kind, name) {
+        (_, "layer") => Field::Layer,
+        (_, "blend_mode") => words(&BLEND_KEYWORDS),
+        (_, "up_time" | "hold_time" | "down_time" | "duration") => Field::Length,
+        (_, "per") => words(&PER_KEYWORDS),
+        (_, "spread") => Field::Degrees,
+        (EffectKind::Static, "color") => Field::Color { many: false },
+        (EffectKind::Cycle, "color") => Field::Color { many: true },
+        (
+            _,
+            "dimmer" | "intensity" | "red" | "green" | "blue" | "white" | "base_level"
+            | "pulse_amplitude" | "start" | "start_level" | "end" | "end_level" | "saturation"
+            | "brightness",
+        ) => Field::Level,
+        (_, "speed") => Field::Speed,
+        (_, "frequency" | "rate") => Field::Frequency,
+        (EffectKind::Cycle, "direction") => words(&CYCLE_DIRECTIONS),
+        (EffectKind::Chase, "direction") => words(&CHASE_DIRECTIONS),
+        (EffectKind::Cycle, "transition") => words(&CYCLE_TRANSITIONS),
+        (EffectKind::Chase, "transition") => words(&CHASE_TRANSITIONS),
+        (EffectKind::Chase, "pattern") => words(&CHASE_PATTERNS),
+        (EffectKind::Dimmer, "curve") => words(&DIMMER_CURVES),
+        (EffectKind::Move, "easing") => words(&EASINGS),
+        (EffectKind::Move, "focus" | "to" | "from") => Field::Aim { point: true },
+        (EffectKind::Move, "pan" | "tilt" | "from_pan" | "from_tilt") => {
+            Field::Aim { point: false }
+        }
+        _ => return None,
+    })
+}
+
+/// The fields of `names`, but an alias (`to`, for `focus`): a form edits
+/// what it stands for, and [`EffectParams::view`] reads it as that.
+fn fields(kind: EffectKind, names: &[&'static str]) -> Vec<ParamField> {
+    names
+        .iter()
+        .filter(|name| !MOVE_ALIASES.iter().any(|(alias, _)| alias == *name))
+        .filter_map(|name| {
+            Some(ParamField {
+                name,
+                field: field(kind, name)?,
+            })
+        })
+        .collect()
 }
 
 /// The [`Vocabulary`] of the grammar, its layers those of `layers`.
@@ -106,8 +208,10 @@ pub fn vocabulary(layers: &LayerSet) -> Vocabulary {
             .map(|(kind, _)| EffectWords {
                 kind: *kind,
                 params: kind.params().to_vec(),
+                fields: fields(*kind, kind.params()),
             })
             .collect(),
+        common: fields(EffectKind::Static, &COMMON_PARAMS),
         layers: layers.names().to_vec(),
         blend_modes: words(&BLEND_KEYWORDS),
         curves: words(&DIMMER_CURVES),
@@ -146,6 +250,16 @@ impl CueEffect {
                 };
                 let mut next = self.with_kept(self.effect.params.clone(), |p, _| !keeps(p));
                 next.effect.kind = *kind;
+                let aimed = next
+                    .effect
+                    .params
+                    .iter()
+                    .any(|p| MoveParam::named(&p.name).is_some_and(MoveParam::is_target));
+                if *kind == EffectKind::Move && !aimed {
+                    next = next
+                        .with_param(MoveParam::Pan.name(), Some(&with_deg("0")))
+                        .with_param(MoveParam::Tilt.name(), Some(&with_deg("0")));
+                }
                 next
             }
             EffectEdit::Move { key, value } => {
@@ -388,6 +502,102 @@ mod tests {
         list.iter()
             .map(|(n, v)| (n.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// A value of each field as written, and every word of a list.
+    fn written(field: &Field) -> Vec<String> {
+        match field {
+            Field::Words { words } => words.iter().map(|w| w.to_string()).collect(),
+            Field::Layer => vec!["foreground".into()],
+            Field::Level => vec!["50%".into(), "0.5".into()],
+            Field::Length => vec!["2s".into(), "2beats".into(), "1measure".into()],
+            Field::Speed | Field::Frequency => vec!["2".into()],
+            Field::Degrees => vec!["45deg".into()],
+            Field::Color { .. } => vec!["\"#3A6EA5\"".into(), "\"blue\"".into()],
+            Field::Aim { point: true } => vec!["\"stage\"".into()],
+            Field::Aim { point: false } => vec!["45deg".into()],
+        }
+    }
+
+    #[test]
+    fn an_effect_made_any_kind_still_plays() {
+        let tempo = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n";
+        for &(from, _) in EFFECT_KEYWORDS.iter() {
+            for &(to, _) in EFFECT_KEYWORDS.iter() {
+                let made = super::super::document::document(
+                    &format!("{tempo}show \"S\" {{\n    @0:00.000\n    all: static, color: \"blue\", duration: 1s\n}}\n"),
+                    None,
+                )
+                .document
+                .unwrap();
+                let mut doc = made.clone();
+                let start =
+                    doc.shows[0].cues[0].effects[0].edited(&EffectEdit::Kind { kind: from });
+                if from == EffectKind::Static {
+                    assert_eq!(start, made.shows[0].cues[0].effects[0]);
+                }
+                doc.shows[0].cues[0].effects[0] = start.edited(&EffectEdit::Kind { kind: to });
+                let text = super::super::writer::write(&doc);
+                if let Err(e) = super::super::parse_light_shows(&text) {
+                    panic!("{from:?} made {to:?} does not play: {e}\n{text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_parameter_has_a_field_the_parser_takes_every_value_of() {
+        let words = vocabulary(LayerSet::standard());
+        let common: Vec<&str> = words.common.iter().map(|f| f.name).collect();
+        assert_eq!(common, COMMON_PARAMS.to_vec(), "every common parameter");
+        for effect in &words.effects {
+            let named: Vec<&str> = effect.fields.iter().map(|f| f.name).collect();
+            let unaliased: Vec<&str> = effect
+                .params
+                .iter()
+                .copied()
+                .filter(|name| !MOVE_ALIASES.iter().any(|(alias, _)| alias == name))
+                .collect();
+            assert_eq!(named, unaliased, "every parameter of {:?}", effect.kind);
+            for name in &effect.params {
+                assert!(
+                    field(effect.kind, name).is_some(),
+                    "{name} of {:?}",
+                    effect.kind
+                );
+            }
+            let keyword = EFFECT_KEYWORDS
+                .iter()
+                .find(|(kind, _)| *kind == effect.kind)
+                .map(|(_, word)| *word)
+                .unwrap();
+            for param in effect.fields.iter().chain(&words.common) {
+                if let Field::Aim { .. } = param.field {
+                    // A form edits it by its name as a `MoveParam`.
+                    let key: Result<MoveParam, _> =
+                        serde_json::from_value(serde_json::json!(param.name));
+                    assert!(key.is_ok(), "{} is no MoveParam", param.name);
+                }
+                for value in written(&param.field) {
+                    let source =
+                        format!(
+                        "tempo {{\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}}\n\
+                         show \"S\" {{\n    @0:00.000\n    all: {keyword}, {}: {value}{}{}\n}}\n",
+                        param.name,
+                        // Every effect lasts; a move goes somewhere.
+                        if param.name == "duration" { "" } else { ", duration: 1s" },
+                        match (effect.kind, param.name) {
+                            (EffectKind::Move, "focus" | "to" | "pan" | "tilt") => "",
+                            (EffectKind::Move, _) => ", pan: 10deg",
+                            _ => "",
+                        }
+                    );
+                    if let Err(e) = super::super::parse_light_shows(&source) {
+                        panic!("{keyword} {}: {value} does not parse: {e}", param.name);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
